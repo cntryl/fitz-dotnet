@@ -125,6 +125,6 @@ public sealed class StreamClient : IStreamClient
             }
         }
 
-        return reader.IsEof ? (0, []) : (0, reader.ReadBytes((int)reader.ReadU32()));
+        return reader.IsEof ? ((byte)0, []) : ((byte)0, reader.ReadBytes((int)reader.ReadU32()));
     }
 }
