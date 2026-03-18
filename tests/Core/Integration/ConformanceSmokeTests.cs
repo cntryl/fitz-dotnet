@@ -23,6 +23,7 @@ public sealed class ConformanceSmokeTests
             await RunCs001ConnectSuccess(),
             await RunCs002AuthFailure(),
             await RunCs003RequestSuccess(),
+            await RunCs004UnknownRoute(),
         };
 
         var outputPath = Environment.GetEnvironmentVariable("CONFORMANCE_OUTPUT");
@@ -42,6 +43,7 @@ public sealed class ConformanceSmokeTests
         Assert.Contains(scenarios, s => s.ScenarioId == "CS-001");
         Assert.Contains(scenarios, s => s.ScenarioId == "CS-002");
         Assert.Contains(scenarios, s => s.ScenarioId == "CS-003");
+        Assert.Contains(scenarios, s => s.ScenarioId == "CS-004");
         Assert.True(File.Exists(outputPath));
     }
 
@@ -243,6 +245,78 @@ public sealed class ConformanceSmokeTests
             evidence.Add($"request success scenario failed: {ex.GetType().Name}: {ex.Message}");
             return new ScenarioResult(
                 "CS-003",
+                "fitz-dotnet",
+                "websocket",
+                "anonymous",
+                "fail",
+                sw.ElapsedMilliseconds,
+                evidence,
+                ex.Message
+            );
+        }
+    }
+
+    private static async Task<ScenarioResult> RunCs004UnknownRoute()
+    {
+        var url = Environment.GetEnvironmentVariable("FITZ_BROKER_ANON_WS_ADDR") ?? "ws://localhost:4190/ws";
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var evidence = new List<string>();
+
+        try
+        {
+            await using var client = new Client(
+                new ClientConfig(
+                    url,
+                    Timeout: TimeSpan.FromMilliseconds(500),
+                    AuthSettleDelay: TimeSpan.FromMilliseconds(100)
+                )
+            );
+
+            await client.ConnectAsync();
+
+            var noWorkerRoute = CreateUniqueRoute("rpc");
+            try
+            {
+                await client.Rpc().RequestAsync(noWorkerRoute, "ping"u8.ToArray());
+                evidence.Add("WARNING: rpc request to unregistered route unexpectedly succeeded");
+                return new ScenarioResult(
+                    "CS-004",
+                    "fitz-dotnet",
+                    "websocket",
+                    "anonymous",
+                    "fail",
+                    sw.ElapsedMilliseconds,
+                    evidence,
+                    "unknown-route request unexpectedly succeeded"
+                );
+            }
+            catch (Exception rpcException)
+            {
+                evidence.Add($"rpc to unregistered route raised {rpcException.GetType().Name}");
+            }
+
+            var route = CreateUniqueRoute("kv");
+            var tx = await client.Kv().BeginAsync(route);
+            await tx.PutAsync("k"u8.ToArray(), "v"u8.ToArray());
+            await tx.CommitAsync();
+            evidence.Add("client remains usable after unknown-route error");
+
+            return new ScenarioResult(
+                "CS-004",
+                "fitz-dotnet",
+                "websocket",
+                "anonymous",
+                "pass",
+                sw.ElapsedMilliseconds,
+                evidence,
+                ""
+            );
+        }
+        catch (Exception ex)
+        {
+            evidence.Add($"unknown-route scenario failed: {ex.GetType().Name}: {ex.Message}");
+            return new ScenarioResult(
+                "CS-004",
                 "fitz-dotnet",
                 "websocket",
                 "anonymous",

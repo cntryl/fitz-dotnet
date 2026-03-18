@@ -73,7 +73,11 @@ public sealed class StreamClientTests
         });
 
         // Act
-        var records = await stream.ReadAsync("stream://prod/app/events", 4, 2);
+        var records = new List<StreamRecord>();
+        await foreach (var record in stream.ReadAsync("stream://prod/app/events", 4, 2))
+        {
+            records.Add(record);
+        }
 
         // Assert
         Assert.Collection(

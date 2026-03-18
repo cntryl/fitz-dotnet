@@ -2,6 +2,7 @@ using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
+using System.Runtime.CompilerServices;
 
 namespace Cntryl.Fitz.Domains.Stream;
 
@@ -52,7 +53,12 @@ public sealed class StreamClient : IStreamClient
         return new StreamSession(_request, reader.ReadU64());
     }
 
-    public async Task<IReadOnlyList<StreamRecord>> ReadAsync(string route, ulong startOffset, ulong limit = 100, ulong? maxBytes = null, CancellationToken cancellationToken = default)
+    public async IAsyncEnumerable<StreamRecord> ReadAsync(
+        string route,
+        ulong startOffset,
+        ulong limit = 100,
+        ulong? maxBytes = null,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var writer = new BinaryBufferWriter();
         writer.WriteString(route);
@@ -73,18 +79,15 @@ public sealed class StreamClient : IStreamClient
 
         if (data.Length == 0)
         {
-            return [];
+            yield break;
         }
 
         var inner = new BinaryBufferReader(data);
         var count = inner.ReadU32();
-        var items = new List<StreamRecord>((int)count);
         for (var index = 0; index < count; index++)
         {
-            items.Add(new StreamRecord(inner.ReadU64(), inner.ReadBytes((int)inner.ReadU32())));
+            yield return new StreamRecord(inner.ReadU64(), inner.ReadBytes((int)inner.ReadU32()));
         }
-
-        return items;
     }
 
     public async Task<StreamMetadata> MetadataAsync(string route, CancellationToken cancellationToken = default)
