@@ -55,8 +55,8 @@ public sealed class NoticeClientTests
             {
                 Assert.Equal(MessageTypes.NoticeNotify, messageType);
                 notifyHandler = handler;
-            },
-            _ => { });
+                return new TestRegistration();
+            });
 
         // Act
         var task = Task.Run(async () =>

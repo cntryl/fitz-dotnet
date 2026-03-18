@@ -5,10 +5,12 @@ namespace Cntryl.Fitz.Connection;
 public sealed class Multiplexer
 {
     private readonly object _gate = new();
-    private readonly Dictionary<ushort, LinkedList<PendingRequest>> _pending = new();
-    private readonly Dictionary<ushort, Action<byte[]>> _notificationHandlers = new();
+    private readonly Dictionary<ushort, PendingRequest> _pending = new();
+    private readonly Dictionary<ushort, SemaphoreSlim> _requestLanes = new();
+    private readonly Dictionary<ushort, Dictionary<long, Action<byte[]>>> _notificationHandlers = new();
     private readonly Dictionary<ushort, int> _optionalResponses = new();
     private ConnectionState _state = ConnectionState.Disconnected;
+    private long _nextHandlerId;
 
     public void SetConnected()
     {
@@ -29,20 +31,24 @@ public sealed class Multiplexer
         CancelAll();
     }
 
-    public void RegisterNotificationHandler(ushort messageType, Action<byte[]> handler)
+    public IDisposable RegisterNotificationHandler(ushort messageType, Action<byte[]> handler)
     {
-        lock (_gate)
-        {
-            _notificationHandlers[messageType] = handler;
-        }
-    }
+        ArgumentNullException.ThrowIfNull(handler);
 
-    public void UnregisterNotificationHandler(ushort messageType)
-    {
+        long handlerId;
         lock (_gate)
         {
-            _notificationHandlers.Remove(messageType);
+            handlerId = ++_nextHandlerId;
+            if (!_notificationHandlers.TryGetValue(messageType, out var handlers))
+            {
+                handlers = new Dictionary<long, Action<byte[]>>();
+                _notificationHandlers[messageType] = handlers;
+            }
+
+            handlers[handlerId] = handler;
         }
+
+        return new NotificationRegistration(this, messageType, handlerId);
     }
 
     public Action ExpectOptionalResponse(ushort messageType)
@@ -76,22 +82,15 @@ public sealed class Multiplexer
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
     {
+        var lane = GetLane(messageType);
+        await lane.WaitAsync(cancellationToken).ConfigureAwait(false);
+
         var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
         var request = new PendingRequest(tcs);
-        lock (_gate)
-        {
-            if (!_pending.TryGetValue(messageType, out var queue))
-            {
-                queue = new LinkedList<PendingRequest>();
-                _pending[messageType] = queue;
-            }
-
-            request.Node = queue.AddLast(request);
-        }
 
         using var timeoutCts = new CancellationTokenSource(timeout);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-        using var reg = linkedCts.Token.Register(() =>
+        using var registration = linkedCts.Token.Register(() =>
         {
             RemovePending(messageType, request);
             if (timeoutCts.IsCancellationRequested)
@@ -104,6 +103,16 @@ public sealed class Multiplexer
             }
         });
 
+        lock (_gate)
+        {
+            if (_pending.ContainsKey(messageType))
+            {
+                throw new InvalidOperationException($"A request is already pending for message type {messageType}.");
+            }
+
+            _pending[messageType] = request;
+        }
+
         try
         {
             await send(frameData, cancellationToken).ConfigureAwait(false);
@@ -114,33 +123,26 @@ public sealed class Multiplexer
             RemovePending(messageType, request);
             throw;
         }
+        finally
+        {
+            lane.Release();
+        }
     }
 
     public void Dispatch(ushort messageType, byte[] payload)
     {
         PendingRequest? pending = null;
-        Action<byte[]>? notificationHandler = null;
+        Action<byte[]>[]? handlers = null;
 
         lock (_gate)
         {
-            if (_pending.TryGetValue(messageType, out var queue) && queue.Count > 0)
+            if (_pending.TryGetValue(messageType, out pending))
             {
-                var first = queue.First;
-                if (first is not null)
-                {
-                    pending = first.Value;
-                    pending.Node = null;
-                    queue.RemoveFirst();
-                }
-
-                if (queue.Count == 0)
-                {
-                    _pending.Remove(messageType);
-                }
+                _pending.Remove(messageType);
             }
-            else if (_notificationHandlers.TryGetValue(messageType, out var handler))
+            else if (_notificationHandlers.TryGetValue(messageType, out var registeredHandlers) && registeredHandlers.Count > 0)
             {
-                notificationHandler = handler;
+                handlers = registeredHandlers.Values.ToArray();
             }
             else
             {
@@ -172,37 +174,50 @@ public sealed class Multiplexer
             return;
         }
 
-        if (notificationHandler is not null)
+        if (handlers is null)
+        {
+            return;
+        }
+
+        foreach (var handler in handlers)
         {
             try
             {
-                notificationHandler(payload);
+                handler(payload);
             }
             catch
             {
             }
-
-            return;
         }
     }
 
     public void CancelAll()
     {
-        PendingRequest[] requests;
+        PendingRequest[] pending;
         lock (_gate)
         {
-            requests = _pending.Values.SelectMany(q => q).ToArray();
-            foreach (var pending in requests)
-            {
-                pending.Node = null;
-            }
-
+            pending = _pending.Values.ToArray();
             _pending.Clear();
         }
 
-        foreach (var pending in requests)
+        foreach (var request in pending)
         {
-            pending.Promise.TrySetException(new ConnectionException("Connection closed or reset"));
+            request.Promise.TrySetException(new ConnectionException("Connection closed or reset"));
+        }
+    }
+
+    private SemaphoreSlim GetLane(ushort messageType)
+    {
+        lock (_gate)
+        {
+            if (_requestLanes.TryGetValue(messageType, out var lane))
+            {
+                return lane;
+            }
+
+            lane = new SemaphoreSlim(1, 1);
+            _requestLanes[messageType] = lane;
+            return lane;
         }
     }
 
@@ -210,22 +225,26 @@ public sealed class Multiplexer
     {
         lock (_gate)
         {
-            if (!_pending.TryGetValue(messageType, out var queue) || queue.Count == 0)
-            {
-                return;
-            }
-
-            var node = request.Node;
-            if (node is null)
-            {
-                return;
-            }
-
-            queue.Remove(node);
-            request.Node = null;
-            if (queue.Count == 0)
+            if (_pending.TryGetValue(messageType, out var existing) && ReferenceEquals(existing, request))
             {
                 _pending.Remove(messageType);
+            }
+        }
+    }
+
+    private void RemoveNotificationHandler(ushort messageType, long handlerId)
+    {
+        lock (_gate)
+        {
+            if (!_notificationHandlers.TryGetValue(messageType, out var handlers))
+            {
+                return;
+            }
+
+            handlers.Remove(handlerId);
+            if (handlers.Count == 0)
+            {
+                _notificationHandlers.Remove(messageType);
             }
         }
     }
@@ -238,7 +257,30 @@ public sealed class Multiplexer
         }
 
         internal TaskCompletionSource<byte[]> Promise { get; }
+    }
 
-        internal LinkedListNode<PendingRequest>? Node { get; set; }
+    private sealed class NotificationRegistration : IDisposable
+    {
+        private readonly Multiplexer _owner;
+        private readonly ushort _messageType;
+        private readonly long _handlerId;
+        private int _disposed;
+
+        internal NotificationRegistration(Multiplexer owner, ushort messageType, long handlerId)
+        {
+            _owner = owner;
+            _messageType = messageType;
+            _handlerId = handlerId;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            _owner.RemoveNotificationHandler(_messageType, _handlerId);
+        }
     }
 }

@@ -50,13 +50,9 @@ public sealed class DomainWorkflowIntegrationTests
             records.Add(Encoding.UTF8.GetString(record.Body));
         }
 
-        // Some broker builds currently return an empty READ payload even after a successful commit.
-        // Treat non-empty reads as a stronger assertion when available.
-        if (records.Count > 0)
-        {
-            Assert.Contains("one", records);
-            Assert.Contains("two", records);
-        }
+        Assert.True(records.Count >= 2, $"expected at least 2 committed stream records, got {records.Count}");
+        Assert.Contains("one", records);
+        Assert.Contains("two", records);
     }
 
     [Fact]

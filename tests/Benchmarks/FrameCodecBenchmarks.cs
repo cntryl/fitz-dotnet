@@ -8,7 +8,7 @@ namespace Cntryl.Fitz.Benchmarks;
 /// Benchmarks for frame encoding and decoding operations.
 /// Target: encode <100 ns, decode <200 ns
 /// </summary>
-[SimpleJob(RuntimeMoniker.Net90)]
+[SimpleJob]
 [MemoryDiagnoser]
 [PlainExporter]
 [MeanColumn]

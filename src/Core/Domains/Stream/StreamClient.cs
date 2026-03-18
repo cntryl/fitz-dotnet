@@ -1,23 +1,29 @@
-﻿using Cntryl.Fitz.Abstractions.Domains.Stream;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
-using System.Runtime.CompilerServices;
+using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Stream;
 
 public sealed class StreamClient : IStreamClient
 {
     private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
+    private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
 
     internal StreamClient(FitzConnection connection)
-        : this(connection.RequestAsync)
+        : this(connection.RequestAsync, connection.RegisterNotificationHandler)
     {
     }
 
-    public StreamClient(Func<ushort, byte[], CancellationToken, Task<byte[]>> request)
+    public StreamClient(
+        Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
     {
         _request = request;
+        _registerNotificationHandler = registerNotificationHandler;
     }
 
     public async Task<IStreamSession> BeginAsync(string route, ulong expectedOffset = 0, ReadOnlyMemory<byte>? ingestMetadata = null, CancellationToken ct = default)
@@ -36,7 +42,7 @@ public sealed class StreamClient : IStreamClient
             writer.WriteU8(0);
         }
 
-        var response = await _request(MessageTypes.StreamBegin, writer.Build(), ct);
+        var response = await _request(MessageTypes.StreamBegin, writer.Build(), ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -70,7 +76,7 @@ public sealed class StreamClient : IStreamClient
             writer.WriteU64(maxBytes.Value);
         }
 
-        var response = await _request(MessageTypes.StreamRead, writer.Build(), ct);
+        var response = await _request(MessageTypes.StreamRead, writer.Build(), ct).ConfigureAwait(false);
         var (status, data) = ReadWrappedStreamResponse(response);
         if (status != 0)
         {
@@ -89,11 +95,35 @@ public sealed class StreamClient : IStreamClient
         }
     }
 
+    public async Task<StreamRecord?> PeekAsync(string route, CancellationToken ct = default)
+    {
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(route);
+
+        var response = await _request(MessageTypes.StreamLast, writer.Build(), ct).ConfigureAwait(false);
+        var (status, data) = ReadWrappedStreamResponse(response);
+        if (status != 0)
+        {
+            throw new StreamException($"LAST failed with status {status}", "LAST_FAILED", status);
+        }
+
+        if (data.Length == 0)
+        {
+            return null;
+        }
+
+        var reader = new BinaryBufferReader(data);
+        var offset = reader.ReadU64();
+        var bodyLength = reader.ReadU32();
+        var body = reader.ReadBytes((int)bodyLength);
+        return new StreamRecord(offset, body);
+    }
+
     public async Task<StreamMetadata> MetadataAsync(string route, CancellationToken ct = default)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        var response = await _request(MessageTypes.StreamGetMetadata, writer.Build(), ct);
+        var response = await _request(MessageTypes.StreamGetMetadata, writer.Build(), ct).ConfigureAwait(false);
         var (status, data) = ReadWrappedStreamResponse(response);
         if (status != 0)
         {
@@ -107,6 +137,90 @@ public sealed class StreamClient : IStreamClient
 
         var inner = new BinaryBufferReader(data);
         return new StreamMetadata(inner.ReadU64(), inner.ReadU64(), inner.ReadU64());
+    }
+
+    public async IAsyncEnumerable<StreamCommitEvent> SubscribeAsync(
+        string pattern,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        if (_registerNotificationHandler == null)
+        {
+            throw new InvalidOperationException("Notification handlers not configured for subscription support");
+        }
+
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(pattern);
+
+        var response = await _request(MessageTypes.StreamSubscribe, writer.Build(), ct).ConfigureAwait(false);
+        var reader = new BinaryBufferReader(response);
+        var status = reader.ReadU8();
+        if (status != 0)
+        {
+            throw new StreamException($"SUBSCRIBE failed with status {status}", "SUBSCRIBE_FAILED", status);
+        }
+
+        if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
+        {
+            throw new StreamException("SUBSCRIBE response missing subscription id", "MISSING_SUBSCRIPTION_ID");
+        }
+
+        var subscriptionId = reader.ReadU64();
+        var channel = new SubscriptionChannel<StreamCommitEvent>();
+        var registration = _registerNotificationHandler(MessageTypes.StreamNotify, payload =>
+        {
+            try
+            {
+                var notifyReader = new BinaryBufferReader(payload);
+                if (notifyReader.ReadU64() != subscriptionId)
+                {
+                    return;
+                }
+
+                var route = notifyReader.ReadString();
+                var bodyLength = notifyReader.ReadU32();
+                var body = notifyReader.ReadBytes((int)bodyLength);
+                channel.PostNotification(new StreamCommitEvent(route, TryParseCommitOffset(body)));
+            }
+            catch
+            {
+                channel.Dispose();
+            }
+        });
+
+        try
+        {
+            await foreach (var evt in channel.GetEnumerableAsync(ct).ConfigureAwait(false))
+            {
+                yield return evt;
+            }
+        }
+        finally
+        {
+            registration.Dispose();
+            channel.Dispose();
+        }
+    }
+
+    private static ulong TryParseCommitOffset(byte[] payload)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            if (document.RootElement.TryGetProperty("last_resource_offset", out var lastOffset))
+            {
+                return lastOffset.GetUInt64();
+            }
+
+            if (document.RootElement.TryGetProperty("first_resource_offset", out var firstOffset))
+            {
+                return firstOffset.GetUInt64();
+            }
+        }
+        catch
+        {
+        }
+
+        return 0;
     }
 
     private static (byte Status, byte[] Data) ReadWrappedStreamResponse(byte[] response)
@@ -132,8 +246,6 @@ public sealed class StreamClient : IStreamClient
 
     private static List<StreamRecord> ParseReadRecords(byte[] data)
     {
-        // Prefer count-prefixed parsing. Fall back to flat parsing for brokers
-        // that return records directly without a leading count.
         var fromCount = TryParseCountPrefixedRecords(data);
         if (fromCount.Count > 0)
         {

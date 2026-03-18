@@ -15,4 +15,5 @@
 
 - Build: `dotnet build Fitz.sln`
 - Test: `dotnet test tests/Core/Core.Tests.csproj`
+- Conformance (broker-backed): `dotnet test tests/Core/Core.Tests.csproj --filter FullyQualifiedName~Conformance`
 - List solution projects: `dotnet sln Fitz.sln list`

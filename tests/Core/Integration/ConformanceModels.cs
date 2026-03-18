@@ -28,6 +28,8 @@ internal static class ConformanceResultBuilder
 {
     internal static AggregateResult BuildAggregate(IReadOnlyList<ScenarioResult> scenarios)
     {
+        var transport = scenarios.FirstOrDefault()?.Transport ?? IntegrationFixture.GetConformanceTransport();
+        var authMode = scenarios.FirstOrDefault()?.AuthMode ?? IntegrationFixture.GetConformanceAuthMode();
         var p0 = scenarios.Where(s => s.ScenarioId is "CS-001" or "CS-002" or "CS-003" or "CS-004" or "CS-005" or "CS-006" or "CS-007" or "CS-008").ToList();
         var p1 = scenarios.Where(s => s.ScenarioId is "CS-009" or "CS-010" or "CS-011" or "CS-012" or "CS-013" or "CS-014" or "CS-015").ToList();
 
@@ -52,8 +54,8 @@ internal static class ConformanceResultBuilder
             "1.0",
             DateTimeOffset.UtcNow,
             "fitz-dotnet",
-            "websocket",
-            "anonymous",
+            transport,
+            authMode,
             p0PassRate,
             p1PassRate,
             overall,

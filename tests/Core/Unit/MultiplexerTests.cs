@@ -69,33 +69,66 @@ public sealed class MultiplexerTests
     }
 
     [Fact]
-    public async Task should_match_fifo_order_given_two_inflight_requests_when_dispatching_same_message_type()
+    public async Task should_serialize_same_message_type_given_two_requests_when_dispatching()
     {
         // Arrange
         var mux = new Multiplexer();
         mux.SetConnected();
 
+        var sendOrder = new List<byte>();
         var firstTask = mux.RequestAsync(
             120,
             [0x1],
-            static (_, _) => Task.CompletedTask,
+            async (_, _) =>
+            {
+                sendOrder.Add(0x1);
+                await Task.Delay(50).ConfigureAwait(false);
+            },
             TimeSpan.FromSeconds(1)
         );
+
+        await Task.Delay(10);
 
         var secondTask = mux.RequestAsync(
             120,
             [0x2],
-            static (_, _) => Task.CompletedTask,
+            (_, _) =>
+            {
+                sendOrder.Add(0x2);
+                return Task.CompletedTask;
+            },
             TimeSpan.FromSeconds(1)
         );
 
+        await Task.Delay(60);
+
         // Act
         mux.Dispatch(120, [0xA]);
+        await Task.Delay(25);
         mux.Dispatch(120, [0xB]);
 
         // Assert
+        Assert.Equal([0x1, 0x2], sendOrder);
         Assert.Equal([0xA], await firstTask);
         Assert.Equal([0xB], await secondTask);
+    }
+
+    [Fact]
+    public void should_dispatch_to_all_registered_handlers_given_notification_message()
+    {
+        // Arrange
+        var mux = new Multiplexer();
+        mux.SetConnected();
+
+        var seen = new List<string>();
+        using var first = mux.RegisterNotificationHandler(130, _ => seen.Add("first"));
+        using var second = mux.RegisterNotificationHandler(130, _ => seen.Add("second"));
+
+        // Act
+        mux.Dispatch(130, [0x1]);
+
+        // Assert
+        Assert.Equal(["first", "second"], seen);
     }
 
     [Fact]

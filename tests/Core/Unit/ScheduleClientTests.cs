@@ -83,8 +83,8 @@ public sealed class ScheduleClientTests
             {
                 Assert.Equal(MessageTypes.ScheduleNotify, messageType);
                 notifyHandler = handler;
-            },
-            _ => { });
+                return new TestRegistration();
+            });
 
         // Act
         var task = Task.Run(async () =>
@@ -117,5 +117,44 @@ public sealed class ScheduleClientTests
 
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("schedule://prod/*", reader.ReadString());
+    }
+
+    [Fact]
+    public async Task should_return_entries_and_total_count_given_list_response_when_listing_schedules()
+    {
+        // Arrange
+        byte[]? seenPayload = null;
+        var schedule = new ScheduleClient((messageType, payload, _) =>
+        {
+            Assert.Equal(MessageTypes.ScheduleList, messageType);
+            seenPayload = payload;
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU64(2);
+            writer.WriteU8(1);
+            writer.WriteString("schedule://prod/app/jobs");
+            writer.WriteString("*/5 * * * *");
+            writer.WriteU32(3);
+            writer.WriteBytes("job"u8);
+            writer.WriteU8(0);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var (entries, totalCount) = await schedule.ListAsync(offset: 10, limit: 25);
+
+        // Assert
+        Assert.Equal((ulong)2, totalCount);
+        Assert.Single(entries);
+        Assert.Equal("schedule://prod/app/jobs", entries[0].Route);
+        Assert.Equal("*/5 * * * *", entries[0].Cron);
+        Assert.Equal("job", System.Text.Encoding.UTF8.GetString(entries[0].Payload));
+
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal((ulong)10, reader.ReadU64());
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal((ulong)25, reader.ReadU64());
     }
 }

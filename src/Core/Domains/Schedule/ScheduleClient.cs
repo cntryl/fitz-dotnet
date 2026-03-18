@@ -1,4 +1,4 @@
-﻿using System.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
 using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
@@ -10,25 +10,21 @@ namespace Cntryl.Fitz.Domains.Schedule;
 public sealed class ScheduleClient : IScheduleClient
 {
     private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
-    private readonly Action<ushort, Action<byte[]>>? _registerNotificationHandler;
-    private readonly Action<ushort>? _unregisterNotificationHandler;
+    private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
 
     internal ScheduleClient(FitzConnection connection)
         : this(
             connection.RequestAsync,
-            connection.RegisterNotificationHandler,
-            connection.UnregisterNotificationHandler)
+            connection.RegisterNotificationHandler)
     {
     }
 
     public ScheduleClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
-        Action<ushort, Action<byte[]>>? registerNotificationHandler = null,
-        Action<ushort>? unregisterNotificationHandler = null)
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
-        _unregisterNotificationHandler = unregisterNotificationHandler;
     }
 
     public async Task<string?> CreateAsync(string route, string cron, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
@@ -38,14 +34,13 @@ public sealed class ScheduleClient : IScheduleClient
         writer.WriteString(cron);
         writer.WriteU32((uint)payload.Length);
         writer.WriteBytes(payload.Span);
-        var data = await AssertSuccessAsync(MessageTypes.ScheduleCreate, writer.Build(), "CREATE", ct);
+        var data = await AssertSuccessAsync(MessageTypes.ScheduleCreate, writer.Build(), "CREATE", ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(data);
         if (!reader.IsEof && reader.ReadU8() == 1)
         {
             return reader.ReadString();
         }
 
-        // Route is the canonical identity when server omits explicit schedule id.
         return route;
     }
 
@@ -53,22 +48,63 @@ public sealed class ScheduleClient : IScheduleClient
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        _ = await AssertSuccessAsync(MessageTypes.ScheduleCancel, writer.Build(), "CANCEL", ct);
+        _ = await AssertSuccessAsync(MessageTypes.ScheduleCancel, writer.Build(), "CANCEL", ct).ConfigureAwait(false);
+    }
+
+    public async Task<(ScheduleEntry[] Entries, ulong TotalCount)> ListAsync(ulong offset = 0, ulong limit = 0, CancellationToken ct = default)
+    {
+        using var writer = new BinaryBufferWriter();
+        writer.WriteU8(offset > 0 ? (byte)1 : (byte)0);
+        if (offset > 0)
+        {
+            writer.WriteU64(offset);
+        }
+
+        writer.WriteU8(limit > 0 ? (byte)1 : (byte)0);
+        if (limit > 0)
+        {
+            writer.WriteU64(limit);
+        }
+
+        var data = await AssertSuccessAsync(MessageTypes.ScheduleList, writer.Build(), "LIST", ct).ConfigureAwait(false);
+        if (data.Length == 0)
+        {
+            return ([], 0);
+        }
+
+        var reader = new BinaryBufferReader(data);
+        var totalCount = reader.ReadU64();
+        var entries = new List<ScheduleEntry>();
+
+        while (!reader.IsEof)
+        {
+            var hasEntry = reader.ReadU8();
+            if (hasEntry == 0)
+            {
+                break;
+            }
+
+            var route = reader.ReadString();
+            var cron = reader.ReadString();
+            var payloadLength = reader.ReadU32();
+            var payload = reader.ReadBytes((int)payloadLength);
+            entries.Add(new ScheduleEntry(route, route, cron, payload));
+        }
+
+        return (entries.ToArray(), totalCount);
     }
 
     public async IAsyncEnumerable<ScheduleExecutionEvent> SubscribeAsync(
         string pattern,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        if (_registerNotificationHandler == null || _unregisterNotificationHandler == null)
+        if (_registerNotificationHandler == null)
         {
             throw new InvalidOperationException("Notification handlers not configured for subscription support");
         }
 
         var channel = new SubscriptionChannel<ScheduleExecutionEvent>();
-
-        // Register notification handler
-        _registerNotificationHandler(MessageTypes.ScheduleNotify, payload =>
+        var registration = _registerNotificationHandler(MessageTypes.ScheduleNotify, payload =>
         {
             try
             {
@@ -84,36 +120,34 @@ public sealed class ScheduleClient : IScheduleClient
             }
         });
 
-        // Send subscribe request
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
         try
         {
-            var response = await _request(MessageTypes.ScheduleSubscribe, writer.Build(), ct);
+            var response = await _request(MessageTypes.ScheduleSubscribe, writer.Build(), ct).ConfigureAwait(false);
             var reader = new BinaryBufferReader(response);
             var status = reader.ReadU8();
             if (status != 0)
             {
                 throw new ScheduleException($"SUBSCRIBE failed with status {status}", "SUBSCRIBE_FAILED", status);
             }
-        }
-        catch
-        {
-            _unregisterNotificationHandler(MessageTypes.ScheduleNotify);
-            throw;
-        }
 
-        // Yield events from the channel
-        await foreach (var evt in channel.GetEnumerableAsync(ct))
+            await foreach (var evt in channel.GetEnumerableAsync(ct).ConfigureAwait(false))
+            {
+                yield return evt;
+            }
+        }
+        finally
         {
-            yield return evt;
+            registration.Dispose();
+            channel.Dispose();
         }
     }
 
     private async Task<byte[]> AssertSuccessAsync(ushort messageType, byte[] payload, string operation, CancellationToken ct)
     {
-        var response = await _request(messageType, payload, ct);
+        var response = await _request(messageType, payload, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)

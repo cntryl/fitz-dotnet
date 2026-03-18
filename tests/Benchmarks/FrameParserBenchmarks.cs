@@ -4,7 +4,7 @@ using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Benchmarks;
 
-[SimpleJob(RuntimeMoniker.Net90)]
+[SimpleJob]
 [MemoryDiagnoser]
 [PlainExporter]
 public class FrameParserBenchmarks

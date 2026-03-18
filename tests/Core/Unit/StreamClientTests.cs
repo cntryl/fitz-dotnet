@@ -126,6 +126,93 @@ public sealed class StreamClientTests
     }
 
     [Fact]
+    public async Task should_return_last_record_given_wrapped_payload_when_peeking_stream()
+    {
+        // Arrange
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            Assert.Equal(MessageTypes.StreamLast, messageType);
+
+            var request = new BinaryBufferReader(payload);
+            Assert.Equal("stream://prod/app/events", request.ReadString());
+
+            using var data = new BinaryBufferWriter();
+            data.WriteU64(42);
+            data.WriteU32(4);
+            data.WriteBytes("tail"u8);
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(0);
+            writer.WriteU32((uint)data.Build().Length);
+            writer.WriteBytes(data.Build());
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var record = await stream.PeekAsync("stream://prod/app/events");
+
+        // Assert
+        Assert.NotNull(record);
+        Assert.Equal((ulong)42, record!.Offset);
+        Assert.Equal("tail", System.Text.Encoding.UTF8.GetString(record.Body));
+    }
+
+    [Fact]
+    public async Task should_yield_commit_event_given_matching_notification_when_subscribing()
+    {
+        // Arrange
+        Action<byte[]>? notifyHandler = null;
+        var stream = new StreamClient(
+            (messageType, payload, _) =>
+            {
+                Assert.Equal(MessageTypes.StreamSubscribe, messageType);
+                var request = new BinaryBufferReader(payload);
+                Assert.Equal("stream://prod/*", request.ReadString());
+
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                writer.WriteU8(1);
+                writer.WriteU64(55);
+                return Task.FromResult(writer.Build());
+            },
+            (messageType, handler) =>
+            {
+                Assert.Equal(MessageTypes.StreamNotify, messageType);
+                notifyHandler = handler;
+                return new TestRegistration();
+            });
+
+        // Act
+        var task = Task.Run(async () =>
+        {
+            await foreach (var evt in stream.SubscribeAsync("stream://prod/*"))
+            {
+                return evt;
+            }
+
+            return null;
+        });
+
+        await Task.Delay(25);
+        Assert.NotNull(notifyHandler);
+        using var notification = new BinaryBufferWriter();
+        notification.WriteU64(55);
+        notification.WriteString("stream://prod/app/events");
+        var json = System.Text.Encoding.UTF8.GetBytes("{\"event\":\"committed\",\"last_resource_offset\":19}");
+        notification.WriteU32((uint)json.Length);
+        notification.WriteBytes(json);
+        notifyHandler!(notification.Build());
+
+        var evt = await task;
+
+        // Assert
+        Assert.NotNull(evt);
+        Assert.Equal("stream://prod/app/events", evt!.Route);
+        Assert.Equal((ulong)19, evt.CommitOffset);
+    }
+
+    [Fact]
     public async Task should_return_committed_offset_given_append_response_when_appending_to_stream_session()
     {
         // Arrange

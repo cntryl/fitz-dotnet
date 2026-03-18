@@ -100,8 +100,8 @@ public sealed class QueueClientTests
             {
                 Assert.Equal(MessageTypes.QueueNotify, messageType);
                 notifyHandler = handler;
-            },
-            _ => { });
+                return new TestRegistration();
+            });
 
         // Act
         var task = Task.Run(async () =>

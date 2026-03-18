@@ -10,7 +10,6 @@ namespace Cntryl.Fitz.Runtime;
 internal sealed class SubscriptionChannel<T>
 {
     private readonly Channel<T> _channel;
-    private readonly CancellationTokenSource _cts;
     private bool _disposed;
 
     internal SubscriptionChannel()
@@ -20,7 +19,6 @@ internal sealed class SubscriptionChannel<T>
             SingleReader = false,
             SingleWriter = true,
         });
-        _cts = new CancellationTokenSource();
     }
 
     /// <summary>
@@ -43,11 +41,26 @@ internal sealed class SubscriptionChannel<T>
     internal async IAsyncEnumerable<T> GetEnumerableAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
-        await foreach (var notification in _channel.Reader.ReadAllAsync(linkedCts.Token))
+        while (await _channel.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            yield return notification;
+            while (_channel.Reader.TryRead(out var notification))
+            {
+                yield return notification;
+            }
         }
+    }
+
+    internal async ValueTask<SubscriptionReadResult<T>> ReadAsync(CancellationToken cancellationToken = default)
+    {
+        while (await _channel.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            if (_channel.Reader.TryRead(out var notification))
+            {
+                return new SubscriptionReadResult<T>(true, notification);
+            }
+        }
+
+        return new SubscriptionReadResult<T>(false, default!);
     }
 
     /// <summary>
@@ -62,8 +75,8 @@ internal sealed class SubscriptionChannel<T>
         }
 
         _disposed = true;
-        _cts.Cancel();
         _channel.Writer.TryComplete();
-        _cts.Dispose();
     }
 }
+
+internal readonly record struct SubscriptionReadResult<T>(bool HasItem, T Item);

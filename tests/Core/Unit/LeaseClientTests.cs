@@ -164,8 +164,8 @@ public sealed class LeaseClientTests
             {
                 Assert.Equal(MessageTypes.LeaseNotify, messageType);
                 notifyHandler = handler;
-            },
-            _ => { });
+                return new TestRegistration();
+            });
 
         // Act
         var task = Task.Run(async () =>

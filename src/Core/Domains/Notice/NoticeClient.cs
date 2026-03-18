@@ -1,4 +1,4 @@
-﻿using System.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
 using Cntryl.Fitz.Abstractions.Domains.Notice;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
@@ -11,28 +11,24 @@ public sealed class NoticeClient : INoticeClient
 {
     private readonly Func<ushort, byte[], CancellationToken, Task> _send;
     private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>>? _request;
-    private readonly Action<ushort, Action<byte[]>>? _registerNotificationHandler;
-    private readonly Action<ushort>? _unregisterNotificationHandler;
+    private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
 
     internal NoticeClient(FitzConnection connection)
         : this(
             connection.SendAsync,
             connection.RequestAsync,
-            connection.RegisterNotificationHandler,
-            connection.UnregisterNotificationHandler)
+            connection.RegisterNotificationHandler)
     {
     }
 
     public NoticeClient(
         Func<ushort, byte[], CancellationToken, Task> send,
         Func<ushort, byte[], CancellationToken, Task<byte[]>>? request = null,
-        Action<ushort, Action<byte[]>>? registerNotificationHandler = null,
-        Action<ushort>? unregisterNotificationHandler = null)
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
     {
         _send = send;
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
-        _unregisterNotificationHandler = unregisterNotificationHandler;
     }
 
     public Task PublishAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default)
@@ -48,15 +44,13 @@ public sealed class NoticeClient : INoticeClient
         string pattern,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        if (_request == null || _registerNotificationHandler == null || _unregisterNotificationHandler == null)
+        if (_request == null || _registerNotificationHandler == null)
         {
             throw new InvalidOperationException("Notification handlers not configured for subscription support");
         }
 
         var channel = new SubscriptionChannel<NoticeMessage>();
-
-        // Register notification handler
-        _registerNotificationHandler(MessageTypes.NoticeNotify, payload =>
+        var registration = _registerNotificationHandler(MessageTypes.NoticeNotify, payload =>
         {
             try
             {
@@ -72,30 +66,28 @@ public sealed class NoticeClient : INoticeClient
             }
         });
 
-        // Send subscribe request
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
         try
         {
-            var response = await _request(MessageTypes.NoticeSubscribe, writer.Build(), ct);
+            var response = await _request(MessageTypes.NoticeSubscribe, writer.Build(), ct).ConfigureAwait(false);
             var reader = new BinaryBufferReader(response);
             var status = reader.ReadU8();
             if (status != 0)
             {
                 throw new NoticeException($"SUBSCRIBE failed with status {status}", "SUBSCRIBE_FAILED", status);
             }
-        }
-        catch
-        {
-            _unregisterNotificationHandler(MessageTypes.NoticeNotify);
-            throw;
-        }
 
-        // Yield events from the channel
-        await foreach (var evt in channel.GetEnumerableAsync(ct))
+            await foreach (var evt in channel.GetEnumerableAsync(ct).ConfigureAwait(false))
+            {
+                yield return evt;
+            }
+        }
+        finally
         {
-            yield return evt;
+            registration.Dispose();
+            channel.Dispose();
         }
     }
 }

@@ -26,15 +26,40 @@ internal static class IntegrationFixture
         );
     }
 
-    internal static string GetAnonymousWebSocketUrl()
+    internal static string GetConformanceTransport()
     {
-        return Environment.GetEnvironmentVariable("FITZ_BROKER_ANON_WS_ADDR") ?? "ws://localhost:4190/ws";
+        var configured = Environment.GetEnvironmentVariable("CONFORMANCE_TRANSPORT");
+        return string.Equals(configured, "tcp", StringComparison.OrdinalIgnoreCase) ? "tcp" : "websocket";
     }
 
-    internal static string GetAuthWebSocketUrl()
+    internal static string GetConformanceAuthMode()
     {
-        return Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws";
+        return (Environment.GetEnvironmentVariable("CONFORMANCE_AUTH_MODE") ?? "anonymous").ToLowerInvariant();
     }
+
+    internal static string GetBrokerUrl(string transport, string authMode)
+    {
+        var normalizedTransport = NormalizeTransport(transport);
+        var normalizedAuthMode = authMode.ToLowerInvariant();
+
+        return (normalizedTransport, normalizedAuthMode) switch
+        {
+            ("ws", "valid_jwt") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws",
+            ("ws", "invalid_jwt") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws",
+            ("ws", _) => Environment.GetEnvironmentVariable("FITZ_BROKER_ANON_WS_ADDR") ?? "ws://localhost:4190/ws",
+            ("websocket", "valid_jwt") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws",
+            ("websocket", "invalid_jwt") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws",
+            ("websocket", _) => Environment.GetEnvironmentVariable("FITZ_BROKER_ANON_WS_ADDR") ?? "ws://localhost:4190/ws",
+            ("tcp", "valid_jwt") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_TCP_ADDR") ?? "localhost:4091",
+            ("tcp", "invalid_jwt") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_TCP_ADDR") ?? "localhost:4091",
+            ("tcp", _) => Environment.GetEnvironmentVariable("FITZ_BROKER_ANON_TCP_ADDR") ?? "localhost:4191",
+            _ => throw new NotSupportedException($"Unsupported transport '{transport}'.")
+        };
+    }
+
+    internal static string GetAnonymousWebSocketUrl() => GetBrokerUrl("websocket", "anonymous");
+
+    internal static string GetAuthWebSocketUrl() => GetBrokerUrl("websocket", "valid_jwt");
 
     internal static string GetOutputPath()
     {
@@ -47,35 +72,55 @@ internal static class IntegrationFixture
         return Path.Combine(AppContext.BaseDirectory, "conformance-results.json");
     }
 
-    internal static Client CreateAnonymousClient(string url, TimeSpan? timeout = null)
+    internal static Client CreateAnonymousClient(string url, string? transport = null, TimeSpan? timeout = null, ReconnectOptions? reconnect = null)
     {
-        return new Client(
-            new ClientConfig(
-                url,
-                Timeout: timeout,
-                AuthSettleDelay: TimeSpan.FromMilliseconds(100)
-            )
-        );
+        return CreateClient(url, transport, timeout, reconnect, tokenProvider: null);
     }
 
-    internal static Client CreateInvalidJwtClient(string url)
+    internal static Client CreateValidJwtClient(string url, string? transport = null, TimeSpan? timeout = null, ReconnectOptions? reconnect = null)
+    {
+        var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "test-secret-key";
+        var audience = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_AUDIENCE") ?? "fitz";
+        var validToken = CreateTestJwt(secret, audience, DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds());
+
+        return CreateClient(
+            url,
+            transport,
+            timeout,
+            reconnect,
+            _ => ValueTask.FromResult(validToken));
+    }
+
+    internal static Client CreateInvalidJwtClient(string url, string? transport = null, TimeSpan? timeout = null, ReconnectOptions? reconnect = null)
     {
         var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "test-secret-key";
         var audience = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_AUDIENCE") ?? "fitz";
         var invalidToken = CreateInvalidSignatureJwt(secret, audience);
 
-        return new Client(
-            new ClientConfig(
-                url,
-                AuthSettleDelay: TimeSpan.FromMilliseconds(100),
-                TokenProvider: _ => ValueTask.FromResult(invalidToken)
-            )
-        );
+        return CreateClient(
+            url,
+            transport,
+            timeout,
+            reconnect,
+            _ => ValueTask.FromResult(invalidToken));
+    }
+
+    internal static Client CreateClientForMode(string transport, string authMode, TimeSpan? timeout = null, ReconnectOptions? reconnect = null)
+    {
+        var url = GetBrokerUrl(transport, authMode);
+        return authMode.ToLowerInvariant() switch
+        {
+            "valid_jwt" => CreateValidJwtClient(url, transport, timeout, reconnect),
+            "invalid_jwt" => CreateInvalidJwtClient(url, transport, timeout, reconnect),
+            _ => CreateAnonymousClient(url, transport, timeout, reconnect)
+        };
     }
 
     internal static string CreateUniqueRoute(string prefix)
     {
-        return $"{prefix}://conformance-realm/integration/{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}";
+        return prefix == "schedule"
+            ? $"{prefix}://conformance-realm/integration/{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}/res/run"
+            : $"{prefix}://conformance-realm/integration/{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}/res";
     }
 
     internal static async Task WriteAggregateAsync(AggregateResult aggregate)
@@ -98,6 +143,31 @@ internal static class IntegrationFixture
         return ex is AuthenticationException
             ? "error is typed AuthenticationException (ideal)"
             : "auth failure surfaced as non-typed exception";
+    }
+
+    private static Client CreateClient(
+        string url,
+        string? transport,
+        TimeSpan? timeout,
+        ReconnectOptions? reconnect,
+        Func<CancellationToken, ValueTask<string>>? tokenProvider)
+    {
+        var normalizedTransport = NormalizeTransport(transport);
+        return new Client(
+            new ClientConfig(
+                url,
+                Transport: normalizedTransport,
+                Timeout: timeout,
+                AuthSettleDelay: normalizedTransport == "tcp" ? TimeSpan.FromMilliseconds(500) : TimeSpan.FromMilliseconds(250),
+                TokenProvider: tokenProvider,
+                Reconnect: reconnect
+            )
+        );
+    }
+
+    private static string NormalizeTransport(string? transport)
+    {
+        return string.Equals(transport, "tcp", StringComparison.OrdinalIgnoreCase) ? "tcp" : "ws";
     }
 
     private static string CreateInvalidSignatureJwt(string secret, string audience)

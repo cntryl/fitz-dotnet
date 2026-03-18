@@ -15,7 +15,7 @@ public interface IRpcResponseWriter
     /// <summary>
     /// Sends a response frame. Set isEnd=true to finalize the RPC response stream.
     /// </summary>
-    Task SendAsync(ReadOnlyMemory<byte> body, bool isEnd = false, CancellationToken ct = default);
+    ValueTask SendAsync(ReadOnlyMemory<byte> body, bool isEnd = false, CancellationToken ct = default);
 }
 
 /// <summary>

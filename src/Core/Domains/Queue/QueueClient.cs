@@ -1,4 +1,4 @@
-﻿using System.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
 using Cntryl.Fitz.Abstractions.Domains.Queue;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
@@ -10,25 +10,21 @@ namespace Cntryl.Fitz.Domains.Queue;
 public sealed class QueueClient : IQueueClient
 {
     private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
-    private readonly Action<ushort, Action<byte[]>>? _registerNotificationHandler;
-    private readonly Action<ushort>? _unregisterNotificationHandler;
+    private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
 
     internal QueueClient(FitzConnection connection)
         : this(
             connection.RequestAsync,
-            connection.RegisterNotificationHandler,
-            connection.UnregisterNotificationHandler)
+            connection.RegisterNotificationHandler)
     {
     }
 
     public QueueClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
-        Action<ushort, Action<byte[]>>? registerNotificationHandler = null,
-        Action<ushort>? unregisterNotificationHandler = null)
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
-        _unregisterNotificationHandler = unregisterNotificationHandler;
     }
 
     public async Task<ulong> EnqueueAsync(
@@ -49,7 +45,7 @@ public sealed class QueueClient : IQueueClient
             writer.WriteU64((ulong)delaySeconds);
         }
 
-        var response = await _request(MessageTypes.QueueEnqueue, writer.Build(), ct);
+        var response = await _request(MessageTypes.QueueEnqueue, writer.Build(), ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -84,7 +80,7 @@ public sealed class QueueClient : IQueueClient
             writer.WriteU64((ulong)waitSeconds.Value);
         }
 
-        var response = await _request(MessageTypes.QueueReserve, writer.Build(), ct);
+        var response = await _request(MessageTypes.QueueReserve, writer.Build(), ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -118,15 +114,13 @@ public sealed class QueueClient : IQueueClient
         string pattern,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        if (_registerNotificationHandler == null || _unregisterNotificationHandler == null)
+        if (_registerNotificationHandler == null)
         {
             throw new InvalidOperationException("Notification handlers not configured for subscription support");
         }
 
         var channel = new SubscriptionChannel<QueueAvailabilityEvent>();
-
-        // Register notification handler
-        _registerNotificationHandler(MessageTypes.QueueNotify, payload =>
+        var registration = _registerNotificationHandler(MessageTypes.QueueNotify, payload =>
         {
             try
             {
@@ -137,36 +131,32 @@ public sealed class QueueClient : IQueueClient
             }
             catch
             {
-                // Silently ignore parsing errors in notifications
                 channel.Dispose();
             }
         });
 
-        // Send subscribe request to server
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
         try
         {
-            var response = await _request(MessageTypes.QueueSubscribe, writer.Build(), ct);
+            var response = await _request(MessageTypes.QueueSubscribe, writer.Build(), ct).ConfigureAwait(false);
             var reader = new BinaryBufferReader(response);
             var status = reader.ReadU8();
             if (status != 0)
             {
-                _unregisterNotificationHandler(MessageTypes.QueueNotify);
                 throw new QueueException($"SUBSCRIBE failed with status {status}", "SUBSCRIBE_FAILED", status);
             }
-        }
-        catch
-        {
-            _unregisterNotificationHandler(MessageTypes.QueueNotify);
-            throw;
-        }
 
-        // Yield events from the channel
-        await foreach (var evt in channel.GetEnumerableAsync(ct))
+            await foreach (var evt in channel.GetEnumerableAsync(ct).ConfigureAwait(false))
+            {
+                yield return evt;
+            }
+        }
+        finally
         {
-            yield return evt;
+            registration.Dispose();
+            channel.Dispose();
         }
     }
 }
