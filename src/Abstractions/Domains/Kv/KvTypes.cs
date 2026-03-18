@@ -12,4 +12,12 @@ public enum KvDurability : byte
     Sync = 1,
 }
 
-public sealed record KvGetResult(bool Found, byte[]? Value = null);
+public sealed record KvGetResult(bool Found, ReadOnlyMemory<byte>? Value = null);
+
+public sealed record KvPair(ReadOnlyMemory<byte> Key, ReadOnlyMemory<byte> Value);
+
+public sealed record KvScanQuery(
+    ReadOnlyMemory<byte>? StartKey = null,
+    ReadOnlyMemory<byte>? EndKey = null,
+    ulong? Limit = null,
+    bool Reverse = false);

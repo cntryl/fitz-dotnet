@@ -2,7 +2,7 @@ namespace Cntryl.Fitz.Abstractions.Domains.Stream;
 
 public interface IStreamSession
 {
-    Task<ulong?> AppendAsync(byte[] body, byte[]? metadata = null, CancellationToken cancellationToken = default);
-    Task CommitAsync(CancellationToken cancellationToken = default);
-    Task RollbackAsync(CancellationToken cancellationToken = default);
+    Task<ulong?> AppendAsync(ReadOnlyMemory<byte> body, ReadOnlyMemory<byte>? metadata = null, CancellationToken ct = default);
+    Task CommitAsync(CancellationToken ct = default);
+    Task RollbackAsync(CancellationToken ct = default);
 }

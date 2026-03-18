@@ -1,5 +1,7 @@
+using System.Collections.Generic;
 using System.Text;
 using Cntryl.Fitz.Abstractions.Domains.Kv;
+using Cntryl.Fitz.Abstractions.Domains.Rpc;
 using Cntryl.Fitz.Observability;
 
 namespace Cntryl.Fitz.Core.Tests.Integration;
@@ -191,7 +193,7 @@ public sealed class ConformanceSmokeTests
                 );
             }
 
-            var value = Encoding.UTF8.GetString(result.Value ?? []);
+            var value = result.Value.HasValue ? Encoding.UTF8.GetString(result.Value.Value.Span) : string.Empty;
             if (!string.Equals(value, "Alice", StringComparison.Ordinal))
             {
                 return new ScenarioResult(
@@ -256,7 +258,11 @@ public sealed class ConformanceSmokeTests
             var noWorkerRoute = IntegrationFixture.CreateUniqueRoute("rpc");
             try
             {
-                await client.Rpc().RequestAsync(noWorkerRoute, "ping"u8.ToArray());
+                var frames = new List<RpcResponseFrame>();
+                await foreach (var frame in client.Rpc().CallAsync(noWorkerRoute, new ReadOnlyMemory<byte>("ping"u8.ToArray())))
+                {
+                    frames.Add(frame);
+                }
                 evidence.Add("WARNING: rpc request to unregistered route unexpectedly succeeded");
                 return new ScenarioResult(
                     "CS-004",

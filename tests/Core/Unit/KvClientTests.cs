@@ -1,4 +1,4 @@
-using Cntryl.Fitz.Abstractions.Domains.Kv;
+﻿using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Domains.Kv;
 using Cntryl.Fitz.Protocol;
 
@@ -18,7 +18,7 @@ public sealed class KvClientTests
             seenMessageType = messageType;
             seenPayload = payload;
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             writer.WriteU64(42);
             return Task.FromResult(writer.Build());
@@ -48,14 +48,14 @@ public sealed class KvClientTests
             callCount++;
             if (callCount == 1)
             {
-                var begin = new BinaryBufferWriter();
+                using var begin = new BinaryBufferWriter();
                 begin.WriteU8(0);
                 begin.WriteU64(900);
                 return Task.FromResult(begin.Build());
             }
 
             Assert.Equal(MessageTypes.KvGet, messageType);
-            var get = new BinaryBufferWriter();
+            using var get = new BinaryBufferWriter();
             get.WriteU8(0);
             get.WriteU8(1);
             get.WriteU32(5);
@@ -65,10 +65,142 @@ public sealed class KvClientTests
 
         // Act
         var tx = await kv.BeginAsync("kv://prod/app/users");
-        var result = await tx.GetAsync("user:1"u8.ToArray());
+        var result = await tx.GetAsync(new ReadOnlyMemory<byte>("user:1"u8.ToArray()));
 
         // Assert
         Assert.True(result.Found);
-        Assert.Equal("alice", System.Text.Encoding.UTF8.GetString(result.Value!));
+        Assert.Equal("alice", System.Text.Encoding.UTF8.GetString(result.Value!.Value.Span));
+    }
+
+    [Fact]
+    public async Task should_insert_key_successfully_when_calling_insert_async()
+    {
+        // Arrange
+        var calls = new List<ushort>();
+        var kv = new KvClient((messageType, payload, _) =>
+        {
+            calls.Add(messageType);
+            using var response = new BinaryBufferWriter();
+            response.WriteU8(0);
+            if (messageType == MessageTypes.KvBegin)
+            {
+                response.WriteU64(123);
+            }
+            return Task.FromResult(response.Build());
+        });
+
+        // Act
+        var tx = await kv.BeginAsync("kv://prod/app/users");
+        await tx.InsertAsync(new ReadOnlyMemory<byte>("user:2"u8.ToArray()), new ReadOnlyMemory<byte>("bob"u8.ToArray()));
+
+        // Assert
+        Assert.Equal(2, calls.Count);
+        Assert.Equal(MessageTypes.KvBegin, calls[0]);
+        Assert.Equal(MessageTypes.KvInsert, calls[1]);
+    }
+
+    [Fact]
+    public async Task should_delete_key_successfully_when_calling_delete_async()
+    {
+        // Arrange
+        var calls = new List<ushort>();
+        var kv = new KvClient((messageType, payload, _) =>
+        {
+            calls.Add(messageType);
+            using var response = new BinaryBufferWriter();
+            response.WriteU8(0);
+            if (messageType == MessageTypes.KvBegin)
+            {
+                response.WriteU64(124);
+            }
+            return Task.FromResult(response.Build());
+        });
+
+        // Act
+        var tx = await kv.BeginAsync("kv://prod/app/users");
+        await tx.DeleteAsync(new ReadOnlyMemory<byte>("user:1"u8.ToArray()));
+
+        // Assert
+        Assert.Equal(2, calls.Count);
+        Assert.Equal(MessageTypes.KvBegin, calls[0]);
+        Assert.Equal(MessageTypes.KvDelete, calls[1]);
+    }
+
+    [Fact]
+    public async Task should_delete_range_successfully_when_calling_delete_range_async()
+    {
+        // Arrange
+        var calls = new List<ushort>();
+        var kv = new KvClient((messageType, payload, _) =>
+        {
+            calls.Add(messageType);
+            using var response = new BinaryBufferWriter();
+            response.WriteU8(0);
+            if (messageType == MessageTypes.KvBegin)
+            {
+                response.WriteU64(125);
+            }
+            return Task.FromResult(response.Build());
+        });
+
+        // Act
+        var tx = await kv.BeginAsync("kv://prod/app/users");
+        await tx.DeleteRangeAsync(new ReadOnlyMemory<byte>("user:1"u8.ToArray()), new ReadOnlyMemory<byte>("user:9"u8.ToArray()));
+
+        // Assert
+        Assert.Equal(2, calls.Count);
+        Assert.Equal(MessageTypes.KvBegin, calls[0]);
+        Assert.Equal(MessageTypes.KvDeleteRange, calls[1]);
+    }
+
+    [Fact]
+    public async Task should_scan_keys_successfully_when_calling_scan_async()
+    {
+        // Arrange
+        ushort seenMessageType = 0;
+        var kv = new KvClient((messageType, payload, _) =>
+        {
+            if (seenMessageType == 0)
+            {
+                seenMessageType = messageType;
+                using var begin = new BinaryBufferWriter();
+                begin.WriteU8(0);
+                begin.WriteU64(126);
+                return Task.FromResult(begin.Build());
+            }
+
+            Assert.Equal(MessageTypes.KvScan, messageType);
+            using var scan = new BinaryBufferWriter();
+            scan.WriteU8(0); // status
+            scan.WriteU32(2); // 2 key-value pairs
+            
+            // First pair
+            scan.WriteU32(4);
+            scan.WriteBytes("key1"u8.ToArray());
+            scan.WriteU32(6);
+            scan.WriteBytes("value1"u8.ToArray());
+            
+            // Second pair
+            scan.WriteU32(4);
+            scan.WriteBytes("key2"u8.ToArray());
+            scan.WriteU32(6);
+            scan.WriteBytes("value2"u8.ToArray());
+            
+            return Task.FromResult(scan.Build());
+        });
+
+        // Act
+        var tx = await kv.BeginAsync("kv://prod/app/users");
+        var enumerable = tx.ScanAsync(new KvScanQuery());
+        var pairs = new List<KvPair>();
+        await foreach (var pair in enumerable)
+        {
+            pairs.Add(pair);
+        }
+
+        // Assert
+        Assert.Equal(2, pairs.Count);
+        Assert.Equal("key1", System.Text.Encoding.UTF8.GetString(pairs[0].Key.Span));
+        Assert.Equal("value1", System.Text.Encoding.UTF8.GetString(pairs[0].Value.Span));
     }
 }

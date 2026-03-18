@@ -16,6 +16,16 @@ internal static class IntegrationFixture
         );
     }
 
+    internal static bool IsScenarioEnabled(string scenario)
+    {
+        var key = $"FITZ_DOTNET_RUN_INTEGRATION_{scenario.ToUpperInvariant()}";
+        return string.Equals(
+            Environment.GetEnvironmentVariable(key),
+            "1",
+            StringComparison.Ordinal
+        );
+    }
+
     internal static string GetAnonymousWebSocketUrl()
     {
         return Environment.GetEnvironmentVariable("FITZ_BROKER_ANON_WS_ADDR") ?? "ws://localhost:4190/ws";
@@ -65,7 +75,7 @@ internal static class IntegrationFixture
 
     internal static string CreateUniqueRoute(string prefix)
     {
-        return $"{prefix}://conformance-realm/{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}";
+        return $"{prefix}://conformance-realm/integration/{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}";
     }
 
     internal static async Task WriteAggregateAsync(AggregateResult aggregate)

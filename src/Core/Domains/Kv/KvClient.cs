@@ -1,4 +1,4 @@
-using Cntryl.Fitz.Abstractions.Domains.Kv;
+﻿using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
@@ -25,7 +25,7 @@ public sealed class KvClient : IKvClient
         KvDurability durability = KvDurability.Async,
         CancellationToken cancellationToken = default)
     {
-        var writer = new BinaryBufferWriter();
+        using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteU8((byte)mode);
         writer.WriteU8((byte)durability);

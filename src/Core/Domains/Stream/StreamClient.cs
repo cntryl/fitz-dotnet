@@ -1,4 +1,4 @@
-using Cntryl.Fitz.Abstractions.Domains.Stream;
+﻿using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
@@ -20,23 +20,23 @@ public sealed class StreamClient : IStreamClient
         _request = request;
     }
 
-    public async Task<IStreamSession> BeginAsync(string route, ulong expectedOffset = 0, byte[]? ingestMetadata = null, CancellationToken cancellationToken = default)
+    public async Task<IStreamSession> BeginAsync(string route, ulong expectedOffset = 0, ReadOnlyMemory<byte>? ingestMetadata = null, CancellationToken ct = default)
     {
-        var writer = new BinaryBufferWriter();
+        using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteU64(expectedOffset);
-        if (ingestMetadata is { Length: > 0 })
+        if (ingestMetadata.HasValue && ingestMetadata.Value.Length > 0)
         {
             writer.WriteU8(1);
-            writer.WriteU32((uint)ingestMetadata.Length);
-            writer.WriteBytes(ingestMetadata);
+            writer.WriteU32((uint)ingestMetadata.Value.Length);
+            writer.WriteBytes(ingestMetadata.Value.Span);
         }
         else
         {
             writer.WriteU8(0);
         }
 
-        var response = await _request(MessageTypes.StreamBegin, writer.Build(), cancellationToken);
+        var response = await _request(MessageTypes.StreamBegin, writer.Build(), ct);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -58,9 +58,9 @@ public sealed class StreamClient : IStreamClient
         ulong startOffset,
         ulong limit = 100,
         ulong? maxBytes = null,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var writer = new BinaryBufferWriter();
+        using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteU64(startOffset);
         writer.WriteU64(limit);
@@ -70,7 +70,7 @@ public sealed class StreamClient : IStreamClient
             writer.WriteU64(maxBytes.Value);
         }
 
-        var response = await _request(MessageTypes.StreamRead, writer.Build(), cancellationToken);
+        var response = await _request(MessageTypes.StreamRead, writer.Build(), ct);
         var (status, data) = ReadWrappedStreamResponse(response);
         if (status != 0)
         {
@@ -82,19 +82,18 @@ public sealed class StreamClient : IStreamClient
             yield break;
         }
 
-        var inner = new BinaryBufferReader(data);
-        var count = inner.ReadU32();
-        for (var index = 0; index < count; index++)
+        var records = ParseReadRecords(data);
+        foreach (var record in records)
         {
-            yield return new StreamRecord(inner.ReadU64(), inner.ReadBytes((int)inner.ReadU32()));
+            yield return record;
         }
     }
 
-    public async Task<StreamMetadata> MetadataAsync(string route, CancellationToken cancellationToken = default)
+    public async Task<StreamMetadata> MetadataAsync(string route, CancellationToken ct = default)
     {
-        var writer = new BinaryBufferWriter();
+        using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        var response = await _request(MessageTypes.StreamGetMetadata, writer.Build(), cancellationToken);
+        var response = await _request(MessageTypes.StreamGetMetadata, writer.Build(), ct);
         var (status, data) = ReadWrappedStreamResponse(response);
         if (status != 0)
         {
@@ -129,5 +128,83 @@ public sealed class StreamClient : IStreamClient
         }
 
         return reader.IsEof ? ((byte)0, []) : ((byte)0, reader.ReadBytes((int)reader.ReadU32()));
+    }
+
+    private static List<StreamRecord> ParseReadRecords(byte[] data)
+    {
+        // Prefer count-prefixed parsing. Fall back to flat parsing for brokers
+        // that return records directly without a leading count.
+        var fromCount = TryParseCountPrefixedRecords(data);
+        if (fromCount.Count > 0)
+        {
+            return fromCount;
+        }
+
+        return ParseFlatRecords(data);
+    }
+
+    private static List<StreamRecord> TryParseCountPrefixedRecords(byte[] data)
+    {
+        var records = new List<StreamRecord>();
+        if (data.Length < 4)
+        {
+            return records;
+        }
+
+        var reader = new BinaryBufferReader(data);
+        uint count;
+        try
+        {
+            count = reader.ReadU32();
+        }
+        catch
+        {
+            return records;
+        }
+
+        for (var index = 0U; index < count; index++)
+        {
+            try
+            {
+                var offset = reader.ReadU64();
+                var bodyLength = reader.ReadU32();
+                var body = reader.ReadBytes((int)bodyLength);
+                records.Add(new StreamRecord(offset, body));
+            }
+            catch
+            {
+                records.Clear();
+                return records;
+            }
+        }
+
+        return reader.IsEof ? records : new List<StreamRecord>();
+    }
+
+    private static List<StreamRecord> ParseFlatRecords(byte[] data)
+    {
+        var records = new List<StreamRecord>();
+        if (data.Length < 12)
+        {
+            return records;
+        }
+
+        var reader = new BinaryBufferReader(data);
+        while (!reader.IsEof)
+        {
+            try
+            {
+                var offset = reader.ReadU64();
+                var bodyLength = reader.ReadU32();
+                var body = reader.ReadBytes((int)bodyLength);
+                records.Add(new StreamRecord(offset, body));
+            }
+            catch
+            {
+                break;
+            }
+        }
+
+        return records;
     }
 }

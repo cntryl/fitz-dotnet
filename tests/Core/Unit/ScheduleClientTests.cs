@@ -1,4 +1,4 @@
-using Cntryl.Fitz.Domains.Schedule;
+﻿using Cntryl.Fitz.Domains.Schedule;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -17,7 +17,7 @@ public sealed class ScheduleClientTests
             seenMessageType = messageType;
             seenPayload = payload;
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             writer.WriteU8(1);
             writer.WriteString("sched-123");
@@ -50,7 +50,7 @@ public sealed class ScheduleClientTests
             var reader = new BinaryBufferReader(payload);
             Assert.Equal("schedule://prod/app/jobs", reader.ReadString());
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             return Task.FromResult(writer.Build());
         });
@@ -59,5 +59,63 @@ public sealed class ScheduleClientTests
         await schedule.CancelAsync("schedule://prod/app/jobs");
 
         // Assert
+    }
+
+    [Fact]
+    public async Task should_yield_execution_event_given_notification_when_subscribing()
+    {
+        // Arrange
+        Action<byte[]>? notifyHandler = null;
+        ushort seenMessageType = 0;
+        byte[]? seenPayload = null;
+
+        var schedule = new ScheduleClient(
+            (messageType, payload, _) =>
+            {
+                seenMessageType = messageType;
+                seenPayload = payload;
+
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                return Task.FromResult(writer.Build());
+            },
+            (messageType, handler) =>
+            {
+                Assert.Equal(MessageTypes.ScheduleNotify, messageType);
+                notifyHandler = handler;
+            },
+            _ => { });
+
+        // Act
+        var task = Task.Run(async () =>
+        {
+            await foreach (var evt in schedule.SubscribeAsync("schedule://prod/*"))
+            {
+                return evt;
+            }
+
+            return null;
+        });
+
+        await Task.Delay(25);
+        Assert.NotNull(notifyHandler);
+        using var notification = new BinaryBufferWriter();
+        notification.WriteString("sched-1");
+        notification.WriteString("schedule://prod/app/jobs");
+        notification.WriteU64(123456UL);
+        notifyHandler!(notification.Build());
+
+        var evt = await task;
+
+        // Assert
+        Assert.NotNull(evt);
+        Assert.Equal(MessageTypes.ScheduleSubscribe, seenMessageType);
+        Assert.NotNull(seenPayload);
+        Assert.Equal("sched-1", evt!.ScheduleId);
+        Assert.Equal("schedule://prod/app/jobs", evt.Route);
+        Assert.Equal((ulong)123456, evt.ExecutedAtMs);
+
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal("schedule://prod/*", reader.ReadString());
     }
 }

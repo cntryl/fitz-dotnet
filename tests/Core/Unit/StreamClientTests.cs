@@ -1,4 +1,4 @@
-using Cntryl.Fitz.Abstractions.Domains.Stream;
+﻿using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Domains.Stream;
 using Cntryl.Fitz.Protocol;
 
@@ -18,7 +18,7 @@ public sealed class StreamClientTests
             seenMessageType = messageType;
             seenPayload = payload;
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             writer.WriteU8(1);
             writer.WriteU64(99);
@@ -55,7 +55,7 @@ public sealed class StreamClientTests
             Assert.Equal((ulong)2, request.ReadU64());
             Assert.Equal((byte)0, request.ReadU8());
 
-            var data = new BinaryBufferWriter();
+            using var data = new BinaryBufferWriter();
             data.WriteU32(2);
             data.WriteU64(4);
             data.WriteU32(3);
@@ -64,7 +64,7 @@ public sealed class StreamClientTests
             data.WriteU32(3);
             data.WriteBytes("two"u8);
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             writer.WriteU8(0);
             writer.WriteU32((uint)data.Build().Length);
@@ -105,12 +105,12 @@ public sealed class StreamClientTests
             var request = new BinaryBufferReader(payload);
             Assert.Equal("stream://prod/app/events", request.ReadString());
 
-            var data = new BinaryBufferWriter();
+            using var data = new BinaryBufferWriter();
             data.WriteU64(10);
             data.WriteU64(42);
             data.WriteU64(33);
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             writer.WriteU8(0);
             writer.WriteU32((uint)data.Build().Length);
@@ -135,7 +135,7 @@ public sealed class StreamClientTests
         {
             calls.Add((messageType, payload));
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             if (messageType == MessageTypes.StreamBegin)
             {
                 writer.WriteU8(0);
@@ -182,7 +182,7 @@ public sealed class StreamClientTests
         {
             calls.Add((messageType, payload));
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             if (messageType == MessageTypes.StreamBegin)
             {
@@ -218,7 +218,7 @@ public sealed class StreamClientTests
         {
             calls.Add((messageType, payload));
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             if (messageType == MessageTypes.StreamBegin)
             {

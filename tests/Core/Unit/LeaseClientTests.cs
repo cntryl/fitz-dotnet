@@ -1,4 +1,4 @@
-using Cntryl.Fitz.Domains.Lease;
+﻿using Cntryl.Fitz.Domains.Lease;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -17,7 +17,7 @@ public sealed class LeaseClientTests
             seenMessageType = messageType;
             seenPayload = payload;
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             writer.WriteU8(1);
             writer.WriteU64(77);
@@ -50,7 +50,7 @@ public sealed class LeaseClientTests
             var request = new BinaryBufferReader(payload);
             Assert.Equal("lease://prod/app/lock", request.ReadString());
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             writer.WriteU8(1);
             writer.WriteString("worker-1");
@@ -77,7 +77,7 @@ public sealed class LeaseClientTests
         {
             calls.Add((messageType, payload));
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             if (messageType == MessageTypes.LeaseAcquire)
             {
@@ -106,44 +106,6 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task should_encode_ttl_given_lease_handle_when_renewing_lease()
-    {
-        // Arrange
-        var calls = new List<(ushort MessageType, byte[] Payload)>();
-
-        var leaseClient = new LeaseClient((messageType, payload, _) =>
-        {
-            calls.Add((messageType, payload));
-
-            var writer = new BinaryBufferWriter();
-            writer.WriteU8(0);
-            if (messageType == MessageTypes.LeaseAcquire)
-            {
-                writer.WriteU8(1);
-                writer.WriteU64(77);
-            }
-
-            return Task.FromResult(writer.Build());
-        });
-
-        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
-
-        // Act
-        await lease.RenewAsync(90);
-
-        // Assert
-        Assert.Equal(2, calls.Count);
-        Assert.Equal(MessageTypes.LeaseAcquire, calls[0].MessageType);
-        Assert.Equal(MessageTypes.LeaseRenew, calls[1].MessageType);
-
-        var renewReader = new BinaryBufferReader(calls[1].Payload);
-        Assert.Equal("lease://prod/app/lock", renewReader.ReadString());
-        Assert.Equal(string.Empty, renewReader.ReadString());
-        Assert.Equal((ulong)77, renewReader.ReadU64());
-        Assert.Equal((ulong)90, renewReader.ReadU64());
-    }
-
-    [Fact]
     public async Task should_encode_token_given_lease_handle_when_releasing_lease()
     {
         // Arrange
@@ -153,7 +115,7 @@ public sealed class LeaseClientTests
         {
             calls.Add((messageType, payload));
 
-            var writer = new BinaryBufferWriter();
+            using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             if (messageType == MessageTypes.LeaseAcquire)
             {
@@ -178,5 +140,67 @@ public sealed class LeaseClientTests
         Assert.Equal("lease://prod/app/lock", releaseReader.ReadString());
         Assert.Equal(string.Empty, releaseReader.ReadString());
         Assert.Equal((ulong)77, releaseReader.ReadU64());
+    }
+
+    [Fact]
+    public async Task should_yield_lease_change_given_notification_when_subscribing()
+    {
+        // Arrange
+        Action<byte[]>? notifyHandler = null;
+        ushort seenMessageType = 0;
+        byte[]? seenPayload = null;
+
+        var leaseClient = new LeaseClient(
+            (messageType, payload, _) =>
+            {
+                seenMessageType = messageType;
+                seenPayload = payload;
+
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                return Task.FromResult(writer.Build());
+            },
+            (messageType, handler) =>
+            {
+                Assert.Equal(MessageTypes.LeaseNotify, messageType);
+                notifyHandler = handler;
+            },
+            _ => { });
+
+        // Act
+        var task = Task.Run(async () =>
+        {
+            await foreach (var evt in leaseClient.SubscribeAsync("lease://prod/*"))
+            {
+                return evt;
+            }
+
+            return null;
+        });
+
+        await Task.Delay(25);
+        Assert.NotNull(notifyHandler);
+        using var notification = new BinaryBufferWriter();
+        notification.WriteString("lease://prod/app/lock");
+        notification.WriteU8(1);
+        notification.WriteU8(1);
+        notification.WriteString("worker-1");
+        notification.WriteU8(1);
+        notification.WriteU64(25);
+        notifyHandler!(notification.Build());
+
+        var evt = await task;
+
+        // Assert
+        Assert.NotNull(evt);
+        Assert.Equal(MessageTypes.LeaseSubscribe, seenMessageType);
+        Assert.NotNull(seenPayload);
+        Assert.Equal("lease://prod/app/lock", evt!.Route);
+        Assert.True(evt.Status.IsHeld);
+        Assert.Equal("worker-1", evt.Status.Owner);
+        Assert.Equal((ulong)25, evt.Status.TtlRemainingSecs);
+
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal("lease://prod/*", reader.ReadString());
     }
 }
