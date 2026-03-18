@@ -7,8 +7,9 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class StreamClientTests
 {
     [Fact]
-    public async Task BeginAsync_EncodesRequestAndReturnsSession()
+    public async Task should_return_stream_session_given_success_response_when_beginning_stream()
     {
+        // Arrange
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
@@ -24,8 +25,10 @@ public sealed class StreamClientTests
             return Task.FromResult(writer.Build());
         });
 
+        // Act
         var session = await stream.BeginAsync("stream://prod/app/events", 12, "meta"u8.ToArray());
 
+        // Assert
         Assert.NotNull(session);
         Assert.Equal(MessageTypes.StreamBegin, seenMessageType);
         Assert.NotNull(seenPayload);
@@ -39,8 +42,9 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task ReadAsync_DecodesRecords()
+    public async Task should_return_records_given_wrapped_payload_when_reading_stream()
     {
+        // Arrange
         var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamRead, messageType);
@@ -68,8 +72,10 @@ public sealed class StreamClientTests
             return Task.FromResult(writer.Build());
         });
 
+        // Act
         var records = await stream.ReadAsync("stream://prod/app/events", 4, 2);
 
+        // Assert
         Assert.Collection(
             records,
             record =>
@@ -85,8 +91,9 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task MetadataAsync_DecodesMetadata()
+    public async Task should_return_metadata_given_wrapped_payload_when_reading_stream_metadata()
     {
+        // Arrange
         var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamGetMetadata, messageType);
@@ -107,8 +114,128 @@ public sealed class StreamClientTests
             return Task.FromResult(writer.Build());
         });
 
+        // Act
         var metadata = await stream.MetadataAsync("stream://prod/app/events");
 
+        // Assert
         Assert.Equal(new StreamMetadata(10, 42, 33), metadata);
+    }
+
+    [Fact]
+    public async Task should_return_committed_offset_given_append_response_when_appending_to_stream_session()
+    {
+        // Arrange
+        var calls = new List<(ushort MessageType, byte[] Payload)>();
+
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            calls.Add((messageType, payload));
+
+            var writer = new BinaryBufferWriter();
+            if (messageType == MessageTypes.StreamBegin)
+            {
+                writer.WriteU8(0);
+                writer.WriteU8(1);
+                writer.WriteU64(99);
+            }
+            else
+            {
+                writer.WriteU8(0);
+                writer.WriteU8(0);
+                writer.WriteU32(8);
+                writer.WriteU64(1234);
+            }
+
+            return Task.FromResult(writer.Build());
+        });
+
+        var session = await stream.BeginAsync("stream://prod/app/events");
+
+        // Act
+        var offset = await session.AppendAsync("entry"u8.ToArray(), "meta"u8.ToArray());
+
+        // Assert
+        Assert.Equal((ulong)1234, offset);
+        Assert.Equal(2, calls.Count);
+        Assert.Equal(MessageTypes.StreamAppend, calls[1].MessageType);
+
+        var reader = new BinaryBufferReader(calls[1].Payload);
+        Assert.Equal((ulong)99, reader.ReadU64());
+        Assert.Equal((uint)5, reader.ReadU32());
+        Assert.Equal("entry", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(5)));
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal((uint)4, reader.ReadU32());
+        Assert.Equal("meta", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(4)));
+    }
+
+    [Fact]
+    public async Task should_encode_commit_flag_given_stream_session_when_committing()
+    {
+        // Arrange
+        var calls = new List<(ushort MessageType, byte[] Payload)>();
+
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            calls.Add((messageType, payload));
+
+            var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            if (messageType == MessageTypes.StreamBegin)
+            {
+                writer.WriteU8(1);
+                writer.WriteU64(44);
+            }
+
+            return Task.FromResult(writer.Build());
+        });
+
+        var session = await stream.BeginAsync("stream://prod/app/events");
+
+        // Act
+        await session.CommitAsync();
+
+        // Assert
+        Assert.Equal(2, calls.Count);
+        Assert.Equal(MessageTypes.StreamBegin, calls[0].MessageType);
+        Assert.Equal(MessageTypes.StreamCommit, calls[1].MessageType);
+
+        var commitReader = new BinaryBufferReader(calls[1].Payload);
+        Assert.Equal((ulong)44, commitReader.ReadU64());
+        Assert.Equal((byte)0, commitReader.ReadU8());
+    }
+
+    [Fact]
+    public async Task should_encode_session_id_given_stream_session_when_rolling_back()
+    {
+        // Arrange
+        var calls = new List<(ushort MessageType, byte[] Payload)>();
+
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            calls.Add((messageType, payload));
+
+            var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            if (messageType == MessageTypes.StreamBegin)
+            {
+                writer.WriteU8(1);
+                writer.WriteU64(44);
+            }
+
+            return Task.FromResult(writer.Build());
+        });
+
+        var session = await stream.BeginAsync("stream://prod/app/events");
+
+        // Act
+        await session.RollbackAsync();
+
+        // Assert
+        Assert.Equal(2, calls.Count);
+        Assert.Equal(MessageTypes.StreamBegin, calls[0].MessageType);
+        Assert.Equal(MessageTypes.StreamRollback, calls[1].MessageType);
+
+        var rollbackReader = new BinaryBufferReader(calls[1].Payload);
+        Assert.Equal((ulong)44, rollbackReader.ReadU64());
     }
 }

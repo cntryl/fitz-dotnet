@@ -6,8 +6,9 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class ScheduleClientTests
 {
     [Fact]
-    public async Task CreateAsync_EncodesRequestAndReturnsId()
+    public async Task should_return_schedule_id_given_success_response_when_creating_schedule()
     {
+        // Arrange
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
@@ -23,8 +24,10 @@ public sealed class ScheduleClientTests
             return Task.FromResult(writer.Build());
         });
 
+        // Act
         var id = await schedule.CreateAsync("schedule://prod/app/jobs", "*/5 * * * *", "job"u8.ToArray());
 
+        // Assert
         Assert.Equal("sched-123", id);
         Assert.Equal(MessageTypes.ScheduleCreate, seenMessageType);
         Assert.NotNull(seenPayload);
@@ -37,8 +40,9 @@ public sealed class ScheduleClientTests
     }
 
     [Fact]
-    public async Task CancelAsync_EncodesRoute()
+    public async Task should_encode_route_given_schedule_route_when_canceling_schedule()
     {
+        // Arrange
         var schedule = new ScheduleClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.ScheduleCancel, messageType);
@@ -51,6 +55,9 @@ public sealed class ScheduleClientTests
             return Task.FromResult(writer.Build());
         });
 
+        // Act
         await schedule.CancelAsync("schedule://prod/app/jobs");
+
+        // Assert
     }
 }

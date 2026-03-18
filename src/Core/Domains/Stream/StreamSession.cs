@@ -42,8 +42,8 @@ public sealed class StreamSession : IStreamSession
 
         if (!reader.IsEof)
         {
-            _ = reader.ReadU8();
-            if (reader.RemainingBytes >= 8)
+            var hasSession = reader.ReadU8();
+            if (hasSession == 1 && reader.RemainingBytes >= 8)
             {
                 _ = reader.ReadU64();
             }

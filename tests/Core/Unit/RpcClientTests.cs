@@ -6,8 +6,9 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class RpcClientTests
 {
     [Fact]
-    public async Task RequestAsync_EncodesRequestAndAcceptsSuccessStatus()
+    public async Task should_accept_success_status_given_valid_request_when_invoking_rpc()
     {
+        // Arrange
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
@@ -21,8 +22,10 @@ public sealed class RpcClientTests
             return Task.FromResult(writer.Build());
         });
 
+        // Act
         await rpc.RequestAsync("rpc://prod/app/echo", "ping"u8.ToArray());
 
+        // Assert
         Assert.Equal(MessageTypes.RpcRequest, seenMessageType);
         Assert.NotNull(seenPayload);
 

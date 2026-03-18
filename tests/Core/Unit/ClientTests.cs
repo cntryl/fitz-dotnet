@@ -7,8 +7,9 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class ClientTests
 {
     [Fact]
-    public async Task ConnectAsync_SetsConnectedState()
+    public async Task should_set_connected_state_given_valid_transport_when_connecting()
     {
+        // Arrange
         var transport = new FakeTransport();
         var config = new ClientConfig(
             "ws://localhost:4190/ws",
@@ -18,8 +19,10 @@ public sealed class ClientTests
         );
         var client = new Client(config);
 
+        // Act
         await client.ConnectAsync();
 
+        // Assert
         Assert.True(client.IsConnected);
         Assert.Single(transport.SentFrames);
         var frame = FrameCodec.Decode(transport.SentFrames[0]);
@@ -28,8 +31,9 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task ConnectAsync_RespectsCancellation()
+    public async Task should_throw_operation_canceled_given_canceled_token_when_connecting()
     {
+        // Arrange
         var transport = new FakeTransport();
         var client = new Client(
             new ClientConfig(
@@ -42,7 +46,11 @@ public sealed class ClientTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.ConnectAsync(cts.Token));
+        // Act
+        var act = () => client.ConnectAsync(cts.Token);
+
+        // Assert
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(act);
     }
 
     private sealed class FakeTransport : ITransport

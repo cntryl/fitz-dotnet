@@ -7,8 +7,9 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class KvClientTests
 {
     [Fact]
-    public async Task BeginAsync_EncodesRequestAndReturnsTransaction()
+    public async Task should_return_transaction_given_success_response_when_beginning_transaction()
     {
+        // Arrange
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
@@ -23,8 +24,10 @@ public sealed class KvClientTests
             return Task.FromResult(writer.Build());
         });
 
+        // Act
         var tx = await kv.BeginAsync("kv://prod/app/users", KvMode.ReadWrite, KvDurability.Async);
 
+        // Assert
         Assert.NotNull(tx);
         Assert.Equal(MessageTypes.KvBegin, seenMessageType);
         Assert.NotNull(seenPayload);
@@ -36,8 +39,9 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task TransactionGetAsync_DecodesFoundValue()
+    public async Task should_return_found_value_given_existing_key_when_getting_from_transaction()
     {
+        // Arrange
         var callCount = 0;
         var kv = new KvClient((messageType, payload, _) =>
         {
@@ -59,9 +63,11 @@ public sealed class KvClientTests
             return Task.FromResult(get.Build());
         });
 
+        // Act
         var tx = await kv.BeginAsync("kv://prod/app/users");
         var result = await tx.GetAsync("user:1"u8.ToArray());
 
+        // Assert
         Assert.True(result.Found);
         Assert.Equal("alice", System.Text.Encoding.UTF8.GetString(result.Value!));
     }

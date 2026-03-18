@@ -6,8 +6,9 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class QueueClientTests
 {
     [Fact]
-    public async Task EnqueueAsync_EncodesPayloadAndReadsMessageId()
+    public async Task should_return_message_id_given_success_response_when_enqueueing()
     {
+        // Arrange
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
@@ -22,8 +23,10 @@ public sealed class QueueClientTests
             return Task.FromResult(writer.Build());
         });
 
+        // Act
         var id = await queue.EnqueueAsync("queue://prod/app/tasks", "job-1"u8.ToArray());
 
+        // Assert
         Assert.Equal((ulong)555, id);
         Assert.Equal(MessageTypes.QueueEnqueue, seenMessageType);
         Assert.NotNull(seenPayload);

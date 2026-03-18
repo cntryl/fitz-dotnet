@@ -6,8 +6,9 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class NoticeClientTests
 {
     [Fact]
-    public async Task PublishAsync_EncodesRouteAndBody()
+    public async Task should_encode_route_and_body_given_notice_payload_when_publishing()
     {
+        // Arrange
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
@@ -18,8 +19,10 @@ public sealed class NoticeClientTests
             return Task.CompletedTask;
         });
 
+        // Act
         await notice.PublishAsync("notice://prod/app/events", "hello"u8.ToArray());
 
+        // Assert
         Assert.Equal(MessageTypes.NoticePublish, seenMessageType);
         Assert.NotNull(seenPayload);
 

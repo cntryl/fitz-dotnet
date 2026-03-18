@@ -6,8 +6,9 @@ namespace Cntryl.Fitz.Core.Tests.Integration;
 public sealed class ConformanceSmokeTests
 {
     [Fact]
-    public async Task RunConformanceSmoke_WhenEnabled_WritesJsonResult()
+    public async Task should_write_json_result_given_enabled_flag_when_running_conformance_smoke()
     {
+        // Arrange
         if (!IsEnabled())
         {
             return;
@@ -24,12 +25,14 @@ public sealed class ConformanceSmokeTests
             outputPath = Path.Combine(AppContext.BaseDirectory, "conformance-results.json");
         }
 
+        // Act
         var aggregate = BuildAggregate(scenarios);
         await File.WriteAllTextAsync(
             outputPath,
             JsonSerializer.Serialize(aggregate, new JsonSerializerOptions { WriteIndented = true })
         );
 
+        // Assert
         Assert.Contains(scenarios, s => s.ScenarioId == "CS-001");
         Assert.True(File.Exists(outputPath));
     }
