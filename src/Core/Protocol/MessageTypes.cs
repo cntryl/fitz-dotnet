@@ -13,4 +13,21 @@ public static class MessageTypes
     public const ushort QueueEnqueue = 200;
 
     public const ushort RpcRequest = 302;
+
+    public const ushort LeaseAcquire = 400;
+    public const ushort LeaseRenew = 401;
+    public const ushort LeaseRelease = 402;
+    public const ushort LeaseQuery = 403;
+
+    public const ushort NoticePublish = 500;
+
+    public const ushort StreamBegin = 600;
+    public const ushort StreamAppend = 601;
+    public const ushort StreamCommit = 602;
+    public const ushort StreamRollback = 603;
+    public const ushort StreamRead = 604;
+    public const ushort StreamGetMetadata = 606;
+
+    public const ushort ScheduleCreate = 700;
+    public const ushort ScheduleCancel = 701;
 }
