@@ -37,13 +37,34 @@ public sealed class WebSocketTransport : ITransport
         await socket.SendAsync(data, WebSocketMessageType.Binary, endOfMessage: true, cts.Token);
     }
 
-    public async Task<int> ReceiveAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    public async Task<byte[]> ReceiveAsync(CancellationToken cancellationToken = default)
     {
         var socket = EnsureSocket();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(_timeout);
-        var result = await socket.ReceiveAsync(buffer, cts.Token);
-        return result.Count;
+
+        using var stream = new MemoryStream();
+        var buffer = new byte[16 * 1024];
+        while (true)
+        {
+            var result = await socket.ReceiveAsync(buffer, cts.Token);
+            if (result.MessageType == WebSocketMessageType.Close)
+            {
+                return [];
+            }
+
+            if (result.Count > 0)
+            {
+                stream.Write(buffer, 0, result.Count);
+            }
+
+            if (result.EndOfMessage)
+            {
+                break;
+            }
+        }
+
+        return stream.ToArray();
     }
 
     public async Task CloseAsync(CancellationToken cancellationToken = default)

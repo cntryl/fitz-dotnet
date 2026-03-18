@@ -7,10 +7,10 @@ namespace Cntryl.Fitz.Connection;
 
 public sealed class FitzConnection
 {
-    private const int ReceiveBufferSize = 64 * 1024;
     private readonly ClientConfig _config;
     private readonly Func<ITransport> _transportFactory;
     private readonly Multiplexer _multiplexer = new();
+    private readonly FrameParser _frameParser = new();
     private ITransport? _transport;
     private Task? _receiveLoop;
     private CancellationTokenSource? _receiveLoopCts;
@@ -139,20 +139,22 @@ public sealed class FitzConnection
 
         _receiveLoop = Task.Run(async () =>
         {
-            var buffer = new byte[ReceiveBufferSize];
             while (!token.IsCancellationRequested)
             {
                 try
                 {
-                    var received = await EnsureTransport().ReceiveAsync(buffer, token);
-                    if (received <= 0)
+                    var data = await EnsureTransport().ReceiveAsync(token);
+                    if (data.Length == 0)
                     {
                         await Task.Delay(25, token);
                         continue;
                     }
 
-                    var frame = FrameCodec.Decode(buffer.AsSpan(0, received));
-                    _multiplexer.Dispatch(frame.MessageType, frame.Payload);
+                    var frames = _frameParser.ParseFrames(data);
+                    foreach (var frame in frames)
+                    {
+                        _multiplexer.Dispatch(frame.MessageType, frame.Payload);
+                    }
                 }
                 catch (OperationCanceledException)
                 {

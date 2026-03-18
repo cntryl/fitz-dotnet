@@ -64,10 +64,10 @@ public sealed class ClientTests
             return Task.CompletedTask;
         }
 
-        public Task<int> ReceiveAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        public Task<byte[]> ReceiveAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(0);
+            return Task.FromResult(Array.Empty<byte>());
         }
 
         public Task CloseAsync(CancellationToken cancellationToken = default)

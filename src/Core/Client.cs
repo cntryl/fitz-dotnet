@@ -1,5 +1,7 @@
 using Cntryl.Fitz.Abstractions;
+using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Connection;
+using Cntryl.Fitz.Domains.Kv;
 using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz;
@@ -8,6 +10,7 @@ public sealed class Client : IClient
 {
     private readonly ClientConfig _config;
     private readonly FitzConnection _connection;
+    private KvClient? _kvClient;
 
     public Client(ClientConfig config)
     {
@@ -36,6 +39,11 @@ public sealed class Client : IClient
     public async ValueTask DisposeAsync()
     {
         await _connection.CloseAsync();
+    }
+
+    public IKvClient Kv()
+    {
+        return _kvClient ??= new KvClient(_connection);
     }
 
     public bool IsConnected => _connection.State == ConnectionState.Authenticated;
