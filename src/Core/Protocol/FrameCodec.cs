@@ -4,8 +4,13 @@ public static class FrameCodec
 {
     public static byte[] Encode(ushort messageType, ReadOnlySpan<byte> payload)
     {
+        if (payload.Length > ushort.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(payload), "Payload exceeds frame limit.");
+        }
+
         var typeLength = messageType <= 0xFE ? 1 : 3;
-        var output = new byte[typeLength + 2 + payload.Length];
+        var output = GC.AllocateUninitializedArray<byte>(typeLength + 2 + payload.Length);
         var offset = 0;
 
         if (messageType <= 0xFE)
@@ -17,11 +22,6 @@ public static class FrameCodec
             output[offset++] = 0xFF;
             output[offset++] = (byte)(messageType >> 8);
             output[offset++] = (byte)(messageType & 0xFF);
-        }
-
-        if (payload.Length > ushort.MaxValue)
-        {
-            throw new ArgumentOutOfRangeException(nameof(payload), "Payload exceeds frame limit.");
         }
 
         output[offset++] = (byte)(payload.Length >> 8);
@@ -55,6 +55,11 @@ public static class FrameCodec
         }
 
         var payloadLength = (frameBytes[offset++] << 8) | frameBytes[offset++];
+        if (payloadLength > ushort.MaxValue)
+        {
+            throw new InvalidOperationException("Frame payload exceeds allowed length.");
+        }
+
         if (frameBytes.Length - offset < payloadLength)
         {
             throw new InvalidOperationException("Frame payload is incomplete.");

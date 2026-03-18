@@ -38,6 +38,19 @@ Run all codec benchmarks:
 dotnet run -c Release -- --filter Cntryl.Fitz.Benchmarks.FrameCodecBenchmarks
 ```
 
+### 1b. FrameParserBenchmarks
+
+Measures parser throughput and allocation behavior for single, batched, and split-frame reads.
+
+- `ParseSingleFrame`
+- `ParseTwoFramesBatch`
+- `ParseSplitFrameAcrossChunks`
+
+Run parser benchmarks:
+```bash
+dotnet run -c Release -- --filter Cntryl.Fitz.Benchmarks.FrameParserBenchmarks
+```
+
 ### 2. MultiplexerBenchmarks
 
 Measures request correlation and dispatch performance under varying concurrency levels.
