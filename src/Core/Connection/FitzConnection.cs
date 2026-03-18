@@ -32,20 +32,20 @@ public sealed class FitzConnection
 
         State = ConnectionState.Connecting;
         _transport = _transportFactory();
-        await _transport.ConnectAsync(cancellationToken);
+        await _transport.ConnectAsync(cancellationToken).ConfigureAwait(false);
         StartReceiveLoop();
 
         State = ConnectionState.Authenticating;
         var tokenProvider = _config.TokenProvider;
-        var token = tokenProvider is null ? string.Empty : await tokenProvider(cancellationToken);
+        var token = tokenProvider is null ? string.Empty : await tokenProvider(cancellationToken).ConfigureAwait(false);
 
         var connectFrame = FrameCodec.Encode(MessageTypes.Connect, Encoding.UTF8.GetBytes(token));
-        await _transport.SendAsync(connectFrame, cancellationToken);
+        await _transport.SendAsync(connectFrame, cancellationToken).ConfigureAwait(false);
 
         var settleDelay = _config.AuthSettleDelay ?? TimeSpan.FromMilliseconds(100);
         if (settleDelay > TimeSpan.Zero)
         {
-            await Task.Delay(settleDelay, cancellationToken);
+            await Task.Delay(settleDelay, cancellationToken).ConfigureAwait(false);
         }
 
         State = ConnectionState.Authenticated;
@@ -67,9 +67,17 @@ public sealed class FitzConnection
                 (data, token) => transport.SendAsync(data, token),
                 timeout,
                 cancellationToken
-            );
+            ).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (RequestTimeoutException)
+        {
+            throw;
+        }
+        catch (ConnectionException)
         {
             throw;
         }
@@ -83,7 +91,7 @@ public sealed class FitzConnection
     {
         EnsureAuthenticated();
         var frame = FrameCodec.Encode(messageType, payload);
-        await EnsureTransport().SendAsync(frame, cancellationToken);
+        await EnsureTransport().SendAsync(frame, cancellationToken).ConfigureAwait(false);
     }
 
     public void RegisterNotificationHandler(ushort messageType, Action<byte[]> handler)
@@ -101,7 +109,7 @@ public sealed class FitzConnection
         _receiveLoopCts?.Cancel();
         if (_receiveLoop is not null)
         {
-            await _receiveLoop;
+            await _receiveLoop.ConfigureAwait(false);
             _receiveLoop = null;
         }
 
@@ -110,8 +118,8 @@ public sealed class FitzConnection
 
         if (transport is not null)
         {
-            await transport.CloseAsync(cancellationToken);
-            await transport.DisposeAsync();
+            await transport.CloseAsync(cancellationToken).ConfigureAwait(false);
+            await transport.DisposeAsync().ConfigureAwait(false);
         }
 
         _multiplexer.SetDisconnected();
@@ -143,10 +151,10 @@ public sealed class FitzConnection
             {
                 try
                 {
-                    var data = await EnsureTransport().ReceiveAsync(token);
+                    var data = await EnsureTransport().ReceiveAsync(token).ConfigureAwait(false);
                     if (data.Length == 0)
                     {
-                        await Task.Delay(25, token);
+                        await Task.Delay(25, token).ConfigureAwait(false);
                         continue;
                     }
 
