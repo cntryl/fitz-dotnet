@@ -1,0 +1,18 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Abstractions\Abstractions.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <PackageId>Cntryl.Fitz</PackageId>
+    <AssemblyName>Cntryl.Fitz</AssemblyName>
+    <RootNamespace>Cntryl.Fitz</RootNamespace>
+    <Description>Core .NET client library for Fitz.</Description>
+    <Authors>Cntryl</Authors>
+    <RepositoryUrl>https://github.com/cntryl/fitz-dotnet</RepositoryUrl>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+  </PropertyGroup>
+
+</Project>

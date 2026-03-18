@@ -1,0 +1,23 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Core\Core.csproj" />
+    <ProjectReference Include="..\Abstractions\Abstractions.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <PackageId>Cntryl.Fitz.DependencyInjection</PackageId>
+    <AssemblyName>Cntryl.Fitz.DependencyInjection</AssemblyName>
+    <RootNamespace>Cntryl.Fitz.DependencyInjection</RootNamespace>
+    <Description>Dependency injection extensions for Fitz .NET client.</Description>
+    <Authors>Cntryl</Authors>
+    <RepositoryUrl>https://github.com/cntryl/fitz-dotnet</RepositoryUrl>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.8" />
+  </ItemGroup>
+
+</Project>
