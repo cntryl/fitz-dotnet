@@ -9,4 +9,8 @@ public static class MessageTypes
     public const ushort KvRollback = 102;
     public const ushort KvGet = 103;
     public const ushort KvPut = 104;
+
+    public const ushort QueueEnqueue = 200;
+
+    public const ushort RpcRequest = 302;
 }

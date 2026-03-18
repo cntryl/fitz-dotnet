@@ -1,7 +1,11 @@
 using Cntryl.Fitz.Abstractions;
 using Cntryl.Fitz.Abstractions.Domains.Kv;
+using Cntryl.Fitz.Abstractions.Domains.Queue;
+using Cntryl.Fitz.Abstractions.Domains.Rpc;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Domains.Kv;
+using Cntryl.Fitz.Domains.Queue;
+using Cntryl.Fitz.Domains.Rpc;
 using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz;
@@ -11,6 +15,8 @@ public sealed class Client : IClient
     private readonly ClientConfig _config;
     private readonly FitzConnection _connection;
     private KvClient? _kvClient;
+    private QueueClient? _queueClient;
+    private RpcClient? _rpcClient;
 
     public Client(ClientConfig config)
     {
@@ -44,6 +50,16 @@ public sealed class Client : IClient
     public IKvClient Kv()
     {
         return _kvClient ??= new KvClient(_connection);
+    }
+
+    public IQueueClient Queue()
+    {
+        return _queueClient ??= new QueueClient(_connection);
+    }
+
+    public IRpcClient Rpc()
+    {
+        return _rpcClient ??= new RpcClient(_connection);
     }
 
     public bool IsConnected => _connection.State == ConnectionState.Authenticated;
