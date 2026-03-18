@@ -5,6 +5,7 @@ obj/
 .vscode/
 TestResults/
 artifacts/
+BenchmarkDotNet.Artifacts/
 *.user
 *.rsuser
 *.suo

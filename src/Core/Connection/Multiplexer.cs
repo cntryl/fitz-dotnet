@@ -5,7 +5,7 @@ namespace Cntryl.Fitz.Connection;
 public sealed class Multiplexer
 {
     private readonly object _gate = new();
-    private readonly Dictionary<ushort, Queue<PendingRequest>> _pending = new();
+    private readonly Dictionary<ushort, LinkedList<PendingRequest>> _pending = new();
     private readonly Dictionary<ushort, Action<byte[]>> _notificationHandlers = new();
     private readonly Dictionary<ushort, int> _optionalResponses = new();
     private ConnectionState _state = ConnectionState.Disconnected;
@@ -82,11 +82,11 @@ public sealed class Multiplexer
         {
             if (!_pending.TryGetValue(messageType, out var queue))
             {
-                queue = new Queue<PendingRequest>();
+                queue = new LinkedList<PendingRequest>();
                 _pending[messageType] = queue;
             }
 
-            queue.Enqueue(request);
+            request.Node = queue.AddLast(request);
         }
 
         using var timeoutCts = new CancellationTokenSource(timeout);
@@ -125,7 +125,14 @@ public sealed class Multiplexer
         {
             if (_pending.TryGetValue(messageType, out var queue) && queue.Count > 0)
             {
-                pending = queue.Dequeue();
+                var first = queue.First;
+                if (first is not null)
+                {
+                    pending = first.Value;
+                    pending.Node = null;
+                    queue.RemoveFirst();
+                }
+
                 if (queue.Count == 0)
                 {
                     _pending.Remove(messageType);
@@ -185,6 +192,11 @@ public sealed class Multiplexer
         lock (_gate)
         {
             requests = _pending.Values.SelectMany(q => q).ToArray();
+            foreach (var pending in requests)
+            {
+                pending.Node = null;
+            }
+
             _pending.Clear();
         }
 
@@ -203,16 +215,30 @@ public sealed class Multiplexer
                 return;
             }
 
-            var arr = queue.ToArray().Where(x => !ReferenceEquals(x, request)).ToArray();
-            if (arr.Length == 0)
+            var node = request.Node;
+            if (node is null)
             {
-                _pending.Remove(messageType);
                 return;
             }
 
-            _pending[messageType] = new Queue<PendingRequest>(arr);
+            queue.Remove(node);
+            request.Node = null;
+            if (queue.Count == 0)
+            {
+                _pending.Remove(messageType);
+            }
         }
     }
 
-    private sealed record PendingRequest(TaskCompletionSource<byte[]> Promise);
+    private sealed class PendingRequest
+    {
+        internal PendingRequest(TaskCompletionSource<byte[]> promise)
+        {
+            Promise = promise;
+        }
+
+        internal TaskCompletionSource<byte[]> Promise { get; }
+
+        internal LinkedListNode<PendingRequest>? Node { get; set; }
+    }
 }

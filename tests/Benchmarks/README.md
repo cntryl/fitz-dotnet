@@ -53,6 +53,18 @@ Run all multiplexer benchmarks:
 dotnet run -c Release -- --filter Cntryl.Fitz.Benchmarks.MultiplexerBenchmarks
 ```
 
+### 2b. MultiplexerHotPathBenchmarks
+
+Measures the real `Multiplexer` hot path from Core instead of synthetic dictionary-only proxies.
+
+- `RequestDispatchRoundTrip`: enqueue request, dispatch frame, complete task
+- `CancellationThenNextDispatch`: cancel first inflight request and verify next request still receives response
+
+Run real multiplexer hot-path benchmarks:
+```bash
+dotnet run -c Release -- --filter Cntryl.Fitz.Benchmarks.MultiplexerHotPathBenchmarks
+```
+
 ### 3. AllocationBenchmarks
 
 Compares allocation strategies (ArrayPool vs new byte[] vs stackalloc).

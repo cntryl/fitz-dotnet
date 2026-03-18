@@ -118,4 +118,39 @@ public sealed class MultiplexerTests
         // Assert
         await Assert.ThrowsAsync<ConnectionException>(() => inflight);
     }
+
+    [Fact]
+    public async Task should_dispatch_to_next_request_given_first_request_canceled_when_same_message_type_is_inflight()
+    {
+        // Arrange
+        var mux = new Multiplexer();
+        mux.SetConnected();
+
+        using var firstCts = new CancellationTokenSource();
+        var first = mux.RequestAsync(
+            122,
+            [0x1],
+            static async (_, _) =>
+            {
+                await Task.Delay(100).ConfigureAwait(false);
+            },
+            TimeSpan.FromSeconds(5),
+            firstCts.Token
+        );
+
+        var second = mux.RequestAsync(
+            122,
+            [0x2],
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromSeconds(5)
+        );
+
+        // Act
+        firstCts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        mux.Dispatch(122, [0xB]);
+
+        // Assert
+        Assert.Equal([0xB], await second);
+    }
 }
