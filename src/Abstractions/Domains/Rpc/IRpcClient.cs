@@ -2,5 +2,6 @@ namespace Cntryl.Fitz.Abstractions.Domains.Rpc;
 
 public interface IRpcClient
 {
-    Task RequestAsync(string route, byte[] body, CancellationToken cancellationToken = default);
+    IAsyncEnumerable<RpcResponseFrame> CallAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default);
+    Task<IDisposable> RegisterWorkerAsync(string pattern, Func<RpcRequest, IRpcResponseWriter, CancellationToken, Task> handler, CancellationToken ct = default);
 }

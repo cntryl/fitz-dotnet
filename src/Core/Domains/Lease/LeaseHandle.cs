@@ -1,4 +1,4 @@
-using Cntryl.Fitz.Abstractions.Domains.Lease;
+﻿using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
@@ -17,42 +17,44 @@ public sealed class LeaseHandle : ILease
 
     public string Route { get; }
 
-    public ulong Token { get; }
+    public ulong Token { get; private set; }
 
-    public Task ExtendAsync(ulong ttlSecs, CancellationToken cancellationToken = default)
+    public Task ExtendAsync(ulong ttlSecs, CancellationToken ct = default)
     {
-        return SendTokenTtlAsync(MessageTypes.LeaseRenew, ttlSecs, "EXTEND", cancellationToken);
+        return SendTokenTtlAsync(MessageTypes.LeaseRenew, ttlSecs, "EXTEND", ct);
     }
 
-    public Task RenewAsync(ulong ttlSecs, CancellationToken cancellationToken = default)
+    public async Task ReleaseAsync(CancellationToken ct = default)
     {
-        return SendTokenTtlAsync(MessageTypes.LeaseRenew, ttlSecs, "RENEW", cancellationToken);
-    }
-
-    public async Task ReleaseAsync(CancellationToken cancellationToken = default)
-    {
-        var writer = new BinaryBufferWriter();
+        using var writer = new BinaryBufferWriter();
         writer.WriteString(Route);
         writer.WriteString(string.Empty);
         writer.WriteU64(Token);
-        var response = await _request(MessageTypes.LeaseRelease, writer.Build(), cancellationToken);
+        var response = await _request(MessageTypes.LeaseRelease, writer.Build(), ct);
         if (response.Length > 0 && response[0] != 0)
         {
             throw new LeaseException($"RELEASE failed with status {response[0]}", "RELEASE_FAILED", response[0]);
         }
     }
 
-    private async Task SendTokenTtlAsync(ushort messageType, ulong ttlSecs, string operation, CancellationToken cancellationToken)
+    private async Task SendTokenTtlAsync(ushort messageType, ulong ttlSecs, string operation, CancellationToken ct)
     {
-        var writer = new BinaryBufferWriter();
+        using var writer = new BinaryBufferWriter();
         writer.WriteString(Route);
         writer.WriteString(string.Empty);
         writer.WriteU64(Token);
         writer.WriteU64(ttlSecs);
-        var response = await _request(messageType, writer.Build(), cancellationToken);
+        var response = await _request(messageType, writer.Build(), ct);
         if (response.Length > 0 && response[0] != 0)
         {
             throw new LeaseException($"{operation} failed with status {response[0]}", $"{operation}_FAILED", response[0]);
+        }
+
+        if (response.Length >= 9)
+        {
+            var reader = new BinaryBufferReader(response);
+            _ = reader.ReadU8(); // status
+            Token = reader.ReadU64();
         }
     }
 }

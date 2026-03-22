@@ -8,7 +8,7 @@ namespace Cntryl.Fitz.Benchmarks;
 /// Benchmarks for request correlation and multiplexing operations.
 /// Target: lookup <2 μs @ 5K concurrent, dispatch <5 μs per frame
 /// </summary>
-[SimpleJob(RuntimeMoniker.Net90)]
+[SimpleJob]
 [ThreadingDiagnoser]
 [MemoryDiagnoser]
 [PlainExporter]

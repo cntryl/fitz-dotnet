@@ -1,4 +1,5 @@
 using Cntryl.Fitz;
+using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Transport;
 
@@ -53,8 +54,63 @@ public sealed class ClientTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(act);
     }
 
+    [Fact]
+    public async Task should_throw_authentication_exception_given_transport_close_during_authentication()
+    {
+        // Arrange
+        var transport = new FakeTransport(receive: _ => Task.FromResult(Array.Empty<byte>()));
+        var client = new Client(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                AuthSettleDelay: TimeSpan.FromMilliseconds(200),
+                TransportFactory: _ => transport
+            )
+        );
+
+        // Act
+        var act = () => client.ConnectAsync();
+
+        // Assert
+        await Assert.ThrowsAsync<AuthenticationException>(act);
+    }
+
+    [Fact]
+    public async Task should_remain_connected_given_request_timeout_when_receive_loop_is_idle()
+    {
+        // Arrange
+        var transport = new FakeTransport(receive: async ct =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            return [];
+        });
+        var client = new Client(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                Timeout: TimeSpan.FromMilliseconds(50),
+                AuthSettleDelay: TimeSpan.Zero,
+                TransportFactory: _ => transport
+            )
+        );
+
+        await client.ConnectAsync();
+
+        // Act
+        var ex = await Assert.ThrowsAsync<RequestTimeoutException>(() => client.RequestAsync(MessageTypes.KvBegin, []));
+
+        // Assert
+        Assert.Contains("Request timeout", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.True(client.IsConnected);
+    }
+
     private sealed class FakeTransport : ITransport
     {
+        private readonly Func<CancellationToken, Task<byte[]>> _receive;
+
+        public FakeTransport(Func<CancellationToken, Task<byte[]>>? receive = null)
+        {
+            _receive = receive ?? (ct => Task.Delay(50, ct).ContinueWith(_ => Array.Empty<byte>(), TaskScheduler.Default));
+        }
+
         public List<byte[]> SentFrames { get; } = [];
 
         public string Url => "ws://fake";
@@ -75,7 +131,7 @@ public sealed class ClientTests
         public Task<byte[]> ReceiveAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(Array.Empty<byte>());
+            return _receive(cancellationToken);
         }
 
         public Task CloseAsync(CancellationToken cancellationToken = default)

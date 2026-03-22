@@ -6,6 +6,7 @@ public sealed class WebSocketTransport : ITransport
 {
     private readonly Uri _uri;
     private readonly TimeSpan _timeout;
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
     private ClientWebSocket? _socket;
 
     public WebSocketTransport(string url, TimeSpan timeout)
@@ -32,22 +33,28 @@ public sealed class WebSocketTransport : ITransport
     public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
         var socket = EnsureSocket();
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(_timeout);
-        await socket.SendAsync(data, WebSocketMessageType.Binary, endOfMessage: true, cts.Token);
+        await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(_timeout);
+            await socket.SendAsync(data, WebSocketMessageType.Binary, endOfMessage: true, cts.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            _sendLock.Release();
+        }
     }
 
     public async Task<byte[]> ReceiveAsync(CancellationToken cancellationToken = default)
     {
         var socket = EnsureSocket();
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(_timeout);
 
         using var stream = new MemoryStream();
         var buffer = new byte[16 * 1024];
         while (true)
         {
-            var result = await socket.ReceiveAsync(buffer, cts.Token);
+            var result = await socket.ReceiveAsync(buffer, cancellationToken);
             if (result.MessageType == WebSocketMessageType.Close)
             {
                 return [];

@@ -1,31 +1,39 @@
+using System.Runtime.CompilerServices;
 using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
+using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Lease;
 
 public sealed class LeaseClient : ILeaseClient
 {
     private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
+    private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
 
     internal LeaseClient(FitzConnection connection)
-        : this(connection.RequestAsync)
+        : this(
+            connection.RequestAsync,
+            connection.RegisterNotificationHandler)
     {
     }
 
-    public LeaseClient(Func<ushort, byte[], CancellationToken, Task<byte[]>> request)
+    public LeaseClient(
+        Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
     {
         _request = request;
+        _registerNotificationHandler = registerNotificationHandler;
     }
 
-    public async Task<ILease> AcquireAsync(string route, ulong ttlSecs, CancellationToken cancellationToken = default)
+    public async Task<ILease> AcquireAsync(string route, ulong ttlSecs, CancellationToken ct = default)
     {
-        var writer = new BinaryBufferWriter();
+        using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteString(string.Empty);
         writer.WriteU64(ttlSecs);
-        var response = await _request(MessageTypes.LeaseAcquire, writer.Build(), cancellationToken);
+        var response = await _request(MessageTypes.LeaseAcquire, writer.Build(), ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -33,24 +41,30 @@ public sealed class LeaseClient : ILeaseClient
             throw new LeaseException($"ACQUIRE failed with status {status}", "ACQUIRE_FAILED", status);
         }
 
-        if (!reader.IsEof)
+        if (reader.RemainingBytes == 8)
         {
-            _ = reader.ReadU8();
+            return new LeaseHandle(_request, route, reader.ReadU64());
         }
 
-        if (reader.IsEof)
+        if (reader.RemainingBytes < 9)
         {
             throw new LeaseException("ACQUIRE response missing fencing token", "MISSING_TOKEN");
+        }
+
+        var responseType = reader.ReadU8();
+        if (responseType >= 2)
+        {
+            throw new LeaseException($"ACQUIRE returned non-acquired response type {responseType}", "ACQUIRE_NOT_ACQUIRED");
         }
 
         return new LeaseHandle(_request, route, reader.ReadU64());
     }
 
-    public async Task<LeaseInfo> QueryAsync(string route, CancellationToken cancellationToken = default)
+    public async Task<LeaseInfo> QueryAsync(string route, CancellationToken ct = default)
     {
-        var writer = new BinaryBufferWriter();
+        using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        var response = await _request(MessageTypes.LeaseQuery, writer.Build(), cancellationToken);
+        var response = await _request(MessageTypes.LeaseQuery, writer.Build(), ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -67,5 +81,57 @@ public sealed class LeaseClient : ILeaseClient
         var owner = reader.ReadString();
         var ttlRemaining = reader.ReadU64();
         return new LeaseInfo(true, owner, ttlRemaining);
+    }
+
+    public async IAsyncEnumerable<LeaseChangeEvent> SubscribeAsync(
+        string pattern,
+        [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        if (_registerNotificationHandler == null)
+        {
+            throw new InvalidOperationException("Notification handlers not configured for subscription support");
+        }
+
+        var channel = new SubscriptionChannel<LeaseChangeEvent>();
+        var registration = _registerNotificationHandler(MessageTypes.LeaseNotify, payload =>
+        {
+            try
+            {
+                var reader = new BinaryBufferReader(payload);
+                var eventRoute = reader.ReadString();
+                var isHeld = reader.ReadU8() == 1;
+                var owner = reader.ReadU8() == 1 ? reader.ReadString() : null;
+                var ttlRemaining = reader.ReadU8() == 1 ? (ulong?)reader.ReadU64() : null;
+                channel.PostNotification(new LeaseChangeEvent(eventRoute, new LeaseStatus(isHeld, owner, ttlRemaining)));
+            }
+            catch
+            {
+                channel.Dispose();
+            }
+        });
+
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(pattern);
+
+        try
+        {
+            var response = await _request(MessageTypes.LeaseSubscribe, writer.Build(), ct).ConfigureAwait(false);
+            var reader = new BinaryBufferReader(response);
+            var status = reader.ReadU8();
+            if (status != 0)
+            {
+                throw new LeaseException($"SUBSCRIBE failed with status {status}", "SUBSCRIBE_FAILED", status);
+            }
+
+            await foreach (var evt in channel.GetEnumerableAsync(ct).ConfigureAwait(false))
+            {
+                yield return evt;
+            }
+        }
+        finally
+        {
+            registration.Dispose();
+            channel.Dispose();
+        }
     }
 }

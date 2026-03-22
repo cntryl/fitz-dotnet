@@ -8,7 +8,7 @@ namespace Cntryl.Fitz.Benchmarks;
 /// Benchmarks focused on allocation patterns and GC pressure.
 /// Target: <40% allocations vs legacy List<T> buffering
 /// </summary>
-[SimpleJob(RuntimeMoniker.Net90)]
+[SimpleJob]
 [MemoryDiagnoser]
 [PlainExporter]
 public class AllocationBenchmarks

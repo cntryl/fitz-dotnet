@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  fast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore Fitz.sln
+
+      - name: Build
+        run: dotnet build Fitz.sln -c Release --no-restore
+
+      - name: Run unit tests
+        run: dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName!~Integration
+
+  spec:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [ws, tcp]
+        auth_mode: [anonymous, valid_jwt]
+    env:
+      FITZ_DOTNET_RUN_INTEGRATION: "1"
+      FITZ_DOTNET_RUN_INTEGRATION_STREAM: "1"
+      FITZ_DOTNET_RUN_INTEGRATION_LEASE: "1"
+      FITZ_DOTNET_RUN_INTEGRATION_KV: "1"
+      FITZ_BROKER_ANON_TCP_ADDR: localhost:4191
+      FITZ_BROKER_ANON_WS_ADDR: ws://localhost:4190/ws
+      FITZ_BROKER_AUTH_TCP_ADDR: localhost:4091
+      FITZ_BROKER_AUTH_WS_ADDR: ws://localhost:4090/ws
+      FITZ_BROKER_JWT_HMAC_SECRET: test-secret-key
+      FITZ_BROKER_JWT_AUDIENCE: fitz
+      CONFORMANCE_OUTPUT: conformance-results.json
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Verify transport support is implemented
+        run: |
+          if [ "${{ matrix.transport }}" = "tcp" ]; then
+            grep -q '"tcp"' src/Core/Transport/TransportResolver.cs
+          fi
+
+      - name: Start broker stack
+        run: docker compose -f ../fitz-go/compose.yml up -d
+
+      - name: Restore
+        run: dotnet restore Fitz.sln
+
+      - name: Build
+        run: dotnet build Fitz.sln -c Release --no-restore
+
+      - name: Run conformance tests
+        env:
+          CONFORMANCE_TRANSPORT: ${{ matrix.transport }}
+          CONFORMANCE_AUTH_MODE: ${{ matrix.auth_mode }}
+        run: dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~Conformance
+
+      - name: Enforce P0 conformance
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          required = {"CS-001","CS-002","CS-003","CS-004","CS-005","CS-006","CS-007","CS-008"}
+          path = Path("conformance-results.json")
+          data = json.loads(path.read_text(encoding="utf-8"))
+          observed = {s["scenario_id"] for s in data["scenarios"]}
+          missing = sorted(required - observed)
+          failing = sorted(s["scenario_id"] for s in data["scenarios"] if s["scenario_id"] in required and s["verdict"] != "pass")
+          print(f"transport={data['transport']} auth={data['auth_mode']} p0={data['p0_pass_rate']:.0%} p1={data['p1_pass_rate']:.0%} failing={failing} missing={missing}")
+          if failing or missing:
+              raise SystemExit(1)
+          PY
+
+      - name: Upload conformance results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fitz-dotnet-conformance-${{ matrix.transport }}-${{ matrix.auth_mode }}
+          path: conformance-results.json
+
+      - name: Stop broker stack
+        if: always()
+        run: docker compose -f ../fitz-go/compose.yml down --volumes

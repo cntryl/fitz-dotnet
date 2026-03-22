@@ -1,4 +1,4 @@
-using Cntryl.Fitz.Abstractions.Domains.Stream;
+﻿using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
@@ -15,24 +15,24 @@ public sealed class StreamSession : IStreamSession
         _sessionId = sessionId;
     }
 
-    public async Task<ulong?> AppendAsync(byte[] body, byte[]? metadata = null, CancellationToken cancellationToken = default)
+    public async Task<ulong?> AppendAsync(ReadOnlyMemory<byte> body, ReadOnlyMemory<byte>? metadata = null, CancellationToken ct = default)
     {
-        var writer = new BinaryBufferWriter();
+        using var writer = new BinaryBufferWriter();
         writer.WriteU64(_sessionId);
         writer.WriteU32((uint)body.Length);
-        writer.WriteBytes(body);
-        if (metadata is { Length: > 0 })
+        writer.WriteBytes(body.Span);
+        if (metadata.HasValue && metadata.Value.Length > 0)
         {
             writer.WriteU8(1);
-            writer.WriteU32((uint)metadata.Length);
-            writer.WriteBytes(metadata);
+            writer.WriteU32((uint)metadata.Value.Length);
+            writer.WriteBytes(metadata.Value.Span);
         }
         else
         {
             writer.WriteU8(0);
         }
 
-        var response = await _request(MessageTypes.StreamAppend, writer.Build(), cancellationToken);
+        var response = await _request(MessageTypes.StreamAppend, writer.Build(), ct);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -58,24 +58,24 @@ public sealed class StreamSession : IStreamSession
         return wrapped.RemainingBytes >= 8 ? wrapped.ReadU64() : null;
     }
 
-    public Task CommitAsync(CancellationToken cancellationToken = default)
+    public Task CommitAsync(CancellationToken ct = default)
     {
-        var writer = new BinaryBufferWriter();
+        using var writer = new BinaryBufferWriter();
         writer.WriteU64(_sessionId);
         writer.WriteU8(0);
-        return ExpectStatusAsync(MessageTypes.StreamCommit, writer.Build(), "COMMIT", cancellationToken);
+        return ExpectStatusAsync(MessageTypes.StreamCommit, writer.Build(), "COMMIT", ct);
     }
 
-    public Task RollbackAsync(CancellationToken cancellationToken = default)
+    public Task RollbackAsync(CancellationToken ct = default)
     {
-        var writer = new BinaryBufferWriter();
+        using var writer = new BinaryBufferWriter();
         writer.WriteU64(_sessionId);
-        return ExpectStatusAsync(MessageTypes.StreamRollback, writer.Build(), "ROLLBACK", cancellationToken);
+        return ExpectStatusAsync(MessageTypes.StreamRollback, writer.Build(), "ROLLBACK", ct);
     }
 
-    private async Task ExpectStatusAsync(ushort messageType, byte[] payload, string operation, CancellationToken cancellationToken)
+    private async Task ExpectStatusAsync(ushort messageType, byte[] payload, string operation, CancellationToken ct)
     {
-        var response = await _request(messageType, payload, cancellationToken);
+        var response = await _request(messageType, payload, ct);
         if (response.Length > 0 && response[0] != 0)
         {
             throw new StreamException($"{operation} failed with status {response[0]}", $"{operation}_FAILED", response[0]);

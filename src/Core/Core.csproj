@@ -4,13 +4,8 @@
     <ProjectReference Include="..\Abstractions\Abstractions.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <PackageReference Include="System.Threading.Channels" Version="8.0.0" />
-    <PackageReference Include="System.Net.WebSockets" Version="4.3.0" />
-  </ItemGroup>
-
   <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <PackageId>Cntryl.Fitz</PackageId>
     <AssemblyName>Cntryl.Fitz</AssemblyName>
     <RootNamespace>Cntryl.Fitz</RootNamespace>

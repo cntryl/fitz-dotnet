@@ -7,7 +7,7 @@ namespace Cntryl.Fitz.Benchmarks;
 /// <summary>
 /// Real multiplexer hot-path benchmarks (request enqueue + dispatch + completion).
 /// </summary>
-[SimpleJob(RuntimeMoniker.Net90)]
+[SimpleJob]
 [MemoryDiagnoser]
 [ThreadingDiagnoser]
 [PlainExporter]
