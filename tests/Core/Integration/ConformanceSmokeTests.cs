@@ -8,6 +8,19 @@ namespace Cntryl.Fitz.Core.Tests.Integration;
 public sealed class ConformanceSmokeTests
 {
     [Fact]
+    public async Task should_fail_invalid_jwt_auth_when_connecting()
+    {
+        if (!IntegrationFixture.IsEnabled())
+        {
+            return;
+        }
+
+        var transport = IntegrationFixture.GetConformanceTransport();
+        var result = await RunCs002AuthFailure(transport);
+        Assert.Equal("pass", result.Verdict);
+    }
+
+    [Fact]
     public async Task should_write_json_result_given_enabled_flag_when_running_conformance_suite()
     {
         if (!IntegrationFixture.IsEnabled())

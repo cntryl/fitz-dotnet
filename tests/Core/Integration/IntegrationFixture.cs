@@ -66,10 +66,12 @@ internal static class IntegrationFixture
         var outputPath = Environment.GetEnvironmentVariable("CONFORMANCE_OUTPUT");
         if (!string.IsNullOrWhiteSpace(outputPath))
         {
-            return outputPath;
+            return Path.IsPathRooted(outputPath)
+                ? outputPath
+                : Path.Combine(GetRepositoryRoot(), outputPath);
         }
 
-        return Path.Combine(AppContext.BaseDirectory, "conformance-results.json");
+        return Path.Combine(GetRepositoryRoot(), "artifacts", "conformance-results.json");
     }
 
     internal static Client CreateAnonymousClient(string url, string? transport = null, TimeSpan? timeout = null, ReconnectOptions? reconnect = null)
@@ -223,5 +225,21 @@ internal static class IntegrationFixture
     private static string Base64UrlEncode(byte[] value)
     {
         return Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
+    private static string GetRepositoryRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null)
+        {
+            if (File.Exists(Path.Combine(current.FullName, "Fitz.sln")))
+            {
+                return current.FullName;
+            }
+
+            current = current.Parent;
+        }
+
+        return Directory.GetCurrentDirectory();
     }
 }

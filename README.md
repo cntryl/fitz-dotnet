@@ -1,19 +1,67 @@
 # fitz-dotnet
 
-.NET client SDK for Fitz.
+`fitz-dotnet` is the .NET SDK for Fitz.
 
-## Repository layout
+## Packages
 
-- src/Core/Core.csproj: core SDK package and client implementation.
-- src/Abstractions/Abstractions.csproj: shared interfaces/contracts.
-- src/DependencyInjection/DependencyInjection.csproj: DI registration extensions.
-- tests/Core/Core.Tests.csproj: single test project with two directories:
-	- tests/Core/Unit
-	- tests/Core/Integration
+- `Cntryl.Fitz`: core client API
+- `Cntryl.Fitz.Abstractions`: public interfaces and shared contracts
+- `Cntryl.Fitz.DependencyInjection`: DI registration helpers
 
-## Commands
+## Install
 
-- Build: `dotnet build Fitz.sln`
-- Test: `dotnet test tests/Core/Core.Tests.csproj`
-- Conformance (broker-backed): `dotnet test tests/Core/Core.Tests.csproj --filter FullyQualifiedName~Conformance`
-- List solution projects: `dotnet sln Fitz.sln list`
+```bash
+dotnet add package Cntryl.Fitz
+dotnet add package Cntryl.Fitz.Abstractions
+dotnet add package Cntryl.Fitz.DependencyInjection
+```
+
+## Quick Start
+
+```csharp
+using Cntryl.Fitz;
+
+await using var client = new Client(
+    new ClientConfig(
+        "ws://localhost:4190/ws",
+        TokenProvider: _ => ValueTask.FromResult("your-jwt-token")
+    )
+);
+
+await client.ConnectAsync();
+
+var tx = await client.Kv().BeginAsync("kv://realm/app/users");
+await tx.PutAsync("user-1"u8.ToArray(), """{"name":"Alice"}"""u8.ToArray());
+await tx.CommitAsync();
+
+await client.DisposeAsync();
+```
+
+## Verification
+
+Fast local checks:
+
+```bash
+dotnet restore Fitz.sln
+dotnet build Fitz.sln -c Release --no-restore
+dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName!~Integration
+```
+
+Broker-backed conformance:
+
+```bash
+docker compose -f ../fitz-go/compose.yml up -d
+CONFORMANCE_TRANSPORT=ws CONFORMANCE_AUTH_MODE=anonymous \
+CONFORMANCE_OUTPUT=artifacts/conformance-results.json \
+dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~Conformance
+docker compose -f ../fitz-go/compose.yml down --volumes
+```
+
+The conformance run writes JSON results to `artifacts/conformance-results.json` by default.
+
+## Repository Layout
+
+- `src/Core/Core.csproj`: core SDK package and client implementation
+- `src/Abstractions/Abstractions.csproj`: shared interfaces and contracts
+- `src/DependencyInjection/DependencyInjection.csproj`: DI registration extensions
+- `tests/Core/Core.Tests.csproj`: unit and broker-backed conformance coverage
