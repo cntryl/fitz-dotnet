@@ -1,76 +1,92 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Jobs;
-using System.Buffers;
+using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Benchmarks;
 
 /// <summary>
-/// Benchmarks for frame encoding and decoding operations.
-/// Target: encode <100 ns, decode <200 ns
+/// Frame codec benchmarks: encoding and decoding hot-path performance.
 /// </summary>
-[SimpleJob]
+[SimpleJob(warmupCount: 3, targetCount: 5)]
 [MemoryDiagnoser]
 [PlainExporter]
-[MeanColumn]
-[MedianColumn]
-[StdDevColumn]
-[AllStatisticsColumn]
 public class FrameCodecBenchmarks
 {
-    private static readonly byte[] MessageTypes = [0x01, 0x14, 0x64, 0xc8];
-    private static readonly int[] PayloadSizes = [0, 64, 256, 1024];
-    
-    // Placeholder: will be populated with actual frame codec implementations
-    private byte[] _smallPayload = null!;
-    private byte[] _largePayload = null!;
-    private byte[] _frameBuffer = null!;
+    private byte[]? _payload64;
+    private byte[]? _payload256;
+    private byte[]? _payload1024;
+    private byte[]? _encoded64;
+    private byte[]? _encoded256;
+    private byte[]? _encoded1024;
+    private byte[]? _encodedLarge;
+    private byte[]? _payload4096;
 
     [GlobalSetup]
     public void Setup()
     {
-        _smallPayload = new byte[64];
-        _largePayload = new byte[1024];
-        _frameBuffer = ArrayPool<byte>.Shared.Rent(2048);
+        _payload64 = new byte[64];
+        _payload256 = new byte[256];
+        _payload1024 = new byte[1024];
+        _payload4096 = new byte[4096];
+
+        for (int i = 0; i < _payload4096.Length; i++)
+            _payload4096[i] = (byte)(i % 256);
+
+        _payload64.AsSpan().Fill(0xAA);
+        _payload256.AsSpan().Fill(0xBB);
+        _payload1024.AsSpan().Fill(0xCC);
+
+        _encoded64 = FrameCodec.Encode(100, _payload64);
+        _encoded256 = FrameCodec.Encode(200, _payload256);
+        _encoded1024 = FrameCodec.Encode(300, _payload1024);
+        _encodedLarge = FrameCodec.Encode(400, _payload4096);
     }
 
-    [GlobalCleanup]
-    public void Cleanup()
-    {
-        ArrayPool<byte>.Shared.Return(_frameBuffer);
-    }
-
-    /// <summary>
-    /// Benchmark: encode small payload (64 bytes)
-    /// Target: <100 ns
-    /// </summary>
     [Benchmark]
-    public int EncodeSmallPayload()
+    public byte[] EncodeSmallMessage()
     {
-        // Placeholder: will use actual FrameCodec.EncodeFrame()
-        // Return actual length for verification
-        return _smallPayload.Length + 8; // Approximate frame overhead
+        return FrameCodec.Encode(100, _payload64!);
     }
 
-    /// <summary>
-    /// Benchmark: encode large payload (1024 bytes)
-    /// Target: <500 ns
-    /// </summary>
     [Benchmark]
-    public int EncodeLargePayload()
+    public byte[] EncodeMediumMessage()
     {
-        // Placeholder: will use actual FrameCodec.EncodeFrame()
-        return _largePayload.Length + 8;
+        return FrameCodec.Encode(200, _payload256!);
     }
 
-    /// <summary>
-    /// Benchmark: decode frame header and extract payload slice
-    /// Target: <200 ns (no allocation)
-    /// </summary>
     [Benchmark]
-    public int DecodeFrame()
+    public byte[] EncodeLargeMessage()
     {
-        // Placeholder: will use actual FrameCodec.DecodeFrame()
-        // Should return payload length
-        return _smallPayload.Length;
+        return FrameCodec.Encode(300, _payload1024!);
+    }
+
+    [Benchmark]
+    public Frame DecodeSmallMessage()
+    {
+        return FrameCodec.Decode(_encoded64!);
+    }
+
+    [Benchmark]
+    public Frame DecodeMediumMessage()
+    {
+        return FrameCodec.Decode(_encoded256!);
+    }
+
+    [Benchmark]
+    public Frame DecodeLargeMessage()
+    {
+        return FrameCodec.Decode(_encoded1024!);
+    }
+
+    [Benchmark]
+    public Frame DecodeXLargeMessage()
+    {
+        return FrameCodec.Decode(_encodedLarge!);
+    }
+
+    [Benchmark]
+    public byte[] EncodeExtendedMessageType()
+    {
+        return FrameCodec.Encode(500, _payload256!);
     }
 }

@@ -6,7 +6,7 @@
   </ItemGroup>
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net9.0</TargetFramework>
     <PackageId>Cntryl.Fitz.DependencyInjection</PackageId>
     <AssemblyName>Cntryl.Fitz.DependencyInjection</AssemblyName>
     <RootNamespace>Cntryl.Fitz.DependencyInjection</RootNamespace>
