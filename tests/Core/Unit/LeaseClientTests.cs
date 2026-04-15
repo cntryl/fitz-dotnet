@@ -143,12 +143,15 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task should_yield_lease_change_given_notification_when_subscribing()
+    public async Task should_invoke_lease_handler_given_notification_when_subscribing()
     {
         // Arrange
         Action<byte[]>? notifyHandler = null;
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
+        LeaseChangeEvent? received = null;
+        CancellationToken seenCancellationToken = default;
+        var receivedTcs = new TaskCompletionSource<LeaseChangeEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var leaseClient = new LeaseClient(
             (messageType, payload, _) =>
@@ -158,6 +161,8 @@ public sealed class LeaseClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+                writer.WriteU8(1);
+                writer.WriteU64(555);
                 return Task.FromResult(writer.Build());
             },
             (messageType, handler) =>
@@ -168,39 +173,35 @@ public sealed class LeaseClientTests
             });
 
         // Act
-        var task = Task.Run(async () =>
+        var subscription = await leaseClient.SubscribeAsync("lease://prod/*", (evt, cancellationToken) =>
         {
-            await foreach (var evt in leaseClient.SubscribeAsync("lease://prod/*"))
-            {
-                return evt;
-            }
-
-            return null;
+            received = evt;
+            seenCancellationToken = cancellationToken;
+            receivedTcs.TrySetResult(evt);
+            return ValueTask.CompletedTask;
         });
 
         await Task.Delay(25);
         Assert.NotNull(notifyHandler);
         using var notification = new BinaryBufferWriter();
+        notification.WriteU64(subscription.SubscriptionId);
         notification.WriteString("lease://prod/app/lock");
-        notification.WriteU8(1);
-        notification.WriteU8(1);
-        notification.WriteString("worker-1");
-        notification.WriteU8(1);
-        notification.WriteU64(25);
         notifyHandler!(notification.Build());
 
-        var evt = await task;
+        var evt = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         // Assert
         Assert.NotNull(evt);
         Assert.Equal(MessageTypes.LeaseSubscribe, seenMessageType);
         Assert.NotNull(seenPayload);
         Assert.Equal("lease://prod/app/lock", evt!.Route);
-        Assert.True(evt.Status.IsHeld);
-        Assert.Equal("worker-1", evt.Status.Owner);
-        Assert.Equal((ulong)25, evt.Status.TtlRemainingSecs);
+        Assert.Same(received, evt);
+        Assert.NotEqual(default, seenCancellationToken);
+        Assert.False(seenCancellationToken.IsCancellationRequested);
 
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("lease://prod/*", reader.ReadString());
+
+        await subscription.DisposeAsync();
     }
 }

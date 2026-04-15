@@ -159,10 +159,13 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task should_yield_commit_event_given_matching_notification_when_subscribing()
+    public async Task should_invoke_stream_handler_given_matching_notification_when_subscribing()
     {
         // Arrange
         Action<byte[]>? notifyHandler = null;
+        StreamCommitEvent? received = null;
+        CancellationToken seenCancellationToken = default;
+        var receivedTcs = new TaskCompletionSource<StreamCommitEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
         var stream = new StreamClient(
             (messageType, payload, _) =>
             {
@@ -184,32 +187,35 @@ public sealed class StreamClientTests
             });
 
         // Act
-        var task = Task.Run(async () =>
+        var subscription = await stream.SubscribeAsync("stream://prod/*", (evt, cancellationToken) =>
         {
-            await foreach (var evt in stream.SubscribeAsync("stream://prod/*"))
-            {
-                return evt;
-            }
-
-            return null;
+            received = evt;
+            seenCancellationToken = cancellationToken;
+            receivedTcs.TrySetResult(evt);
+            return ValueTask.CompletedTask;
         });
 
         await Task.Delay(25);
         Assert.NotNull(notifyHandler);
         using var notification = new BinaryBufferWriter();
-        notification.WriteU64(55);
+        notification.WriteU64(subscription.SubscriptionId);
         notification.WriteString("stream://prod/app/events");
         var json = System.Text.Encoding.UTF8.GetBytes("{\"event\":\"committed\",\"last_resource_offset\":19}");
         notification.WriteU32((uint)json.Length);
         notification.WriteBytes(json);
         notifyHandler!(notification.Build());
 
-        var evt = await task;
+        var evt = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         // Assert
         Assert.NotNull(evt);
         Assert.Equal("stream://prod/app/events", evt!.Route);
         Assert.Equal((ulong)19, evt.CommitOffset);
+        Assert.Same(received, evt);
+        Assert.NotEqual(default, seenCancellationToken);
+        Assert.False(seenCancellationToken.IsCancellationRequested);
+
+        await subscription.DisposeAsync();
     }
 
     [Fact]

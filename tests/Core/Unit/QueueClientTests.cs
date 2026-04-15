@@ -79,12 +79,15 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task should_yield_availability_event_given_notification_when_subscribing()
+    public async Task should_invoke_queue_handler_given_notification_when_subscribing()
     {
         // Arrange
         Action<byte[]>? notifyHandler = null;
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
+        QueueAvailabilityEvent? received = null;
+        CancellationToken seenCancellationToken = default;
+        var receivedTcs = new TaskCompletionSource<QueueAvailabilityEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var queue = new QueueClient(
             (messageType, payload, _) =>
@@ -94,6 +97,8 @@ public sealed class QueueClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+                writer.WriteU8(1);
+                writer.WriteU64(555);
                 return Task.FromResult(writer.Build());
             },
             (messageType, handler) =>
@@ -104,24 +109,23 @@ public sealed class QueueClientTests
             });
 
         // Act
-        var task = Task.Run(async () =>
+        var subscription = await queue.SubscribeAsync("queue://prod/*", (evt, cancellationToken) =>
         {
-            await foreach (var evt in queue.SubscribeAsync("queue://prod/*"))
-            {
-                return evt;
-            }
-
-            return null;
+            received = evt;
+            seenCancellationToken = cancellationToken;
+            receivedTcs.TrySetResult(evt);
+            return ValueTask.CompletedTask;
         });
 
         await Task.Delay(25);
         Assert.NotNull(notifyHandler);
         using var notification = new BinaryBufferWriter();
+        notification.WriteU64(subscription.SubscriptionId);
         notification.WriteString("queue://prod/app/tasks");
         notification.WriteU64(9);
         notifyHandler!(notification.Build());
 
-        var evt = await task;
+        var evt = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         // Assert
         Assert.NotNull(evt);
@@ -129,9 +133,14 @@ public sealed class QueueClientTests
         Assert.NotNull(seenPayload);
         Assert.Equal("queue://prod/app/tasks", evt!.Route);
         Assert.Equal((ulong)9, evt.MessageCount);
+        Assert.Same(received, evt);
+        Assert.NotEqual(default, seenCancellationToken);
+        Assert.False(seenCancellationToken.IsCancellationRequested);
 
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("queue://prod/*", reader.ReadString());
+
+        await subscription.DisposeAsync();
     }
 
     [Fact]

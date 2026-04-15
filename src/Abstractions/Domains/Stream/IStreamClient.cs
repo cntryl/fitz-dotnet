@@ -6,5 +6,8 @@ public interface IStreamClient
     IAsyncEnumerable<StreamRecord> ReadAsync(string route, ulong startOffset, ulong limit = 100, ulong? maxBytes = null, CancellationToken ct = default);
     Task<StreamRecord?> PeekAsync(string route, CancellationToken ct = default);
     Task<StreamMetadata> MetadataAsync(string route, CancellationToken ct = default);
-    IAsyncEnumerable<StreamCommitEvent> SubscribeAsync(string pattern, CancellationToken ct = default);
+    Task<StreamSubscription> SubscribeAsync(
+        string pattern,
+        Func<StreamCommitEvent, CancellationToken, ValueTask> handler,
+        CancellationToken ct = default);
 }

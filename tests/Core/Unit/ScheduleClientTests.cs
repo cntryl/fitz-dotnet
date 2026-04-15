@@ -62,12 +62,15 @@ public sealed class ScheduleClientTests
     }
 
     [Fact]
-    public async Task should_yield_execution_event_given_notification_when_subscribing()
+    public async Task should_invoke_schedule_handler_given_notification_when_subscribing()
     {
         // Arrange
         Action<byte[]>? notifyHandler = null;
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
+        ScheduleNotification? received = null;
+        CancellationToken seenCancellationToken = default;
+        var receivedTcs = new TaskCompletionSource<ScheduleNotification>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var schedule = new ScheduleClient(
             (messageType, payload, _) =>
@@ -77,6 +80,8 @@ public sealed class ScheduleClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+                writer.WriteU8(1);
+                writer.WriteU64(55);
                 return Task.FromResult(writer.Build());
             },
             (messageType, handler) =>
@@ -87,36 +92,37 @@ public sealed class ScheduleClientTests
             });
 
         // Act
-        var task = Task.Run(async () =>
+        var subscription = await schedule.SubscribeAsync("schedule://prod/app/jobs/run", (notification, cancellationToken) =>
         {
-            await foreach (var evt in schedule.SubscribeAsync("schedule://prod/*"))
-            {
-                return evt;
-            }
-
-            return null;
+            received = notification;
+            seenCancellationToken = cancellationToken;
+            receivedTcs.TrySetResult(notification);
+            return ValueTask.CompletedTask;
         });
 
         await Task.Delay(25);
         Assert.NotNull(notifyHandler);
         using var notification = new BinaryBufferWriter();
-        notification.WriteString("sched-1");
-        notification.WriteString("schedule://prod/app/jobs");
-        notification.WriteU64(123456UL);
+        notification.WriteU64(subscription.SubscriptionId);
+        notification.WriteU32(4);
+        notification.WriteBytes("fire"u8);
         notifyHandler!(notification.Build());
 
-        var evt = await task;
+        var evt = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         // Assert
         Assert.NotNull(evt);
         Assert.Equal(MessageTypes.ScheduleSubscribe, seenMessageType);
         Assert.NotNull(seenPayload);
-        Assert.Equal("sched-1", evt!.ScheduleId);
-        Assert.Equal("schedule://prod/app/jobs", evt.Route);
-        Assert.Equal((ulong)123456, evt.ExecutedAtMs);
+        Assert.Equal("fire", System.Text.Encoding.UTF8.GetString(evt!.Payload.Span));
+        Assert.Same(received, evt);
+        Assert.NotEqual(default, seenCancellationToken);
+        Assert.False(seenCancellationToken.IsCancellationRequested);
 
         var reader = new BinaryBufferReader(seenPayload!);
-        Assert.Equal("schedule://prod/*", reader.ReadString());
+        Assert.Equal("schedule://prod/app/jobs/run", reader.ReadString());
+
+        await subscription.DisposeAsync();
     }
 
     [Fact]

@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using System.Text.Json;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Connection;
@@ -12,10 +13,19 @@ public sealed class StreamClient : IStreamClient
 {
     private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
     private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
+    private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
+    private readonly object _gate = new();
+    private readonly Dictionary<string, StreamSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
+    private readonly Dictionary<ulong, string> _patternsBySubscriptionId = new();
+    private IDisposable? _notificationRegistration;
+    private bool _notificationHandlerInitialized;
+    private long _nextHandleId;
+    private readonly IDisposable? _reconnectRegistration;
 
     internal StreamClient(FitzConnection connection)
         : this(connection.RequestAsync, connection.RegisterNotificationHandler)
     {
+        _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
 
     public StreamClient(
@@ -139,15 +149,69 @@ public sealed class StreamClient : IStreamClient
         return new StreamMetadata(inner.ReadU64(), inner.ReadU64(), inner.ReadU64());
     }
 
-    public async IAsyncEnumerable<StreamCommitEvent> SubscribeAsync(
+    public async Task<StreamSubscription> SubscribeAsync(
         string pattern,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        Func<StreamCommitEvent, CancellationToken, ValueTask> handler,
+        CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(handler);
         if (_registerNotificationHandler == null)
         {
             throw new InvalidOperationException("Notification handlers not configured for subscription support");
         }
 
+        EnsureNotificationHandlerInitialized();
+
+        var channel = Channel.CreateUnbounded<StreamCommitEvent>(new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false,
+        });
+        var registration = new SubscriptionRegistration<StreamCommitEvent>(channel);
+        var handleId = Interlocked.Increment(ref _nextHandleId);
+
+        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
+            {
+                existingSubscription.Registrations[handleId] = registration;
+                var existingHandle = CreateSubscription(pattern, handleId, existingSubscription.SubscriptionId);
+                SubscriptionPump.Start(registration, handler);
+                return existingHandle;
+            }
+
+            var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
+            var subscription = new StreamSubscriptionState(subscriptionId);
+            subscription.Registrations[handleId] = registration;
+            _subscriptionsByPattern[pattern] = subscription;
+            _patternsBySubscriptionId[subscriptionId] = pattern;
+
+            var handle = CreateSubscription(pattern, handleId, subscriptionId);
+            SubscriptionPump.Start(registration, handler);
+            return handle;
+        }
+        catch
+        {
+            registration.Dispose();
+            throw;
+        }
+        finally
+        {
+            _subscriptionGate.Release();
+        }
+    }
+
+    private StreamSubscription CreateSubscription(string pattern, long handleId, ulong subscriptionId)
+    {
+        return new StreamSubscription(
+            subscriptionId,
+            pattern,
+            cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken));
+    }
+
+    private async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken ct)
+    {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
@@ -161,43 +225,191 @@ public sealed class StreamClient : IStreamClient
 
         if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
         {
-            throw new StreamException("SUBSCRIBE response missing subscription id", "MISSING_SUBSCRIPTION_ID");
+            throw new StreamException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
         }
 
-        var subscriptionId = reader.ReadU64();
-        var channel = new SubscriptionChannel<StreamCommitEvent>();
-        var registration = _registerNotificationHandler(MessageTypes.StreamNotify, payload =>
+        return reader.ReadU64();
+    }
+
+    private async Task UnsubscribeWireAsync(string pattern, CancellationToken ct)
+    {
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(pattern);
+
+        var response = await _request(MessageTypes.StreamUnsubscribe, writer.Build(), ct).ConfigureAwait(false);
+        var reader = new BinaryBufferReader(response);
+        var status = reader.ReadU8();
+        if (status != 0)
         {
-            try
-            {
-                var notifyReader = new BinaryBufferReader(payload);
-                if (notifyReader.ReadU64() != subscriptionId)
-                {
-                    return;
-                }
+            throw new StreamException($"UNSUBSCRIBE failed with status {status}", "UNSUBSCRIBE_FAILED", status);
+        }
+    }
 
-                var route = notifyReader.ReadString();
-                var bodyLength = notifyReader.ReadU32();
-                var body = notifyReader.ReadBytes((int)bodyLength);
-                channel.PostNotification(new StreamCommitEvent(route, TryParseCommitOffset(body)));
-            }
-            catch
-            {
-                channel.Dispose();
-            }
-        });
+    private async ValueTask UnsubscribeAsync(string pattern, long handleId, CancellationToken ct)
+    {
+        SubscriptionRegistration<StreamCommitEvent>? registration = null;
+        bool shouldUnsubscribe = false;
 
+        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await foreach (var evt in channel.GetEnumerableAsync(ct).ConfigureAwait(false))
+            if (!_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
             {
-                yield return evt;
+                return;
+            }
+
+            if (!subscription.Registrations.Remove(handleId, out registration))
+            {
+                return;
+            }
+
+            if (subscription.Registrations.Count == 0)
+            {
+                _subscriptionsByPattern.Remove(pattern);
+                _patternsBySubscriptionId.Remove(subscription.SubscriptionId);
+                shouldUnsubscribe = true;
             }
         }
         finally
         {
-            registration.Dispose();
-            channel.Dispose();
+            _subscriptionGate.Release();
+        }
+
+        registration?.Dispose();
+
+        if (shouldUnsubscribe)
+        {
+            await UnsubscribeWireAsync(pattern, ct).ConfigureAwait(false);
+        }
+    }
+
+    private void EnsureNotificationHandlerInitialized()
+    {
+        if (_notificationHandlerInitialized)
+        {
+            return;
+        }
+
+        if (_registerNotificationHandler is null)
+        {
+            throw new InvalidOperationException("Notification handlers not configured for subscription support");
+        }
+
+        _notificationHandlerInitialized = true;
+        _notificationRegistration = _registerNotificationHandler(MessageTypes.StreamNotify, HandleNotification);
+    }
+
+    private void HandleNotification(byte[] payload)
+    {
+        try
+        {
+            var notifyReader = new BinaryBufferReader(payload);
+            var subscriptionId = notifyReader.ReadU64();
+            var route = notifyReader.ReadString();
+            var bodyLength = notifyReader.ReadU32();
+            var body = notifyReader.ReadBytes((int)bodyLength);
+
+            SubscriptionRegistration<StreamCommitEvent>[] registrations;
+            lock (_gate)
+            {
+                if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
+                    !_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
+                {
+                    return;
+                }
+
+                registrations = subscription.Registrations.Values.ToArray();
+            }
+
+            var notification = new StreamCommitEvent(route, TryParseCommitOffset(body));
+            foreach (var registration in registrations)
+            {
+                registration.Channel.Writer.TryWrite(notification);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private async ValueTask HandleReconnect(CancellationToken cancellationToken)
+    {
+        await RestoreSubscriptionsAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
+    {
+        await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            List<(string Pattern, StreamSubscriptionState Subscription)> snapshot;
+            lock (_gate)
+            {
+                if (_subscriptionsByPattern.Count == 0)
+                {
+                    return;
+                }
+
+                snapshot = new List<(string Pattern, StreamSubscriptionState Subscription)>(_subscriptionsByPattern.Count);
+                foreach (var entry in _subscriptionsByPattern)
+                {
+                    snapshot.Add((entry.Key, entry.Value.Clone()));
+                }
+            }
+
+            var restoredSubscriptions = new Dictionary<string, StreamSubscriptionState>(StringComparer.Ordinal);
+            var restoredPatternsById = new Dictionary<ulong, string>();
+
+            foreach (var entry in snapshot)
+            {
+                var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
+                entry.Subscription.SubscriptionId = subscriptionId;
+                restoredSubscriptions[entry.Pattern] = entry.Subscription;
+                restoredPatternsById[subscriptionId] = entry.Pattern;
+            }
+
+            lock (_gate)
+            {
+                _subscriptionsByPattern.Clear();
+                _patternsBySubscriptionId.Clear();
+
+                foreach (var entry in restoredSubscriptions)
+                {
+                    _subscriptionsByPattern[entry.Key] = entry.Value;
+                }
+
+                foreach (var entry in restoredPatternsById)
+                {
+                    _patternsBySubscriptionId[entry.Key] = entry.Value;
+                }
+            }
+        }
+        finally
+        {
+            _subscriptionGate.Release();
+        }
+    }
+
+    private sealed class StreamSubscriptionState
+    {
+        public StreamSubscriptionState(ulong subscriptionId)
+        {
+            SubscriptionId = subscriptionId;
+        }
+
+        public ulong SubscriptionId { get; set; }
+
+        public Dictionary<long, SubscriptionRegistration<StreamCommitEvent>> Registrations { get; } = new();
+
+        public StreamSubscriptionState Clone()
+        {
+            var clone = new StreamSubscriptionState(SubscriptionId);
+            foreach (var entry in Registrations)
+            {
+                clone.Registrations.Add(entry.Key, entry.Value);
+            }
+
+            return clone;
         }
     }
 

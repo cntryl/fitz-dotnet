@@ -33,12 +33,15 @@ public sealed class NoticeClientTests
     }
 
     [Fact]
-    public async Task should_yield_notice_message_given_notification_when_subscribing()
+    public async Task should_invoke_notice_handler_given_notification_when_subscribing()
     {
         // Arrange
         Action<byte[]>? notifyHandler = null;
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
+        NoticeMessage? received = null;
+        CancellationToken seenCancellationToken = default;
+        var receivedTcs = new TaskCompletionSource<NoticeMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var notice = new NoticeClient(
             (_, _, _) => Task.CompletedTask,
@@ -59,34 +62,39 @@ public sealed class NoticeClientTests
             });
 
         // Act
-        var task = Task.Run(async () =>
+        var subscription = await notice.SubscribeAsync("notice://prod/*", (message, cancellationToken) =>
         {
-            await foreach (var msg in notice.SubscribeAsync("notice://prod/*"))
-            {
-                return msg;
-            }
-
-            return null;
+            received = message;
+            seenCancellationToken = cancellationToken;
+            receivedTcs.TrySetResult(message);
+            return ValueTask.CompletedTask;
         });
 
         await Task.Delay(25);
         Assert.NotNull(notifyHandler);
+        Assert.Equal("notice://prod/*", subscription.Pattern);
         using var notification = new BinaryBufferWriter();
+        notification.WriteU64(subscription.SubscriptionId);
         notification.WriteString("notice://prod/app/events");
         notification.WriteU32(5);
         notification.WriteBytes("hello"u8);
         notifyHandler!(notification.Build());
 
-        var msg = await task;
+        var msg = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         // Assert
         Assert.NotNull(msg);
+        Assert.Same(received, msg);
         Assert.Equal(MessageTypes.NoticeSubscribe, seenMessageType);
         Assert.NotNull(seenPayload);
         Assert.Equal("notice://prod/app/events", msg!.Route);
         Assert.Equal("hello", System.Text.Encoding.UTF8.GetString(msg.Body.Span));
+        Assert.NotEqual(default, seenCancellationToken);
+        Assert.False(seenCancellationToken.IsCancellationRequested);
 
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("notice://prod/*", reader.ReadString());
+
+        await subscription.DisposeAsync();
     }
 }

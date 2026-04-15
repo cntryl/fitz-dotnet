@@ -17,8 +17,9 @@ public interface IQueueClient
         CancellationToken ct = default
     );
 
-    IAsyncEnumerable<QueueAvailabilityEvent> SubscribeAsync(
+    Task<QueueSubscription> SubscribeAsync(
         string pattern,
+        Func<QueueAvailabilityEvent, CancellationToken, ValueTask> handler,
         CancellationToken ct = default
     );
 }
