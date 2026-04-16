@@ -1,6 +1,20 @@
-# fitz-dotnet docs
+# fitz-dotnet Documentation
 
-Internal engineering docs currently available in this repo:
+The .NET SDK follows the canonical Fitz client docs in the server repository under [../../fitz/docs/clients](../../fitz/docs/clients).
 
-- `spec-parity-audit.md`: 2026-03-18 internal audit of `fitz-dotnet` against the shared Fitz client contract, including ranked findings and remediation backlog.
-- `spec-parity-gap-matrix.md`: capability-by-capability matrix mapping the current .NET public surface to Fitz acceptance criteria and cross-language conformance scenarios.
+## Canonical Docs
+
+- [CLIENT_SPEC.md](../../fitz/docs/clients/CLIENT_SPEC.md)
+- [CLIENT_ACCEPTANCE_CRITERIA.md](../../fitz/docs/clients/CLIENT_ACCEPTANCE_CRITERIA.md)
+- [CLIENT_IMPLEMENTATION_GUIDE.md](../../fitz/docs/clients/CLIENT_IMPLEMENTATION_GUIDE.md)
+- [CONNECTION_FLOW.md](../../fitz/docs/clients/CONNECTION_FLOW.md)
+
+## Local Docs
+
+- [../README.md](../README.md)
+- [../CLIENT_SPEC.md](../CLIENT_SPEC.md)
+- [../CLIENT_ACCEPTANCE_CRITERIA.md](../CLIENT_ACCEPTANCE_CRITERIA.md)
+- [spec-parity-audit.md](spec-parity-audit.md)
+- [spec-parity-gap-matrix.md](spec-parity-gap-matrix.md)
+
+Use the canonical docs for protocol behavior and the local docs for .NET-specific parity evidence.

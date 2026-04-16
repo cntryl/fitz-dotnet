@@ -59,6 +59,12 @@ docker compose -f ../fitz-go/compose.yml down --volumes
 
 The conformance run writes JSON results to `artifacts/conformance-results.json` by default.
 
+## Documentation
+
+- [docs/README.md](docs/README.md)
+- [CLIENT_SPEC.md](CLIENT_SPEC.md)
+- [CLIENT_ACCEPTANCE_CRITERIA.md](CLIENT_ACCEPTANCE_CRITERIA.md)
+
 ## Repository Layout
 
 - `src/Core/Core.csproj`: core SDK package and client implementation
