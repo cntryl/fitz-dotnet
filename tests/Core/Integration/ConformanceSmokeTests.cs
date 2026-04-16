@@ -28,6 +28,7 @@ public sealed class ConformanceSmokeTests
             return;
         }
 
+        var runStartedAt = DateTimeOffset.UtcNow;
         var transport = IntegrationFixture.GetConformanceTransport();
         var authMode = IntegrationFixture.GetConformanceAuthMode();
 
@@ -50,7 +51,8 @@ public sealed class ConformanceSmokeTests
             await RunCs015ShutdownDuringActiveWork(transport, authMode),
         };
 
-        var aggregate = ConformanceResultBuilder.BuildAggregate(scenarios);
+        var runFinishedAt = DateTimeOffset.UtcNow;
+        var aggregate = ConformanceResultBuilder.BuildAggregate(runStartedAt, runFinishedAt, scenarios);
         await IntegrationFixture.WriteAggregateAsync(aggregate);
 
         Assert.Equal(15, scenarios.Count);
@@ -733,7 +735,7 @@ public sealed class ConformanceSmokeTests
         }
     }
 
-    private static ScenarioResult Result(string scenarioId, string transport, string authMode, string verdict, long latencyMs, IReadOnlyList<string> evidence, string error = "")
+    private static ScenarioResult Result(string scenarioId, string transport, string authMode, string verdict, long latencyMs, IReadOnlyList<string> evidence, string notes = "")
     {
         return new ScenarioResult(
             scenarioId,
@@ -743,7 +745,7 @@ public sealed class ConformanceSmokeTests
             verdict,
             latencyMs,
             evidence,
-            error
+            notes
         );
     }
 }

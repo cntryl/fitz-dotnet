@@ -168,6 +168,7 @@ public sealed class FitzConnection
         await transport.ConnectAsync(cancellationToken).ConfigureAwait(false);
         _transport = transport;
 
+        State = ConnectionState.Connected;
         StartReceiveLoop();
 
         State = ConnectionState.Authenticating;

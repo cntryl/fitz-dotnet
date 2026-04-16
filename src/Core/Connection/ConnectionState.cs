@@ -4,6 +4,7 @@ public enum ConnectionState
 {
     Disconnected,
     Connecting,
+    Connected,
     Reconnecting,
     Authenticating,
     Authenticated,
