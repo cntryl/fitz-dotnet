@@ -1,4 +1,5 @@
-﻿using Cntryl.Fitz.Domains.Queue;
+﻿using Cntryl.Fitz.Abstractions.Domains.Queue;
+using Cntryl.Fitz.Domains.Queue;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;

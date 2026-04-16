@@ -26,7 +26,7 @@ public sealed class StreamClientTests
         });
 
         // Act
-        var session = await stream.BeginAsync("stream://prod/app/events", 12, "meta"u8.ToArray());
+        var session = await stream.BeginAsync("stream://prod/app/events", "meta"u8.ToArray());
 
         // Assert
         Assert.NotNull(session);
@@ -35,7 +35,6 @@ public sealed class StreamClientTests
 
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("stream://prod/app/events", reader.ReadString());
-        Assert.Equal((ulong)12, reader.ReadU64());
         Assert.Equal((byte)1, reader.ReadU8());
         Assert.Equal((uint)4, reader.ReadU32());
         Assert.Equal("meta", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(4)));
@@ -169,14 +168,23 @@ public sealed class StreamClientTests
         var stream = new StreamClient(
             (messageType, payload, _) =>
             {
-                Assert.Equal(MessageTypes.StreamSubscribe, messageType);
                 var request = new BinaryBufferReader(payload);
-                Assert.Equal("stream://prod/*", request.ReadString());
-
                 using var writer = new BinaryBufferWriter();
-                writer.WriteU8(0);
-                writer.WriteU8(1);
-                writer.WriteU64(55);
+
+                if (messageType == MessageTypes.StreamSubscribe)
+                {
+                    Assert.Equal("stream://prod/*", request.ReadString());
+                    writer.WriteU8(0);
+                    writer.WriteU8(1);
+                    writer.WriteU64(55);
+                }
+                else
+                {
+                    Assert.Equal(MessageTypes.StreamUnsubscribe, messageType);
+                    Assert.Equal("stream://prod/*", request.ReadString());
+                    writer.WriteU8(0);
+                }
+
                 return Task.FromResult(writer.Build());
             },
             (messageType, handler) =>
@@ -249,7 +257,7 @@ public sealed class StreamClientTests
         var session = await stream.BeginAsync("stream://prod/app/events");
 
         // Act
-        var offset = await session.AppendAsync("entry"u8.ToArray(), "meta"u8.ToArray());
+        var offset = await session.AppendAsync(12, "entry"u8.ToArray(), "meta"u8.ToArray());
 
         // Assert
         Assert.Equal((ulong)1234, offset);
@@ -258,6 +266,7 @@ public sealed class StreamClientTests
 
         var reader = new BinaryBufferReader(calls[1].Payload);
         Assert.Equal((ulong)99, reader.ReadU64());
+        Assert.Equal((ulong)12, reader.ReadU64());
         Assert.Equal((uint)5, reader.ReadU32());
         Assert.Equal("entry", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(5)));
         Assert.Equal((byte)1, reader.ReadU8());

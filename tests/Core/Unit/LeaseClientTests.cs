@@ -1,4 +1,5 @@
-﻿using Cntryl.Fitz.Domains.Lease;
+﻿using Cntryl.Fitz.Abstractions.Domains.Lease;
+using Cntryl.Fitz.Domains.Lease;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;

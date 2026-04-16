@@ -526,10 +526,10 @@ public sealed class ConformanceSmokeTests
             await client.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("stream");
-            var session = await client.Stream().BeginAsync(route, 0);
-            await session.AppendAsync(new byte[] { 10 });
-            await session.AppendAsync(new byte[] { 20 });
-            await session.AppendAsync(new byte[] { 30 });
+            var session = await client.Stream().BeginAsync(route);
+            await session.AppendAsync(0, new byte[] { 10 });
+            await session.AppendAsync(1, new byte[] { 20 });
+            await session.AppendAsync(2, new byte[] { 30 });
             await session.CommitAsync();
             evidence.Add("stream session appended 3 records");
 
@@ -575,9 +575,9 @@ public sealed class ConformanceSmokeTests
             await client.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("stream");
-            var session = await client.Stream().BeginAsync(route, 0);
-            await session.AppendAsync("first"u8.ToArray());
-            await session.AppendAsync("last"u8.ToArray());
+            var session = await client.Stream().BeginAsync(route);
+            await session.AppendAsync(0, "first"u8.ToArray());
+            await session.AppendAsync(1, "last"u8.ToArray());
             await session.CommitAsync();
             evidence.Add("stream session committed");
 
@@ -614,15 +614,16 @@ public sealed class ConformanceSmokeTests
             await client.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("stream");
-            var session = await client.Stream().BeginAsync(route, 0);
-            await session.AppendAsync("record-1"u8.ToArray());
+            var session = await client.Stream().BeginAsync(route);
+            await session.AppendAsync(0, "record-1"u8.ToArray());
             await session.CommitAsync();
             evidence.Add("written first record at offset 0");
 
             Exception? caught = null;
             try
             {
-                await client.Stream().BeginAsync(route, 0);
+                var wrongSession = await client.Stream().BeginAsync(route);
+                await wrongSession.AppendAsync(0, "record-2"u8.ToArray());
             }
             catch (Exception ex)
             {
@@ -631,10 +632,10 @@ public sealed class ConformanceSmokeTests
 
             if (caught is null)
             {
-                return Result("CS-013", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "expected begin with wrong offset to fail");
+                return Result("CS-013", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "expected append with wrong offset to fail");
             }
 
-            evidence.Add($"begin with wrong offset raised {caught.GetType().Name}");
+            evidence.Add($"append with wrong offset raised {caught.GetType().Name}");
             return Result("CS-013", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence, caught.Message);
         }
         catch (Exception ex)

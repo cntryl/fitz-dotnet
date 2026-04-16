@@ -15,10 +15,11 @@ public sealed class StreamSession : IStreamSession
         _sessionId = sessionId;
     }
 
-    public async Task<ulong?> AppendAsync(ReadOnlyMemory<byte> body, ReadOnlyMemory<byte>? metadata = null, CancellationToken ct = default)
+    public async Task<ulong?> AppendAsync(ulong expectedOffset, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte>? metadata = null, CancellationToken ct = default)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_sessionId);
+        writer.WriteU64(expectedOffset);
         writer.WriteU32((uint)body.Length);
         writer.WriteBytes(body.Span);
         if (metadata.HasValue && metadata.Value.Length > 0)

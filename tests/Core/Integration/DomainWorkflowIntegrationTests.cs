@@ -39,9 +39,9 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
 
-        var session = await client.Stream().BeginAsync(route, expectedOffset: 0);
-        await session.AppendAsync("one"u8.ToArray());
-        await session.AppendAsync("two"u8.ToArray());
+        var session = await client.Stream().BeginAsync(route);
+        await session.AppendAsync(0, "one"u8.ToArray());
+        await session.AppendAsync(1, "two"u8.ToArray());
         await session.CommitAsync();
 
         var records = new List<string>();

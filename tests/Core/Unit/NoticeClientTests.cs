@@ -1,4 +1,5 @@
-﻿using Cntryl.Fitz.Domains.Notice;
+﻿using Cntryl.Fitz.Abstractions.Domains.Notice;
+using Cntryl.Fitz.Domains.Notice;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -52,6 +53,8 @@ public sealed class NoticeClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+                writer.WriteU8(1);
+                writer.WriteU64(55);
                 return Task.FromResult(writer.Build());
             },
             (messageType, handler) =>

@@ -36,9 +36,6 @@ public abstract class SubscriptionHandle : IAsyncDisposable
             return;
         }
 
-        try
-        {
-            await _unsubscribe(cancellationToken).ConfigureAwait(false);
-        }
+        await _unsubscribe(cancellationToken).ConfigureAwait(false);
     }
 }

@@ -36,11 +36,10 @@ public sealed class StreamClient : IStreamClient
         _registerNotificationHandler = registerNotificationHandler;
     }
 
-    public async Task<IStreamSession> BeginAsync(string route, ulong expectedOffset = 0, ReadOnlyMemory<byte>? ingestMetadata = null, CancellationToken ct = default)
+    public async Task<IStreamSession> BeginAsync(string route, ReadOnlyMemory<byte>? ingestMetadata = null, CancellationToken ct = default)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        writer.WriteU64(expectedOffset);
         if (ingestMetadata.HasValue && ingestMetadata.Value.Length > 0)
         {
             writer.WriteU8(1);
