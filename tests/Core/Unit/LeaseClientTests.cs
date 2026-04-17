@@ -1,5 +1,6 @@
 ﻿using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Domains.Lease;
+using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -174,7 +175,7 @@ public sealed class LeaseClientTests
             });
 
         // Act
-        var subscription = await leaseClient.SubscribeAsync("lease://prod/*", (evt, cancellationToken) =>
+        var subscription = await leaseClient.SubscribeAsync("lease://prod/app/lock", (evt, cancellationToken) =>
         {
             received = evt;
             seenCancellationToken = cancellationToken;
@@ -201,8 +202,24 @@ public sealed class LeaseClientTests
         Assert.False(seenCancellationToken.IsCancellationRequested);
 
         var reader = new BinaryBufferReader(seenPayload!);
-        Assert.Equal("lease://prod/*", reader.ReadString());
+        Assert.Equal("lease://prod/app/lock", reader.ReadString());
 
         await subscription.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task should_throw_invalid_route_given_wildcard_when_acquiring_lease()
+    {
+        // Arrange
+        var leaseClient = new LeaseClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+
+        // Act
+        var ex = await Assert.ThrowsAsync<LeaseException>(async () =>
+        {
+            await leaseClient.AcquireAsync("lease://prod/app/*", 30);
+        });
+
+        // Assert
+        Assert.Equal("INVALID_ROUTE", ex.Code);
     }
 }

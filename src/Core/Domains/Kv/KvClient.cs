@@ -1,5 +1,6 @@
 ﻿using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Connection;
+using Cntryl.Fitz.Core;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
@@ -25,6 +26,11 @@ public sealed class KvClient : IKvClient
         KvDurability durability = KvDurability.Async,
         CancellationToken cancellationToken = default)
     {
+        if (!RouteValidation.IsFixedRoute(route, "kv", 3))
+        {
+            throw new KvException($"route '{route}' must be kv://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+        }
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteU8((byte)mode);

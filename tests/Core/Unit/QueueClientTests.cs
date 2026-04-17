@@ -1,5 +1,6 @@
 ﻿using Cntryl.Fitz.Abstractions.Domains.Queue;
 using Cntryl.Fitz.Domains.Queue;
+using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -110,7 +111,7 @@ public sealed class QueueClientTests
             });
 
         // Act
-        var subscription = await queue.SubscribeAsync("queue://prod/*", (evt, cancellationToken) =>
+        var subscription = await queue.SubscribeAsync("queue://prod/app/*", (evt, cancellationToken) =>
         {
             received = evt;
             seenCancellationToken = cancellationToken;
@@ -139,7 +140,7 @@ public sealed class QueueClientTests
         Assert.False(seenCancellationToken.IsCancellationRequested);
 
         var reader = new BinaryBufferReader(seenPayload!);
-        Assert.Equal("queue://prod/*", reader.ReadString());
+        Assert.Equal("queue://prod/app/*", reader.ReadString());
 
         await subscription.DisposeAsync();
     }
@@ -196,5 +197,21 @@ public sealed class QueueClientTests
         Assert.Equal("queue://prod/app/tasks", completeWithTokenReader.ReadString());
         Assert.Equal((ulong)555, completeWithTokenReader.ReadU64());
         Assert.Equal((ulong)999, completeWithTokenReader.ReadU64());
+    }
+
+    [Fact]
+    public async Task should_throw_invalid_route_given_wildcard_when_enqueueing()
+    {
+        // Arrange
+        var queue = new QueueClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+
+        // Act
+        var ex = await Assert.ThrowsAsync<QueueException>(async () =>
+        {
+            await queue.EnqueueAsync("queue://prod/app/*", "job-1"u8.ToArray());
+        });
+
+        // Assert
+        Assert.Equal("INVALID_ROUTE", ex.Code);
     }
 }

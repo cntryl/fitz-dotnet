@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Notice;
 using Cntryl.Fitz.Connection;
+using Cntryl.Fitz.Core;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
@@ -43,6 +44,11 @@ public sealed class NoticeClient : INoticeClient
 
     public Task PublishAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default)
     {
+        if (!RouteValidation.IsFixedRoute(route, "notice", 3))
+        {
+            throw new NoticeException($"route '{route}' must be notice://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+        }
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteU32((uint)body.Length);
@@ -53,6 +59,11 @@ public sealed class NoticeClient : INoticeClient
     public async Task<NoticeSubscription> SubscribeAsync(string pattern, Func<NoticeMessage, CancellationToken, ValueTask> handler, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
+        if (!RouteValidation.IsSelectorRoute(pattern, "notice", 3, allowRealmWildcard: true))
+        {
+            throw new NoticeException($"route '{pattern}' must be notice://{{realm}}/{{area}}/{{resource}}, notice://{{realm}}/{{area}}/*, or notice://{{realm}}/*/*", "INVALID_ROUTE");
+        }
+
         EnsureNotificationHandlerInitialized();
 
         var channel = Channel.CreateUnbounded<NoticeMessage>(new UnboundedChannelOptions

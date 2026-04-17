@@ -1,5 +1,6 @@
 ﻿using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Domains.Kv;
+using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -202,5 +203,21 @@ public sealed class KvClientTests
         Assert.Equal(2, pairs.Count);
         Assert.Equal("key1", System.Text.Encoding.UTF8.GetString(pairs[0].Key.Span));
         Assert.Equal("value1", System.Text.Encoding.UTF8.GetString(pairs[0].Value.Span));
+    }
+
+    [Fact]
+    public async Task should_throw_invalid_route_given_wildcard_when_beginning_transaction()
+    {
+        // Arrange
+        var kv = new KvClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+
+        // Act
+        var ex = await Assert.ThrowsAsync<KvException>(async () =>
+        {
+            await kv.BeginAsync("kv://prod/*/*");
+        });
+
+        // Assert
+        Assert.Equal("INVALID_ROUTE", ex.Code);
     }
 }

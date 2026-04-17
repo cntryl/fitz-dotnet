@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Connection;
+using Cntryl.Fitz.Core;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
@@ -39,6 +40,11 @@ public sealed class LeaseClient : ILeaseClient
 
     public async Task<ILease> AcquireAsync(string route, ulong ttlSecs, CancellationToken ct = default)
     {
+        if (!RouteValidation.IsFixedRoute(route, "lease", 3))
+        {
+            throw new LeaseException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+        }
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteString(string.Empty);
@@ -72,6 +78,11 @@ public sealed class LeaseClient : ILeaseClient
 
     public async Task<LeaseInfo> QueryAsync(string route, CancellationToken ct = default)
     {
+        if (!RouteValidation.IsFixedRoute(route, "lease", 3))
+        {
+            throw new LeaseException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+        }
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         var response = await _request(MessageTypes.LeaseQuery, writer.Build(), ct).ConfigureAwait(false);
@@ -99,6 +110,11 @@ public sealed class LeaseClient : ILeaseClient
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
+        if (!RouteValidation.IsFixedRoute(pattern, "lease", 3))
+        {
+            throw new LeaseException($"route '{pattern}' must be lease://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+        }
+
         if (_registerNotificationHandler == null)
         {
             throw new InvalidOperationException("Notification handlers not configured for subscription support");

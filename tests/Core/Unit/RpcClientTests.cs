@@ -130,7 +130,7 @@ public sealed class RpcClientTests
             });
 
         using var registration = await rpc.RegisterWorkerAsync(
-            "rpc://prod/app/*",
+            "rpc://prod/app/echo",
             (req, _, _) =>
             {
                 requestTcs.TrySetResult(req);
@@ -157,7 +157,7 @@ public sealed class RpcClientTests
         Assert.Equal("ping", System.Text.Encoding.UTF8.GetString(request.Body.Span));
 
         var reader = new BinaryBufferReader(seenPayload!);
-        Assert.Equal("rpc://prod/app/*", reader.ReadString());
+        Assert.Equal("rpc://prod/app/echo", reader.ReadString());
     }
 
     [Fact]
@@ -242,5 +242,30 @@ public sealed class RpcClientTests
 
         // Assert
         Assert.Equal("Connection closed or reset", ex.Message);
+    }
+
+    [Fact]
+    public async Task should_throw_invalid_route_given_wildcard_when_calling_rpc()
+    {
+        // Arrange
+        var rpc = new RpcClient(
+            (_, _, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                return Task.FromResult(writer.Build());
+            },
+            registerNotificationHandler: (_, _) => new TestRegistration());
+
+        // Act
+        var ex = await Assert.ThrowsAsync<RpcException>(async () =>
+        {
+            await foreach (var _ in rpc.CallAsync("rpc://prod/app/*", "ping"u8.ToArray()))
+            {
+            }
+        });
+
+        // Assert
+        Assert.Equal("INVALID_ROUTE", ex.Code);
     }
 }

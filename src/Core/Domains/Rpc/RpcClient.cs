@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using Cntryl.Fitz.Abstractions.Domains.Rpc;
 using Cntryl.Fitz.Connection;
+using Cntryl.Fitz.Core;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
@@ -53,6 +54,11 @@ public sealed class RpcClient : IRpcClient
         ReadOnlyMemory<byte> body,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
+        if (!RouteValidation.IsConcreteRoute(route, "rpc"))
+        {
+            throw new RpcException($"route '{route}' must be a concrete rpc route", "INVALID_ROUTE");
+        }
+
         if (_registerNotificationHandler == null)
         {
             throw new InvalidOperationException("Notification handlers not configured for RPC streaming");
@@ -163,6 +169,11 @@ public sealed class RpcClient : IRpcClient
         Func<RpcRequest, IRpcResponseWriter, CancellationToken, Task> handler,
         CancellationToken ct = default)
     {
+        if (!RouteValidation.IsConcreteRoute(pattern, "rpc"))
+        {
+            throw new RpcException($"route '{pattern}' must be a concrete rpc route", "INVALID_ROUTE");
+        }
+
         if (_registerNotificationHandler == null)
         {
             throw new InvalidOperationException("Notification handlers not configured for worker registration");

@@ -1,5 +1,6 @@
 ﻿using Cntryl.Fitz.Abstractions.Domains.Notice;
 using Cntryl.Fitz.Domains.Notice;
+using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -65,7 +66,7 @@ public sealed class NoticeClientTests
             });
 
         // Act
-        var subscription = await notice.SubscribeAsync("notice://prod/*", (message, cancellationToken) =>
+        var subscription = await notice.SubscribeAsync("notice://prod/app/*", (message, cancellationToken) =>
         {
             received = message;
             seenCancellationToken = cancellationToken;
@@ -75,7 +76,7 @@ public sealed class NoticeClientTests
 
         await Task.Delay(25);
         Assert.NotNull(notifyHandler);
-        Assert.Equal("notice://prod/*", subscription.Pattern);
+        Assert.Equal("notice://prod/app/*", subscription.Pattern);
         using var notification = new BinaryBufferWriter();
         notification.WriteU64(subscription.SubscriptionId);
         notification.WriteString("notice://prod/app/events");
@@ -96,8 +97,24 @@ public sealed class NoticeClientTests
         Assert.False(seenCancellationToken.IsCancellationRequested);
 
         var reader = new BinaryBufferReader(seenPayload!);
-        Assert.Equal("notice://prod/*", reader.ReadString());
+        Assert.Equal("notice://prod/app/*", reader.ReadString());
 
         await subscription.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task should_throw_invalid_route_given_wildcard_when_publishing_notice()
+    {
+        // Arrange
+        var notice = new NoticeClient((_, _, _) => Task.CompletedTask);
+
+        // Act
+        var ex = await Assert.ThrowsAsync<NoticeException>(async () =>
+        {
+            await notice.PublishAsync("notice://prod/app/*", "hello"u8.ToArray());
+        });
+
+        // Assert
+        Assert.Equal("INVALID_ROUTE", ex.Code);
     }
 }

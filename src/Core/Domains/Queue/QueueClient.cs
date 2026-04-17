@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Queue;
 using Cntryl.Fitz.Connection;
+using Cntryl.Fitz.Core;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
@@ -43,6 +44,11 @@ public sealed class QueueClient : IQueueClient
         int? delayMs = null,
         CancellationToken ct = default)
     {
+        if (!RouteValidation.IsFixedRoute(route, "queue", 3))
+        {
+            throw new QueueException($"route '{route}' must be queue://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+        }
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteU32((uint)body.Length);
@@ -73,6 +79,11 @@ public sealed class QueueClient : IQueueClient
         int? waitSeconds = null,
         CancellationToken ct = default)
     {
+        if (!RouteValidation.IsSelectorRoute(route, "queue", 3, allowRealmWildcard: false))
+        {
+            throw new QueueException($"route '{route}' must be queue://{{realm}}/{{area}}/{{resource}} or queue://{{realm}}/{{area}}/*", "INVALID_ROUTE");
+        }
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteU64(leaseSeconds);
@@ -126,6 +137,11 @@ public sealed class QueueClient : IQueueClient
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
+        if (!RouteValidation.IsSelectorRoute(pattern, "queue", 3, allowRealmWildcard: true))
+        {
+            throw new QueueException($"route '{pattern}' must be queue://{{realm}}/{{area}}/{{resource}}, queue://{{realm}}/{{area}}/*, or queue://{{realm}}/*/*", "INVALID_ROUTE");
+        }
+
         if (_registerNotificationHandler == null)
         {
             throw new InvalidOperationException("Notification handlers not configured for subscription support");
