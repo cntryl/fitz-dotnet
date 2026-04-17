@@ -156,19 +156,30 @@ public sealed class StreamClient : IStreamClient
         await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
+            StreamSubscription? existingHandle = null;
+            lock (_gate)
             {
-                existingSubscription.Registrations[handleId] = registration;
-                var existingHandle = CreateSubscription(pattern, handleId, existingSubscription.SubscriptionId);
+                if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
+                {
+                    existingSubscription.Registrations[handleId] = registration;
+                    existingHandle = CreateSubscription(pattern, handleId, existingSubscription.SubscriptionId);
+                }
+            }
+
+            if (existingHandle is not null)
+            {
                 SubscriptionPump.Start(registration, handler);
                 return existingHandle;
             }
 
             var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
             var subscription = new StreamSubscriptionState(subscriptionId);
-            subscription.Registrations[handleId] = registration;
-            _subscriptionsByPattern[pattern] = subscription;
-            _patternsBySubscriptionId[subscriptionId] = pattern;
+            lock (_gate)
+            {
+                subscription.Registrations[handleId] = registration;
+                _subscriptionsByPattern[pattern] = subscription;
+                _patternsBySubscriptionId[subscriptionId] = pattern;
+            }
 
             var handle = CreateSubscription(pattern, handleId, subscriptionId);
             SubscriptionPump.Start(registration, handler);
@@ -219,21 +230,24 @@ public sealed class StreamClient : IStreamClient
         await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (!_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
+            lock (_gate)
             {
-                return;
-            }
+                if (!_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
+                {
+                    return;
+                }
 
-            if (!subscription.Registrations.Remove(handleId, out registration))
-            {
-                return;
-            }
+                if (!subscription.Registrations.Remove(handleId, out registration))
+                {
+                    return;
+                }
 
-            if (subscription.Registrations.Count == 0)
-            {
-                _subscriptionsByPattern.Remove(pattern);
-                _patternsBySubscriptionId.Remove(subscription.SubscriptionId);
-                shouldUnsubscribe = true;
+                if (subscription.Registrations.Count == 0)
+                {
+                    _subscriptionsByPattern.Remove(pattern);
+                    _patternsBySubscriptionId.Remove(subscription.SubscriptionId);
+                    shouldUnsubscribe = true;
+                }
             }
         }
         finally
@@ -274,6 +288,7 @@ public sealed class StreamClient : IStreamClient
             var route = notifyReader.ReadString();
             var bodyLength = notifyReader.ReadU32();
             var body = notifyReader.ReadSpan((int)bodyLength);
+            var notification = new StreamCommitEvent(route, StreamWireHelpers.TryParseCommitOffset(body));
 
             lock (_gate)
             {
@@ -283,7 +298,6 @@ public sealed class StreamClient : IStreamClient
                     return;
                 }
 
-                var notification = new StreamCommitEvent(route, StreamWireHelpers.TryParseCommitOffset(body));
                 foreach (var registration in subscription.Registrations.Values)
                 {
                     registration.Channel.Writer.TryWrite(notification);
@@ -437,7 +451,7 @@ public sealed class StreamClient : IStreamClient
     private static void ThrowInvalidRouteShape(string route, bool allowWildcardSelectors)
     {
         var expected = allowWildcardSelectors
-            ? "stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*"
+            ? "one of stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*"
             : "stream://{realm}/{area}/{resource}";
         throw new StreamException($"stream route '{route}' must be {expected}", "INVALID_ROUTE");
     }
@@ -500,13 +514,19 @@ public sealed class StreamClient : IStreamClient
             }
 
             var offset = reader.ReadU64();
-            var bodyLength = checked((int)reader.ReadU32());
-            if (reader.RemainingBytes < bodyLength)
+            var bodyLength = reader.ReadU32();
+            if (bodyLength > int.MaxValue)
+            {
+                throw new StreamException("READ response record body length too large", "READ_INVALID_RESPONSE");
+            }
+
+            var bodyLengthInt = (int)bodyLength;
+            if (reader.RemainingBytes < bodyLengthInt)
             {
                 throw new StreamException("READ response truncated record body", "READ_INVALID_RESPONSE");
             }
 
-            records[index] = new StreamRecord(offset, reader.ReadBytes(bodyLength));
+            records[index] = new StreamRecord(offset, reader.ReadBytes(bodyLengthInt));
         }
 
         if (!reader.IsEof)

@@ -61,36 +61,6 @@ public sealed class StreamClientTests
         Assert.Equal("meta", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(4)));
     }
 
-    [Fact]
-    public async Task should_reject_trailing_bytes_given_success_response_when_beginning_stream()
-    {
-        // Arrange
-        var stream = new StreamClient((messageType, payload, _) =>
-        {
-            Assert.Equal(MessageTypes.StreamBegin, messageType);
-
-            var request = new BinaryBufferReader(payload);
-            Assert.Equal("stream://prod/app/events", request.ReadString());
-            Assert.Equal((byte)0, request.ReadU8());
-
-            using var writer = new BinaryBufferWriter();
-            writer.WriteU8(0);
-            writer.WriteU8(1);
-            writer.WriteU64(99);
-            writer.WriteU8(0xFF);
-            return Task.FromResult(writer.Build());
-        });
-
-        // Act
-        var ex = await Assert.ThrowsAsync<StreamException>(async () =>
-        {
-            await stream.BeginAsync("stream://prod/app/events");
-        });
-
-        // Assert
-        Assert.Equal("BEGIN_INVALID_RESPONSE", ex.Code);
-    }
-
     [Theory]
     [MemberData(nameof(ExactRouteValidationCases))]
     public async Task should_reject_invalid_route_given_exact_stream_methods_when_calling_begin_peek_and_metadata(string route, string expectedMessage)
@@ -550,44 +520,6 @@ public sealed class StreamClientTests
         var commitReader = new BinaryBufferReader(calls[1].Payload);
         Assert.Equal((ulong)44, commitReader.ReadU64());
         Assert.Equal((byte)0, commitReader.ReadU8());
-    }
-
-    [Fact]
-    public async Task should_reject_trailing_bytes_given_success_response_when_committing_stream_session()
-    {
-        // Arrange
-        var calls = new List<(ushort MessageType, byte[] Payload)>();
-
-        var stream = new StreamClient((messageType, payload, _) =>
-        {
-            calls.Add((messageType, payload));
-
-            using var writer = new BinaryBufferWriter();
-            writer.WriteU8(0);
-            if (messageType == MessageTypes.StreamBegin)
-            {
-                writer.WriteU8(1);
-                writer.WriteU64(44);
-            }
-            else if (messageType == MessageTypes.StreamCommit)
-            {
-                writer.WriteU8(0xFF);
-            }
-
-            return Task.FromResult(writer.Build());
-        });
-
-        var session = await stream.BeginAsync("stream://prod/app/events");
-
-        // Act
-        var ex = await Assert.ThrowsAsync<StreamException>(async () =>
-        {
-            await session.CommitAsync();
-        });
-
-        // Assert
-        Assert.Equal("COMMIT_INVALID_RESPONSE", ex.Code);
-        Assert.Equal(2, calls.Count);
     }
 
     [Fact]

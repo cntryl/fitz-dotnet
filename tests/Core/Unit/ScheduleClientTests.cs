@@ -77,7 +77,7 @@ public sealed class ScheduleClientTests
         // Act
         var ex = await Assert.ThrowsAsync<ScheduleException>(async () =>
         {
-            await schedule.CreateAsync("queue://prod/app/jobs/run", "*/5 * * * *");
+            await schedule.CreateAsync("queue://prod/app/jobs/run", "*/5 * * * *", ReadOnlyMemory<byte>.Empty);
         });
 
         // Assert
