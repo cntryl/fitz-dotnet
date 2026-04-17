@@ -1,11 +1,32 @@
 ﻿using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Domains.Stream;
+using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class StreamClientTests
 {
+    public static TheoryData<string, string> ExactRouteValidationCases => new()
+    {
+        { "queue://prod/app/events", "must start with stream://" },
+        { "stream://prod//events", "segments must be non-empty" },
+        { "stream://prod/app/*", "must be stream://{realm}/{area}/{resource}" },
+        { "stream://prod/*/*", "must be stream://{realm}/{area}/{resource}" },
+        { "stream://prod/app/events/extra", "must be stream://{realm}/{area}/{resource}" },
+    };
+
+    public static TheoryData<string, string> SelectorRouteValidationCases => new()
+    {
+        { "queue://prod/app/events", "must start with stream://" },
+        { "stream://prod//events", "segments must be non-empty" },
+        { "stream://prod/*", "must be one of stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*" },
+        { "stream://prod/*/events", "must be one of stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*" },
+        { "stream://*/app/events", "must be one of stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*" },
+        { "stream://prod/app/**", "must be one of stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*" },
+        { "stream://prod/app/events/extra", "must be one of stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*" },
+    };
+
     [Fact]
     public async Task should_return_stream_session_given_success_response_when_beginning_stream()
     {
@@ -38,6 +59,140 @@ public sealed class StreamClientTests
         Assert.Equal((byte)1, reader.ReadU8());
         Assert.Equal((uint)4, reader.ReadU32());
         Assert.Equal("meta", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(4)));
+    }
+
+    [Fact]
+    public async Task should_reject_trailing_bytes_given_success_response_when_beginning_stream()
+    {
+        // Arrange
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            Assert.Equal(MessageTypes.StreamBegin, messageType);
+
+            var request = new BinaryBufferReader(payload);
+            Assert.Equal("stream://prod/app/events", request.ReadString());
+            Assert.Equal((byte)0, request.ReadU8());
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(1);
+            writer.WriteU64(99);
+            writer.WriteU8(0xFF);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var ex = await Assert.ThrowsAsync<StreamException>(async () =>
+        {
+            await stream.BeginAsync("stream://prod/app/events");
+        });
+
+        // Assert
+        Assert.Equal("BEGIN_INVALID_RESPONSE", ex.Code);
+    }
+
+    [Theory]
+    [MemberData(nameof(ExactRouteValidationCases))]
+    public async Task should_reject_invalid_route_given_exact_stream_methods_when_calling_begin_peek_and_metadata(string route, string expectedMessage)
+    {
+        // Arrange
+        var requestCount = 0;
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            requestCount++;
+            return Task.FromResult(Array.Empty<byte>());
+        });
+
+        // Act
+        var beginEx = await Assert.ThrowsAsync<StreamException>(async () =>
+        {
+            await stream.BeginAsync(route);
+        });
+
+        var peekEx = await Assert.ThrowsAsync<StreamException>(async () =>
+        {
+            await stream.PeekAsync(route);
+        });
+
+        var metadataEx = await Assert.ThrowsAsync<StreamException>(async () =>
+        {
+            await stream.MetadataAsync(route);
+        });
+
+        // Assert
+        Assert.Equal("INVALID_ROUTE", beginEx.Code);
+        Assert.Equal("INVALID_ROUTE", peekEx.Code);
+        Assert.Equal("INVALID_ROUTE", metadataEx.Code);
+        Assert.Contains(expectedMessage, beginEx.Message, StringComparison.Ordinal);
+        Assert.Contains(expectedMessage, peekEx.Message, StringComparison.Ordinal);
+        Assert.Contains(expectedMessage, metadataEx.Message, StringComparison.Ordinal);
+        Assert.Equal(0, requestCount);
+    }
+
+    [Theory]
+    [MemberData(nameof(SelectorRouteValidationCases))]
+    public async Task should_reject_invalid_route_given_stream_read_and_subscribe_when_using_selector_methods(string route, string expectedMessage)
+    {
+        // Arrange
+        var requestCount = 0;
+        var stream = new StreamClient(
+            (messageType, payload, _) =>
+            {
+                requestCount++;
+                return Task.FromResult(Array.Empty<byte>());
+            },
+            (_, _) => new TestRegistration());
+
+        // Act
+        var readEx = await Assert.ThrowsAsync<StreamException>(async () =>
+        {
+            await foreach (var _ in stream.ReadAsync(route, 0, 1))
+            {
+            }
+        });
+
+        var subscribeEx = await Assert.ThrowsAsync<StreamException>(async () =>
+        {
+            await stream.SubscribeAsync(route, (evt, cancellationToken) => ValueTask.CompletedTask);
+        });
+
+        // Assert
+        Assert.Equal("INVALID_ROUTE", readEx.Code);
+        Assert.Equal("INVALID_ROUTE", subscribeEx.Code);
+        Assert.Contains(expectedMessage, readEx.Message, StringComparison.Ordinal);
+        Assert.Contains(expectedMessage, subscribeEx.Message, StringComparison.Ordinal);
+        Assert.Equal(0, requestCount);
+    }
+
+    [Fact]
+    public async Task should_accept_wildcard_selector_given_stream_read_when_reading_stream()
+    {
+        // Arrange
+        var requestCount = 0;
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            requestCount++;
+            Assert.Equal(MessageTypes.StreamRead, messageType);
+
+            var request = new BinaryBufferReader(payload);
+            Assert.Equal("stream://prod/app/*", request.ReadString());
+            Assert.Equal((ulong)4, request.ReadU64());
+            Assert.Equal((ulong)2, request.ReadU64());
+            Assert.Equal((byte)0, request.ReadU8());
+
+            return Task.FromResult(new byte[] { 0 });
+        });
+
+        // Act
+        var records = new List<StreamRecord>();
+        await foreach (var record in stream.ReadAsync("stream://prod/app/*", 4, 2))
+        {
+            records.Add(record);
+        }
+
+        // Assert
+        Assert.Empty(records);
+        Assert.Equal(1, requestCount);
     }
 
     [Fact]
@@ -91,6 +246,93 @@ public sealed class StreamClientTests
                 Assert.Equal((ulong)5, record.Offset);
                 Assert.Equal("two", System.Text.Encoding.UTF8.GetString(record.Body));
             });
+    }
+
+    [Fact]
+    public async Task should_reject_flat_payload_given_wrapped_payload_when_reading_stream()
+    {
+        // Arrange
+        var requestCount = 0;
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            requestCount++;
+            Assert.Equal(MessageTypes.StreamRead, messageType);
+
+            var request = new BinaryBufferReader(payload);
+            Assert.Equal("stream://prod/app/events", request.ReadString());
+            Assert.Equal((ulong)4, request.ReadU64());
+            Assert.Equal((ulong)2, request.ReadU64());
+            Assert.Equal((byte)0, request.ReadU8());
+
+            using var flat = new BinaryBufferWriter();
+            flat.WriteU64(4);
+            flat.WriteU32(3);
+            flat.WriteBytes("one"u8);
+
+            var flatPayload = flat.Build();
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(0);
+            writer.WriteU32((uint)flatPayload.Length);
+            writer.WriteBytes(flatPayload);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var act = async () =>
+        {
+            await foreach (var _ in stream.ReadAsync("stream://prod/app/events", 4, 2))
+            {
+            }
+        };
+
+        // Assert
+        var ex = await Assert.ThrowsAsync<StreamException>(act);
+        Assert.Equal("READ_INVALID_RESPONSE", ex.Code);
+        Assert.Equal(1, requestCount);
+    }
+
+    [Fact]
+    public async Task should_reject_trailing_bytes_given_count_prefixed_payload_when_reading_stream()
+    {
+        // Arrange
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            Assert.Equal(MessageTypes.StreamRead, messageType);
+
+            var request = new BinaryBufferReader(payload);
+            Assert.Equal("stream://prod/app/events", request.ReadString());
+            Assert.Equal((ulong)4, request.ReadU64());
+            Assert.Equal((ulong)2, request.ReadU64());
+            Assert.Equal((byte)0, request.ReadU8());
+
+            using var data = new BinaryBufferWriter();
+            data.WriteU32(1);
+            data.WriteU64(4);
+            data.WriteU32(3);
+            data.WriteBytes("one"u8);
+            data.WriteU8(0xFF);
+
+            var dataPayload = data.Build();
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(0);
+            writer.WriteU32((uint)dataPayload.Length);
+            writer.WriteBytes(dataPayload);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var act = async () =>
+        {
+            await foreach (var _ in stream.ReadAsync("stream://prod/app/events", 4, 2))
+            {
+            }
+        };
+
+        // Assert
+        var ex = await Assert.ThrowsAsync<StreamException>(act);
+        Assert.Equal("READ_INVALID_RESPONSE", ex.Code);
     }
 
     [Fact]
@@ -173,7 +415,7 @@ public sealed class StreamClientTests
 
                 if (messageType == MessageTypes.StreamSubscribe)
                 {
-                    Assert.Equal("stream://prod/*", request.ReadString());
+                    Assert.Equal("stream://prod/*/*", request.ReadString());
                     writer.WriteU8(0);
                     writer.WriteU8(1);
                     writer.WriteU64(55);
@@ -181,7 +423,7 @@ public sealed class StreamClientTests
                 else
                 {
                     Assert.Equal(MessageTypes.StreamUnsubscribe, messageType);
-                    Assert.Equal("stream://prod/*", request.ReadString());
+                    Assert.Equal("stream://prod/*/*", request.ReadString());
                     writer.WriteU8(0);
                 }
 
@@ -195,7 +437,7 @@ public sealed class StreamClientTests
             });
 
         // Act
-        var subscription = await stream.SubscribeAsync("stream://prod/*", (evt, cancellationToken) =>
+        var subscription = await stream.SubscribeAsync("stream://prod/*/*", (evt, cancellationToken) =>
         {
             received = evt;
             seenCancellationToken = cancellationToken;
@@ -308,6 +550,44 @@ public sealed class StreamClientTests
         var commitReader = new BinaryBufferReader(calls[1].Payload);
         Assert.Equal((ulong)44, commitReader.ReadU64());
         Assert.Equal((byte)0, commitReader.ReadU8());
+    }
+
+    [Fact]
+    public async Task should_reject_trailing_bytes_given_success_response_when_committing_stream_session()
+    {
+        // Arrange
+        var calls = new List<(ushort MessageType, byte[] Payload)>();
+
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            calls.Add((messageType, payload));
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            if (messageType == MessageTypes.StreamBegin)
+            {
+                writer.WriteU8(1);
+                writer.WriteU64(44);
+            }
+            else if (messageType == MessageTypes.StreamCommit)
+            {
+                writer.WriteU8(0xFF);
+            }
+
+            return Task.FromResult(writer.Build());
+        });
+
+        var session = await stream.BeginAsync("stream://prod/app/events");
+
+        // Act
+        var ex = await Assert.ThrowsAsync<StreamException>(async () =>
+        {
+            await session.CommitAsync();
+        });
+
+        // Assert
+        Assert.Equal("COMMIT_INVALID_RESPONSE", ex.Code);
+        Assert.Equal(2, calls.Count);
     }
 
     [Fact]

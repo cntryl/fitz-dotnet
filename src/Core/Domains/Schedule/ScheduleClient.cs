@@ -294,14 +294,24 @@ public sealed class ScheduleClient : IScheduleClient
     {
         if (!route.StartsWith("schedule://", StringComparison.Ordinal))
         {
-            throw new ScheduleException($"Invalid route: {route}", "INVALID_ROUTE");
+            throw new ScheduleException($"schedule route '{route}' must start with schedule://", "INVALID_ROUTE");
         }
 
         var remainder = route["schedule://".Length..];
         var segments = remainder.Split('/');
-        if (segments.Length != 4 || segments.Any(segment => segment.Length == 0 || segment == "*" || segment == "**"))
+        if (segments.Any(segment => segment.Length == 0))
         {
-            throw new ScheduleException($"Invalid route: {route}", "INVALID_ROUTE");
+            throw new ScheduleException($"schedule route '{route}' segments must be non-empty", "INVALID_ROUTE");
+        }
+
+        if (segments.Length != 4)
+        {
+            throw new ScheduleException($"schedule route '{route}' must be schedule://{{realm}}/{{area}}/{{resource}}/{{operation}}", "INVALID_ROUTE");
+        }
+
+        if (segments.Any(segment => segment == "*" || segment == "**"))
+        {
+            throw new ScheduleException($"schedule route '{route}' must not contain wildcards", "INVALID_ROUTE");
         }
     }
 

@@ -1,5 +1,6 @@
 ﻿using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Domains.Schedule;
+using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -60,6 +61,75 @@ public sealed class ScheduleClientTests
         await schedule.CancelAsync("schedule://prod/app/jobs/run");
 
         // Assert
+    }
+
+    [Fact]
+    public async Task should_reject_wrong_scheme_given_schedule_route_when_creating_schedule()
+    {
+        // Arrange
+        var requestCount = 0;
+        var schedule = new ScheduleClient((messageType, payload, _) =>
+        {
+            requestCount++;
+            return Task.FromResult(Array.Empty<byte>());
+        });
+
+        // Act
+        var ex = await Assert.ThrowsAsync<ScheduleException>(async () =>
+        {
+            await schedule.CreateAsync("queue://prod/app/jobs/run", "*/5 * * * *");
+        });
+
+        // Assert
+        Assert.Equal("INVALID_ROUTE", ex.Code);
+        Assert.Contains("must start with schedule://", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(0, requestCount);
+    }
+
+    [Fact]
+    public async Task should_reject_empty_segment_given_schedule_route_when_canceling_schedule()
+    {
+        // Arrange
+        var requestCount = 0;
+        var schedule = new ScheduleClient((messageType, payload, _) =>
+        {
+            requestCount++;
+            return Task.FromResult(Array.Empty<byte>());
+        });
+
+        // Act
+        var ex = await Assert.ThrowsAsync<ScheduleException>(async () =>
+        {
+            await schedule.CancelAsync("schedule://prod//jobs/run");
+        });
+
+        // Assert
+        Assert.Equal("INVALID_ROUTE", ex.Code);
+        Assert.Contains("segments must be non-empty", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(0, requestCount);
+    }
+
+    [Fact]
+    public async Task should_reject_wildcard_route_given_schedule_route_when_subscribing_schedule()
+    {
+        // Arrange
+        var requestCount = 0;
+        var schedule = new ScheduleClient((messageType, payload, _) =>
+        {
+            requestCount++;
+            return Task.FromResult(Array.Empty<byte>());
+        });
+
+        // Act
+        var ex = await Assert.ThrowsAsync<ScheduleException>(async () =>
+        {
+            await schedule.SubscribeAsync("schedule://prod/app/jobs/*", (notification, cancellationToken) => ValueTask.CompletedTask);
+        });
+
+        // Assert
+        Assert.Equal("INVALID_ROUTE", ex.Code);
+        Assert.Contains("must not contain wildcards", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(0, requestCount);
     }
 
     [Fact]

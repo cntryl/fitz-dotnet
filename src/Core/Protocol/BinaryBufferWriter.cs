@@ -48,15 +48,16 @@ public sealed class BinaryBufferWriter : IDisposable
     public void WriteString(string value)
     {
         var byteCount = Encoding.UTF8.GetByteCount(value);
-        WriteU32((uint)byteCount);
-        EnsureCapacity(byteCount);
+        EnsureCapacity(4 + byteCount);
+        BinaryPrimitives.WriteUInt32BigEndian(_buffer.AsSpan(_position, 4), (uint)byteCount);
+        _position += 4;
         Encoding.UTF8.GetBytes(value, _buffer.AsSpan(_position, byteCount));
         _position += byteCount;
     }
 
     public byte[] Build()
     {
-        var result = new byte[_position];
+        var result = GC.AllocateUninitializedArray<byte>(_position);
         _buffer.AsSpan(0, _position).CopyTo(result);
         return result;
     }
@@ -72,12 +73,13 @@ public sealed class BinaryBufferWriter : IDisposable
 
     private void EnsureCapacity(int needed)
     {
-        if (_position + needed <= _buffer.Length)
+        var required = _position + needed;
+        if (required <= _buffer.Length)
         {
             return;
         }
 
-        var newSize = Math.Max(_buffer.Length * 2, _position + needed);
+        var newSize = Math.Max(_buffer.Length * 2, required);
         var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
         _buffer.AsSpan(0, _position).CopyTo(newBuffer);
         ArrayPool<byte>.Shared.Return(_buffer);

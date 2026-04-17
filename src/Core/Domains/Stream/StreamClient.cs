@@ -1,6 +1,5 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
-using System.Text.Json;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
@@ -38,6 +37,8 @@ public sealed class StreamClient : IStreamClient
 
     public async Task<IStreamSession> BeginAsync(string route, ReadOnlyMemory<byte>? ingestMetadata = null, CancellationToken ct = default)
     {
+        ValidateExactStreamRoute(route);
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         if (ingestMetadata.HasValue && ingestMetadata.Value.Length > 0)
@@ -52,20 +53,7 @@ public sealed class StreamClient : IStreamClient
         }
 
         var response = await _request(MessageTypes.StreamBegin, writer.Build(), ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw new StreamException($"BEGIN failed with status {status}", "BEGIN_FAILED", status);
-        }
-
-        var hasSession = reader.IsEof ? (byte)0 : reader.ReadU8();
-        if (hasSession != 1 || reader.RemainingBytes < 8)
-        {
-            throw new StreamException("BEGIN response missing session id", "MISSING_SESSION_ID");
-        }
-
-        return new StreamSession(_request, reader.ReadU64());
+        return new StreamSession(_request, StreamWireHelpers.ReadExpectedSessionId(response, "BEGIN", "MISSING_SESSION_ID"));
     }
 
     public async IAsyncEnumerable<StreamRecord> ReadAsync(
@@ -75,6 +63,8 @@ public sealed class StreamClient : IStreamClient
         ulong? maxBytes = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
+        ValidateStreamSelector(route);
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteU64(startOffset);
@@ -86,13 +76,9 @@ public sealed class StreamClient : IStreamClient
         }
 
         var response = await _request(MessageTypes.StreamRead, writer.Build(), ct).ConfigureAwait(false);
-        var (status, data) = ReadWrappedStreamResponse(response);
-        if (status != 0)
-        {
-            throw new StreamException($"READ failed with status {status}", "READ_FAILED", status);
-        }
+        var data = StreamWireHelpers.ReadOptionalPayload(response, "READ");
 
-        if (data.Length == 0)
+        if (data.IsEmpty)
         {
             yield break;
         }
@@ -106,45 +92,41 @@ public sealed class StreamClient : IStreamClient
 
     public async Task<StreamRecord?> PeekAsync(string route, CancellationToken ct = default)
     {
+        ValidateExactStreamRoute(route);
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
 
         var response = await _request(MessageTypes.StreamLast, writer.Build(), ct).ConfigureAwait(false);
-        var (status, data) = ReadWrappedStreamResponse(response);
-        if (status != 0)
-        {
-            throw new StreamException($"LAST failed with status {status}", "LAST_FAILED", status);
-        }
-
-        if (data.Length == 0)
+        var data = StreamWireHelpers.ReadOptionalPayload(response, "LAST");
+        if (data.IsEmpty)
         {
             return null;
         }
 
-        var reader = new BinaryBufferReader(data);
-        var offset = reader.ReadU64();
-        var bodyLength = reader.ReadU32();
-        var body = reader.ReadBytes((int)bodyLength);
-        return new StreamRecord(offset, body);
+        return StreamWireHelpers.ReadRecord(data, "LAST");
     }
 
     public async Task<StreamMetadata> MetadataAsync(string route, CancellationToken ct = default)
     {
+        ValidateExactStreamRoute(route);
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         var response = await _request(MessageTypes.StreamGetMetadata, writer.Build(), ct).ConfigureAwait(false);
-        var (status, data) = ReadWrappedStreamResponse(response);
-        if (status != 0)
-        {
-            throw new StreamException($"METADATA failed with status {status}", "METADATA_FAILED", status);
-        }
+        var data = StreamWireHelpers.ReadOptionalPayload(response, "METADATA");
 
-        if (data.Length == 0)
+        if (data.IsEmpty)
         {
             return new StreamMetadata(0, 0, 0);
         }
 
         var inner = new BinaryBufferReader(data);
+        if (inner.RemainingBytes < 24)
+        {
+            throw new StreamException("METADATA response missing metadata payload", "METADATA_INVALID_RESPONSE");
+        }
+
         return new StreamMetadata(inner.ReadU64(), inner.ReadU64(), inner.ReadU64());
     }
 
@@ -154,6 +136,8 @@ public sealed class StreamClient : IStreamClient
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
+        ValidateStreamSelector(pattern);
+
         if (_registerNotificationHandler == null)
         {
             throw new InvalidOperationException("Notification handlers not configured for subscription support");
@@ -215,19 +199,7 @@ public sealed class StreamClient : IStreamClient
         writer.WriteString(pattern);
 
         var response = await _request(MessageTypes.StreamSubscribe, writer.Build(), ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw new StreamException($"SUBSCRIBE failed with status {status}", "SUBSCRIBE_FAILED", status);
-        }
-
-        if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
-        {
-            throw new StreamException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
-        }
-
-        return reader.ReadU64();
+        return StreamWireHelpers.ReadExpectedSessionId(response, "SUBSCRIBE", "MISSING_SUB_ID");
     }
 
     private async Task UnsubscribeWireAsync(string pattern, CancellationToken ct)
@@ -236,12 +208,7 @@ public sealed class StreamClient : IStreamClient
         writer.WriteString(pattern);
 
         var response = await _request(MessageTypes.StreamUnsubscribe, writer.Build(), ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw new StreamException($"UNSUBSCRIBE failed with status {status}", "UNSUBSCRIBE_FAILED", status);
-        }
+        StreamWireHelpers.EnsureSuccessStatusOnly(response, "UNSUBSCRIBE");
     }
 
     private async ValueTask UnsubscribeAsync(string pattern, long handleId, CancellationToken ct)
@@ -306,9 +273,8 @@ public sealed class StreamClient : IStreamClient
             var subscriptionId = notifyReader.ReadU64();
             var route = notifyReader.ReadString();
             var bodyLength = notifyReader.ReadU32();
-            var body = notifyReader.ReadBytes((int)bodyLength);
+            var body = notifyReader.ReadSpan((int)bodyLength);
 
-            SubscriptionRegistration<StreamCommitEvent>[] registrations;
             lock (_gate)
             {
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
@@ -317,13 +283,11 @@ public sealed class StreamClient : IStreamClient
                     return;
                 }
 
-                registrations = subscription.Registrations.Values.ToArray();
-            }
-
-            var notification = new StreamCommitEvent(route, TryParseCommitOffset(body));
-            foreach (var registration in registrations)
-            {
-                registration.Channel.Writer.TryWrite(notification);
+                var notification = new StreamCommitEvent(route, StreamWireHelpers.TryParseCommitOffset(body));
+                foreach (var registration in subscription.Registrations.Values)
+                {
+                    registration.Channel.Writer.TryWrite(notification);
+                }
             }
         }
         catch
@@ -334,6 +298,64 @@ public sealed class StreamClient : IStreamClient
     private async ValueTask HandleReconnect(CancellationToken cancellationToken)
     {
         await RestoreSubscriptionsAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void ValidateExactStreamRoute(string route)
+    {
+        ValidateStreamRoute(route, allowWildcardSelectors: false);
+    }
+
+    private static void ValidateStreamSelector(string route)
+    {
+        ValidateStreamRoute(route, allowWildcardSelectors: true);
+    }
+
+    private static void ValidateStreamRoute(string route, bool allowWildcardSelectors)
+    {
+        ArgumentNullException.ThrowIfNull(route);
+
+        if (!route.StartsWith("stream://", StringComparison.Ordinal))
+        {
+            throw new StreamException($"stream route '{route}' must start with stream://", "INVALID_ROUTE");
+        }
+
+        var remainderStart = "stream://".Length;
+        var firstSlash = route.IndexOf('/', remainderStart);
+        var secondSlash = firstSlash >= 0 ? route.IndexOf('/', firstSlash + 1) : -1;
+        var thirdSlash = secondSlash >= 0 ? route.IndexOf('/', secondSlash + 1) : -1;
+        if (firstSlash < 0 || secondSlash < 0 || thirdSlash >= 0)
+        {
+            ThrowInvalidRouteShape(route, allowWildcardSelectors);
+        }
+
+        var realm = route.AsSpan(remainderStart, firstSlash - remainderStart);
+        var area = route.AsSpan(firstSlash + 1, secondSlash - firstSlash - 1);
+        var resource = route.AsSpan(secondSlash + 1);
+
+        if (realm.IsEmpty || area.IsEmpty || resource.IsEmpty)
+        {
+            throw new StreamException($"stream route '{route}' segments must be non-empty", "INVALID_ROUTE");
+        }
+
+        if (!allowWildcardSelectors)
+        {
+            if (IsWildcardSegment(realm) || IsWildcardSegment(area) || IsWildcardSegment(resource))
+            {
+                throw new StreamException($"stream route '{route}' must be stream://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+            }
+
+            return;
+        }
+
+        if (IsWildcardSegment(realm) || IsDoubleWildcard(area) || IsDoubleWildcard(resource))
+        {
+            ThrowInvalidSelectorRoute(route);
+        }
+
+        if (IsSingleWildcard(area) && !IsSingleWildcard(resource))
+        {
+            ThrowInvalidSelectorRoute(route);
+        }
     }
 
     private async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
@@ -412,120 +434,84 @@ public sealed class StreamClient : IStreamClient
         }
     }
 
-    private static ulong TryParseCommitOffset(byte[] payload)
+    private static void ThrowInvalidRouteShape(string route, bool allowWildcardSelectors)
     {
-        try
-        {
-            using var document = JsonDocument.Parse(payload);
-            if (document.RootElement.TryGetProperty("last_resource_offset", out var lastOffset))
-            {
-                return lastOffset.GetUInt64();
-            }
-
-            if (document.RootElement.TryGetProperty("first_resource_offset", out var firstOffset))
-            {
-                return firstOffset.GetUInt64();
-            }
-        }
-        catch
-        {
-        }
-
-        return 0;
+        var expected = allowWildcardSelectors
+            ? "stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*"
+            : "stream://{realm}/{area}/{resource}";
+        throw new StreamException($"stream route '{route}' must be {expected}", "INVALID_ROUTE");
     }
 
-    private static (byte Status, byte[] Data) ReadWrappedStreamResponse(byte[] response)
+    private static void ThrowInvalidSelectorRoute(string route)
     {
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
+        throw new StreamException($"stream route '{route}' must be one of stream://{{realm}}/{{area}}/{{resource}}, stream://{{realm}}/{{area}}/*, or stream://{{realm}}/*/*", "INVALID_ROUTE");
+    }
+
+    private static bool IsSingleWildcard(ReadOnlySpan<char> segment)
+    {
+        return segment.Length == 1 && segment[0] == '*';
+    }
+
+    private static bool IsDoubleWildcard(ReadOnlySpan<char> segment)
+    {
+        return segment.Length == 2 && segment[0] == '*' && segment[1] == '*';
+    }
+
+    private static bool IsWildcardSegment(ReadOnlySpan<char> segment)
+    {
+        return IsSingleWildcard(segment) || IsDoubleWildcard(segment);
+    }
+
+    private static StreamRecord[] ParseReadRecords(ReadOnlyMemory<byte> data)
+    {
+        var reader = new BinaryBufferReader(data);
+        if (reader.IsEof)
         {
-            return (status, []);
+            return Array.Empty<StreamRecord>();
+        }
+
+        if (reader.RemainingBytes < 4)
+        {
+            throw new StreamException("READ response missing record count", "READ_INVALID_RESPONSE");
+        }
+
+        var recordCount = reader.ReadU32();
+        if (recordCount == 0)
+        {
+            if (!reader.IsEof)
+            {
+                throw new StreamException("READ response had trailing data", "READ_INVALID_RESPONSE");
+            }
+
+            return Array.Empty<StreamRecord>();
+        }
+
+        if (recordCount > int.MaxValue)
+        {
+            throw new StreamException("READ response record count too large", "READ_INVALID_RESPONSE");
+        }
+
+        var records = new StreamRecord[(int)recordCount];
+        for (var index = 0; index < records.Length; index++)
+        {
+            if (reader.RemainingBytes < 12)
+            {
+                throw new StreamException("READ response truncated record", "READ_INVALID_RESPONSE");
+            }
+
+            var offset = reader.ReadU64();
+            var bodyLength = checked((int)reader.ReadU32());
+            if (reader.RemainingBytes < bodyLength)
+            {
+                throw new StreamException("READ response truncated record body", "READ_INVALID_RESPONSE");
+            }
+
+            records[index] = new StreamRecord(offset, reader.ReadBytes(bodyLength));
         }
 
         if (!reader.IsEof)
         {
-            var hasSession = reader.ReadU8();
-            if (hasSession == 1 && reader.RemainingBytes >= 8)
-            {
-                _ = reader.ReadU64();
-            }
-        }
-
-        return reader.IsEof ? ((byte)0, []) : ((byte)0, reader.ReadBytes((int)reader.ReadU32()));
-    }
-
-    private static List<StreamRecord> ParseReadRecords(byte[] data)
-    {
-        var fromCount = TryParseCountPrefixedRecords(data);
-        if (fromCount.Count > 0)
-        {
-            return fromCount;
-        }
-
-        return ParseFlatRecords(data);
-    }
-
-    private static List<StreamRecord> TryParseCountPrefixedRecords(byte[] data)
-    {
-        var records = new List<StreamRecord>();
-        if (data.Length < 4)
-        {
-            return records;
-        }
-
-        var reader = new BinaryBufferReader(data);
-        uint count;
-        try
-        {
-            count = reader.ReadU32();
-        }
-        catch
-        {
-            return records;
-        }
-
-        for (var index = 0U; index < count; index++)
-        {
-            try
-            {
-                var offset = reader.ReadU64();
-                var bodyLength = reader.ReadU32();
-                var body = reader.ReadBytes((int)bodyLength);
-                records.Add(new StreamRecord(offset, body));
-            }
-            catch
-            {
-                records.Clear();
-                return records;
-            }
-        }
-
-        return reader.IsEof ? records : new List<StreamRecord>();
-    }
-
-    private static List<StreamRecord> ParseFlatRecords(byte[] data)
-    {
-        var records = new List<StreamRecord>();
-        if (data.Length < 12)
-        {
-            return records;
-        }
-
-        var reader = new BinaryBufferReader(data);
-        while (!reader.IsEof)
-        {
-            try
-            {
-                var offset = reader.ReadU64();
-                var bodyLength = reader.ReadU32();
-                var body = reader.ReadBytes((int)bodyLength);
-                records.Add(new StreamRecord(offset, body));
-            }
-            catch
-            {
-                break;
-            }
+            throw new StreamException("READ response had trailing data", "READ_INVALID_RESPONSE");
         }
 
         return records;

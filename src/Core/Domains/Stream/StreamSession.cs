@@ -33,30 +33,15 @@ public sealed class StreamSession : IStreamSession
             writer.WriteU8(0);
         }
 
-        var response = await _request(MessageTypes.StreamAppend, writer.Build(), ct);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw new StreamException($"APPEND failed with status {status}", "APPEND_FAILED", status);
-        }
-
-        if (!reader.IsEof)
-        {
-            var hasSession = reader.ReadU8();
-            if (hasSession == 1 && reader.RemainingBytes >= 8)
-            {
-                _ = reader.ReadU64();
-            }
-        }
-
-        if (reader.IsEof)
+        var response = await _request(MessageTypes.StreamAppend, writer.Build(), ct).ConfigureAwait(false);
+        var data = StreamWireHelpers.ReadOptionalPayload(response, "APPEND");
+        if (data.IsEmpty || data.Length < 8)
         {
             return null;
         }
 
-        var wrapped = new BinaryBufferReader(reader.ReadBytes((int)reader.ReadU32()));
-        return wrapped.RemainingBytes >= 8 ? wrapped.ReadU64() : null;
+        var wrapped = new BinaryBufferReader(data);
+        return wrapped.ReadU64();
     }
 
     public Task CommitAsync(CancellationToken ct = default)
@@ -76,10 +61,7 @@ public sealed class StreamSession : IStreamSession
 
     private async Task ExpectStatusAsync(ushort messageType, byte[] payload, string operation, CancellationToken ct)
     {
-        var response = await _request(messageType, payload, ct);
-        if (response.Length > 0 && response[0] != 0)
-        {
-            throw new StreamException($"{operation} failed with status {response[0]}", $"{operation}_FAILED", response[0]);
-        }
+        var response = await _request(messageType, payload, ct).ConfigureAwait(false);
+        StreamWireHelpers.EnsureSuccessStatusOnly(response, operation);
     }
 }
