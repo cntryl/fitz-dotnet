@@ -21,9 +21,9 @@ public sealed class FrameParserTests
         // Assert
         Assert.Equal(2, frames.Count);
         Assert.Equal((ushort)100, frames[0].MessageType);
-        Assert.Equal([0x1, 0x2], frames[0].Payload);
+        Assert.Equal([0x1, 0x2], frames[0].Payload.ToArray());
         Assert.Equal((ushort)101, frames[1].MessageType);
-        Assert.Equal([0xA], frames[1].Payload);
+        Assert.Equal([0xA], frames[1].Payload.ToArray());
     }
 
     [Fact]
@@ -43,6 +43,33 @@ public sealed class FrameParserTests
         Assert.Empty(before);
         Assert.Single(after);
         Assert.Equal((ushort)302, after[0].MessageType);
-        Assert.Equal([0x9, 0x8, 0x7, 0x6], after[0].Payload);
+        Assert.Equal([0x9, 0x8, 0x7, 0x6], after[0].Payload.ToArray());
+    }
+
+    [Fact]
+    public void should_read_frames_sequentially_given_buffered_data_when_try_reading()
+    {
+        // Arrange
+        var parser = new FrameParser();
+        var first = FrameCodec.Encode(100, [0x1, 0x2]);
+        var second = FrameCodec.Encode(101, [0xA]);
+
+        parser.Append(first);
+        parser.Append(second);
+
+        // Act
+        var readFirst = parser.TryReadFrame(out var firstFrame);
+        var readSecond = parser.TryReadFrame(out var secondFrame);
+        var readThird = parser.TryReadFrame(out var thirdFrame);
+
+        // Assert
+        Assert.True(readFirst);
+        Assert.True(readSecond);
+        Assert.False(readThird);
+        Assert.Equal((ushort)100, firstFrame.MessageType);
+        Assert.Equal([0x1, 0x2], firstFrame.Payload.ToArray());
+        Assert.Equal((ushort)101, secondFrame.MessageType);
+        Assert.Equal([0xA], secondFrame.Payload.ToArray());
+        Assert.True(thirdFrame.Payload.IsEmpty);
     }
 }

@@ -51,7 +51,7 @@ public sealed class FrameParserEdgeCaseTests
         var encoded = FrameCodec.Encode(500, []);
         var frames = parser.ParseFrames(encoded);
         Assert.Single(frames);
-        Assert.Empty(frames[0].Payload);
+        Assert.True(frames[0].Payload.IsEmpty);
     }
 
     [Fact]
@@ -124,7 +124,7 @@ public sealed class FrameParserEdgeCaseTests
         var frames = parser.ParseFrames(encoded);
         Assert.Single(frames);
         Assert.Equal((ushort)600, frames[0].MessageType);
-        Assert.Equal(largePayload, frames[0].Payload);
+        Assert.Equal(largePayload, frames[0].Payload.ToArray());
     }
 
     [Fact]

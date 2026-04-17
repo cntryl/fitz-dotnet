@@ -11,7 +11,7 @@ public sealed class FrameCodecEdgeCaseTests
         var encoded = FrameCodec.Encode(0, payload);
         var decoded = FrameCodec.Decode(encoded);
         Assert.Equal((ushort)0, decoded.MessageType);
-        Assert.Equal(payload, decoded.Payload);
+        Assert.Equal(payload, decoded.Payload.ToArray());
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public sealed class FrameCodecEdgeCaseTests
         var payload = new byte[0];
         var encoded = FrameCodec.Encode(100, payload);
         var decoded = FrameCodec.Decode(encoded);
-        Assert.Empty(decoded.Payload);
+        Assert.True(decoded.Payload.IsEmpty);
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public sealed class FrameCodecEdgeCaseTests
             payload[i] = (byte)(i % 256);
         var encoded = FrameCodec.Encode(999, payload);
         var decoded = FrameCodec.Decode(encoded);
-        Assert.Equal(payload, decoded.Payload);
+        Assert.Equal(payload, decoded.Payload.ToArray());
     }
 
     [Fact]
@@ -81,7 +81,7 @@ public sealed class FrameCodecEdgeCaseTests
         var encoded = FrameCodec.Encode(500, payload);
         var decoded = FrameCodec.Decode(encoded);
         Assert.Equal((ushort)500, decoded.MessageType);
-        Assert.Equal(payload, decoded.Payload);
+        Assert.Equal(payload, decoded.Payload.ToArray());
     }
 
     [Theory]
@@ -116,6 +116,6 @@ public sealed class FrameCodecEdgeCaseTests
             payload[i] = (byte)i;
         var encoded = FrameCodec.Encode(777, payload);
         var decoded = FrameCodec.Decode(encoded);
-        Assert.Equal(payload, decoded.Payload);
+        Assert.Equal(payload, decoded.Payload.ToArray());
     }
 }

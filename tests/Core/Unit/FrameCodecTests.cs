@@ -16,7 +16,7 @@ public sealed class FrameCodecTests
 
         // Assert
         Assert.Equal((ushort)100, decoded.MessageType);
-        Assert.Equal(payload, decoded.Payload);
+        Assert.Equal(payload, decoded.Payload.ToArray());
     }
 
     [Fact]
@@ -31,6 +31,6 @@ public sealed class FrameCodecTests
 
         // Assert
         Assert.Equal((ushort)700, decoded.MessageType);
-        Assert.Equal(payload, decoded.Payload);
+        Assert.Equal(payload, decoded.Payload.ToArray());
     }
 }

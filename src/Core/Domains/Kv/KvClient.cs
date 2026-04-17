@@ -8,7 +8,7 @@ namespace Cntryl.Fitz.Domains.Kv;
 
 public sealed class KvClient : IKvClient
 {
-    private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
+    private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
 
     internal KvClient(FitzConnection connection)
         : this(connection.RequestAsync)
@@ -16,6 +16,11 @@ public sealed class KvClient : IKvClient
     }
 
     public KvClient(Func<ushort, byte[], CancellationToken, Task<byte[]>> request)
+        : this(async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)))
+    {
+    }
+
+    internal KvClient(Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request)
     {
         _request = request;
     }
@@ -36,7 +41,7 @@ public sealed class KvClient : IKvClient
         writer.WriteU8((byte)mode);
         writer.WriteU8((byte)durability);
 
-        var response = await _request(MessageTypes.KvBegin, writer.Build(), cancellationToken);
+        var response = await _request(MessageTypes.KvBegin, writer.WrittenMemory, cancellationToken).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -44,12 +49,17 @@ public sealed class KvClient : IKvClient
             throw new KvException($"BEGIN failed with status {status}", "BEGIN_FAILED", status);
         }
 
-        if (reader.IsEof)
+        if (reader.IsEof || reader.RemainingBytes < 8)
         {
             throw new KvException("BEGIN response missing transaction id", "MISSING_TX_ID");
         }
 
         var txId = reader.ReadU64();
+        if (!reader.IsEof)
+        {
+            throw new KvException("BEGIN response has trailing bytes", "BEGIN_INVALID_RESPONSE");
+        }
+
         return new KvTransaction(_request, route, txId);
     }
 }

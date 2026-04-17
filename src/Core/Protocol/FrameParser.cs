@@ -1,51 +1,59 @@
+using System.Buffers.Binary;
+
 namespace Cntryl.Fitz.Protocol;
 
 public sealed class FrameParser
 {
-    private byte[] _buffer = new byte[1024];
+    private const int InitialCapacity = 1024;
+    private const int DefaultMaxBufferSize = ushort.MaxValue + FrameCodec.MaxHeaderSize;
+
+    private readonly int _maxBufferSize;
+    private byte[] _buffer = new byte[InitialCapacity];
     private int _length;
+    private int _readOffset;
 
-    public IReadOnlyList<Frame> ParseFrames(ReadOnlySpan<byte> data)
+    public FrameParser()
+        : this(DefaultMaxBufferSize)
     {
-        if (!data.IsEmpty)
-        {
-            EnsureCapacity(_length + data.Length);
-            data.CopyTo(_buffer.AsSpan(_length));
-            _length += data.Length;
-        }
-
-        var frames = new List<Frame>();
-        var offset = 0;
-
-        while (TryReadFrame(_buffer.AsSpan(0, _length), ref offset, out var frame))
-        {
-            frames.Add(frame);
-        }
-
-        if (offset > 0)
-        {
-            var remaining = _length - offset;
-            if (remaining > 0)
-            {
-                _buffer.AsSpan(offset, remaining).CopyTo(_buffer);
-            }
-
-            _length = remaining;
-        }
-
-        return frames;
     }
 
-    private static bool TryReadFrame(ReadOnlySpan<byte> source, ref int offset, out Frame frame)
+    public FrameParser(int maxBufferSize)
+    {
+        if (maxBufferSize < ushort.MaxValue + FrameCodec.MaxHeaderSize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxBufferSize), "Max buffer size must accommodate at least one full frame.");
+        }
+
+        _maxBufferSize = maxBufferSize;
+    }
+
+    public void Append(ReadOnlySpan<byte> data)
+    {
+        if (data.IsEmpty)
+        {
+            return;
+        }
+
+        EnsureCapacity(_length + data.Length);
+        data.CopyTo(_buffer.AsSpan(_length));
+        _length += data.Length;
+    }
+
+    public bool TryReadFrame(out Frame frame)
     {
         frame = default;
-        if (offset >= source.Length)
+
+        if (_readOffset >= _length)
         {
+            _readOffset = 0;
+            _length = 0;
             return false;
         }
 
-        var start = offset;
-        if (source.Length - offset < 3)
+        var source = _buffer.AsSpan(_readOffset, _length - _readOffset);
+        var offset = 0;
+
+        if (source.Length < 3)
         {
             return false;
         }
@@ -54,13 +62,13 @@ public sealed class FrameParser
         var first = source[offset++];
         if (first == 0xFF)
         {
-            if (source.Length - offset < 2)
+            if (source.Length < 5)
             {
-                offset = start;
                 return false;
             }
 
-            messageType = (ushort)((source[offset++] << 8) | source[offset++]);
+            messageType = BinaryPrimitives.ReadUInt16BigEndian(source.Slice(offset, 2));
+            offset += 2;
         }
         else
         {
@@ -69,22 +77,47 @@ public sealed class FrameParser
 
         if (source.Length - offset < 2)
         {
-            offset = start;
             return false;
         }
 
-        var payloadLength = (source[offset++] << 8) | source[offset++];
+        var payloadLength = BinaryPrimitives.ReadUInt16BigEndian(source.Slice(offset, 2));
+        offset += 2;
         if (source.Length - offset < payloadLength)
         {
-            offset = start;
             return false;
         }
 
-        var payload = source.Slice(offset, payloadLength).ToArray();
+        frame = new Frame(messageType, _buffer.AsMemory(_readOffset + offset, payloadLength));
+        _readOffset += offset + payloadLength;
 
-        offset += payloadLength;
-        frame = new Frame(messageType, payload);
+        if (_readOffset == _length)
+        {
+            _readOffset = 0;
+            _length = 0;
+        }
+
         return true;
+    }
+
+    public IReadOnlyList<Frame> ParseFrames(ReadOnlySpan<byte> data)
+    {
+        Append(data);
+
+        List<Frame>? frames = null;
+        while (TryReadFrame(out var frame))
+        {
+            frames ??= new List<Frame>();
+            if (frame.Payload.IsEmpty)
+            {
+                frames.Add(frame);
+            }
+            else
+            {
+                frames.Add(new Frame(frame.MessageType, frame.Payload.ToArray()));
+            }
+        }
+
+        return frames is null ? Array.Empty<Frame>() : frames;
     }
 
     private void EnsureCapacity(int required)
@@ -94,10 +127,36 @@ public sealed class FrameParser
             return;
         }
 
+        if (required > _maxBufferSize)
+        {
+            throw new InvalidOperationException($"Frame accumulator exceeded max buffer size {_maxBufferSize}.");
+        }
+
+        if (_readOffset > 0)
+        {
+            var unread = _length - _readOffset;
+            if (unread > 0)
+            {
+                Buffer.BlockCopy(_buffer, _readOffset, _buffer, 0, unread);
+            }
+
+            _length = unread;
+            _readOffset = 0;
+            if (required <= _buffer.Length)
+            {
+                return;
+            }
+        }
+
         var next = _buffer.Length;
         while (next < required)
         {
             next *= 2;
+        }
+
+        if (next > _maxBufferSize)
+        {
+            next = _maxBufferSize;
         }
 
         Array.Resize(ref _buffer, next);

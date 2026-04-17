@@ -11,8 +11,8 @@ namespace Cntryl.Fitz.Domains.Rpc;
 
 public sealed class RpcClient : IRpcClient
 {
-    private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
-    private readonly Func<ushort, byte[], CancellationToken, Task> _send;
+    private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
+    private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
     private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
     private readonly Func<Func<CancellationToken, ValueTask>, IDisposable>? _onReconnect;
     private readonly Func<CancellationToken>? _getConnectionClosedToken;
@@ -40,9 +40,28 @@ public sealed class RpcClient : IRpcClient
         Func<Func<CancellationToken, ValueTask>, IDisposable>? onReconnect = null,
         Func<CancellationToken>? getConnectionClosedToken = null,
         TimeSpan? connectionTimeout = null)
+        : this(
+            async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
+            send is null
+                ? async (messageType, payload, ct) => { _ = await request(messageType, payload.ToArray(), ct).ConfigureAwait(false); }
+                : async (messageType, payload, ct) => await send(messageType, payload.ToArray(), ct).ConfigureAwait(false),
+            registerNotificationHandler,
+            onReconnect,
+            getConnectionClosedToken,
+            connectionTimeout)
+    {
+    }
+
+    internal RpcClient(
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send,
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null,
+        Func<Func<CancellationToken, ValueTask>, IDisposable>? onReconnect = null,
+        Func<CancellationToken>? getConnectionClosedToken = null,
+        TimeSpan? connectionTimeout = null)
     {
         _request = request;
-        _send = send ?? ((messageType, payload, ct) => request(messageType, payload, ct));
+        _send = send;
         _registerNotificationHandler = registerNotificationHandler;
         _onReconnect = onReconnect;
         _getConnectionClosedToken = getConnectionClosedToken;
@@ -115,12 +134,17 @@ public sealed class RpcClient : IRpcClient
 
         try
         {
-            var response = await _request(MessageTypes.RpcRequest, writer.Build(), ct).ConfigureAwait(false);
+            var response = await _request(MessageTypes.RpcRequest, writer.WrittenMemory, ct).ConfigureAwait(false);
             var reader = new BinaryBufferReader(response);
             var status = reader.ReadU8();
             if (status != 0)
             {
                 throw new RpcException($"CALL failed with status {status}", "CALL_FAILED", status);
+            }
+
+            if (!reader.IsEof)
+            {
+                throw new RpcException("CALL response has trailing bytes", "CALL_INVALID_RESPONSE");
             }
 
             var connectionClosedToken = _getConnectionClosedToken?.Invoke() ?? CancellationToken.None;
@@ -257,12 +281,17 @@ public sealed class RpcClient : IRpcClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.RpcSubscribeWorker, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.RpcSubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
         {
             throw new RpcException($"REGISTER failed with status {status}", "REGISTER_FAILED", status);
+        }
+
+        if (!reader.IsEof)
+        {
+            throw new RpcException("REGISTER response has trailing bytes", "REGISTER_INVALID_RESPONSE");
         }
     }
 
@@ -274,16 +303,22 @@ public sealed class RpcClient : IRpcClient
 
         try
         {
-            var response = await _request(MessageTypes.RpcUnsubscribeWorker, writer.Build(), CancellationToken.None).ConfigureAwait(false);
-            if (response.Length == 0)
+            var response = await _request(MessageTypes.RpcUnsubscribeWorker, writer.WrittenMemory, CancellationToken.None).ConfigureAwait(false);
+            if (response.IsEmpty)
             {
                 return;
             }
 
-            var status = response[0];
+            var reader = new BinaryBufferReader(response);
+            var status = reader.ReadU8();
             if (status != 0)
             {
                 throw new RpcException($"UNREGISTER failed with status {status}", "UNREGISTER_FAILED", status);
+            }
+
+            if (!reader.IsEof)
+            {
+                throw new RpcException("UNREGISTER response has trailing bytes", "UNREGISTER_INVALID_RESPONSE");
             }
         }
         finally
@@ -339,11 +374,11 @@ public sealed class RpcClient : IRpcClient
 
     private sealed class RpcResponseWriter : IRpcResponseWriter
     {
-        private readonly Func<ushort, byte[], CancellationToken, Task> _send;
+        private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
         private readonly byte[] _correlationId;
         private ulong _sequence;
 
-        internal RpcResponseWriter(Func<ushort, byte[], CancellationToken, Task> send, byte[] correlationId)
+        internal RpcResponseWriter(Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send, byte[] correlationId)
         {
             _send = send;
             _correlationId = correlationId;
@@ -359,7 +394,7 @@ public sealed class RpcClient : IRpcClient
             writer.WriteBytes(body.Span);
             writer.WriteU8(isEnd ? (byte)1 : (byte)0);
 
-            await _send(MessageTypes.RpcResponse, writer.Build(), ct).ConfigureAwait(false);
+            await _send(MessageTypes.RpcResponse, writer.WrittenMemory, ct).ConfigureAwait(false);
         }
     }
 

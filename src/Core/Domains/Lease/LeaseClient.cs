@@ -11,7 +11,7 @@ namespace Cntryl.Fitz.Domains.Lease;
 
 public sealed class LeaseClient : ILeaseClient
 {
-    private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
+    private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
@@ -33,12 +33,19 @@ public sealed class LeaseClient : ILeaseClient
     public LeaseClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        : this(async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)), registerNotificationHandler)
+    {
+    }
+
+    internal LeaseClient(
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
     }
 
-    public async Task<ILease> AcquireAsync(string route, ulong ttlSecs, CancellationToken ct = default)
+    public async ValueTask<ILease> AcquireAsync(string route, ulong ttlSecs, CancellationToken ct = default)
     {
         if (!RouteValidation.IsFixedRoute(route, "lease", 3))
         {
@@ -49,7 +56,7 @@ public sealed class LeaseClient : ILeaseClient
         writer.WriteString(route);
         writer.WriteString(string.Empty);
         writer.WriteU64(ttlSecs);
-        var response = await _request(MessageTypes.LeaseAcquire, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.LeaseAcquire, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -59,7 +66,13 @@ public sealed class LeaseClient : ILeaseClient
 
         if (reader.RemainingBytes == 8)
         {
-            return new LeaseHandle(_request, route, reader.ReadU64());
+            var token = reader.ReadU64();
+            if (!reader.IsEof)
+            {
+                throw new LeaseException("ACQUIRE response has trailing bytes", "ACQUIRE_INVALID_RESPONSE");
+            }
+
+            return new LeaseHandle(_request, route, token);
         }
 
         if (reader.RemainingBytes < 9)
@@ -73,10 +86,16 @@ public sealed class LeaseClient : ILeaseClient
             throw new LeaseException($"ACQUIRE returned non-acquired response type {responseType}", "ACQUIRE_NOT_ACQUIRED");
         }
 
-        return new LeaseHandle(_request, route, reader.ReadU64());
+        var fencedToken = reader.ReadU64();
+        if (!reader.IsEof)
+        {
+            throw new LeaseException("ACQUIRE response has trailing bytes", "ACQUIRE_INVALID_RESPONSE");
+        }
+
+        return new LeaseHandle(_request, route, fencedToken);
     }
 
-    public async Task<LeaseInfo> QueryAsync(string route, CancellationToken ct = default)
+    public async ValueTask<LeaseInfo> QueryAsync(string route, CancellationToken ct = default)
     {
         if (!RouteValidation.IsFixedRoute(route, "lease", 3))
         {
@@ -85,7 +104,7 @@ public sealed class LeaseClient : ILeaseClient
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        var response = await _request(MessageTypes.LeaseQuery, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.LeaseQuery, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -101,6 +120,11 @@ public sealed class LeaseClient : ILeaseClient
 
         var owner = reader.ReadString();
         var ttlRemaining = reader.ReadU64();
+        if (!reader.IsEof)
+        {
+            throw new LeaseException("QUERY response has trailing bytes", "QUERY_INVALID_RESPONSE");
+        }
+
         return new LeaseInfo(true, owner, ttlRemaining);
     }
 
@@ -175,7 +199,7 @@ public sealed class LeaseClient : ILeaseClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.LeaseSubscribe, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.LeaseSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -188,7 +212,13 @@ public sealed class LeaseClient : ILeaseClient
             throw new LeaseException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
         }
 
-        return reader.ReadU64();
+        var subscriptionId = reader.ReadU64();
+        if (!reader.IsEof)
+        {
+            throw new LeaseException("SUBSCRIBE response has trailing bytes", "SUBSCRIBE_INVALID_RESPONSE");
+        }
+
+        return subscriptionId;
     }
 
     private async Task UnsubscribeWireAsync(string pattern, CancellationToken ct)
@@ -196,7 +226,7 @@ public sealed class LeaseClient : ILeaseClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.LeaseUnsubscribe, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.LeaseUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -266,8 +296,6 @@ public sealed class LeaseClient : ILeaseClient
             var reader = new BinaryBufferReader(payload);
             var subscriptionId = reader.ReadU64();
             var route = reader.ReadString();
-
-            SubscriptionRegistration<LeaseChangeEvent>[] registrations;
             lock (_gate)
             {
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
@@ -276,13 +304,11 @@ public sealed class LeaseClient : ILeaseClient
                     return;
                 }
 
-                registrations = subscription.Registrations.Values.ToArray();
-            }
-
-            var notification = new LeaseChangeEvent(route);
-            foreach (var registration in registrations)
-            {
-                registration.Channel.Writer.TryWrite(notification);
+                var notification = new LeaseChangeEvent(route);
+                foreach (var registration in subscription.Registrations.Values)
+                {
+                    registration.Channel.Writer.TryWrite(notification);
+                }
             }
         }
         catch

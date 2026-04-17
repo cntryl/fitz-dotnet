@@ -51,6 +51,17 @@ public sealed class Multiplexer
         return new NotificationRegistration(this, messageType, handlerId);
     }
 
+    public void Dispatch(ushort messageType, ReadOnlyMemory<byte> payload)
+    {
+        if (payload.IsEmpty)
+        {
+            Dispatch(messageType, Array.Empty<byte>());
+            return;
+        }
+
+        Dispatch(messageType, payload.ToArray());
+    }
+
     public Action ExpectOptionalResponse(ushort messageType)
     {
         lock (_gate)
@@ -142,7 +153,8 @@ public sealed class Multiplexer
             }
             else if (_notificationHandlers.TryGetValue(messageType, out var registeredHandlers) && registeredHandlers.Count > 0)
             {
-                handlers = registeredHandlers.Values.ToArray();
+                handlers = new Action<byte[]>[registeredHandlers.Count];
+                registeredHandlers.Values.CopyTo(handlers, 0);
             }
             else
             {
@@ -196,7 +208,8 @@ public sealed class Multiplexer
         PendingRequest[] pending;
         lock (_gate)
         {
-            pending = _pending.Values.ToArray();
+            pending = new PendingRequest[_pending.Count];
+            _pending.Values.CopyTo(pending, 0);
             _pending.Clear();
         }
 

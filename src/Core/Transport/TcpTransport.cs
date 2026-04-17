@@ -9,6 +9,7 @@ public sealed class TcpTransport : ITransport
     private readonly Uri _uri;
     private readonly TimeSpan _timeout;
     private readonly int _maxFrameSize;
+    private readonly byte[] _receiveHeaderBuffer = new byte[4];
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private TcpClient? _client;
     private NetworkStream? _stream;
@@ -52,50 +53,48 @@ public sealed class TcpTransport : ITransport
             throw new InvalidOperationException($"TCP frame length {frameLength} exceeds max frame size {_maxFrameSize}.");
         }
 
-        await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var totalLength = 4 + frameLength;
+        var buffer = ArrayPool<byte>.Shared.Rent(totalLength);
         try
         {
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(_timeout);
+            BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(0, 4), (uint)frameLength);
+            if (!data.IsEmpty)
+            {
+                data.Span.CopyTo(buffer.AsSpan(4));
+            }
 
-            var header = ArrayPool<byte>.Shared.Rent(4);
+            await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                BinaryPrimitives.WriteUInt32BigEndian(header.AsSpan(0, 4), (uint)frameLength);
-                await stream.WriteAsync(header.AsMemory(0, 4), cts.Token).ConfigureAwait(false);
-                if (!data.IsEmpty)
-                {
-                    await stream.WriteAsync(data, cts.Token).ConfigureAwait(false);
-                }
-
-                await stream.FlushAsync(cts.Token).ConfigureAwait(false);
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                cts.CancelAfter(_timeout);
+                await stream.WriteAsync(buffer.AsMemory(0, totalLength), cts.Token).ConfigureAwait(false);
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(header);
+                _sendLock.Release();
             }
         }
         finally
         {
-            _sendLock.Release();
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 
-    public async Task<byte[]> ReceiveAsync(CancellationToken cancellationToken = default)
+    public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
     {
         var stream = EnsureStream();
 
-        var header = new byte[4];
-        var headerRead = await ReadExactOrClosedAsync(stream, header, cancellationToken).ConfigureAwait(false);
+        var headerRead = await ReadExactOrClosedAsync(stream, _receiveHeaderBuffer, cancellationToken).ConfigureAwait(false);
         if (headerRead == 0)
         {
-            return [];
+            return PooledFrame.Closed;
         }
 
-        var frameLength = checked((int)BinaryPrimitives.ReadUInt32BigEndian(header));
+        var frameLength = checked((int)BinaryPrimitives.ReadUInt32BigEndian(_receiveHeaderBuffer));
         if (frameLength == 0)
         {
-            return [];
+            return PooledFrame.Empty;
         }
 
         if (frameLength > _maxFrameSize)
@@ -103,14 +102,15 @@ public sealed class TcpTransport : ITransport
             throw new InvalidOperationException($"TCP frame length {frameLength} exceeds max frame size {_maxFrameSize}.");
         }
 
-        var payload = GC.AllocateUninitializedArray<byte>(frameLength);
+        var payload = ArrayPool<byte>.Shared.Rent(frameLength);
         var payloadRead = await ReadExactOrClosedAsync(stream, payload, cancellationToken).ConfigureAwait(false);
         if (payloadRead == 0)
         {
-            return [];
+            ArrayPool<byte>.Shared.Return(payload);
+            return PooledFrame.Closed;
         }
 
-        return payload;
+        return PooledFrame.FromRentedBuffer(payload, frameLength);
     }
 
     public Task CloseAsync(CancellationToken cancellationToken = default)

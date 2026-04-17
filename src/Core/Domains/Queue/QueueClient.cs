@@ -11,7 +11,7 @@ namespace Cntryl.Fitz.Domains.Queue;
 
 public sealed class QueueClient : IQueueClient
 {
-    private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
+    private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
@@ -33,12 +33,19 @@ public sealed class QueueClient : IQueueClient
     public QueueClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        : this(async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)), registerNotificationHandler)
+    {
+    }
+
+    internal QueueClient(
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
     }
 
-    public async Task<ulong> EnqueueAsync(
+    public async ValueTask<ulong> EnqueueAsync(
         string route,
         ReadOnlyMemory<byte> body,
         int? delayMs = null,
@@ -61,7 +68,7 @@ public sealed class QueueClient : IQueueClient
             writer.WriteU64((ulong)delaySeconds);
         }
 
-        var response = await _request(MessageTypes.QueueEnqueue, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.QueueEnqueue, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -69,7 +76,13 @@ public sealed class QueueClient : IQueueClient
             throw new QueueException($"ENQUEUE failed with status {status}", "ENQUEUE_FAILED", status);
         }
 
-        return reader.IsEof ? 0UL : reader.ReadU64();
+        var result = reader.IsEof ? 0UL : reader.ReadU64();
+        if (!reader.IsEof)
+        {
+            throw new QueueException("ENQUEUE response has trailing bytes", "ENQUEUE_INVALID_RESPONSE");
+        }
+
+        return result;
     }
 
     public async Task<IQueueReservedItem[]> ReserveAsync(
@@ -101,7 +114,7 @@ public sealed class QueueClient : IQueueClient
             writer.WriteU64((ulong)waitSeconds.Value);
         }
 
-        var response = await _request(MessageTypes.QueueReserve, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.QueueReserve, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -126,6 +139,11 @@ public sealed class QueueClient : IQueueClient
                 1,
                 _request
             );
+        }
+
+        if (!reader.IsEof)
+        {
+            throw new QueueException("RESERVE response has trailing bytes", "RESERVE_INVALID_RESPONSE");
         }
 
         return items;
@@ -202,7 +220,7 @@ public sealed class QueueClient : IQueueClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.QueueSubscribe, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.QueueSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -215,7 +233,13 @@ public sealed class QueueClient : IQueueClient
             throw new QueueException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
         }
 
-        return reader.ReadU64();
+        var subscriptionId = reader.ReadU64();
+        if (!reader.IsEof)
+        {
+            throw new QueueException("SUBSCRIBE response has trailing bytes", "SUBSCRIBE_INVALID_RESPONSE");
+        }
+
+        return subscriptionId;
     }
 
     private async Task UnsubscribeWireAsync(string pattern, CancellationToken ct)
@@ -223,7 +247,7 @@ public sealed class QueueClient : IQueueClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.QueueUnsubscribe, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.QueueUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -294,8 +318,6 @@ public sealed class QueueClient : IQueueClient
             var subscriptionId = reader.ReadU64();
             var eventRoute = reader.ReadString();
             var messageCount = reader.ReadU64();
-
-            SubscriptionRegistration<QueueAvailabilityEvent>[] registrations;
             lock (_gate)
             {
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
@@ -304,13 +326,11 @@ public sealed class QueueClient : IQueueClient
                     return;
                 }
 
-                registrations = subscription.Registrations.Values.ToArray();
-            }
-
-            var notification = new QueueAvailabilityEvent(eventRoute, messageCount);
-            foreach (var registration in registrations)
-            {
-                registration.Channel.Writer.TryWrite(notification);
+                var notification = new QueueAvailabilityEvent(eventRoute, messageCount);
+                foreach (var registration in subscription.Registrations.Values)
+                {
+                    registration.Channel.Writer.TryWrite(notification);
+                }
             }
         }
         catch

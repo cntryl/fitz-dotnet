@@ -12,7 +12,7 @@ public sealed class FitzConnection
     private readonly ClientConfig _config;
     private readonly Func<ITransport> _transportFactory;
     private readonly Multiplexer _multiplexer = new();
-    private readonly FrameParser _frameParser = new();
+    private readonly FrameParser _frameParser;
     private readonly Dictionary<long, Func<CancellationToken, ValueTask>> _reconnectListeners = new();
     private CancellationTokenSource _connectionClosedCts = new();
 
@@ -28,6 +28,7 @@ public sealed class FitzConnection
     {
         _config = config;
         _transportFactory = transportFactory;
+        _frameParser = new FrameParser(config.MaxFrameSize + FrameCodec.MaxHeaderSize);
     }
 
     public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
@@ -47,22 +48,24 @@ public sealed class FitzConnection
         await OpenAndAuthenticateAsync(isReconnect: false, cancellationToken).ConfigureAwait(false);
     }
 
-    public async Task<byte[]> RequestAsync(ushort messageType, byte[] payload, CancellationToken cancellationToken = default)
+    public async ValueTask<ReadOnlyMemory<byte>> RequestAsync(ushort messageType, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)
     {
         EnsureAuthenticated();
         var transport = EnsureTransport();
-        var frame = FrameCodec.Encode(messageType, payload);
+        var frame = FrameCodec.Encode(messageType, payload.Span);
         var timeout = _config.Timeout ?? TimeSpan.FromSeconds(30);
 
         try
         {
-            return await _multiplexer.RequestAsync(
+            var response = await _multiplexer.RequestAsync(
                 messageType,
                 frame,
                 (data, token) => transport.SendAsync(data, token),
                 timeout,
                 cancellationToken
             ).ConfigureAwait(false);
+
+            return response;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -83,10 +86,10 @@ public sealed class FitzConnection
         }
     }
 
-    public async Task SendAsync(ushort messageType, byte[] payload, CancellationToken cancellationToken = default)
+    public async ValueTask SendAsync(ushort messageType, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)
     {
         EnsureAuthenticated();
-        var frame = FrameCodec.Encode(messageType, payload);
+        var frame = FrameCodec.Encode(messageType, payload.Span);
 
         try
         {
@@ -252,14 +255,17 @@ public sealed class FitzConnection
                 try
                 {
                     var transport = EnsureTransport();
-                    var data = await transport.ReceiveAsync(token).ConfigureAwait(false);
-                    if (data.Length == 0)
+                    using var data = await transport.ReceiveAsync(token).ConfigureAwait(false);
+                    if (data.IsClosed)
                     {
                         throw new ConnectionException("Transport closed.");
                     }
 
-                    var frames = _frameParser.ParseFrames(data);
-                    foreach (var frame in frames)
+                    if (!data.Memory.IsEmpty)
+                    {
+                        _frameParser.Append(data.Memory.Span);
+                    }
+                    while (_frameParser.TryReadFrame(out var frame))
                     {
                         _multiplexer.Dispatch(frame.MessageType, frame.Payload);
                     }

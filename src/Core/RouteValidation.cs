@@ -1,90 +1,290 @@
 using System;
-using System.Linq;
 
 namespace Cntryl.Fitz.Core;
+
+internal enum RouteValidationFailure
+{
+    InvalidScheme,
+    EmptySegment,
+    InvalidShape,
+    ContainsWildcard,
+}
 
 internal static class RouteValidation
 {
     internal static bool IsConcreteRoute(string route, string scheme)
     {
-        return TryParseSegments(route, scheme, out var segments) && !ContainsWildcard(segments);
+        return TryValidateConcreteRoute(route, scheme, out _);
     }
 
     internal static bool IsFixedRoute(string route, string scheme, int segmentCount)
     {
-        return TryParseSegments(route, scheme, out var segments) && segments.Length == segmentCount && !ContainsWildcard(segments);
+        return TryValidateFixedRoute(route, scheme, segmentCount, out _);
     }
 
     internal static bool IsSelectorRoute(string route, string scheme, int segmentCount, bool allowRealmWildcard)
     {
-        if (!TryParseSegments(route, scheme, out var segments) || segments.Length != segmentCount)
-        {
-            return false;
-        }
-
-        if (!ContainsWildcard(segments))
-        {
-            return true;
-        }
-
-        if (allowRealmWildcard && segmentCount == 3 && IsConcreteSegment(segments[0]) && segments[1] == "*" && segments[2] == "*")
-        {
-            return true;
-        }
-
-        if (segments[^1] != "*")
-        {
-            return false;
-        }
-
-        return segments[..^1].All(IsConcreteSegment);
+        return TryValidateSelectorRoute(route, scheme, segmentCount, allowRealmWildcard, out _);
     }
 
-    private static bool TryParseSegments(string route, string scheme, out string[] segments)
+    internal static bool TryValidateConcreteRoute(string route, string scheme, out RouteValidationFailure failure)
     {
-        segments = Array.Empty<string>();
+        failure = RouteValidationFailure.InvalidScheme;
+
+        if (!TryGetPathStart(route, scheme, out var pathStart, out failure))
+        {
+            return false;
+        }
+
+        var index = pathStart;
+        while (true)
+        {
+            var segmentEnd = route.IndexOf('/', index);
+            if (segmentEnd < 0)
+            {
+                segmentEnd = route.Length;
+            }
+
+            if (segmentEnd == index)
+            {
+                failure = RouteValidationFailure.EmptySegment;
+                return false;
+            }
+
+            if (IsWildcardSegment(route, index, segmentEnd - index))
+            {
+                failure = RouteValidationFailure.ContainsWildcard;
+                return false;
+            }
+
+            if (segmentEnd == route.Length)
+            {
+                return true;
+            }
+
+            index = segmentEnd + 1;
+        }
+    }
+
+    internal static bool TryValidateFixedRoute(string route, string scheme, int segmentCount, out RouteValidationFailure failure)
+    {
+        failure = RouteValidationFailure.InvalidScheme;
+
+        if (segmentCount <= 0)
+        {
+            failure = RouteValidationFailure.InvalidShape;
+            return false;
+        }
+
+        if (!TryGetPathStart(route, scheme, out var pathStart, out failure))
+        {
+            return false;
+        }
+
+        var index = pathStart;
+        var seenSegments = 0;
+        while (true)
+        {
+            var segmentEnd = route.IndexOf('/', index);
+            if (segmentEnd < 0)
+            {
+                segmentEnd = route.Length;
+            }
+
+            if (segmentEnd == index)
+            {
+                failure = RouteValidationFailure.EmptySegment;
+                return false;
+            }
+
+            if (IsWildcardSegment(route, index, segmentEnd - index))
+            {
+                failure = RouteValidationFailure.ContainsWildcard;
+                return false;
+            }
+
+            seenSegments++;
+            if (segmentEnd == route.Length)
+            {
+                break;
+            }
+
+            index = segmentEnd + 1;
+        }
+
+        if (seenSegments != segmentCount)
+        {
+            failure = RouteValidationFailure.InvalidShape;
+            return false;
+        }
+
+        return true;
+    }
+
+    internal static bool TryValidateSelectorRoute(string route, string scheme, int segmentCount, bool allowRealmWildcard, out RouteValidationFailure failure)
+    {
+        failure = RouteValidationFailure.InvalidScheme;
+
+        if (segmentCount <= 0)
+        {
+            failure = RouteValidationFailure.InvalidShape;
+            return false;
+        }
+
+        if (!TryGetPathStart(route, scheme, out var pathStart, out failure))
+        {
+            return false;
+        }
+
+        var index = pathStart;
+        var seenSegments = 0;
+        var hasWildcard = false;
+        var allPreviousSegmentsConcrete = true;
+        var firstSegmentConcrete = false;
+        var secondSegmentSingleWildcard = false;
+        var thirdSegmentSingleWildcard = false;
+        var lastSegmentSingleWildcard = false;
+
+        while (true)
+        {
+            var segmentEnd = route.IndexOf('/', index);
+            if (segmentEnd < 0)
+            {
+                segmentEnd = route.Length;
+            }
+
+            if (segmentEnd == index)
+            {
+                failure = RouteValidationFailure.EmptySegment;
+                return false;
+            }
+
+            var segmentLength = segmentEnd - index;
+            var isConcrete = IsConcreteSegment(route, index, segmentLength);
+            var isSingleWildcard = IsSingleWildcard(route, index, segmentLength);
+            var isDoubleWildcard = IsDoubleWildcard(route, index, segmentLength);
+
+            if (seenSegments == 0)
+            {
+                firstSegmentConcrete = isConcrete;
+            }
+            else if (seenSegments == 1)
+            {
+                secondSegmentSingleWildcard = isSingleWildcard;
+            }
+            else if (seenSegments == 2)
+            {
+                thirdSegmentSingleWildcard = isSingleWildcard;
+            }
+
+            if (!isConcrete)
+            {
+                hasWildcard = true;
+                if (seenSegments < segmentCount - 1)
+                {
+                    allPreviousSegmentsConcrete = false;
+                }
+            }
+
+            if (isDoubleWildcard)
+            {
+                failure = RouteValidationFailure.InvalidShape;
+                return false;
+            }
+
+            seenSegments++;
+            lastSegmentSingleWildcard = isSingleWildcard;
+
+            if (segmentEnd == route.Length)
+            {
+                break;
+            }
+
+            index = segmentEnd + 1;
+        }
+
+        if (seenSegments != segmentCount)
+        {
+            failure = RouteValidationFailure.InvalidShape;
+            return false;
+        }
+
+        if (!hasWildcard)
+        {
+            return true;
+        }
+
+        if (allowRealmWildcard &&
+            segmentCount == 3 &&
+            firstSegmentConcrete &&
+            secondSegmentSingleWildcard &&
+            thirdSegmentSingleWildcard)
+        {
+            return true;
+        }
+
+        if (!lastSegmentSingleWildcard || !allPreviousSegmentsConcrete)
+        {
+            failure = RouteValidationFailure.InvalidShape;
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryGetPathStart(string route, string scheme, out int pathStart, out RouteValidationFailure failure)
+    {
+        pathStart = 0;
+        failure = RouteValidationFailure.InvalidScheme;
 
         if (string.IsNullOrWhiteSpace(route) || string.IsNullOrWhiteSpace(scheme))
         {
             return false;
         }
 
-        var prefix = scheme + "://";
-        if (!route.StartsWith(prefix, StringComparison.Ordinal))
+        var schemeLength = scheme.Length;
+        if (route.Length <= schemeLength + 2)
         {
             return false;
         }
 
-        var path = route.Substring(prefix.Length);
-        if (path.Length == 0)
+        if (!route.AsSpan(0, schemeLength).SequenceEqual(scheme))
         {
             return false;
         }
 
-        segments = path.Split('/');
-        if (segments.Length == 0)
+        if (route[schemeLength] != ':' || route[schemeLength + 1] != '/' || route[schemeLength + 2] != '/')
         {
             return false;
         }
 
-        foreach (var segment in segments)
+        pathStart = schemeLength + 3;
+        if (route.Length <= pathStart)
         {
-            if (segment.Length == 0)
-            {
-                return false;
-            }
+            failure = RouteValidationFailure.EmptySegment;
+            return false;
         }
 
         return true;
     }
 
-    private static bool ContainsWildcard(string[] segments)
+    private static bool IsConcreteSegment(string route, int start, int length)
     {
-        return segments.Any(segment => !IsConcreteSegment(segment));
+        return !IsWildcardSegment(route, start, length);
     }
 
-    private static bool IsConcreteSegment(string segment)
+    private static bool IsWildcardSegment(string route, int start, int length)
     {
-        return segment != "*" && segment != "**";
+        return IsSingleWildcard(route, start, length) || IsDoubleWildcard(route, start, length);
+    }
+
+    private static bool IsSingleWildcard(string route, int start, int length)
+    {
+        return length == 1 && route[start] == '*';
+    }
+
+    private static bool IsDoubleWildcard(string route, int start, int length)
+    {
+        return length == 2 && route[start] == '*' && route[start + 1] == '*';
     }
 }

@@ -14,17 +14,17 @@ internal sealed record QueueReservedItem(
     ulong Token, 
     ReadOnlyMemory<byte> Body, 
     uint Attempt = 1,
-    Func<ushort, byte[], CancellationToken, Task<byte[]>>? RequestFn = null) 
+    Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? RequestFn = null) 
     : QueueItem(Route, Id, Token, Body, Attempt)
 {
     internal QueueReservedItem(
         QueueItem item,
-        Func<ushort, byte[], CancellationToken, Task<byte[]>> requestFn)
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> requestFn)
         : this(item.Route, item.Id, item.Token, item.Body, item.Attempt, requestFn)
     {
     }
 
-    private Func<ushort, byte[], CancellationToken, Task<byte[]>> GetRequest()
+    private Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> GetRequest()
     {
         return RequestFn ?? throw new InvalidOperationException("Request function not configured");
     }
@@ -37,12 +37,17 @@ internal sealed record QueueReservedItem(
         writer.WriteU64(Token);
         writer.WriteU64(leaseSeconds);
 
-        var response = await GetRequest()(MessageTypes.QueueExtend, writer.Build(), ct);
+        var response = await GetRequest()(MessageTypes.QueueExtend, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
         {
             throw new QueueException($"EXTEND failed with status {status}", "EXTEND_FAILED", status);
+        }
+
+        if (!reader.IsEof)
+        {
+            throw new QueueException("EXTEND response has trailing bytes", "EXTEND_INVALID_RESPONSE");
         }
     }
 
@@ -53,12 +58,17 @@ internal sealed record QueueReservedItem(
         writer.WriteU64(Id);
         writer.WriteU64(Token);
 
-        var response = await GetRequest()(MessageTypes.QueueComplete, writer.Build(), ct);
+        var response = await GetRequest()(MessageTypes.QueueComplete, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
         {
             throw new QueueException($"COMPLETE failed with status {status}", "COMPLETE_FAILED", status);
+        }
+
+        if (!reader.IsEof)
+        {
+            throw new QueueException("COMPLETE response has trailing bytes", "COMPLETE_INVALID_RESPONSE");
         }
     }
 
@@ -69,12 +79,17 @@ internal sealed record QueueReservedItem(
         writer.WriteU64(Id);
         writer.WriteU64(token);
 
-        var response = await GetRequest()(MessageTypes.QueueComplete, writer.Build(), ct);
+        var response = await GetRequest()(MessageTypes.QueueComplete, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
         {
             throw new QueueException($"COMPLETE failed with status {status}", "COMPLETE_FAILED", status);
+        }
+
+        if (!reader.IsEof)
+        {
+            throw new QueueException("COMPLETE response has trailing bytes", "COMPLETE_INVALID_RESPONSE");
         }
     }
 }

@@ -6,9 +6,9 @@ namespace Cntryl.Fitz.Domains.Lease;
 
 public sealed class LeaseHandle : ILease
 {
-    private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
+    private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
 
-    internal LeaseHandle(Func<ushort, byte[], CancellationToken, Task<byte[]>> request, string route, ulong token)
+    internal LeaseHandle(Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request, string route, ulong token)
     {
         _request = request;
         Route = route;
@@ -30,10 +30,20 @@ public sealed class LeaseHandle : ILease
         writer.WriteString(Route);
         writer.WriteString(string.Empty);
         writer.WriteU64(Token);
-        var response = await _request(MessageTypes.LeaseRelease, writer.Build(), ct);
-        if (response.Length > 0 && response[0] != 0)
+        var response = await _request(MessageTypes.LeaseRelease, writer.WrittenMemory, ct).ConfigureAwait(false);
+        if (response.Length > 0 && response.Span[0] != 0)
         {
-            throw new LeaseException($"RELEASE failed with status {response[0]}", "RELEASE_FAILED", response[0]);
+            throw new LeaseException($"RELEASE failed with status {response.Span[0]}", "RELEASE_FAILED", response.Span[0]);
+        }
+
+        if (response.Length > 0)
+        {
+            var reader = new BinaryBufferReader(response);
+            _ = reader.ReadU8();
+            if (!reader.IsEof)
+            {
+                throw new LeaseException("RELEASE response has trailing bytes", "RELEASE_INVALID_RESPONSE");
+            }
         }
     }
 
@@ -44,10 +54,10 @@ public sealed class LeaseHandle : ILease
         writer.WriteString(string.Empty);
         writer.WriteU64(Token);
         writer.WriteU64(ttlSecs);
-        var response = await _request(messageType, writer.Build(), ct);
-        if (response.Length > 0 && response[0] != 0)
+        var response = await _request(messageType, writer.WrittenMemory, ct).ConfigureAwait(false);
+        if (response.Length > 0 && response.Span[0] != 0)
         {
-            throw new LeaseException($"{operation} failed with status {response[0]}", $"{operation}_FAILED", response[0]);
+            throw new LeaseException($"{operation} failed with status {response.Span[0]}", $"{operation}_FAILED", response.Span[0]);
         }
 
         if (response.Length >= 9)
@@ -55,6 +65,10 @@ public sealed class LeaseHandle : ILease
             var reader = new BinaryBufferReader(response);
             _ = reader.ReadU8(); // status
             Token = reader.ReadU64();
+            if (!reader.IsEof)
+            {
+                throw new LeaseException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+            }
         }
     }
 }

@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Connection;
+using Cntryl.Fitz.Core;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
@@ -10,7 +11,7 @@ namespace Cntryl.Fitz.Domains.Stream;
 
 public sealed class StreamClient : IStreamClient
 {
-    private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
+    private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
@@ -29,6 +30,13 @@ public sealed class StreamClient : IStreamClient
 
     public StreamClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        : this(async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)), registerNotificationHandler)
+    {
+    }
+
+    internal StreamClient(
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
     {
         _request = request;
@@ -52,7 +60,7 @@ public sealed class StreamClient : IStreamClient
             writer.WriteU8(0);
         }
 
-        var response = await _request(MessageTypes.StreamBegin, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.StreamBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
         return new StreamSession(_request, StreamWireHelpers.ReadExpectedSessionId(response, "BEGIN", "MISSING_SESSION_ID"));
     }
 
@@ -75,7 +83,7 @@ public sealed class StreamClient : IStreamClient
             writer.WriteU64(maxBytes.Value);
         }
 
-        var response = await _request(MessageTypes.StreamRead, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.StreamRead, writer.WrittenMemory, ct).ConfigureAwait(false);
         var data = StreamWireHelpers.ReadOptionalPayload(response, "READ");
 
         if (data.IsEmpty)
@@ -97,7 +105,7 @@ public sealed class StreamClient : IStreamClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
 
-        var response = await _request(MessageTypes.StreamLast, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.StreamLast, writer.WrittenMemory, ct).ConfigureAwait(false);
         var data = StreamWireHelpers.ReadOptionalPayload(response, "LAST");
         if (data.IsEmpty)
         {
@@ -113,7 +121,7 @@ public sealed class StreamClient : IStreamClient
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        var response = await _request(MessageTypes.StreamGetMetadata, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.StreamGetMetadata, writer.WrittenMemory, ct).ConfigureAwait(false);
         var data = StreamWireHelpers.ReadOptionalPayload(response, "METADATA");
 
         if (data.IsEmpty)
@@ -209,7 +217,7 @@ public sealed class StreamClient : IStreamClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.StreamSubscribe, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.StreamSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         return StreamWireHelpers.ReadExpectedSessionId(response, "SUBSCRIBE", "MISSING_SUB_ID");
     }
 
@@ -218,7 +226,7 @@ public sealed class StreamClient : IStreamClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.StreamUnsubscribe, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.StreamUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         StreamWireHelpers.EnsureSuccessStatusOnly(response, "UNSUBSCRIBE");
     }
 
@@ -316,60 +324,46 @@ public sealed class StreamClient : IStreamClient
 
     private static void ValidateExactStreamRoute(string route)
     {
-        ValidateStreamRoute(route, allowWildcardSelectors: false);
+        if (RouteValidation.TryValidateFixedRoute(route, "stream", 3, out var failure))
+        {
+            return;
+        }
+
+        ThrowInvalidExactRoute(route, failure);
     }
 
     private static void ValidateStreamSelector(string route)
     {
-        ValidateStreamRoute(route, allowWildcardSelectors: true);
-    }
-
-    private static void ValidateStreamRoute(string route, bool allowWildcardSelectors)
-    {
-        ArgumentNullException.ThrowIfNull(route);
-
-        if (!route.StartsWith("stream://", StringComparison.Ordinal))
+        if (RouteValidation.TryValidateSelectorRoute(route, "stream", 3, allowRealmWildcard: true, out var failure))
         {
-            throw new StreamException($"stream route '{route}' must start with stream://", "INVALID_ROUTE");
-        }
-
-        var remainderStart = "stream://".Length;
-        var firstSlash = route.IndexOf('/', remainderStart);
-        var secondSlash = firstSlash >= 0 ? route.IndexOf('/', firstSlash + 1) : -1;
-        var thirdSlash = secondSlash >= 0 ? route.IndexOf('/', secondSlash + 1) : -1;
-        if (firstSlash < 0 || secondSlash < 0 || thirdSlash >= 0)
-        {
-            ThrowInvalidRouteShape(route, allowWildcardSelectors);
-        }
-
-        var realm = route.AsSpan(remainderStart, firstSlash - remainderStart);
-        var area = route.AsSpan(firstSlash + 1, secondSlash - firstSlash - 1);
-        var resource = route.AsSpan(secondSlash + 1);
-
-        if (realm.IsEmpty || area.IsEmpty || resource.IsEmpty)
-        {
-            throw new StreamException($"stream route '{route}' segments must be non-empty", "INVALID_ROUTE");
-        }
-
-        if (!allowWildcardSelectors)
-        {
-            if (IsWildcardSegment(realm) || IsWildcardSegment(area) || IsWildcardSegment(resource))
-            {
-                throw new StreamException($"stream route '{route}' must be stream://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
-            }
-
             return;
         }
 
-        if (IsWildcardSegment(realm) || IsDoubleWildcard(area) || IsDoubleWildcard(resource))
-        {
-            ThrowInvalidSelectorRoute(route);
-        }
+        ThrowInvalidSelectorRoute(route, failure);
+    }
 
-        if (IsSingleWildcard(area) && !IsSingleWildcard(resource))
+    private static void ThrowInvalidExactRoute(string route, RouteValidationFailure failure)
+    {
+        var message = failure switch
         {
-            ThrowInvalidSelectorRoute(route);
-        }
+            RouteValidationFailure.InvalidScheme => $"stream route '{route}' must start with stream://",
+            RouteValidationFailure.EmptySegment => $"stream route '{route}' segments must be non-empty",
+            _ => $"stream route '{route}' must be stream://{{realm}}/{{area}}/{{resource}}",
+        };
+
+        throw new StreamException(message, "INVALID_ROUTE");
+    }
+
+    private static void ThrowInvalidSelectorRoute(string route, RouteValidationFailure failure)
+    {
+        var message = failure switch
+        {
+            RouteValidationFailure.InvalidScheme => $"stream route '{route}' must start with stream://",
+            RouteValidationFailure.EmptySegment => $"stream route '{route}' segments must be non-empty",
+            _ => $"stream route '{route}' must be one of stream://{{realm}}/{{area}}/{{resource}}, stream://{{realm}}/{{area}}/*, or stream://{{realm}}/*/*",
+        };
+
+        throw new StreamException(message, "INVALID_ROUTE");
     }
 
     private async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
@@ -446,34 +440,6 @@ public sealed class StreamClient : IStreamClient
 
             return clone;
         }
-    }
-
-    private static void ThrowInvalidRouteShape(string route, bool allowWildcardSelectors)
-    {
-        var expected = allowWildcardSelectors
-            ? "one of stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*"
-            : "stream://{realm}/{area}/{resource}";
-        throw new StreamException($"stream route '{route}' must be {expected}", "INVALID_ROUTE");
-    }
-
-    private static void ThrowInvalidSelectorRoute(string route)
-    {
-        throw new StreamException($"stream route '{route}' must be one of stream://{{realm}}/{{area}}/{{resource}}, stream://{{realm}}/{{area}}/*, or stream://{{realm}}/*/*", "INVALID_ROUTE");
-    }
-
-    private static bool IsSingleWildcard(ReadOnlySpan<char> segment)
-    {
-        return segment.Length == 1 && segment[0] == '*';
-    }
-
-    private static bool IsDoubleWildcard(ReadOnlySpan<char> segment)
-    {
-        return segment.Length == 2 && segment[0] == '*' && segment[1] == '*';
-    }
-
-    private static bool IsWildcardSegment(ReadOnlySpan<char> segment)
-    {
-        return IsSingleWildcard(segment) || IsDoubleWildcard(segment);
     }
 
     private static StreamRecord[] ParseReadRecords(ReadOnlyMemory<byte> data)

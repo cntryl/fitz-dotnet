@@ -1,8 +1,8 @@
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Connection;
+using Cntryl.Fitz.Core;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
@@ -11,7 +11,7 @@ namespace Cntryl.Fitz.Domains.Schedule;
 
 public sealed class ScheduleClient : IScheduleClient
 {
-    private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
+    private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
@@ -33,12 +33,19 @@ public sealed class ScheduleClient : IScheduleClient
     public ScheduleClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        : this(async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)), registerNotificationHandler)
+    {
+    }
+
+    internal ScheduleClient(
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
     }
 
-    public async Task<string?> CreateAsync(string route, string cron, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+    public async ValueTask<string?> CreateAsync(string route, string cron, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
         ValidateScheduleRoute(route);
 
@@ -47,23 +54,38 @@ public sealed class ScheduleClient : IScheduleClient
         writer.WriteString(cron);
         writer.WriteU32((uint)payload.Length);
         writer.WriteBytes(payload.Span);
-        var data = await AssertSuccessAsync(MessageTypes.ScheduleCreate, writer.Build(), "CREATE", ct).ConfigureAwait(false);
+        var data = await AssertSuccessAsync(MessageTypes.ScheduleCreate, writer.WrittenMemory, "CREATE", ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(data);
         if (!reader.IsEof && reader.ReadU8() == 1)
         {
-            return reader.ReadString();
+            var createdRoute = reader.ReadString();
+            if (!reader.IsEof)
+            {
+                throw new ScheduleException("CREATE response has trailing bytes", "CREATE_INVALID_RESPONSE");
+            }
+
+            return createdRoute;
+        }
+
+        if (!reader.IsEof)
+        {
+            throw new ScheduleException("CREATE response has trailing bytes", "CREATE_INVALID_RESPONSE");
         }
 
         return route;
     }
 
-    public async Task CancelAsync(string route, CancellationToken ct = default)
+    public async ValueTask CancelAsync(string route, CancellationToken ct = default)
     {
         ValidateScheduleRoute(route);
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        _ = await AssertSuccessAsync(MessageTypes.ScheduleCancel, writer.Build(), "CANCEL", ct).ConfigureAwait(false);
+        var data = await AssertSuccessAsync(MessageTypes.ScheduleCancel, writer.WrittenMemory, "CANCEL", ct).ConfigureAwait(false);
+        if (!data.IsEmpty)
+        {
+            throw new ScheduleException("CANCEL response has trailing bytes", "CANCEL_INVALID_RESPONSE");
+        }
     }
 
     public async Task<(ScheduleEntry[] Entries, ulong TotalCount)> ListAsync(ulong offset = 0, ulong limit = 0, CancellationToken ct = default)
@@ -81,7 +103,7 @@ public sealed class ScheduleClient : IScheduleClient
             writer.WriteU64(limit);
         }
 
-        var data = await AssertSuccessAsync(MessageTypes.ScheduleList, writer.Build(), "LIST", ct).ConfigureAwait(false);
+        var data = await AssertSuccessAsync(MessageTypes.ScheduleList, writer.WrittenMemory, "LIST", ct).ConfigureAwait(false);
         if (data.Length == 0)
         {
             return ([], 0);
@@ -104,6 +126,11 @@ public sealed class ScheduleClient : IScheduleClient
             var payloadLength = reader.ReadU32();
             var payload = reader.ReadBytes((int)payloadLength);
             entries.Add(new ScheduleEntry(route, route, cron, payload));
+        }
+
+        if (!reader.IsEof)
+        {
+            throw new ScheduleException("LIST response has trailing bytes", "LIST_INVALID_RESPONSE");
         }
 
         return (entries.ToArray(), totalCount);
@@ -213,7 +240,7 @@ public sealed class ScheduleClient : IScheduleClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
 
-        var response = await _request(MessageTypes.ScheduleSubscribe, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.ScheduleSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -226,7 +253,13 @@ public sealed class ScheduleClient : IScheduleClient
             throw new ScheduleException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
         }
 
-        return reader.ReadU64();
+        var subscriptionId = reader.ReadU64();
+        if (!reader.IsEof)
+        {
+            throw new ScheduleException("SUBSCRIBE response has trailing bytes", "SUBSCRIBE_INVALID_RESPONSE");
+        }
+
+        return subscriptionId;
     }
 
     private async Task UnsubscribeWireAsync(string route, CancellationToken ct)
@@ -234,7 +267,8 @@ public sealed class ScheduleClient : IScheduleClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
 
-        _ = await AssertSuccessAsync(MessageTypes.ScheduleUnsubscribe, writer.Build(), "UNSUBSCRIBE", ct).ConfigureAwait(false);
+        var data = await AssertSuccessAsync(MessageTypes.ScheduleUnsubscribe, writer.WrittenMemory, "UNSUBSCRIBE", ct).ConfigureAwait(false);
+        _ = data;
     }
 
     private void EnsureNotificationHandlerInitialized()
@@ -262,7 +296,6 @@ public sealed class ScheduleClient : IScheduleClient
             var bodyLength = reader.ReadU32();
             var body = reader.ReadBytes((int)bodyLength);
 
-            SubscriptionRegistration<ScheduleNotification>[] registrations;
             lock (_gate)
             {
                 if (!_routesBySubscriptionId.TryGetValue(subscriptionId, out var route) ||
@@ -271,13 +304,11 @@ public sealed class ScheduleClient : IScheduleClient
                     return;
                 }
 
-                registrations = subscription.Writers.Values.ToArray();
-            }
-
-            var notification = new ScheduleNotification(body);
-            foreach (var registration in registrations)
-            {
-                registration.Channel.Writer.TryWrite(notification);
+                var notification = new ScheduleNotification(body);
+                foreach (var registration in subscription.Writers.Values)
+                {
+                    registration.Channel.Writer.TryWrite(notification);
+                }
             }
         }
         catch
@@ -292,27 +323,25 @@ public sealed class ScheduleClient : IScheduleClient
 
     private static void ValidateScheduleRoute(string route)
     {
-        if (!route.StartsWith("schedule://", StringComparison.Ordinal))
+        if (RouteValidation.TryValidateFixedRoute(route, "schedule", 4, out var failure))
         {
-            throw new ScheduleException($"schedule route '{route}' must start with schedule://", "INVALID_ROUTE");
+            return;
         }
 
-        var remainder = route["schedule://".Length..];
-        var segments = remainder.Split('/');
-        if (segments.Any(segment => segment.Length == 0))
-        {
-            throw new ScheduleException($"schedule route '{route}' segments must be non-empty", "INVALID_ROUTE");
-        }
+        throw CreateRouteException(route, failure);
+    }
 
-        if (segments.Length != 4)
+    private static ScheduleException CreateRouteException(string route, RouteValidationFailure failure)
+    {
+        var message = failure switch
         {
-            throw new ScheduleException($"schedule route '{route}' must be schedule://{{realm}}/{{area}}/{{resource}}/{{operation}}", "INVALID_ROUTE");
-        }
+            RouteValidationFailure.InvalidScheme => $"schedule route '{route}' must start with schedule://",
+            RouteValidationFailure.EmptySegment => $"schedule route '{route}' segments must be non-empty",
+            RouteValidationFailure.ContainsWildcard => $"schedule route '{route}' must not contain wildcards",
+            _ => $"schedule route '{route}' must be schedule://{{realm}}/{{area}}/{{resource}}/{{operation}}",
+        };
 
-        if (segments.Any(segment => segment == "*" || segment == "**"))
-        {
-            throw new ScheduleException($"schedule route '{route}' must not contain wildcards", "INVALID_ROUTE");
-        }
+        return new ScheduleException(message, "INVALID_ROUTE");
     }
 
     private async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
@@ -391,7 +420,7 @@ public sealed class ScheduleClient : IScheduleClient
         }
     }
 
-    private async Task<byte[]> AssertSuccessAsync(ushort messageType, byte[] payload, string operation, CancellationToken ct)
+    private async ValueTask<ReadOnlyMemory<byte>> AssertSuccessAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct)
     {
         var response = await _request(messageType, payload, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
@@ -401,6 +430,6 @@ public sealed class ScheduleClient : IScheduleClient
             throw new ScheduleException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
         }
 
-        return reader.IsEof ? [] : reader.ReadBytes(reader.RemainingBytes);
+        return reader.IsEof ? ReadOnlyMemory<byte>.Empty : response.Slice(1);
     }
 }

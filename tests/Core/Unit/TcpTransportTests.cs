@@ -31,10 +31,10 @@ public sealed class TcpTransportTests
         // Act
         await transport.ConnectAsync();
         await transport.SendAsync("ping"u8.ToArray());
-        var response = await transport.ReceiveAsync();
+        using var response = await transport.ReceiveAsync();
 
         // Assert
-        Assert.Equal("pong", System.Text.Encoding.UTF8.GetString(response));
+        Assert.Equal("pong", System.Text.Encoding.UTF8.GetString(response.Memory.Span));
 
         await serverTask;
         listener.Stop();

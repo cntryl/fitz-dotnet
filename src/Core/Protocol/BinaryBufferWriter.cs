@@ -55,6 +55,12 @@ public sealed class BinaryBufferWriter : IDisposable
         _position += byteCount;
     }
 
+    public int WrittenCount => _position;
+
+    public ReadOnlySpan<byte> WrittenSpan => _buffer.AsSpan(0, _position);
+
+    public ReadOnlyMemory<byte> WrittenMemory => _buffer.AsMemory(0, _position);
+
     public byte[] Build()
     {
         var result = GC.AllocateUninitializedArray<byte>(_position);

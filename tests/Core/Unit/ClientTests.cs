@@ -28,7 +28,7 @@ public sealed class ClientTests
         Assert.Single(transport.SentFrames);
         var frame = FrameCodec.Decode(transport.SentFrames[0]);
         Assert.Equal(MessageTypes.Connect, frame.MessageType);
-        Assert.Equal("token-123", System.Text.Encoding.UTF8.GetString(frame.Payload));
+        Assert.Equal("token-123", System.Text.Encoding.UTF8.GetString(frame.Payload.Span));
     }
 
     [Fact]
@@ -58,7 +58,7 @@ public sealed class ClientTests
     public async Task should_throw_authentication_exception_given_transport_close_during_authentication()
     {
         // Arrange
-        var transport = new FakeTransport(receive: _ => Task.FromResult(Array.Empty<byte>()));
+        var transport = new FakeTransport(receive: _ => new ValueTask<PooledFrame>(PooledFrame.Closed));
         var client = new Client(
             new ClientConfig(
                 "ws://localhost:4190/ws",
@@ -81,7 +81,7 @@ public sealed class ClientTests
         var transport = new FakeTransport(receive: async ct =>
         {
             await Task.Delay(Timeout.InfiniteTimeSpan, ct);
-            return [];
+            return PooledFrame.Closed;
         });
         var client = new Client(
             new ClientConfig(
@@ -104,11 +104,11 @@ public sealed class ClientTests
 
     private sealed class FakeTransport : ITransport
     {
-        private readonly Func<CancellationToken, Task<byte[]>> _receive;
+        private readonly Func<CancellationToken, ValueTask<PooledFrame>> _receive;
 
-        public FakeTransport(Func<CancellationToken, Task<byte[]>>? receive = null)
+        public FakeTransport(Func<CancellationToken, ValueTask<PooledFrame>>? receive = null)
         {
-            _receive = receive ?? (ct => Task.Delay(50, ct).ContinueWith(_ => Array.Empty<byte>(), TaskScheduler.Default));
+            _receive = receive ?? (_ => new ValueTask<PooledFrame>(PooledFrame.Closed));
         }
 
         public List<byte[]> SentFrames { get; } = [];
@@ -128,7 +128,7 @@ public sealed class ClientTests
             return Task.CompletedTask;
         }
 
-        public Task<byte[]> ReceiveAsync(CancellationToken cancellationToken = default)
+        public ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return _receive(cancellationToken);

@@ -2,7 +2,7 @@ namespace Cntryl.Fitz.Abstractions.Domains.Queue;
 
 public interface IQueueClient
 {
-    Task<ulong> EnqueueAsync(
+    ValueTask<ulong> EnqueueAsync(
         string route,
         ReadOnlyMemory<byte> body,
         int? delayMs = null,

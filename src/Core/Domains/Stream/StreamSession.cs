@@ -6,10 +6,10 @@ namespace Cntryl.Fitz.Domains.Stream;
 
 public sealed class StreamSession : IStreamSession
 {
-    private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>> _request;
+    private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly ulong _sessionId;
 
-    internal StreamSession(Func<ushort, byte[], CancellationToken, Task<byte[]>> request, ulong sessionId)
+    internal StreamSession(Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request, ulong sessionId)
     {
         _request = request;
         _sessionId = sessionId;
@@ -33,7 +33,7 @@ public sealed class StreamSession : IStreamSession
             writer.WriteU8(0);
         }
 
-        var response = await _request(MessageTypes.StreamAppend, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.StreamAppend, writer.WrittenMemory, ct).ConfigureAwait(false);
         var data = StreamWireHelpers.ReadOptionalPayload(response, "APPEND");
         if (data.IsEmpty || data.Length < 8)
         {
@@ -49,17 +49,17 @@ public sealed class StreamSession : IStreamSession
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_sessionId);
         writer.WriteU8(0);
-        return ExpectStatusAsync(MessageTypes.StreamCommit, writer.Build(), "COMMIT", ct);
+        return ExpectStatusAsync(MessageTypes.StreamCommit, writer.WrittenMemory, "COMMIT", ct);
     }
 
     public Task RollbackAsync(CancellationToken ct = default)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_sessionId);
-        return ExpectStatusAsync(MessageTypes.StreamRollback, writer.Build(), "ROLLBACK", ct);
+        return ExpectStatusAsync(MessageTypes.StreamRollback, writer.WrittenMemory, "ROLLBACK", ct);
     }
 
-    private async Task ExpectStatusAsync(ushort messageType, byte[] payload, string operation, CancellationToken ct)
+    private async Task ExpectStatusAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct)
     {
         var response = await _request(messageType, payload, ct).ConfigureAwait(false);
         StreamWireHelpers.EnsureSuccessStatusOnly(response, operation);

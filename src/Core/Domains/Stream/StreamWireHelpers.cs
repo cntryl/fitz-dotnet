@@ -11,6 +11,11 @@ internal static class StreamWireHelpers
     {
         var reader = new BinaryBufferReader(response);
         ReadSuccessStatus(reader, operation);
+
+        if (!reader.IsEof)
+        {
+            throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+        }
     }
 
     internal static ulong ReadExpectedSessionId(ReadOnlyMemory<byte> response, string operation, string missingSessionCode)
@@ -23,7 +28,13 @@ internal static class StreamWireHelpers
             throw new StreamException($"{operation} response missing session id", missingSessionCode);
         }
 
-        return reader.ReadU64();
+        var sessionId = reader.ReadU64();
+        if (!reader.IsEof)
+        {
+            throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+        }
+
+        return sessionId;
     }
 
     internal static ReadOnlyMemory<byte> ReadOptionalPayload(ReadOnlyMemory<byte> response, string operation)
@@ -68,7 +79,13 @@ internal static class StreamWireHelpers
             throw new StreamException($"{operation} response payload length too large", $"{operation}_INVALID_RESPONSE");
         }
 
-        return reader.ReadMemory((int)payloadLength);
+        var payload = reader.ReadMemory((int)payloadLength);
+        if (!reader.IsEof)
+        {
+            throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+        }
+
+        return payload;
     }
 
     internal static StreamRecord ReadRecord(ReadOnlyMemory<byte> payload, string operation)
@@ -93,6 +110,11 @@ internal static class StreamWireHelpers
         }
 
         var body = reader.ReadBytes(bodyLengthInt);
+        if (!reader.IsEof)
+        {
+            throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+        }
+
         return new StreamRecord(offset, body);
     }
 

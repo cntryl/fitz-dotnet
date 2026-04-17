@@ -41,22 +41,41 @@ public class FrameParserBenchmarks
     [Benchmark]
     public int ParseSingleFrame()
     {
-        var frames = _parser.ParseFrames(_singleFrame);
-        return frames.Count;
+        _parser.Append(_singleFrame);
+        return _parser.TryReadFrame(out _) ? 1 : 0;
     }
 
     [Benchmark]
     public int ParseTwoFramesBatch()
     {
-        var frames = _parser.ParseFrames(_twoFrames);
-        return frames.Count;
+        _parser.Append(_twoFrames);
+
+        var count = 0;
+        while (_parser.TryReadFrame(out _))
+        {
+            count++;
+        }
+
+        return count;
     }
 
     [Benchmark]
     public int ParseSplitFrameAcrossChunks()
     {
-        var first = _parser.ParseFrames(_chunkA);
-        var second = _parser.ParseFrames(_chunkB);
-        return first.Count + second.Count;
+        _parser.Append(_chunkA);
+        var count = 0;
+
+        while (_parser.TryReadFrame(out _))
+        {
+            count++;
+        }
+
+        _parser.Append(_chunkB);
+        while (_parser.TryReadFrame(out _))
+        {
+            count++;
+        }
+
+        return count;
     }
 }

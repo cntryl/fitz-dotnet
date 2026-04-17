@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Net.WebSockets;
 
 namespace Cntryl.Fitz.Transport;
@@ -27,7 +28,7 @@ public sealed class WebSocketTransport : ITransport
         _socket = new ClientWebSocket();
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(_timeout);
-        await _socket.ConnectAsync(_uri, cts.Token);
+        await _socket.ConnectAsync(_uri, cts.Token).ConfigureAwait(false);
     }
 
     public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
@@ -46,32 +47,53 @@ public sealed class WebSocketTransport : ITransport
         }
     }
 
-    public async Task<byte[]> ReceiveAsync(CancellationToken cancellationToken = default)
+    public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
     {
         var socket = EnsureSocket();
 
-        using var stream = new MemoryStream();
-        var buffer = new byte[16 * 1024];
+        var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
+        var length = 0;
+        var ownsBuffer = true;
         while (true)
         {
-            var result = await socket.ReceiveAsync(buffer, cancellationToken);
+            var remaining = buffer.Length - length;
+            if (remaining == 0)
+            {
+                var next = ArrayPool<byte>.Shared.Rent(buffer.Length * 2);
+                buffer.AsSpan(0, length).CopyTo(next);
+                ArrayPool<byte>.Shared.Return(buffer);
+                buffer = next;
+                remaining = buffer.Length - length;
+            }
+
+            var result = await socket.ReceiveAsync(buffer.AsMemory(length, remaining), cancellationToken).ConfigureAwait(false);
             if (result.MessageType == WebSocketMessageType.Close)
             {
-                return [];
+                if (ownsBuffer)
+                {
+                    ArrayPool<byte>.Shared.Return(buffer);
+                }
+
+                return PooledFrame.Closed;
             }
 
-            if (result.Count > 0)
-            {
-                stream.Write(buffer, 0, result.Count);
-            }
-
+            length += result.Count;
             if (result.EndOfMessage)
             {
-                break;
+                if (length == 0)
+                {
+                    if (ownsBuffer)
+                    {
+                        ArrayPool<byte>.Shared.Return(buffer);
+                    }
+
+                    return PooledFrame.Empty;
+                }
+
+                ownsBuffer = false;
+                return PooledFrame.FromRentedBuffer(buffer, length);
             }
         }
-
-        return stream.ToArray();
     }
 
     public async Task CloseAsync(CancellationToken cancellationToken = default)
@@ -86,7 +108,7 @@ public sealed class WebSocketTransport : ITransport
 
         if (socket.State == WebSocketState.Open)
         {
-            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "client closing", cancellationToken);
+            await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "client closing", cancellationToken).ConfigureAwait(false);
         }
 
         socket.Dispose();
@@ -94,7 +116,7 @@ public sealed class WebSocketTransport : ITransport
 
     public async ValueTask DisposeAsync()
     {
-        await CloseAsync();
+        await CloseAsync().ConfigureAwait(false);
     }
 
     private ClientWebSocket EnsureSocket()

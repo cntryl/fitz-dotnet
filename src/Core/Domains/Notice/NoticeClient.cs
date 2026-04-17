@@ -1,18 +1,18 @@
 using System.Collections.Generic;
-using System.Linq;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Notice;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Core;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
+using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Notice;
 
 public sealed class NoticeClient : INoticeClient
 {
-    private readonly Func<ushort, byte[], CancellationToken, Task> _send;
-    private readonly Func<ushort, byte[], CancellationToken, Task<byte[]>>? _request;
+    private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
+    private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _request;
     private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
@@ -36,13 +36,26 @@ public sealed class NoticeClient : INoticeClient
         Func<ushort, byte[], CancellationToken, Task> send,
         Func<ushort, byte[], CancellationToken, Task<byte[]>>? request = null,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        : this(
+            async (messageType, payload, ct) => await send(messageType, payload.ToArray(), ct).ConfigureAwait(false),
+            request is null
+                ? null
+                : async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
+            registerNotificationHandler)
+    {
+    }
+
+    internal NoticeClient(
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send,
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? request = null,
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
     {
         _send = send;
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
     }
 
-    public Task PublishAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default)
+    public ValueTask PublishAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default)
     {
         if (!RouteValidation.IsFixedRoute(route, "notice", 3))
         {
@@ -53,7 +66,7 @@ public sealed class NoticeClient : INoticeClient
         writer.WriteString(route);
         writer.WriteU32((uint)body.Length);
         writer.WriteBytes(body.Span);
-        return _send(MessageTypes.NoticePublish, writer.Build(), ct);
+        return _send(MessageTypes.NoticePublish, writer.WrittenMemory, ct);
     }
 
     public async Task<NoticeSubscription> SubscribeAsync(string pattern, Func<NoticeMessage, CancellationToken, ValueTask> handler, CancellationToken ct = default)
@@ -71,7 +84,7 @@ public sealed class NoticeClient : INoticeClient
             SingleReader = true,
             SingleWriter = false,
         });
-        var registration = new NoticeHandlerRegistration(channel);
+        var registration = new SubscriptionRegistration<NoticeMessage>(channel);
 
         var handleId = Interlocked.Increment(ref _nextHandleId);
         await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
@@ -81,7 +94,7 @@ public sealed class NoticeClient : INoticeClient
             {
                 existingSubscription.Writers[handleId] = registration;
                 var existingHandle = CreateSubscription(pattern, handleId, existingSubscription.SubscriptionId);
-                StartHandlerPump(registration, handler);
+                SubscriptionPump.Start(registration, handler);
                 return existingHandle;
             }
 
@@ -92,7 +105,7 @@ public sealed class NoticeClient : INoticeClient
             _patternsBySubscriptionId[subscriptionId] = pattern;
 
             var handle = CreateSubscription(pattern, handleId, subscriptionId);
-            StartHandlerPump(registration, handler);
+            SubscriptionPump.Start(registration, handler);
             return handle;
         }
         catch
@@ -120,7 +133,7 @@ public sealed class NoticeClient : INoticeClient
     private async ValueTask UnsubscribeAsync(string pattern, long handleId, CancellationToken ct)
     {
         ulong? subscriptionId = null;
-        NoticeHandlerRegistration? registration = null;
+        SubscriptionRegistration<NoticeMessage>? registration = null;
 
         await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -165,7 +178,7 @@ public sealed class NoticeClient : INoticeClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.NoticeSubscribe, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.NoticeSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -178,7 +191,13 @@ public sealed class NoticeClient : INoticeClient
             throw new NoticeException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
         }
 
-        return reader.ReadU64();
+        var subscriptionId = reader.ReadU64();
+        if (!reader.IsEof)
+        {
+            throw new NoticeException("SUBSCRIBE response has trailing bytes", "SUBSCRIBE_INVALID_RESPONSE");
+        }
+
+        return subscriptionId;
     }
 
     private async Task UnsubscribeWireAsync(ulong subscriptionId, CancellationToken ct)
@@ -191,7 +210,7 @@ public sealed class NoticeClient : INoticeClient
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(subscriptionId);
 
-        var response = await _request(MessageTypes.NoticeUnsubscribe, writer.Build(), ct).ConfigureAwait(false);
+        var response = await _request(MessageTypes.NoticeUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -225,8 +244,6 @@ public sealed class NoticeClient : INoticeClient
             var route = reader.ReadString();
             var bodyLength = reader.ReadU32();
             var body = reader.ReadBytes((int)bodyLength);
-
-            NoticeHandlerRegistration[] registrations;
             lock (_gate)
             {
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
@@ -235,47 +252,16 @@ public sealed class NoticeClient : INoticeClient
                     return;
                 }
 
-                registrations = subscription.Writers.Values.ToArray();
-            }
-
-            var message = new NoticeMessage(route, body);
-            foreach (var registration in registrations)
-            {
-                registration.Channel.Writer.TryWrite(message);
+                var message = new NoticeMessage(route, body);
+                foreach (var registration in subscription.Writers.Values)
+                {
+                    registration.Channel.Writer.TryWrite(message);
+                }
             }
         }
         catch
         {
         }
-    }
-
-    private static void StartHandlerPump(NoticeHandlerRegistration registration, Func<NoticeMessage, CancellationToken, ValueTask> handler)
-    {
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                while (await registration.Channel.Reader.WaitToReadAsync(registration.CancellationToken).ConfigureAwait(false))
-                {
-                    while (registration.Channel.Reader.TryRead(out var message))
-                    {
-                        try
-                        {
-                            await handler(message, registration.CancellationToken).ConfigureAwait(false);
-                        }
-                        catch
-                        {
-                        }
-                    }
-                }
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch
-            {
-            }
-        });
     }
 
     private async ValueTask HandleReconnect(CancellationToken cancellationToken)
@@ -345,7 +331,7 @@ public sealed class NoticeClient : INoticeClient
 
         public ulong SubscriptionId { get; set; }
 
-        public Dictionary<long, NoticeHandlerRegistration> Writers { get; } = new();
+        public Dictionary<long, SubscriptionRegistration<NoticeMessage>> Writers { get; } = new();
 
         public NoticeSubscriptionState Clone()
         {
@@ -356,35 +342,6 @@ public sealed class NoticeClient : INoticeClient
             }
 
             return clone;
-        }
-    }
-
-    private sealed class NoticeHandlerRegistration : IDisposable
-    {
-        private int _disposed;
-
-        public NoticeHandlerRegistration(Channel<NoticeMessage> channel)
-        {
-            Channel = channel;
-            CancellationSource = new CancellationTokenSource();
-        }
-
-        public Channel<NoticeMessage> Channel { get; }
-
-        public CancellationToken CancellationToken => CancellationSource.Token;
-
-        private CancellationTokenSource CancellationSource { get; }
-
-        public void Dispose()
-        {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            {
-                return;
-            }
-
-            CancellationSource.Cancel();
-            Channel.Writer.TryComplete();
-            CancellationSource.Dispose();
         }
     }
 }

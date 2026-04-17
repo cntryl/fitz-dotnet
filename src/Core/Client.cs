@@ -46,12 +46,12 @@ public sealed class Client : IClient
 
     public Task<byte[]> RequestAsync(ushort messageType, byte[] payload, CancellationToken cancellationToken = default)
     {
-        return _connection.RequestAsync(messageType, payload, cancellationToken);
+        return RequestAsyncCore(messageType, payload, cancellationToken);
     }
 
     public Task SendAsync(ushort messageType, byte[] payload, CancellationToken cancellationToken = default)
     {
-        return _connection.SendAsync(messageType, payload, cancellationToken);
+        return SendAsyncCore(messageType, payload, cancellationToken);
     }
 
     public async ValueTask DisposeAsync()
@@ -95,4 +95,15 @@ public sealed class Client : IClient
     }
 
     public bool IsConnected => _connection.State == ConnectionState.Authenticated;
+
+    private async Task<byte[]> RequestAsyncCore(ushort messageType, byte[] payload, CancellationToken cancellationToken)
+    {
+        var response = await _connection.RequestAsync(messageType, payload, cancellationToken).ConfigureAwait(false);
+        return response.ToArray();
+    }
+
+    private async Task SendAsyncCore(ushort messageType, byte[] payload, CancellationToken cancellationToken)
+    {
+        await _connection.SendAsync(messageType, payload, cancellationToken).ConfigureAwait(false);
+    }
 }
