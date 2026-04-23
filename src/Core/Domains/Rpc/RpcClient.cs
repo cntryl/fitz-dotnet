@@ -289,6 +289,12 @@ public sealed class RpcClient : IRpcClient
             throw new RpcException($"REGISTER failed with status {status}", "REGISTER_FAILED", status);
         }
 
+        if (reader.RemainingBytes < 8)
+        {
+            throw new RpcException("REGISTER response missing subscription id", "REGISTER_INVALID_RESPONSE");
+        }
+
+        _ = reader.ReadU64();
         if (!reader.IsEof)
         {
             throw new RpcException("REGISTER response has trailing bytes", "REGISTER_INVALID_RESPONSE");

@@ -10,8 +10,8 @@ This audit evaluates `fitz-dotnet` against the shared Fitz client contract in `.
 
 Baseline facts used in this audit:
 
-- `dotnet test tests/Core/Core.Tests.csproj --no-restore` passed with 31 tests on 2026-03-18.
-- `fitz-dotnet` currently has integration smoke coverage for `CS-001` through `CS-004` only.
+- `dotnet test tests/Core/Core.Tests.csproj` passed with 125 tests on 2026-04-23.
+- `fitz-dotnet` now has a shared conformance runner that covers `CS-001` through `CS-015` and writes normalized JSON artifacts.
 - The shared cross-language suite defines `CS-001` through `CS-015`.
 - `fitz-go` and `fitz-py` already expose dedicated conformance targets aligned to the shared runner contract.
 - `fitz-dotnet` currently supports WebSocket and TCP transports, but shared-suite coverage is still websocket-heavy.
@@ -26,23 +26,22 @@ Overall assessment:
 
 | Severity | Finding | Contracts affected | Recommended order |
 | --- | --- | --- | --- |
-| P0 | No contract-compliant .NET conformance runner exists yet | Runner contract, `CS-001` to `CS-015` | 1 |
-| P1 | Connection auth now uses an immediate broker probe and surfaces typed auth failure, but broker-backed proof across transports is still pending | `AC-CONN-002`, `AC-CONN-003`, `AC-CONN-005`, `CS-001`, `CS-002` | 4 |
+| P1 | Shared conformance runner exists, but matrix-specific CI wiring and transport/auth fan-out still need finishing | Runner contract, `CS-001` to `CS-015` | 1 |
+| P1 | Connection auth now uses an immediate broker probe and surfaces typed auth failure, but broker-backed proof across transports is still pending | `AC-CONN-002`, `AC-CONN-003`, `AC-CONN-005`, `CS-001`, `CS-002` | 2 |
 | P0 | The current public domain surface does not represent several required Fitz capabilities | Required domains contract, `AC-QUEUE-*`, `AC-NOTICE-*`, `AC-RPC-*`, `AC-SCHEDULE-*`, `AC-STREAM-010` to `AC-STREAM-014` | 3 |
-| P1 | TCP transport exists, but the shared suite is still websocket-only | Suite required transport matrix, `CS-001` to `CS-015` | 4 |
+| P1 | TCP transport exists, but the shared suite still needs broader proof across both transports | Suite required transport matrix, `CS-001` to `CS-015` | 4 |
 | P1 | Reconnect/backoff and connection-scoped state restoration need fuller contract coverage | `AC-CONN-006`, `CS-009`, `CS-010`, `CS-015` | 5 |
 | P1 | In-flight response correlation depends on FIFO-by-message-type instead of explicit request identity | `CS-014`, `AC-RPC-002`, `AC-RPC-005` | 6 |
 | P2 | Error/reporting shape and repo documentation lag behind parity needs | `CS-004` to `CS-008`, runner aggregate/result shape, release auditability | 7 |
 
-### P0. No contract-compliant .NET conformance runner exists yet
+### P1. Shared conformance runner exists, but matrix-specific CI wiring still needs finishing
 
 Current evidence:
 
-- `tests/Core/Integration/ConformanceSmokeTests.cs` executes only `CS-001` through `CS-004`.
-- `tests/Core/Integration/ConformanceModels.cs` knows about `CS-001` through `CS-015`, but the executable suite does not cover them.
-- The shared runner contract requires a dedicated runner that executes every scenario in order, emits normalized JSON, continues after failures, and exits non-zero when any P0 scenario is not `pass`.
-- The current .NET aggregate shape hardcodes `client = fitz-dotnet`, `transport = websocket`, and `auth_mode = anonymous` instead of reporting actual run inputs.
-- The current aggregate/result output does not match the runner contract fields such as `run_started_at`, `run_finished_at`, `summary`, and per-scenario `notes`.
+- `tests/Core/Integration/ConformanceSmokeTests.Runner.cs` parses `cross-language-conformance-suite.yaml`, executes the `CS-001` through `CS-015` scenario set in order, and writes a normalized JSON artifact.
+- `tests/Core/Integration/ConformanceSmokeTests.cs` now delegates to the shared runner instead of hardcoding the scenario list inline.
+- `tests/Core/Integration/ConformanceModels.cs` now carries structured evidence and the suite metadata needed by the shared runner contract.
+- The remaining work is matrix-level CI fan-out and any future tightening needed to keep the emitted artifact perfectly aligned with the cross-language harness contract.
 
 Expected behavior:
 
@@ -50,14 +49,13 @@ Expected behavior:
 
 Likely root cause area:
 
-- The repo has a smoke scaffold, not a finished conformance harness.
+- The repo now has the shared harness in place, but the matrix wiring and artifact retention story still need to be finished.
 
 Recommended remediation:
 
-1. Add a dedicated .NET conformance test target that executes `CS-001` through `CS-015`.
-2. Accept runner inputs equivalent to the shared contract.
-3. Emit the shared result shape instead of the current smoke-only aggregate.
-4. Add CI gating for P0 scenarios.
+1. Wire the runner into the full CI transport/auth matrix.
+2. Keep the emitted artifact shape aligned if the shared contract evolves.
+3. Retain artifacts for every supported matrix leg.
 
 ### P1. Connection auth now uses an immediate broker probe and surfaces typed auth failure, but broker-backed proof across transports is still pending
 

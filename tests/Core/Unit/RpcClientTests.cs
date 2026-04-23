@@ -119,6 +119,7 @@ public sealed class RpcClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+                writer.WriteU64(42);
                 return Task.FromResult(writer.Build());
             },
             (_, _, _) => Task.CompletedTask,
