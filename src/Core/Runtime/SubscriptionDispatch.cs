@@ -62,41 +62,52 @@ internal static class SubscriptionPump
         SubscriptionRegistration<TNotification> registration,
         Func<TNotification, CancellationToken, ValueTask> handler)
     {
-        _ = Task.Run(async () =>
+        ThreadPool.UnsafeQueueUserWorkItem(
+            static state => _ = RunAsync(state.Registration, state.Handler),
+            new PumpState<TNotification>(registration, handler),
+            preferLocal: false);
+    }
+
+    private static async ValueTask RunAsync<TNotification>(
+        SubscriptionRegistration<TNotification> registration,
+        Func<TNotification, CancellationToken, ValueTask> handler)
+    {
+        try
         {
-            try
+            while (await registration.Channel.Reader.WaitToReadAsync().ConfigureAwait(false))
             {
-                while (await registration.Channel.Reader.WaitToReadAsync().ConfigureAwait(false))
+                while (registration.Channel.Reader.TryRead(out var message))
                 {
-                    while (registration.Channel.Reader.TryRead(out var message))
+                    if (registration.IsDisposed)
                     {
-                        if (registration.IsDisposed)
-                        {
-                            return;
-                        }
+                        return;
+                    }
 
-                        try
-                        {
-                            await handler(message, registration.CancellationToken).ConfigureAwait(false);
-                        }
-                        catch (OperationCanceledException) when (registration.IsDisposed)
-                        {
-                            return;
-                        }
-                        catch
-                        {
-                        }
+                    try
+                    {
+                        await handler(message, registration.CancellationToken).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (registration.IsDisposed)
+                    {
+                        return;
+                    }
+                    catch
+                    {
+                    }
 
-                        if (registration.IsDisposed)
-                        {
-                            return;
-                        }
+                    if (registration.IsDisposed)
+                    {
+                        return;
                     }
                 }
             }
-            catch
-            {
-            }
-        });
+        }
+        catch
+        {
+        }
     }
+
+    private readonly record struct PumpState<TNotification>(
+        SubscriptionRegistration<TNotification> Registration,
+        Func<TNotification, CancellationToken, ValueTask> Handler);
 }

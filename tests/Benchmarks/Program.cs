@@ -7,6 +7,6 @@ class Program
     static void Main(string[] args)
     {
         // Recommend running with: dotnet run -c Release
-        var summary = BenchmarkRunner.Run(typeof(Program).Assembly);
+        BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
     }
 }
