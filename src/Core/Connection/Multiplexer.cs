@@ -167,22 +167,13 @@ public sealed class Multiplexer
         await lane.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var request = new PendingRequest(tcs);
+        var request = new PendingRequest(this, messageType, timeout, cancellationToken, tcs);
 
-        using var timeoutCts = new CancellationTokenSource(timeout);
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-        using var registration = linkedCts.Token.Register(() =>
-        {
-            RemovePending(messageType, request);
-            if (timeoutCts.IsCancellationRequested)
-            {
-                tcs.TrySetException(new RequestTimeoutException($"Request timeout for message type {messageType} after {timeout.TotalMilliseconds}ms"));
-            }
-            else
-            {
-                tcs.TrySetCanceled(cancellationToken);
-            }
-        });
+        using var timeoutCts = timeout == Timeout.InfiniteTimeSpan ? null : new CancellationTokenSource(timeout);
+        using var cancellationRegistration = cancellationToken.CanBeCanceled
+            ? cancellationToken.Register(static state => ((PendingRequest)state!).Cancel(), request)
+            : default;
+        using var timeoutRegistration = timeoutCts?.Token.Register(static state => ((PendingRequest)state!).Timeout(), request) ?? default;
 
         lock (_gate)
         {
@@ -271,12 +262,38 @@ public sealed class Multiplexer
 
     private sealed class PendingRequest
     {
-        internal PendingRequest(TaskCompletionSource<byte[]> promise)
+        private readonly Multiplexer _owner;
+        private readonly ushort _messageType;
+        private readonly TimeSpan _timeout;
+        private readonly CancellationToken _cancellationToken;
+
+        internal PendingRequest(
+            Multiplexer owner,
+            ushort messageType,
+            TimeSpan timeout,
+            CancellationToken cancellationToken,
+            TaskCompletionSource<byte[]> promise)
         {
+            _owner = owner;
+            _messageType = messageType;
+            _timeout = timeout;
+            _cancellationToken = cancellationToken;
             Promise = promise;
         }
 
         internal TaskCompletionSource<byte[]> Promise { get; }
+
+        internal void Cancel()
+        {
+            _owner.RemovePending(_messageType, this);
+            Promise.TrySetCanceled(_cancellationToken);
+        }
+
+        internal void Timeout()
+        {
+            _owner.RemovePending(_messageType, this);
+            Promise.TrySetException(new RequestTimeoutException($"Request timeout for message type {_messageType} after {_timeout.TotalMilliseconds}ms"));
+        }
     }
 
     private readonly struct NotificationHandler

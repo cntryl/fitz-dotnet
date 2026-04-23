@@ -7,13 +7,20 @@ public sealed class WebSocketTransport : ITransport
 {
     private readonly Uri _uri;
     private readonly TimeSpan _timeout;
+    private readonly int _maxFrameSize;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private ClientWebSocket? _socket;
 
-    public WebSocketTransport(string url, TimeSpan timeout)
+    public WebSocketTransport(string url, TimeSpan timeout, int maxFrameSize)
     {
+        if (maxFrameSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(maxFrameSize));
+        }
+
         _uri = new Uri(url);
         _timeout = timeout;
+        _maxFrameSize = maxFrameSize;
     }
 
     public string Url => _uri.ToString();
@@ -26,9 +33,11 @@ public sealed class WebSocketTransport : ITransport
         }
 
         _socket = new ClientWebSocket();
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(_timeout);
-        await _socket.ConnectAsync(_uri, cts.Token).ConfigureAwait(false);
+        using var timeoutCts = new CancellationTokenSource(_timeout);
+        using var cancellationRegistration = cancellationToken.CanBeCanceled
+            ? cancellationToken.Register(static state => ((CancellationTokenSource)state!).Cancel(), timeoutCts)
+            : default;
+        await _socket.ConnectAsync(_uri, timeoutCts.Token).ConfigureAwait(false);
     }
 
     public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
@@ -37,9 +46,11 @@ public sealed class WebSocketTransport : ITransport
         await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(_timeout);
-            await socket.SendAsync(data, WebSocketMessageType.Binary, endOfMessage: true, cts.Token).ConfigureAwait(false);
+            using var timeoutCts = new CancellationTokenSource(_timeout);
+            using var cancellationRegistration = cancellationToken.CanBeCanceled
+                ? cancellationToken.Register(static state => ((CancellationTokenSource)state!).Cancel(), timeoutCts)
+                : default;
+            await socket.SendAsync(data, WebSocketMessageType.Binary, endOfMessage: true, timeoutCts.Token).ConfigureAwait(false);
         }
         finally
         {
@@ -51,48 +62,72 @@ public sealed class WebSocketTransport : ITransport
     {
         var socket = EnsureSocket();
 
-        var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
+        var initialBufferSize = Math.Min(16 * 1024, _maxFrameSize);
+        var buffer = ArrayPool<byte>.Shared.Rent(initialBufferSize);
         var length = 0;
         var ownsBuffer = true;
-        while (true)
+        try
         {
-            var remaining = buffer.Length - length;
-            if (remaining == 0)
+            while (true)
             {
-                var next = ArrayPool<byte>.Shared.Rent(buffer.Length * 2);
-                buffer.AsSpan(0, length).CopyTo(next);
-                ArrayPool<byte>.Shared.Return(buffer);
-                buffer = next;
-                remaining = buffer.Length - length;
-            }
-
-            var result = await socket.ReceiveAsync(buffer.AsMemory(length, remaining), cancellationToken).ConfigureAwait(false);
-            if (result.MessageType == WebSocketMessageType.Close)
-            {
-                if (ownsBuffer)
+                var remaining = buffer.Length - length;
+                if (remaining == 0)
                 {
+                    if (buffer.Length >= _maxFrameSize)
+                    {
+                        throw new InvalidOperationException($"WebSocket frame length exceeds max frame size {_maxFrameSize}.");
+                    }
+
+                    var nextSize = Math.Min(buffer.Length * 2, _maxFrameSize);
+                    var next = ArrayPool<byte>.Shared.Rent(nextSize);
+                    buffer.AsSpan(0, length).CopyTo(next);
                     ArrayPool<byte>.Shared.Return(buffer);
+                    buffer = next;
+                    remaining = buffer.Length - length;
                 }
 
-                return PooledFrame.Closed;
-            }
-
-            length += result.Count;
-            if (result.EndOfMessage)
-            {
-                if (length == 0)
+                var result = await socket.ReceiveAsync(buffer.AsMemory(length, remaining), cancellationToken).ConfigureAwait(false);
+                if (result.MessageType == WebSocketMessageType.Close)
                 {
                     if (ownsBuffer)
                     {
                         ArrayPool<byte>.Shared.Return(buffer);
                     }
 
-                    return PooledFrame.Empty;
+                    return PooledFrame.Closed;
                 }
 
-                ownsBuffer = false;
-                return PooledFrame.FromRentedBuffer(buffer, length);
+                length += result.Count;
+                if (length > _maxFrameSize)
+                {
+                    throw new InvalidOperationException($"WebSocket frame length exceeds max frame size {_maxFrameSize}.");
+                }
+
+                if (result.EndOfMessage)
+                {
+                    if (length == 0)
+                    {
+                        if (ownsBuffer)
+                        {
+                            ArrayPool<byte>.Shared.Return(buffer);
+                        }
+
+                        return PooledFrame.Empty;
+                    }
+
+                    ownsBuffer = false;
+                    return PooledFrame.FromRentedBuffer(buffer, length);
+                }
             }
+        }
+        catch
+        {
+            if (ownsBuffer)
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
+            throw;
         }
     }
 
