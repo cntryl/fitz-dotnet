@@ -106,7 +106,9 @@ public sealed class ClientTests
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
                 var frame = FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan);
-                return PooledFrame.FromRentedBuffer(frame, frame.Length);
+                var buffer = ArrayPool<byte>.Shared.Rent(frame.Length);
+                frame.CopyTo(buffer);
+                return PooledFrame.FromRentedBuffer(buffer, frame.Length);
             }
 
             await releaseFirstReceive.Task.ConfigureAwait(false);
