@@ -7,25 +7,6 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class StreamClientTests
 {
-    public static TheoryData<string, string> ExactRouteValidationCases => new()
-    {
-        { "queue://prod/app/events", "must start with stream://" },
-        { "stream://prod//events", "segments must be non-empty" },
-        { "stream://prod/app/*", "must be stream://{realm}/{area}/{resource}" },
-        { "stream://prod/*/*", "must be stream://{realm}/{area}/{resource}" },
-        { "stream://prod/app/events/extra", "must be stream://{realm}/{area}/{resource}" },
-    };
-
-    public static TheoryData<string, string> SelectorRouteValidationCases => new()
-    {
-        { "queue://prod/app/events", "must start with stream://" },
-        { "stream://prod//events", "segments must be non-empty" },
-        { "stream://prod/*", "must be one of stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*" },
-        { "stream://prod/*/events", "must be one of stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*" },
-        { "stream://*/app/events", "must be one of stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*" },
-        { "stream://prod/app/**", "must be one of stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*" },
-        { "stream://prod/app/events/extra", "must be one of stream://{realm}/{area}/{resource}, stream://{realm}/{area}/*, or stream://{realm}/*/*" },
-    };
 
     [Fact]
     public async Task should_return_stream_session_given_success_response_when_beginning_stream()
@@ -84,47 +65,40 @@ public sealed class StreamClientTests
         Assert.NotNull(session);
     }
 
-    [Theory]
-    [MemberData(nameof(ExactRouteValidationCases))]
-    public async Task should_reject_invalid_route_given_exact_stream_methods_when_calling_begin_peek_and_metadata(string route, string expectedMessage)
+    [Fact]
+    public async Task should_forward_route_without_local_validation_given_exact_stream_methods()
     {
         // Arrange
         var requestCount = 0;
         var stream = new StreamClient((messageType, payload, _) =>
         {
             requestCount++;
-            return Task.FromResult(Array.Empty<byte>());
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            if (messageType == MessageTypes.StreamBegin)
+            {
+                writer.WriteU8(1);
+                writer.WriteU64(99);
+            }
+
+            return Task.FromResult(writer.Build());
         });
 
         // Act
-        var beginEx = await Assert.ThrowsAsync<StreamException>(async () =>
-        {
-            await stream.BeginAsync(route);
-        });
-
-        var peekEx = await Assert.ThrowsAsync<StreamException>(async () =>
-        {
-            await stream.PeekAsync(route);
-        });
-
-        var metadataEx = await Assert.ThrowsAsync<StreamException>(async () =>
-        {
-            await stream.MetadataAsync(route);
-        });
+        var route = "queue://prod/app/events";
+        var session = await stream.BeginAsync(route);
+        var record = await stream.PeekAsync(route);
+        var metadata = await stream.MetadataAsync(route);
 
         // Assert
-        Assert.Equal("INVALID_ROUTE", beginEx.Code);
-        Assert.Equal("INVALID_ROUTE", peekEx.Code);
-        Assert.Equal("INVALID_ROUTE", metadataEx.Code);
-        Assert.Contains(expectedMessage, beginEx.Message, StringComparison.Ordinal);
-        Assert.Contains(expectedMessage, peekEx.Message, StringComparison.Ordinal);
-        Assert.Contains(expectedMessage, metadataEx.Message, StringComparison.Ordinal);
-        Assert.Equal(0, requestCount);
+        Assert.NotNull(session);
+        Assert.Null(record);
+        Assert.Equal((ulong)0, metadata.RecordCount);
+        Assert.Equal(3, requestCount);
     }
 
-    [Theory]
-    [MemberData(nameof(SelectorRouteValidationCases))]
-    public async Task should_reject_invalid_route_given_stream_read_and_subscribe_when_using_selector_methods(string route, string expectedMessage)
+    [Fact]
+    public async Task should_forward_route_without_local_validation_given_stream_read_and_subscribe_methods()
     {
         // Arrange
         var requestCount = 0;
@@ -132,29 +106,31 @@ public sealed class StreamClientTests
             (messageType, payload, _) =>
             {
                 requestCount++;
-                return Task.FromResult(Array.Empty<byte>());
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                if (messageType == MessageTypes.StreamSubscribe)
+                {
+                    writer.WriteU8(1);
+                    writer.WriteU64(55);
+                }
+                return Task.FromResult(writer.Build());
             },
             (_, _) => new TestRegistration());
 
         // Act
-        var readEx = await Assert.ThrowsAsync<StreamException>(async () =>
+        var route = "stream://prod/app/**";
+        var records = new List<StreamRecord>();
+        await foreach (var record in stream.ReadAsync(route, 0, 1))
         {
-            await foreach (var _ in stream.ReadAsync(route, 0, 1))
-            {
-            }
-        });
+            records.Add(record);
+        }
 
-        var subscribeEx = await Assert.ThrowsAsync<StreamException>(async () =>
-        {
-            await stream.SubscribeAsync(route, (evt, cancellationToken) => ValueTask.CompletedTask);
-        });
+        var subscription = await stream.SubscribeAsync(route, (evt, cancellationToken) => ValueTask.CompletedTask);
 
         // Assert
-        Assert.Equal("INVALID_ROUTE", readEx.Code);
-        Assert.Equal("INVALID_ROUTE", subscribeEx.Code);
-        Assert.Contains(expectedMessage, readEx.Message, StringComparison.Ordinal);
-        Assert.Contains(expectedMessage, subscribeEx.Message, StringComparison.Ordinal);
-        Assert.Equal(0, requestCount);
+        Assert.Empty(records);
+        Assert.Equal(route, subscription.Pattern);
+        Assert.Equal(2, requestCount);
     }
 
     [Fact]

@@ -236,18 +236,28 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task should_throw_invalid_route_given_wildcard_when_enqueueing()
+    public async Task should_forward_wildcard_route_without_local_validation_when_enqueueing()
     {
         // Arrange
-        var queue = new QueueClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
-
-        // Act
-        var ex = await Assert.ThrowsAsync<QueueException>(async () =>
+        ushort seenMessageType = 0;
+        byte[]? seenPayload = null;
+        var queue = new QueueClient((messageType, payload, _) =>
         {
-            await queue.EnqueueAsync("queue://prod/app/*", "job-1"u8.ToArray());
+            seenMessageType = messageType;
+            seenPayload = payload;
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            return Task.FromResult(writer.Build());
         });
 
+        // Act
+        var messageId = await queue.EnqueueAsync("queue://prod/app/*", "job-1"u8.ToArray());
+
         // Assert
-        Assert.Equal("INVALID_ROUTE", ex.Code);
+        Assert.Equal((ulong)0, messageId);
+        Assert.Equal(MessageTypes.QueueEnqueue, seenMessageType);
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal("queue://prod/app/*", reader.ReadString());
     }
 }

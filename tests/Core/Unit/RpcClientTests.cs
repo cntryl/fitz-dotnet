@@ -245,27 +245,61 @@ public sealed class RpcClientTests
     }
 
     [Fact]
-    public async Task should_throw_invalid_route_given_wildcard_when_calling_rpc()
+    public async Task should_forward_wildcard_route_without_local_validation_when_calling_rpc()
     {
         // Arrange
+        ushort seenMessageType = 0;
+        byte[]? seenPayload = null;
+        Action<byte[]>? responseHandler = null;
         var rpc = new RpcClient(
-            (_, _, _) =>
+            (messageType, payload, _) =>
             {
+                seenMessageType = messageType;
+                seenPayload = payload;
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
                 return Task.FromResult(writer.Build());
             },
-            registerNotificationHandler: (_, _) => new TestRegistration());
+            registerNotificationHandler: (messageType, handler) =>
+            {
+                Assert.Equal(MessageTypes.RpcResponse, messageType);
+                responseHandler = handler;
+                return new TestRegistration();
+            });
 
         // Act
-        var ex = await Assert.ThrowsAsync<RpcException>(async () =>
+        var frames = new List<RpcResponseFrame>();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        var task = Task.Run(async () =>
         {
-            await foreach (var _ in rpc.CallAsync("rpc://prod/app/*", "ping"u8.ToArray()))
+            await foreach (var frame in rpc.CallAsync("rpc://prod/app/*", "ping"u8.ToArray(), cts.Token))
             {
+                frames.Add(frame);
             }
         });
 
+        await Task.Delay(25);
+        Assert.NotNull(responseHandler);
+        using var notification = new BinaryBufferWriter();
+        notification.WriteU32(16);
+        var requestReader = new BinaryBufferReader(seenPayload!);
+        _ = requestReader.ReadU32();
+        var correlationId = requestReader.ReadBytes(16);
+        notification.WriteBytes(correlationId);
+        notification.WriteU64(0);
+        notification.WriteU32(4);
+        notification.WriteBytes("pong"u8);
+        notification.WriteU8(1);
+        responseHandler!(notification.Build());
+
+        await task;
+
         // Assert
-        Assert.Equal("INVALID_ROUTE", ex.Code);
+        Assert.Single(frames);
+        Assert.Equal(MessageTypes.RpcRequest, seenMessageType);
+        var reader = new BinaryBufferReader(seenPayload!);
+        _ = reader.ReadU32();
+        _ = reader.ReadBytes(16);
+        Assert.Equal("rpc://prod/app/*", reader.ReadString());
     }
 }

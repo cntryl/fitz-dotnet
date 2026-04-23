@@ -64,72 +64,67 @@ public sealed class ScheduleClientTests
     }
 
     [Fact]
-    public async Task should_reject_wrong_scheme_given_schedule_route_when_creating_schedule()
+    public async Task should_forward_wrong_scheme_without_local_validation_when_creating_schedule()
     {
         // Arrange
         var requestCount = 0;
         var schedule = new ScheduleClient((messageType, payload, _) =>
         {
             requestCount++;
-            return Task.FromResult(Array.Empty<byte>());
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            return Task.FromResult(writer.Build());
         });
 
         // Act
-        var ex = await Assert.ThrowsAsync<ScheduleException>(async () =>
-        {
-            await schedule.CreateAsync("queue://prod/app/jobs/run", "*/5 * * * *", ReadOnlyMemory<byte>.Empty);
-        });
+        var route = await schedule.CreateAsync("queue://prod/app/jobs/run", "*/5 * * * *", ReadOnlyMemory<byte>.Empty);
 
         // Assert
-        Assert.Equal("INVALID_ROUTE", ex.Code);
-        Assert.Contains("must start with schedule://", ex.Message, StringComparison.Ordinal);
-        Assert.Equal(0, requestCount);
+        Assert.Equal("queue://prod/app/jobs/run", route);
+        Assert.Equal(1, requestCount);
     }
 
     [Fact]
-    public async Task should_reject_empty_segment_given_schedule_route_when_canceling_schedule()
+    public async Task should_forward_empty_segment_without_local_validation_when_canceling_schedule()
     {
         // Arrange
         var requestCount = 0;
         var schedule = new ScheduleClient((messageType, payload, _) =>
         {
             requestCount++;
-            return Task.FromResult(Array.Empty<byte>());
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            return Task.FromResult(writer.Build());
         });
 
         // Act
-        var ex = await Assert.ThrowsAsync<ScheduleException>(async () =>
-        {
-            await schedule.CancelAsync("schedule://prod//jobs/run");
-        });
+        await schedule.CancelAsync("schedule://prod//jobs/run");
 
         // Assert
-        Assert.Equal("INVALID_ROUTE", ex.Code);
-        Assert.Contains("segments must be non-empty", ex.Message, StringComparison.Ordinal);
-        Assert.Equal(0, requestCount);
+        Assert.Equal(1, requestCount);
     }
 
     [Fact]
-    public async Task should_reject_wildcard_route_given_schedule_route_when_subscribing_schedule()
+    public async Task should_forward_wildcard_route_without_local_validation_when_subscribing_schedule()
     {
         // Arrange
         var requestCount = 0;
         var schedule = new ScheduleClient((messageType, payload, _) =>
         {
             requestCount++;
-            return Task.FromResult(Array.Empty<byte>());
-        });
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(1);
+            writer.WriteU64(55);
+            return Task.FromResult(writer.Build());
+        }, (_, _) => new TestRegistration());
 
         // Act
-        var ex = await Assert.ThrowsAsync<ScheduleException>(async () =>
-        {
-            await schedule.SubscribeAsync("schedule://prod/app/jobs/*", (notification, cancellationToken) => ValueTask.CompletedTask);
-        });
+        var subscription = await schedule.SubscribeAsync("schedule://prod/app/jobs/*", (notification, cancellationToken) => ValueTask.CompletedTask);
 
         // Assert
-        Assert.Equal("INVALID_ROUTE", ex.Code);
-        Assert.Contains("must not contain wildcards", ex.Message, StringComparison.Ordinal);
-        Assert.Equal(0, requestCount);
+        Assert.NotNull(subscription);
+        Assert.Equal(1, requestCount);
     }
 
     [Fact]

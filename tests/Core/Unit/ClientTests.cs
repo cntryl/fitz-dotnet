@@ -77,6 +77,60 @@ public sealed class ClientTests
     }
 
     [Fact]
+    public async Task should_not_reconnect_given_close_during_reconnect_backoff()
+    {
+        // Arrange
+        var firstReceiveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstReceive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstTransport = new FakeTransport(async _ =>
+        {
+            firstReceiveStarted.TrySetResult();
+            await releaseFirstReceive.Task.ConfigureAwait(false);
+            return PooledFrame.Closed;
+        });
+        var secondTransport = new FakeTransport();
+        var factoryCalls = 0;
+
+        var client = new Client(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                AuthSettleDelay: TimeSpan.Zero,
+                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(250), MaxBackoff: TimeSpan.FromMilliseconds(250)),
+                TransportFactory: _ => factoryCalls++ == 0 ? firstTransport : secondTransport
+            )
+        );
+
+        await client.ConnectAsync();
+        await firstReceiveStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        releaseFirstReceive.SetResult();
+        await WaitForConditionAsync(() => !client.IsConnected, TimeSpan.FromSeconds(1));
+
+        // Act
+        await client.DisposeAsync();
+
+        // Assert
+        Assert.Equal(1, factoryCalls);
+        Assert.Empty(secondTransport.SentFrames);
+        Assert.False(client.IsConnected);
+
+        static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
+        {
+            var deadline = DateTimeOffset.UtcNow + timeout;
+
+            while (!condition())
+            {
+                if (DateTimeOffset.UtcNow >= deadline)
+                {
+                    throw new TimeoutException("Timed out waiting for the connection to disconnect.");
+                }
+
+                await Task.Delay(10).ConfigureAwait(false);
+            }
+        }
+    }
+
+    [Fact]
     public async Task should_remain_connected_given_request_timeout_when_receive_loop_is_idle()
     {
         // Arrange

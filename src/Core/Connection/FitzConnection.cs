@@ -363,6 +363,11 @@ public sealed class FitzConnection
                 try
                 {
                     await Task.Delay(delay).ConfigureAwait(false);
+                    if (_closeRequested)
+                    {
+                        return;
+                    }
+
                     await OpenAndAuthenticateAsync(isReconnect: true, CancellationToken.None).ConfigureAwait(false);
                     return;
                 }

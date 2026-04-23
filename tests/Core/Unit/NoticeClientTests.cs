@@ -234,18 +234,24 @@ public sealed class NoticeClientTests
     }
 
     [Fact]
-    public async Task should_throw_invalid_route_given_wildcard_when_publishing_notice()
+    public async Task should_forward_wildcard_route_without_local_validation_when_publishing_notice()
     {
         // Arrange
-        var notice = new NoticeClient((_, _, _) => Task.CompletedTask);
-
-        // Act
-        var ex = await Assert.ThrowsAsync<NoticeException>(async () =>
+        ushort seenMessageType = 0;
+        byte[]? seenPayload = null;
+        var notice = new NoticeClient((messageType, payload, _) =>
         {
-            await notice.PublishAsync("notice://prod/app/*", "hello"u8.ToArray());
+            seenMessageType = messageType;
+            seenPayload = payload;
+            return Task.CompletedTask;
         });
 
+        // Act
+        await notice.PublishAsync("notice://prod/app/*", "hello"u8.ToArray());
+
         // Assert
-        Assert.Equal("INVALID_ROUTE", ex.Code);
+        Assert.Equal(MessageTypes.NoticePublish, seenMessageType);
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal("notice://prod/app/*", reader.ReadString());
     }
 }

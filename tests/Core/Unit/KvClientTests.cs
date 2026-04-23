@@ -206,18 +206,52 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task should_throw_invalid_route_given_wildcard_when_beginning_transaction()
+    public async Task should_forward_wildcard_route_without_local_validation_when_beginning_transaction()
     {
         // Arrange
-        var kv = new KvClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+        ushort seenMessageType = 0;
+        byte[]? seenPayload = null;
+        var kv = new KvClient((messageType, payload, _) =>
+        {
+            seenMessageType = messageType;
+            seenPayload = payload;
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU64(42);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var tx = await kv.BeginAsync("kv://prod/*/*");
+
+        // Assert
+        Assert.NotNull(tx);
+        Assert.Equal(MessageTypes.KvBegin, seenMessageType);
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal("kv://prod/*/*", reader.ReadString());
+    }
+
+    [Fact]
+    public async Task should_reject_empty_route_before_beginning_transaction()
+    {
+        // Arrange
+        var requestCount = 0;
+        var kv = new KvClient((_, _, _) =>
+        {
+            requestCount++;
+            return Task.FromResult(Array.Empty<byte>());
+        });
 
         // Act
         var ex = await Assert.ThrowsAsync<KvException>(async () =>
         {
-            await kv.BeginAsync("kv://prod/*/*");
+            await kv.BeginAsync("");
         });
 
         // Assert
         Assert.Equal("INVALID_ROUTE", ex.Code);
+        Assert.Contains("must be kv://{realm}/{area}/{resource}", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(0, requestCount);
     }
 }

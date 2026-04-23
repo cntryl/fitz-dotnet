@@ -20,7 +20,7 @@ Overall assessment:
 
 - Core request/response plumbing exists for a subset of Fitz behavior.
 - The repository is not yet spec-complete for Fitz client parity.
-- The highest-risk gaps are public-surface incompleteness, auth-state correctness, conformance-runner drift, and missing TCP support.
+- The highest-risk gaps are public-surface incompleteness, auth-state correctness, conformance-runner drift, and incomplete TCP coverage in the shared suite.
 
 ## Findings
 
@@ -29,8 +29,8 @@ Overall assessment:
 | P0 | No contract-compliant .NET conformance runner exists yet | Runner contract, `CS-001` to `CS-015` | 1 |
 | P0 | Connection auth is marked successful before broker confirmation and cannot reliably surface typed auth failure | `AC-CONN-002`, `AC-CONN-003`, `AC-CONN-005`, `CS-001`, `CS-002` | 2 |
 | P0 | The current public domain surface does not represent several required Fitz capabilities | Required domains contract, `AC-QUEUE-*`, `AC-NOTICE-*`, `AC-RPC-*`, `AC-SCHEDULE-*`, `AC-STREAM-010` to `AC-STREAM-014` | 3 |
-| P0 | TCP transport is required by the shared suite but unsupported in `fitz-dotnet` | Suite required transport matrix, `CS-001` to `CS-015` | 4 |
-| P1 | Reconnect/backoff and connection-scoped state restoration are absent | `AC-CONN-006`, `CS-009`, `CS-010`, `CS-015` | 5 |
+| P1 | TCP transport exists, but the shared suite is still websocket-only | Suite required transport matrix, `CS-001` to `CS-015` | 4 |
+| P1 | Reconnect/backoff and connection-scoped state restoration need fuller contract coverage | `AC-CONN-006`, `CS-009`, `CS-010`, `CS-015` | 5 |
 | P1 | In-flight response correlation depends on FIFO-by-message-type instead of explicit request identity | `CS-014`, `AC-RPC-002`, `AC-RPC-005` | 6 |
 | P2 | Error/reporting shape and repo documentation lag behind parity needs | `CS-004` to `CS-008`, runner aggregate/result shape, release auditability | 7 |
 
@@ -110,36 +110,37 @@ Recommended remediation:
 2. Define parity targets per domain from the Fitz acceptance criteria, then add API surface in that order: RPC, Queue, Notice, Schedule, Stream, KV parity gaps.
 3. Treat worker/subscription APIs as first-class connection-scoped capabilities rather than add-ons.
 
-### P0. TCP transport is required by the shared suite but unsupported in `fitz-dotnet`
+### P1. TCP transport exists, but the shared suite is still websocket-only
 
 Current evidence:
 
-- `src/Core/Transport/TransportResolver.cs` supports only `"ws"` and `"websocket"` and throws `NotSupportedException` for other values.
+- `src/Core/Transport/TransportResolver.cs` resolves both `"ws"`/`"websocket"` and `"tcp"`.
+- `src/Core/Transport/TcpTransport.cs` exists and has unit coverage, but the shared suite still runs websocket-only.
 - The shared suite marks both `websocket` and `tcp` as required transports.
 - The shared runner guidance expects every client to be executable across both transports where the contract lists them.
 
 Expected behavior:
 
-- The client should either implement TCP transport parity or be explicitly treated as non-compliant until that support lands.
+- The client should exercise TCP in the shared runner so transport parity stays enforced.
 
 Likely root cause area:
 
-- Transport work stopped after WebSocket bring-up.
+- The transport implementation exists; the missing piece is shared-suite coverage.
 
 Recommended remediation:
 
-1. Add a TCP transport implementation and resolver path.
-2. Extend the future conformance runner to exercise WebSocket and TCP.
+1. Extend the future conformance runner to exercise WebSocket and TCP.
+2. Keep TCP transport coverage in the unit and integration suites.
 3. Only claim parity once both transport legs are covered by tests.
 
-### P1. Reconnect/backoff and connection-scoped state restoration are absent
+### P1. Reconnect/backoff and connection-scoped state restoration need fuller contract coverage
 
 Current evidence:
 
-- `src/Core/ClientConfig.cs` has timeout and auth settings, but no reconnect/backoff configuration.
-- `src/Core/Connection/FitzConnection.cs` exits the receive loop on disconnect and does not recreate the transport.
-- The public API does not expose subscription or worker registration hooks that could be rebuilt after reconnect.
-- The shared suite and contract require reconnect behavior, reconnect backoff, and rebuilding connection-scoped subscriptions/workers.
+- `src/Core/ClientConfig.cs` now has reconnect/backoff configuration alongside timeout and auth settings.
+- `src/Core/Connection/FitzConnection.cs` performs reconnect with backoff and `OnReconnect`-based state restoration, and the close-during-backoff regression is covered.
+- The public API and domain clients expose reconnect-aware behavior, but the shared suite still lacks broad disconnect/reconnect/shutdown coverage.
+- The shared suite and contract still require reconnect behavior, reconnect backoff, and rebuilding connection-scoped subscriptions/workers.
 
 Expected behavior:
 
@@ -147,13 +148,13 @@ Expected behavior:
 
 Likely root cause area:
 
-- The current client is a single-session transport wrapper, not a reconnect-capable session manager.
+- The reconnect path exists; the remaining gap is broader contract coverage for reconnect and shutdown scenarios.
 
 Recommended remediation:
 
-1. Add reconnect/backoff options to `ClientConfig`.
-2. Separate connection lifecycle from domain client instances so they can restore state.
-3. Add conformance coverage for disconnect, reconnect, and shutdown-active-work scenarios.
+1. Expand conformance coverage for disconnect, reconnect, and shutdown-active-work scenarios.
+2. Keep domain-scoped restoration tests aligned with `OnReconnect` registrations.
+3. Refresh parity docs and runner outputs as reconnect scenarios are promoted into the shared suite.
 
 ### P1. In-flight response correlation depends on FIFO-by-message-type instead of explicit request identity
 
@@ -204,7 +205,7 @@ Recommended remediation:
 
 Remediation will require public-surface decisions in these areas:
 
-- `ClientConfig`: likely needs reconnect/backoff controls, transport selection that can model TCP explicitly, and possibly knobs for reconnect restoration behavior.
+- `ClientConfig`: already includes reconnect/backoff controls; remaining public-surface decisions are transport selection that can model TCP explicitly and, if needed, restoration knobs.
 - `Client` and possibly `IClient`: likely need better connection-state observability if reconnect and auth state become first-class behavior.
 - Domain abstractions: definitely need expansion for Queue, Notice, RPC, Schedule, Stream, and KV parity gaps where the current interfaces cannot express required Fitz operations.
 - Conformance artifacts: the test harness/result model should align to the shared runner contract rather than the current smoke-specific shape.
@@ -223,7 +224,7 @@ Remediation will require public-surface decisions in these areas:
 
 - Rework `ConnectAsync` so auth success is protocol-driven instead of settle-delay-driven.
 - Surface invalid JWT as `AuthenticationException`.
-- Add TCP transport support.
+- Exercise both WebSocket and TCP in the conformance target.
 - Cover anonymous, valid JWT, and invalid JWT flows in the conformance target.
 
 ### 3. Public Domain Surface Completion
@@ -239,7 +240,7 @@ Remediation will require public-surface decisions in these areas:
 
 - Add end-to-end conformance tests for timeout and caller cancellation using public client APIs.
 - Add disconnect-during-request coverage and explicit disconnect error mapping.
-- Add reconnect/backoff options and state-rebuild semantics for connection-scoped behavior.
+- Keep reconnect/backoff and state-rebuild semantics covered by unit and conformance tests.
 - Validate shutdown during active work and double-close safety with conformance coverage.
 
 ### 5. Concurrency and Correlation
