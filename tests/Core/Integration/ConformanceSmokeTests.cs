@@ -5,7 +5,7 @@ using Cntryl.Fitz.Observability;
 
 namespace Cntryl.Fitz.Core.Tests.Integration;
 
-public sealed class ConformanceSmokeTests
+public sealed partial class ConformanceSmokeTests
 {
     [Fact]
     public async Task should_fail_invalid_jwt_auth_when_connecting()
@@ -18,35 +18,14 @@ public sealed class ConformanceSmokeTests
     [Fact]
     public async Task should_write_json_result_given_enabled_flag_when_running_conformance_suite()
     {
-        var runStartedAt = DateTimeOffset.UtcNow;
-        var transport = IntegrationFixture.GetConformanceTransport();
-        var authMode = IntegrationFixture.GetConformanceAuthMode();
+        var config = IntegrationFixture.GetConformanceRunConfig();
+        var aggregate = await RunConformanceSuiteAsync(config);
 
-        var scenarios = new List<ScenarioResult>
-        {
-            await RunCs001ConnectSuccess(transport, authMode),
-            await RunCs002AuthFailure(transport),
-            await RunCs003RequestSuccess(transport, authMode),
-            await RunCs004UnknownRoute(transport, authMode),
-            await RunCs005InvalidPayload(transport, authMode),
-            await RunCs006ServerErrorMapping(transport, authMode),
-            await RunCs007TimeoutHandling(transport, authMode),
-            await RunCs008CallerCancellation(transport, authMode),
-            await RunCs009DisconnectDuringRequest(transport, authMode),
-            await RunCs010ReconnectAndRetryBehavior(transport, authMode),
-            await RunCs011StreamReceiveSequence(transport, authMode),
-            await RunCs012StreamCompletion(transport, authMode),
-            await RunCs013StreamErrorMidFlight(transport, authMode),
-            await RunCs014ConcurrentInflightRequests(transport, authMode),
-            await RunCs015ShutdownDuringActiveWork(transport, authMode),
-        };
-
-        var runFinishedAt = DateTimeOffset.UtcNow;
-        var aggregate = ConformanceResultBuilder.BuildAggregate(runStartedAt, runFinishedAt, scenarios);
-        await IntegrationFixture.WriteAggregateAsync(aggregate);
-
-        Assert.Equal(15, scenarios.Count);
-        Assert.True(File.Exists(IntegrationFixture.GetOutputPath()));
+        Assert.Equal(15, aggregate.Scenarios.Count);
+        Assert.Equal(config.ClientName, aggregate.Client);
+        Assert.Equal(config.Transport, aggregate.Summary.Transport);
+        Assert.Equal(config.AuthMode, aggregate.Summary.AuthMode);
+        Assert.True(File.Exists(config.OutputPath));
     }
 
     private static async Task<ScenarioResult> RunCs001ConnectSuccess(string transport, string authMode)
@@ -725,16 +704,16 @@ public sealed class ConformanceSmokeTests
         }
     }
 
-    private static ScenarioResult Result(string scenarioId, string transport, string authMode, string verdict, long latencyMs, IReadOnlyList<string> evidence, string notes = "")
+    private static ScenarioResult Result(string scenarioId, string transport, string authMode, string verdict, long latencyMs, IReadOnlyList<string> evidence, string notes = "", IReadOnlyDictionary<string, object?>? evidenceFields = null)
     {
         return new ScenarioResult(
             scenarioId,
-            "fitz-dotnet",
+            IntegrationFixture.GetConformanceClientName(),
             transport,
             authMode,
             verdict,
             latencyMs,
-            evidence,
+            ConformanceEvidenceBuilder.Build(evidence, evidenceFields),
             notes
         );
     }

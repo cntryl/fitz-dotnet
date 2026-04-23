@@ -7,6 +7,23 @@ namespace Cntryl.Fitz.Core.Tests.Integration;
 
 internal static class IntegrationFixture
 {
+    internal static ConformanceRunConfig GetConformanceRunConfig()
+    {
+        var transport = GetConformanceTransport();
+        var authMode = GetConformanceAuthMode();
+        return new ConformanceRunConfig(
+            GetConformanceSuitePath(),
+            GetConformanceClientName(),
+            transport,
+            authMode,
+            GetConformanceBrokerAddress(transport, authMode),
+            GetOutputPath(),
+            GetConformanceTimeoutScale(),
+            GetConformanceReconnectEnabledOverride(),
+            GetConformanceSeed()
+        );
+    }
+
     internal static string GetConformanceTransport()
     {
         var configured = Environment.GetEnvironmentVariable("CONFORMANCE_TRANSPORT");
@@ -20,6 +37,12 @@ internal static class IntegrationFixture
 
     internal static string GetBrokerUrl(string transport, string authMode)
     {
+        var configured = Environment.GetEnvironmentVariable("CONFORMANCE_BROKER_ADDR") ?? Environment.GetEnvironmentVariable("CONFORMANCE_BROKER_ADDRESS");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured;
+        }
+
         var normalizedTransport = NormalizeTransport(transport);
         var normalizedAuthMode = authMode.ToLowerInvariant();
 
@@ -41,6 +64,49 @@ internal static class IntegrationFixture
     internal static string GetAnonymousWebSocketUrl() => GetBrokerUrl("websocket", "anonymous");
 
     internal static string GetAuthWebSocketUrl() => GetBrokerUrl("websocket", "valid_jwt");
+
+    internal static string GetConformanceSuitePath()
+    {
+        var configured = Environment.GetEnvironmentVariable("CONFORMANCE_SUITE_PATH");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return Path.IsPathRooted(configured)
+                ? configured
+                : Path.GetFullPath(Path.Combine(GetRepositoryRoot(), configured));
+        }
+
+        return Path.GetFullPath(Path.Combine(GetRepositoryRoot(), "..", "fitz", "docs", "clients", "cross-language-conformance-suite.yaml"));
+    }
+
+    internal static string GetConformanceClientName()
+    {
+        return Environment.GetEnvironmentVariable("CONFORMANCE_CLIENT_NAME") ?? "fitz-dotnet";
+    }
+
+    internal static double GetConformanceTimeoutScale()
+    {
+        var configured = Environment.GetEnvironmentVariable("CONFORMANCE_TIMEOUT_SCALE");
+        return double.TryParse(configured, out var parsed) && parsed > 0 ? parsed : 1.0;
+    }
+
+    internal static bool? GetConformanceReconnectEnabledOverride()
+    {
+        var configured = Environment.GetEnvironmentVariable("CONFORMANCE_RECONNECT_ENABLED_OVERRIDE");
+        if (string.IsNullOrWhiteSpace(configured))
+        {
+            return null;
+        }
+
+        return bool.TryParse(configured, out var parsed) ? parsed : null;
+    }
+
+    internal static int? GetConformanceSeed()
+    {
+        var configured = Environment.GetEnvironmentVariable("CONFORMANCE_SEED");
+        return int.TryParse(configured, out var parsed) ? parsed : null;
+    }
+
+    internal static string GetConformanceBrokerAddress(string transport, string authMode) => GetBrokerUrl(transport, authMode);
 
     internal static string GetOutputPath()
     {
@@ -108,9 +174,9 @@ internal static class IntegrationFixture
             : $"{prefix}://conformance-realm/integration/{resource}";
     }
 
-    internal static async Task WriteAggregateAsync(AggregateResult aggregate)
+    internal static async Task WriteAggregateAsync(AggregateResult aggregate, string? outputPath = null)
     {
-        var outputPath = GetOutputPath();
+        outputPath ??= GetOutputPath();
         var outputDir = Path.GetDirectoryName(outputPath);
         if (!string.IsNullOrWhiteSpace(outputDir))
         {
@@ -138,11 +204,22 @@ internal static class IntegrationFixture
         Func<CancellationToken, ValueTask<string>>? tokenProvider)
     {
         var normalizedTransport = NormalizeTransport(transport);
+        var timeoutScale = GetConformanceTimeoutScale();
+        TimeSpan? scaledTimeout = timeout is { } timeoutValue
+            ? TimeSpan.FromMilliseconds(timeoutValue.TotalMilliseconds * timeoutScale)
+            : null;
+
+        var reconnectOverride = GetConformanceReconnectEnabledOverride();
+        if (reconnectOverride is { } enabled)
+        {
+            reconnect = reconnect is null ? new ReconnectOptions(enabled) : reconnect with { Enabled = enabled };
+        }
+
         return new Client(
             new ClientConfig(
                 url,
                 Transport: normalizedTransport,
-                Timeout: timeout,
+                Timeout: scaledTimeout,
                 AuthSettleDelay: TimeSpan.FromSeconds(5),
                 TokenProvider: tokenProvider,
                 Reconnect: reconnect
