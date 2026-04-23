@@ -189,15 +189,14 @@ public sealed class FitzConnection
             var connectFrame = FrameCodec.Encode(MessageTypes.Connect, Encoding.UTF8.GetBytes(token));
             await transport.SendAsync(connectFrame, cancellationToken).ConfigureAwait(false);
 
-            var settleDelay = _config.AuthSettleDelay ?? GetDefaultAuthSettleDelay();
-            var settleTask = Task.Delay(settleDelay, cancellationToken);
-            var completed = await Task.WhenAny(_authFailure.Task, settleTask).ConfigureAwait(false);
+            var probeTask = ProbeAuthenticationAsync(transport, cancellationToken);
+            var completed = await Task.WhenAny(_authFailure.Task, probeTask).ConfigureAwait(false);
             if (completed == _authFailure.Task)
             {
                 await _authFailure.Task.ConfigureAwait(false);
             }
 
-            await ProbeAuthenticationAsync(transport, cancellationToken).ConfigureAwait(false);
+            await probeTask.ConfigureAwait(false);
             RenewConnectionClosedToken();
             State = ConnectionState.Authenticated;
             _multiplexer.SetConnected();
@@ -454,21 +453,14 @@ public sealed class FitzConnection
 
     private TimeSpan GetDefaultAuthSettleDelay()
     {
-        return string.Equals(_config.Transport, "tcp", StringComparison.OrdinalIgnoreCase)
-            ? TimeSpan.FromMilliseconds(500)
-            : TimeSpan.FromMilliseconds(250);
+        return TimeSpan.FromSeconds(5);
     }
 
     private async Task ProbeAuthenticationAsync(ITransport transport, CancellationToken cancellationToken)
     {
-        if (!string.Equals(_config.Transport, "tcp", StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        var probeTimeout = _config.Timeout is { } configuredTimeout && configuredTimeout > TimeSpan.Zero
+        var probeTimeout = _config.AuthSettleDelay is { } configuredTimeout && configuredTimeout > TimeSpan.Zero
             ? configuredTimeout
-            : TimeSpan.FromMilliseconds(250);
+            : GetDefaultAuthSettleDelay();
 
         try
         {

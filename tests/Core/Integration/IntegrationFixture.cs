@@ -143,7 +143,7 @@ internal static class IntegrationFixture
                 url,
                 Transport: normalizedTransport,
                 Timeout: timeout,
-                AuthSettleDelay: normalizedTransport == "tcp" ? TimeSpan.FromMilliseconds(500) : TimeSpan.FromMilliseconds(250),
+                AuthSettleDelay: TimeSpan.FromSeconds(5),
                 TokenProvider: tokenProvider,
                 Reconnect: reconnect
             )

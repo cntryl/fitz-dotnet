@@ -13,7 +13,18 @@ public sealed class ClientTests
     public async Task should_set_connected_state_given_valid_transport_when_connecting()
     {
         // Arrange
-        var transport = new FakeTransport();
+        var transport = new QueuedTransport();
+        transport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount != 2)
+            {
+                return;
+            }
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+        };
         var config = new ClientConfig(
             "ws://localhost:4190/ws",
             AuthSettleDelay: TimeSpan.Zero,
@@ -27,10 +38,15 @@ public sealed class ClientTests
 
         // Assert
         Assert.True(client.IsConnected);
-        Assert.Single(transport.SentFrames);
+        Assert.Equal(2, transport.SentFrames.Count);
         var frame = FrameCodec.Decode(transport.SentFrames[0]);
         Assert.Equal(MessageTypes.Connect, frame.MessageType);
         Assert.Equal("token-123", System.Text.Encoding.UTF8.GetString(frame.Payload.Span));
+
+        var probeFrame = FrameCodec.Decode(transport.SentFrames[1]);
+        Assert.Equal(MessageTypes.LeaseQuery, probeFrame.MessageType);
+        var probeReader = new BinaryBufferReader(probeFrame.Payload.ToArray());
+        Assert.Equal("lease://fitz/system/auth-probe", probeReader.ReadString());
     }
 
     [Fact]
@@ -80,11 +96,19 @@ public sealed class ClientTests
     public async Task should_not_reconnect_given_close_during_reconnect_backoff()
     {
         // Arrange
-        var firstReceiveStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFirstReceive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var authResponseDelivered = false;
         var firstTransport = new FakeTransport(async _ =>
         {
-            firstReceiveStarted.TrySetResult();
+            if (!authResponseDelivered)
+            {
+                authResponseDelivered = true;
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                var frame = FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan);
+                return PooledFrame.FromRentedBuffer(frame, frame.Length);
+            }
+
             await releaseFirstReceive.Task.ConfigureAwait(false);
             return PooledFrame.Closed;
         });
@@ -101,7 +125,6 @@ public sealed class ClientTests
         );
 
         await client.ConnectAsync();
-        await firstReceiveStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         releaseFirstReceive.SetResult();
         await WaitForConditionAsync(() => !client.IsConnected, TimeSpan.FromSeconds(1));
@@ -134,11 +157,18 @@ public sealed class ClientTests
     public async Task should_remain_connected_given_request_timeout_when_receive_loop_is_idle()
     {
         // Arrange
-        var transport = new FakeTransport(receive: async ct =>
+        var transport = new QueuedTransport();
+        transport.AfterSend = sentFrameCount =>
         {
-            await Task.Delay(Timeout.InfiniteTimeSpan, ct);
-            return PooledFrame.Closed;
-        });
+            if (sentFrameCount != 2)
+            {
+                return;
+            }
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+        };
         var client = new Client(
             new ClientConfig(
                 "ws://localhost:4190/ws",
@@ -162,6 +192,17 @@ public sealed class ClientTests
     public async Task should_receive_notice_notification_given_connection_backed_subscription()
     {
         var transport = new QueuedTransport();
+        transport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount != 2)
+            {
+                return;
+            }
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+        };
         await using var client = new Client(
             new ClientConfig(
                 "ws://localhost:4190/ws",

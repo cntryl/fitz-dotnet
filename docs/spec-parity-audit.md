@@ -14,7 +14,7 @@ Baseline facts used in this audit:
 - `fitz-dotnet` currently has integration smoke coverage for `CS-001` through `CS-004` only.
 - The shared cross-language suite defines `CS-001` through `CS-015`.
 - `fitz-go` and `fitz-py` already expose dedicated conformance targets aligned to the shared runner contract.
-- `fitz-dotnet` currently supports WebSocket transport only.
+- `fitz-dotnet` currently supports WebSocket and TCP transports, but shared-suite coverage is still websocket-heavy.
 
 Overall assessment:
 
@@ -27,7 +27,7 @@ Overall assessment:
 | Severity | Finding | Contracts affected | Recommended order |
 | --- | --- | --- | --- |
 | P0 | No contract-compliant .NET conformance runner exists yet | Runner contract, `CS-001` to `CS-015` | 1 |
-| P0 | Connection auth is marked successful before broker confirmation and cannot reliably surface typed auth failure | `AC-CONN-002`, `AC-CONN-003`, `AC-CONN-005`, `CS-001`, `CS-002` | 2 |
+| P1 | Connection auth now uses an immediate broker probe and surfaces typed auth failure, but broker-backed proof across transports is still pending | `AC-CONN-002`, `AC-CONN-003`, `AC-CONN-005`, `CS-001`, `CS-002` | 4 |
 | P0 | The current public domain surface does not represent several required Fitz capabilities | Required domains contract, `AC-QUEUE-*`, `AC-NOTICE-*`, `AC-RPC-*`, `AC-SCHEDULE-*`, `AC-STREAM-010` to `AC-STREAM-014` | 3 |
 | P1 | TCP transport exists, but the shared suite is still websocket-only | Suite required transport matrix, `CS-001` to `CS-015` | 4 |
 | P1 | Reconnect/backoff and connection-scoped state restoration need fuller contract coverage | `AC-CONN-006`, `CS-009`, `CS-010`, `CS-015` | 5 |
@@ -59,14 +59,14 @@ Recommended remediation:
 3. Emit the shared result shape instead of the current smoke-only aggregate.
 4. Add CI gating for P0 scenarios.
 
-### P0. Connection auth is marked successful before broker confirmation and cannot reliably surface typed auth failure
+### P1. Connection auth now uses an immediate broker probe and surfaces typed auth failure, but broker-backed proof across transports is still pending
 
 Current evidence:
 
-- `src/Core/Connection/FitzConnection.cs` sends `CONNECT`, waits for a fixed settle delay, then unconditionally sets `State = Authenticated`.
-- The same flow never parses an auth-success acknowledgment or a structured auth-failure frame.
-- The receive loop converts transport failures into `Disconnected` state but does not translate auth rejection into `AuthenticationException`.
-- `tests/Core/Integration/ConformanceSmokeTests.cs` currently treats a "silent-close model" for invalid JWT as a `partial` result path instead of a clear typed auth failure.
+- `src/Core/Connection/FitzConnection.cs` sends `CONNECT` and immediately probes the broker with a lightweight lease query before marking the session authenticated.
+- Invalid JWTs now surface through `AuthenticationException` during connect rather than being treated as a successful session.
+- The receive loop still converts transport failures into `Disconnected` state, so broker-backed proof is still needed across both transports.
+- `tests/Core/Integration/ConformanceSmokeTests.cs` still needs end-to-end conformance coverage for the auth matrix even though the unit-level connect path is now stricter.
 
 Expected behavior:
 
@@ -76,14 +76,13 @@ Expected behavior:
 
 Likely root cause area:
 
-- The connect state machine is delay-based rather than protocol-confirmation-based.
+- The connect state machine needed protocol confirmation rather than delay-based success; that fix is now in place, but the broker-backed matrix still needs proof.
 
 Recommended remediation:
 
-1. Introduce explicit auth success/failure detection in the connection layer.
-2. Map auth rejection to `AuthenticationException`.
-3. Remove the fixed-delay success model as the source of truth.
-4. Add end-to-end conformance coverage for anonymous, valid JWT, and invalid JWT auth flows.
+1. Add end-to-end conformance coverage for anonymous, valid JWT, and invalid JWT auth flows.
+2. Verify the new probe-based connect path across both WebSocket and TCP.
+3. Keep the docs honest if broker behavior reveals a remaining edge case.
 
 ### P0. The current public domain surface does not represent several required Fitz capabilities
 
