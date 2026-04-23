@@ -24,6 +24,7 @@ public sealed class RpcClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+                writer.WriteString("ready");
                 return Task.FromResult(writer.Build());
             },
             registerNotificationHandler: (messageType, handler) =>

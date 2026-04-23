@@ -142,9 +142,9 @@ public sealed class RpcClient : IRpcClient
                 throw new RpcException($"CALL failed with status {status}", "CALL_FAILED", status);
             }
 
-            if (!reader.IsEof)
+            if (reader.RemainingBytes > 0)
             {
-                throw new RpcException("CALL response has trailing bytes", "CALL_INVALID_RESPONSE");
+                _ = reader.ReadBytes(reader.RemainingBytes);
             }
 
             var connectionClosedToken = _getConnectionClosedToken?.Invoke() ?? CancellationToken.None;
@@ -289,15 +289,14 @@ public sealed class RpcClient : IRpcClient
             throw new RpcException($"REGISTER failed with status {status}", "REGISTER_FAILED", status);
         }
 
-        if (reader.RemainingBytes < 8)
+        if (reader.RemainingBytes >= 8)
         {
-            throw new RpcException("REGISTER response missing subscription id", "REGISTER_INVALID_RESPONSE");
+            _ = reader.ReadU64();
         }
 
-        _ = reader.ReadU64();
-        if (!reader.IsEof)
+        if (reader.RemainingBytes > 0)
         {
-            throw new RpcException("REGISTER response has trailing bytes", "REGISTER_INVALID_RESPONSE");
+            _ = reader.ReadBytes(reader.RemainingBytes);
         }
     }
 
