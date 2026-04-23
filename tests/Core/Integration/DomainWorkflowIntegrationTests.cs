@@ -8,11 +8,6 @@ public sealed class DomainWorkflowIntegrationTests
     [Fact]
     public async Task should_round_trip_queue_message_given_enqueue_reserve_complete_workflow()
     {
-        if (!IntegrationFixture.IsEnabled())
-        {
-            return;
-        }
-
         var route = IntegrationFixture.CreateUniqueRoute("queue");
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
@@ -30,11 +25,6 @@ public sealed class DomainWorkflowIntegrationTests
     [Fact]
     public async Task should_round_trip_stream_records_given_begin_append_commit_read_workflow()
     {
-        if (!IntegrationFixture.IsEnabled() || !IntegrationFixture.IsScenarioEnabled("STREAM"))
-        {
-            return;
-        }
-
         var route = IntegrationFixture.CreateUniqueRoute("stream");
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
@@ -58,11 +48,6 @@ public sealed class DomainWorkflowIntegrationTests
     [Fact]
     public async Task should_hold_then_release_lease_given_acquire_extend_release_workflow()
     {
-        if (!IntegrationFixture.IsEnabled() || !IntegrationFixture.IsScenarioEnabled("LEASE"))
-        {
-            return;
-        }
-
         var route = IntegrationFixture.CreateUniqueRoute("lease");
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
@@ -83,11 +68,6 @@ public sealed class DomainWorkflowIntegrationTests
     [Fact]
     public async Task should_create_and_cancel_schedule_given_valid_cron_workflow()
     {
-        if (!IntegrationFixture.IsEnabled())
-        {
-            return;
-        }
-
         var route = IntegrationFixture.CreateUniqueRoute("schedule");
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
@@ -102,11 +82,6 @@ public sealed class DomainWorkflowIntegrationTests
     [Fact]
     public async Task should_write_then_read_kv_value_given_transaction_commit_workflow()
     {
-        if (!IntegrationFixture.IsEnabled() || !IntegrationFixture.IsScenarioEnabled("KV"))
-        {
-            return;
-        }
-
         var route = IntegrationFixture.CreateUniqueRoute("kv");
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();

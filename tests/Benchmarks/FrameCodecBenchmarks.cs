@@ -7,7 +7,7 @@ namespace Cntryl.Fitz.Benchmarks;
 /// <summary>
 /// Frame codec benchmarks: encoding and decoding hot-path performance.
 /// </summary>
-[SimpleJob(warmupCount: 3, targetCount: 5)]
+[SimpleJob(warmupCount: 3, iterationCount: 5)]
 [MemoryDiagnoser]
 [PlainExporter]
 public class FrameCodecBenchmarks

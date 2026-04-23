@@ -10,6 +10,7 @@ public sealed class TcpTransport : ITransport
     private readonly TimeSpan _timeout;
     private readonly int _maxFrameSize;
     private readonly byte[] _receiveHeaderBuffer = new byte[4];
+    private readonly byte[] _sendHeaderBuffer = new byte[4];
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private TcpClient? _client;
     private NetworkStream? _stream;
@@ -53,31 +54,23 @@ public sealed class TcpTransport : ITransport
             throw new InvalidOperationException($"TCP frame length {frameLength} exceeds max frame size {_maxFrameSize}.");
         }
 
-        var totalLength = 4 + frameLength;
-        var buffer = ArrayPool<byte>.Shared.Rent(totalLength);
+        await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            BinaryPrimitives.WriteUInt32BigEndian(buffer.AsSpan(0, 4), (uint)frameLength);
+            BinaryPrimitives.WriteUInt32BigEndian(_sendHeaderBuffer, (uint)frameLength);
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(_timeout);
+
+            await stream.WriteAsync(_sendHeaderBuffer.AsMemory(0, 4), cts.Token).ConfigureAwait(false);
             if (!data.IsEmpty)
             {
-                data.Span.CopyTo(buffer.AsSpan(4));
-            }
-
-            await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
-            {
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                cts.CancelAfter(_timeout);
-                await stream.WriteAsync(buffer.AsMemory(0, totalLength), cts.Token).ConfigureAwait(false);
-            }
-            finally
-            {
-                _sendLock.Release();
+                await stream.WriteAsync(data, cts.Token).ConfigureAwait(false);
             }
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(buffer);
+            _sendLock.Release();
         }
     }
 
@@ -85,7 +78,7 @@ public sealed class TcpTransport : ITransport
     {
         var stream = EnsureStream();
 
-        var headerRead = await ReadExactOrClosedAsync(stream, _receiveHeaderBuffer, cancellationToken).ConfigureAwait(false);
+        var headerRead = await ReadExactOrClosedAsync(stream, _receiveHeaderBuffer.AsMemory(), cancellationToken).ConfigureAwait(false);
         if (headerRead == 0)
         {
             return PooledFrame.Closed;
@@ -103,7 +96,7 @@ public sealed class TcpTransport : ITransport
         }
 
         var payload = ArrayPool<byte>.Shared.Rent(frameLength);
-        var payloadRead = await ReadExactOrClosedAsync(stream, payload, cancellationToken).ConfigureAwait(false);
+        var payloadRead = await ReadExactOrClosedAsync(stream, payload.AsMemory(0, frameLength), cancellationToken).ConfigureAwait(false);
         if (payloadRead == 0)
         {
             ArrayPool<byte>.Shared.Return(payload);
@@ -131,12 +124,12 @@ public sealed class TcpTransport : ITransport
         await CloseAsync().ConfigureAwait(false);
     }
 
-    private static async Task<int> ReadExactOrClosedAsync(NetworkStream stream, byte[] buffer, CancellationToken cancellationToken)
+    private static async Task<int> ReadExactOrClosedAsync(NetworkStream stream, Memory<byte> buffer, CancellationToken cancellationToken)
     {
         var totalRead = 0;
         while (totalRead < buffer.Length)
         {
-            var bytesRead = await stream.ReadAsync(buffer.AsMemory(totalRead, buffer.Length - totalRead), cancellationToken).ConfigureAwait(false);
+            var bytesRead = await stream.ReadAsync(buffer[totalRead..], cancellationToken).ConfigureAwait(false);
             if (bytesRead == 0)
             {
                 return 0;

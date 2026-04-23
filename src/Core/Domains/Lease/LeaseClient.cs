@@ -12,7 +12,7 @@ namespace Cntryl.Fitz.Domains.Lease;
 public sealed class LeaseClient : ILeaseClient
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
-    private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
+    private readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
     private readonly Dictionary<string, LeaseSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -25,7 +25,7 @@ public sealed class LeaseClient : ILeaseClient
     internal LeaseClient(FitzConnection connection)
         : this(
             connection.RequestAsync,
-            connection.RegisterNotificationHandler)
+            connection.RegisterBorrowedNotificationHandler)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -33,13 +33,15 @@ public sealed class LeaseClient : ILeaseClient
     public LeaseClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
-        : this(async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)), registerNotificationHandler)
+        : this(
+            async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
+            NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
     {
     }
 
     internal LeaseClient(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
-        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
@@ -115,11 +117,36 @@ public sealed class LeaseClient : ILeaseClient
         var hasHolder = reader.ReadU8();
         if (hasHolder == 0)
         {
+            if (!reader.IsEof)
+            {
+                if (reader.RemainingBytes < 4)
+                {
+                    throw new LeaseException("QUERY response has trailing bytes", "QUERY_INVALID_RESPONSE");
+                }
+
+                _ = reader.ReadU32();
+            }
+
+            if (!reader.IsEof)
+            {
+                throw new LeaseException("QUERY response has trailing bytes", "QUERY_INVALID_RESPONSE");
+            }
+
             return new LeaseInfo(false);
         }
 
         var owner = reader.ReadString();
         var ttlRemaining = reader.ReadU64();
+        if (!reader.IsEof)
+        {
+            if (reader.RemainingBytes < 4)
+            {
+                throw new LeaseException("QUERY response has trailing bytes", "QUERY_INVALID_RESPONSE");
+            }
+
+            _ = reader.ReadU32();
+        }
+
         if (!reader.IsEof)
         {
             throw new LeaseException("QUERY response has trailing bytes", "QUERY_INVALID_RESPONSE");
@@ -289,7 +316,7 @@ public sealed class LeaseClient : ILeaseClient
         _notificationRegistration = _registerNotificationHandler(MessageTypes.LeaseNotify, HandleNotification);
     }
 
-    private void HandleNotification(byte[] payload)
+    private void HandleNotification(ReadOnlyMemory<byte> payload)
     {
         try
         {

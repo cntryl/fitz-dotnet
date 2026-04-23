@@ -85,24 +85,24 @@ public sealed class KvTransaction : IKvTransaction
 
     public Task DeleteAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
     {
-        using var writer = new BinaryBufferWriter();
+        var writer = new BinaryBufferWriter();
         writer.WriteU64(_txId);
         writer.WriteString(_route);
         writer.WriteU32((uint)key.Length);
         writer.WriteBytes(key.Span);
-        return ExpectStatusAsync(MessageTypes.KvDelete, writer.Build(), "DELETE", ct);
+        return ExpectStatusAsync(MessageTypes.KvDelete, writer, "DELETE", ct);
     }
 
     public Task DeleteRangeAsync(ReadOnlyMemory<byte> startKey, ReadOnlyMemory<byte> endKey, CancellationToken ct = default)
     {
-        using var writer = new BinaryBufferWriter();
+        var writer = new BinaryBufferWriter();
         writer.WriteU64(_txId);
         writer.WriteString(_route);
         writer.WriteU32((uint)startKey.Length);
         writer.WriteBytes(startKey.Span);
         writer.WriteU32((uint)endKey.Length);
         writer.WriteBytes(endKey.Span);
-        return ExpectStatusAsync(MessageTypes.KvDeleteRange, writer.Build(), "DELETE_RANGE", ct);
+        return ExpectStatusAsync(MessageTypes.KvDeleteRange, writer, "DELETE_RANGE", ct);
     }
 
     public async IAsyncEnumerable<KvPair> ScanAsync(KvScanQuery query, [EnumeratorCancellation] CancellationToken ct = default)
@@ -212,6 +212,20 @@ public sealed class KvTransaction : IKvTransaction
         if (!reader.IsEof)
         {
             throw new KvException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+        }
+    }
+
+    private Task ExpectStatusAsync(ushort messageType, BinaryBufferWriter writer, string operation, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        return ExpectStatusWithOwnedWriterAsync(messageType, writer, operation, ct);
+    }
+
+    private async Task ExpectStatusWithOwnedWriterAsync(ushort messageType, BinaryBufferWriter writer, string operation, CancellationToken ct)
+    {
+        using (writer)
+        {
+            await ExpectStatusAsync(messageType, writer.WrittenMemory, operation, ct).ConfigureAwait(false);
         }
     }
 }

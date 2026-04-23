@@ -16,7 +16,7 @@ public class MultiplexerBenchmarks
 {
     private ConcurrentDictionary<ushort, object> _correlations = null!;
     private object[] _handlers = null!;
-    
+
     [Params(10, 100, 1000, 5000)]
     public int ConcurrencyLevel { get; set; }
 
@@ -54,7 +54,7 @@ public class MultiplexerBenchmarks
     {
         var id = (ushort)(System.DateTime.UtcNow.Ticks % ConcurrencyLevel);
         var handler = new object();
-        
+
         if (_correlations.TryAdd(id, handler))
         {
             _correlations.TryRemove(id, out _);

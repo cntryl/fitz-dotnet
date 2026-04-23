@@ -12,7 +12,7 @@ namespace Cntryl.Fitz.Domains.Stream;
 public sealed class StreamClient : IStreamClient
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
-    private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
+    private readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
     private readonly Dictionary<string, StreamSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -23,7 +23,7 @@ public sealed class StreamClient : IStreamClient
     private readonly IDisposable? _reconnectRegistration;
 
     internal StreamClient(FitzConnection connection)
-        : this(connection.RequestAsync, connection.RegisterNotificationHandler)
+        : this(connection.RequestAsync, connection.RegisterBorrowedNotificationHandler)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -31,13 +31,15 @@ public sealed class StreamClient : IStreamClient
     public StreamClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
-        : this(async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)), registerNotificationHandler)
+        : this(
+            async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
+            NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
     {
     }
 
     internal StreamClient(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
-        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
@@ -130,12 +132,32 @@ public sealed class StreamClient : IStreamClient
         }
 
         var inner = new BinaryBufferReader(data);
+        var firstOffset = StreamWireHelpers.ReadOptionalU64(inner, "METADATA", "first offset") ?? 0;
+        var lastOffset = StreamWireHelpers.ReadOptionalU64(inner, "METADATA", "last offset") ?? 0;
         if (inner.RemainingBytes < 24)
         {
             throw new StreamException("METADATA response missing metadata payload", "METADATA_INVALID_RESPONSE");
         }
 
-        return new StreamMetadata(inner.ReadU64(), inner.ReadU64(), inner.ReadU64());
+        var recordCount = inner.ReadU64();
+        _ = inner.ReadU64();
+        _ = inner.ReadU64();
+        _ = StreamWireHelpers.ReadOptionalU64(inner, "METADATA", "ttl seconds");
+
+        if (inner.RemainingBytes < 16)
+        {
+            throw new StreamException("METADATA response missing metadata payload", "METADATA_INVALID_RESPONSE");
+        }
+
+        _ = inner.ReadU64();
+        _ = inner.ReadU64();
+
+        if (!inner.IsEof)
+        {
+            throw new StreamException("METADATA response has trailing bytes", "METADATA_INVALID_RESPONSE");
+        }
+
+        return new StreamMetadata(firstOffset, lastOffset, recordCount);
     }
 
     public async Task<StreamSubscription> SubscribeAsync(
@@ -287,7 +309,7 @@ public sealed class StreamClient : IStreamClient
         _notificationRegistration = _registerNotificationHandler(MessageTypes.StreamNotify, HandleNotification);
     }
 
-    private void HandleNotification(byte[] payload)
+    private void HandleNotification(ReadOnlyMemory<byte> payload)
     {
         try
         {
@@ -474,26 +496,24 @@ public sealed class StreamClient : IStreamClient
         var records = new StreamRecord[(int)recordCount];
         for (var index = 0; index < records.Length; index++)
         {
-            if (reader.RemainingBytes < 12)
-            {
-                throw new StreamException("READ response truncated record", "READ_INVALID_RESPONSE");
-            }
-
-            var offset = reader.ReadU64();
-            var bodyLength = reader.ReadU32();
-            if (bodyLength > int.MaxValue)
-            {
-                throw new StreamException("READ response record body length too large", "READ_INVALID_RESPONSE");
-            }
-
-            var bodyLengthInt = (int)bodyLength;
-            if (reader.RemainingBytes < bodyLengthInt)
-            {
-                throw new StreamException("READ response truncated record body", "READ_INVALID_RESPONSE");
-            }
-
-            records[index] = new StreamRecord(offset, reader.ReadBytes(bodyLengthInt));
+            records[index] = StreamWireHelpers.ReadRecord(reader, "READ");
         }
+
+        if (reader.RemainingBytes < 8)
+        {
+            throw new StreamException("READ response missing read footer", "READ_INVALID_RESPONSE");
+        }
+
+        _ = reader.ReadU64();
+        _ = StreamWireHelpers.ReadOptionalU64(reader, "READ", "last area offset");
+        _ = StreamWireHelpers.ReadOptionalU64(reader, "READ", "last realm offset");
+
+        if (reader.IsEof)
+        {
+            throw new StreamException("READ response missing has more flag", "READ_INVALID_RESPONSE");
+        }
+
+        _ = reader.ReadU8();
 
         if (!reader.IsEof)
         {

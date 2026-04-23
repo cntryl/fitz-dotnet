@@ -51,44 +51,18 @@ public sealed class FrameParser
         }
 
         var source = _buffer.AsSpan(_readOffset, _length - _readOffset);
-        var offset = 0;
-
-        if (source.Length < 3)
+        if (!FrameCodec.TryReadHeader(source, out var messageType, out var payloadLength, out var headerLength))
         {
             return false;
         }
 
-        ushort messageType;
-        var first = source[offset++];
-        if (first == 0xFF)
-        {
-            if (source.Length < 5)
-            {
-                return false;
-            }
-
-            messageType = BinaryPrimitives.ReadUInt16BigEndian(source.Slice(offset, 2));
-            offset += 2;
-        }
-        else
-        {
-            messageType = first;
-        }
-
-        if (source.Length - offset < 2)
+        if (source.Length - headerLength < payloadLength)
         {
             return false;
         }
 
-        var payloadLength = BinaryPrimitives.ReadUInt16BigEndian(source.Slice(offset, 2));
-        offset += 2;
-        if (source.Length - offset < payloadLength)
-        {
-            return false;
-        }
-
-        frame = new Frame(messageType, _buffer.AsMemory(_readOffset + offset, payloadLength));
-        _readOffset += offset + payloadLength;
+        frame = new Frame(messageType, _buffer.AsMemory(_readOffset + headerLength, payloadLength));
+        _readOffset += headerLength + payloadLength;
 
         if (_readOffset == _length)
         {

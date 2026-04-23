@@ -7,25 +7,6 @@ namespace Cntryl.Fitz.Core.Tests.Integration;
 
 internal static class IntegrationFixture
 {
-    internal static bool IsEnabled()
-    {
-        return string.Equals(
-            Environment.GetEnvironmentVariable("FITZ_DOTNET_RUN_INTEGRATION"),
-            "1",
-            StringComparison.Ordinal
-        );
-    }
-
-    internal static bool IsScenarioEnabled(string scenario)
-    {
-        var key = $"FITZ_DOTNET_RUN_INTEGRATION_{scenario.ToUpperInvariant()}";
-        return string.Equals(
-            Environment.GetEnvironmentVariable(key),
-            "1",
-            StringComparison.Ordinal
-        );
-    }
-
     internal static string GetConformanceTransport()
     {
         var configured = Environment.GetEnvironmentVariable("CONFORMANCE_TRANSPORT");
@@ -120,9 +101,11 @@ internal static class IntegrationFixture
 
     internal static string CreateUniqueRoute(string prefix)
     {
+        var resource = $"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}";
+
         return prefix == "schedule"
-            ? $"{prefix}://conformance-realm/integration/{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}/res/run"
-            : $"{prefix}://conformance-realm/integration/{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid():N}/res";
+            ? $"{prefix}://conformance-realm/integration/{resource}/run"
+            : $"{prefix}://conformance-realm/integration/{resource}";
     }
 
     internal static async Task WriteAggregateAsync(AggregateResult aggregate)

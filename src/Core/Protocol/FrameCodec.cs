@@ -6,6 +6,8 @@ public static class FrameCodec
 {
     public const int MaxHeaderSize = 5;
 
+    private const byte ExtendedMessageTypeMarker = 0xFF;
+
     public static int MaxEncodedSize(int payloadLength)
     {
         if (payloadLength < 0)
@@ -23,7 +25,7 @@ public static class FrameCodec
             throw new ArgumentOutOfRangeException(nameof(payload), "Payload exceeds frame limit.");
         }
 
-        var typeLength = messageType <= 0xFE ? 1 : 3;
+        var typeLength = GetTypeLength(messageType);
         var required = typeLength + 2 + payload.Length;
         if (destination.Length < required)
         {
@@ -31,13 +33,13 @@ public static class FrameCodec
         }
 
         var offset = 0;
-        if (messageType <= 0xFE)
+        if (typeLength == 1)
         {
             destination[offset++] = (byte)messageType;
         }
         else
         {
-            destination[offset++] = 0xFF;
+            destination[offset++] = ExtendedMessageTypeMarker;
             destination[offset++] = (byte)(messageType >> 8);
             destination[offset++] = (byte)(messageType & 0xFF);
         }
@@ -55,8 +57,7 @@ public static class FrameCodec
             throw new ArgumentOutOfRangeException(nameof(payload), "Payload exceeds frame limit.");
         }
 
-        var typeLength = messageType <= 0xFE ? 1 : 3;
-        var output = GC.AllocateUninitializedArray<byte>(typeLength + 2 + payload.Length);
+        var output = GC.AllocateUninitializedArray<byte>(GetTypeLength(messageType) + 2 + payload.Length);
         EncodeInto(messageType, payload, output);
         return output;
     }
@@ -69,37 +70,9 @@ public static class FrameCodec
     public static Frame Decode(ReadOnlyMemory<byte> frameBytes, bool strict = false)
     {
         var span = frameBytes.Span;
-        if (span.Length < 3)
-        {
-            throw new InvalidOperationException("Frame is too short.");
-        }
+        ReadHeader(span, out var messageType, out var payloadLength, out var headerLength);
 
-        var offset = 0;
-        ushort messageType;
-        var first = span[offset++];
-        if (first == 0xFF)
-        {
-            if (span.Length < 5)
-            {
-                throw new InvalidOperationException("Extended frame header is incomplete.");
-            }
-
-            messageType = BinaryPrimitives.ReadUInt16BigEndian(span.Slice(offset, 2));
-            offset += 2;
-        }
-        else
-        {
-            messageType = first;
-        }
-
-        var payloadLength = BinaryPrimitives.ReadUInt16BigEndian(span.Slice(offset, 2));
-        offset += 2;
-        if (payloadLength > ushort.MaxValue)
-        {
-            throw new InvalidOperationException("Frame payload exceeds allowed length.");
-        }
-
-        var expectedLength = offset + payloadLength;
+        var expectedLength = headerLength + payloadLength;
         if (span.Length < expectedLength)
         {
             throw new InvalidOperationException("Frame payload is incomplete.");
@@ -110,6 +83,55 @@ public static class FrameCodec
             throw new InvalidOperationException("Frame has trailing bytes.");
         }
 
-        return new Frame(messageType, frameBytes.Slice(offset, payloadLength));
+        return new Frame(messageType, frameBytes.Slice(headerLength, payloadLength));
+    }
+
+    internal static bool TryReadHeader(ReadOnlySpan<byte> frameBytes, out ushort messageType, out ushort payloadLength, out int headerLength)
+    {
+        if (frameBytes.Length < 3)
+        {
+            messageType = default;
+            payloadLength = default;
+            headerLength = default;
+            return false;
+        }
+
+        if (frameBytes[0] == ExtendedMessageTypeMarker)
+        {
+            if (frameBytes.Length < MaxHeaderSize)
+            {
+                messageType = default;
+                payloadLength = default;
+                headerLength = default;
+                return false;
+            }
+
+            messageType = BinaryPrimitives.ReadUInt16BigEndian(frameBytes.Slice(1, 2));
+            payloadLength = BinaryPrimitives.ReadUInt16BigEndian(frameBytes.Slice(3, 2));
+            headerLength = MaxHeaderSize;
+            return true;
+        }
+
+        messageType = frameBytes[0];
+        payloadLength = BinaryPrimitives.ReadUInt16BigEndian(frameBytes.Slice(1, 2));
+        headerLength = 3;
+        return true;
+    }
+
+    private static int GetTypeLength(ushort messageType)
+    {
+        return messageType <= 0xFE ? 1 : 3;
+    }
+
+    private static void ReadHeader(ReadOnlySpan<byte> frameBytes, out ushort messageType, out ushort payloadLength, out int headerLength)
+    {
+        if (TryReadHeader(frameBytes, out messageType, out payloadLength, out headerLength))
+        {
+            return;
+        }
+
+        throw frameBytes.Length < 3
+            ? new InvalidOperationException("Frame is too short.")
+            : new InvalidOperationException("Extended frame header is incomplete.");
     }
 }

@@ -107,6 +107,11 @@ public sealed class FitzConnection
         return _multiplexer.RegisterNotificationHandler(messageType, handler);
     }
 
+    internal IDisposable RegisterBorrowedNotificationHandler(ushort messageType, Action<ReadOnlyMemory<byte>> handler)
+    {
+        return _multiplexer.RegisterBorrowedNotificationHandler(messageType, handler);
+    }
+
     public IDisposable OnReconnect(Func<CancellationToken, ValueTask> listener)
     {
         ArgumentNullException.ThrowIfNull(listener);
@@ -466,7 +471,7 @@ public sealed class FitzConnection
             writer.WriteString("lease://fitz/system/auth-probe");
             var response = await _multiplexer.RequestAsync(
                 MessageTypes.LeaseQuery,
-                FrameCodec.Encode(MessageTypes.LeaseQuery, writer.Build()),
+                FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan),
                 (data, token) => transport.SendAsync(data, token),
                 probeTimeout,
                 cancellationToken).ConfigureAwait(false);

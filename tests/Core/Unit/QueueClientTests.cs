@@ -76,8 +76,44 @@ public sealed class QueueClientTests
         Assert.Equal((ulong)30, reader.ReadU64());
         Assert.Equal((byte)1, reader.ReadU8());
         Assert.Equal((uint)2, reader.ReadU32());
-        Assert.Equal((byte)1, reader.ReadU8());
-        Assert.Equal((ulong)10, reader.ReadU64());
+        Assert.True(reader.IsEof);
+    }
+
+    [Fact]
+    public async Task should_retry_reserve_given_wait_seconds_when_item_arrives_after_initial_empty_response()
+    {
+        // Arrange
+        var reserveCallCount = 0;
+        var queue = new QueueClient((messageType, payload, _) =>
+        {
+            Assert.Equal(MessageTypes.QueueReserve, messageType);
+            reserveCallCount++;
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            if (reserveCallCount == 1)
+            {
+                writer.WriteU32(0);
+            }
+            else
+            {
+                writer.WriteU32(1);
+                writer.WriteU64(555);
+                writer.WriteU64(777);
+                writer.WriteU32(5);
+                writer.WriteBytes("job-1"u8);
+            }
+
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var items = await queue.ReserveAsync("queue://prod/app/tasks", 30, waitSeconds: 1);
+
+        // Assert
+        Assert.Equal(2, reserveCallCount);
+        Assert.Single(items);
+        Assert.Equal((ulong)555, items[0].Id);
     }
 
     [Fact]

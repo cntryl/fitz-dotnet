@@ -13,7 +13,7 @@ public sealed class NoticeClient : INoticeClient
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _request;
-    private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
+    private readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
     private readonly Dictionary<string, NoticeSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -27,7 +27,7 @@ public sealed class NoticeClient : INoticeClient
         : this(
             connection.SendAsync,
             connection.RequestAsync,
-            connection.RegisterNotificationHandler)
+            connection.RegisterBorrowedNotificationHandler)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -41,14 +41,14 @@ public sealed class NoticeClient : INoticeClient
             request is null
                 ? null
                 : async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
-            registerNotificationHandler)
+            NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
     {
     }
 
     internal NoticeClient(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send,
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? request = null,
-        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null)
     {
         _send = send;
         _request = request;
@@ -235,7 +235,7 @@ public sealed class NoticeClient : INoticeClient
         _notificationRegistration = _registerNotificationHandler(MessageTypes.NoticeNotify, HandleNotification);
     }
 
-    private void HandleNotification(byte[] payload)
+    private void HandleNotification(ReadOnlyMemory<byte> payload)
     {
         try
         {

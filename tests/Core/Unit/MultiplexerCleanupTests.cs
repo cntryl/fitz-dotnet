@@ -124,6 +124,7 @@ public sealed class MultiplexerCleanupTests
     {
         var mux = new Multiplexer();
         mux.SetConnected();
+        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         using var firstCts = new CancellationTokenSource();
         var first = mux.RequestAsync(
@@ -139,12 +140,17 @@ public sealed class MultiplexerCleanupTests
         var second = mux.RequestAsync(
             105,
             [0x2],
-            static (_, _) => Task.CompletedTask,
+            (_, _) =>
+            {
+                secondStarted.TrySetResult();
+                return Task.CompletedTask;
+            },
             TimeSpan.FromSeconds(5)
         );
 
         firstCts.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        await secondStarted.Task;
 
         mux.Dispatch(105, [0xB]);
         var result = await second;

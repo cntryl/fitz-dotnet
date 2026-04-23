@@ -12,7 +12,7 @@ namespace Cntryl.Fitz.Domains.Schedule;
 public sealed class ScheduleClient : IScheduleClient
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
-    private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
+    private readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
     private readonly Dictionary<string, ScheduleSubscriptionState> _subscriptionsByRoute = new(StringComparer.Ordinal);
@@ -25,7 +25,7 @@ public sealed class ScheduleClient : IScheduleClient
     internal ScheduleClient(FitzConnection connection)
         : this(
             connection.RequestAsync,
-            connection.RegisterNotificationHandler)
+            connection.RegisterBorrowedNotificationHandler)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -33,13 +33,15 @@ public sealed class ScheduleClient : IScheduleClient
     public ScheduleClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
-        : this(async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)), registerNotificationHandler)
+        : this(
+            async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
+            NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
     {
     }
 
     internal ScheduleClient(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
-        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
@@ -287,7 +289,7 @@ public sealed class ScheduleClient : IScheduleClient
         _notificationRegistration = _registerNotificationHandler(MessageTypes.ScheduleNotify, HandleNotification);
     }
 
-    private void HandleNotification(byte[] payload)
+    private void HandleNotification(ReadOnlyMemory<byte> payload)
     {
         try
         {

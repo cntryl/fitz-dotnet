@@ -36,7 +36,7 @@ public sealed class PerfTimer : IDisposable
 
         _elapsedTicks = System.Diagnostics.Stopwatch.GetTimestamp() - _startTicks;
         var microseconds = (long)(_elapsedTicks * 1_000_000.0 / System.Diagnostics.Stopwatch.Frequency);
-        
+
         _histogram?.Record(microseconds);
     }
 

@@ -70,6 +70,32 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
+    public async Task should_ignore_pending_waiters_given_success_response_when_querying_lease()
+    {
+        // Arrange
+        var leaseClient = new LeaseClient((messageType, payload, _) =>
+        {
+            Assert.Equal(MessageTypes.LeaseQuery, messageType);
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(1);
+            writer.WriteString("worker-1");
+            writer.WriteU64(18);
+            writer.WriteU32(3);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var info = await leaseClient.QueryAsync("lease://prod/app/lock");
+
+        // Assert
+        Assert.True(info.IsHeld);
+        Assert.Equal("worker-1", info.Owner);
+        Assert.Equal((ulong)18, info.TtlRemainingSecs);
+    }
+
+    [Fact]
     public async Task should_encode_ttl_given_lease_handle_when_extending_lease()
     {
         // Arrange

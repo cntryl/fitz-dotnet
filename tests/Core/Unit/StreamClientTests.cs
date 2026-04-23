@@ -61,6 +61,29 @@ public sealed class StreamClientTests
         Assert.Equal("meta", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(4)));
     }
 
+    [Fact]
+    public async Task should_allow_optional_payload_given_begin_response_when_beginning_stream()
+    {
+        // Arrange
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            Assert.Equal(MessageTypes.StreamBegin, messageType);
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(1);
+            writer.WriteU64(99);
+            writer.WriteU32(0);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var session = await stream.BeginAsync("stream://prod/app/events");
+
+        // Assert
+        Assert.NotNull(session);
+    }
+
     [Theory]
     [MemberData(nameof(ExactRouteValidationCases))]
     public async Task should_reject_invalid_route_given_exact_stream_methods_when_calling_begin_peek_and_metadata(string route, string expectedMessage)
@@ -182,11 +205,23 @@ public sealed class StreamClientTests
             using var data = new BinaryBufferWriter();
             data.WriteU32(2);
             data.WriteU64(4);
+            data.WriteU8(0);
+            data.WriteU8(0);
             data.WriteU32(3);
             data.WriteBytes("one"u8);
+            data.WriteU8(0);
+            data.WriteU64(111);
             data.WriteU64(5);
+            data.WriteU8(0);
+            data.WriteU8(0);
             data.WriteU32(3);
             data.WriteBytes("two"u8);
+            data.WriteU8(0);
+            data.WriteU64(222);
+            data.WriteU64(5);
+            data.WriteU8(0);
+            data.WriteU8(0);
+            data.WriteU8(0);
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -236,6 +271,8 @@ public sealed class StreamClientTests
 
             using var flat = new BinaryBufferWriter();
             flat.WriteU64(4);
+            flat.WriteU8(0);
+            flat.WriteU8(0);
             flat.WriteU32(3);
             flat.WriteBytes("one"u8);
 
@@ -279,8 +316,16 @@ public sealed class StreamClientTests
             using var data = new BinaryBufferWriter();
             data.WriteU32(1);
             data.WriteU64(4);
+            data.WriteU8(0);
+            data.WriteU8(0);
             data.WriteU32(3);
             data.WriteBytes("one"u8);
+            data.WriteU8(0);
+            data.WriteU64(111);
+            data.WriteU64(4);
+            data.WriteU8(0);
+            data.WriteU8(0);
+            data.WriteU8(0);
             data.WriteU8(0xFF);
 
             var dataPayload = data.Build();
@@ -317,9 +362,16 @@ public sealed class StreamClientTests
             Assert.Equal("stream://prod/app/events", request.ReadString());
 
             using var data = new BinaryBufferWriter();
+            data.WriteU8(1);
             data.WriteU64(10);
+            data.WriteU8(1);
             data.WriteU64(42);
             data.WriteU64(33);
+            data.WriteU64(500);
+            data.WriteU64(1024);
+            data.WriteU8(0);
+            data.WriteU64(100);
+            data.WriteU64(200);
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -349,8 +401,12 @@ public sealed class StreamClientTests
 
             using var data = new BinaryBufferWriter();
             data.WriteU64(42);
+            data.WriteU8(0);
+            data.WriteU8(0);
             data.WriteU32(4);
             data.WriteBytes("tail"u8);
+            data.WriteU8(0);
+            data.WriteU64(123);
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -520,6 +576,33 @@ public sealed class StreamClientTests
         var commitReader = new BinaryBufferReader(calls[1].Payload);
         Assert.Equal((ulong)44, commitReader.ReadU64());
         Assert.Equal((byte)0, commitReader.ReadU8());
+    }
+
+    [Fact]
+    public async Task should_ignore_commit_payload_given_success_response_when_committing()
+    {
+        // Arrange
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            if (messageType == MessageTypes.StreamBegin)
+            {
+                writer.WriteU8(1);
+                writer.WriteU64(44);
+            }
+            else if (messageType == MessageTypes.StreamCommit)
+            {
+                writer.WriteU32(0);
+            }
+
+            return Task.FromResult(writer.Build());
+        });
+
+        var session = await stream.BeginAsync("stream://prod/app/events");
+
+        // Act / Assert
+        await session.CommitAsync();
     }
 
     [Fact]

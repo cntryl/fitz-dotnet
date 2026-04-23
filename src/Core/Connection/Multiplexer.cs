@@ -7,7 +7,7 @@ public sealed class Multiplexer
     private readonly object _gate = new();
     private readonly Dictionary<ushort, PendingRequest> _pending = new();
     private readonly Dictionary<ushort, SemaphoreSlim> _requestLanes = new();
-    private readonly Dictionary<ushort, Dictionary<long, Action<byte[]>>> _notificationHandlers = new();
+    private readonly Dictionary<ushort, Dictionary<long, NotificationHandler>> _notificationHandlers = new();
     private readonly Dictionary<ushort, int> _optionalResponses = new();
     private ConnectionState _state = ConnectionState.Disconnected;
     private long _nextHandlerId;
@@ -34,18 +34,29 @@ public sealed class Multiplexer
     public IDisposable RegisterNotificationHandler(ushort messageType, Action<byte[]> handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
+        return RegisterNotificationHandlerCore(messageType, NotificationHandler.FromOwned(handler));
+    }
 
+    internal IDisposable RegisterBorrowedNotificationHandler(ushort messageType, Action<ReadOnlyMemory<byte>> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
+
+        return RegisterNotificationHandlerCore(messageType, NotificationHandler.FromBorrowed(handler));
+    }
+
+    private IDisposable RegisterNotificationHandlerCore(ushort messageType, NotificationHandler handler)
+    {
         long handlerId;
         lock (_gate)
         {
             handlerId = ++_nextHandlerId;
-            if (!_notificationHandlers.TryGetValue(messageType, out var handlers))
+            if (!_notificationHandlers.TryGetValue(messageType, out var registrations))
             {
-                handlers = new Dictionary<long, Action<byte[]>>();
-                _notificationHandlers[messageType] = handlers;
+                registrations = new Dictionary<long, NotificationHandler>();
+                _notificationHandlers[messageType] = registrations;
             }
 
-            handlers[handlerId] = handler;
+            registrations[handlerId] = handler;
         }
 
         return new NotificationRegistration(this, messageType, handlerId);
@@ -53,13 +64,72 @@ public sealed class Multiplexer
 
     public void Dispatch(ushort messageType, ReadOnlyMemory<byte> payload)
     {
-        if (payload.IsEmpty)
+        PendingRequest? pending = null;
+        NotificationHandler[]? handlers = null;
+
+        lock (_gate)
         {
-            Dispatch(messageType, Array.Empty<byte>());
+            if (_pending.TryGetValue(messageType, out pending))
+            {
+                _pending.Remove(messageType);
+            }
+            else if (_notificationHandlers.TryGetValue(messageType, out var registeredHandlers) && registeredHandlers.Count > 0)
+            {
+                handlers = new NotificationHandler[registeredHandlers.Count];
+                registeredHandlers.Values.CopyTo(handlers, 0);
+            }
+            else
+            {
+                var optional = _optionalResponses.GetValueOrDefault(messageType);
+                if (optional > 0)
+                {
+                    if (optional == 1)
+                    {
+                        _optionalResponses.Remove(messageType);
+                    }
+                    else
+                    {
+                        _optionalResponses[messageType] = optional - 1;
+                    }
+
+                    return;
+                }
+
+                if (_state != ConnectionState.Authenticated)
+                {
+                    return;
+                }
+            }
+        }
+
+        if (pending is not null)
+        {
+            pending.Promise.TrySetResult(payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray());
             return;
         }
 
-        Dispatch(messageType, payload.ToArray());
+        if (handlers is null)
+        {
+            return;
+        }
+
+        byte[]? ownedPayload = null;
+        foreach (var handler in handlers)
+        {
+            try
+            {
+                handler.Invoke(payload, ref ownedPayload);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    public void Dispatch(ushort messageType, byte[] payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        Dispatch(messageType, payload.AsMemory());
     }
 
     public Action ExpectOptionalResponse(ushort messageType)
@@ -140,69 +210,6 @@ public sealed class Multiplexer
         }
     }
 
-    public void Dispatch(ushort messageType, byte[] payload)
-    {
-        PendingRequest? pending = null;
-        Action<byte[]>[]? handlers = null;
-
-        lock (_gate)
-        {
-            if (_pending.TryGetValue(messageType, out pending))
-            {
-                _pending.Remove(messageType);
-            }
-            else if (_notificationHandlers.TryGetValue(messageType, out var registeredHandlers) && registeredHandlers.Count > 0)
-            {
-                handlers = new Action<byte[]>[registeredHandlers.Count];
-                registeredHandlers.Values.CopyTo(handlers, 0);
-            }
-            else
-            {
-                var optional = _optionalResponses.GetValueOrDefault(messageType);
-                if (optional > 0)
-                {
-                    if (optional == 1)
-                    {
-                        _optionalResponses.Remove(messageType);
-                    }
-                    else
-                    {
-                        _optionalResponses[messageType] = optional - 1;
-                    }
-
-                    return;
-                }
-
-                if (_state != ConnectionState.Authenticated)
-                {
-                    return;
-                }
-            }
-        }
-
-        if (pending is not null)
-        {
-            pending.Promise.TrySetResult(payload);
-            return;
-        }
-
-        if (handlers is null)
-        {
-            return;
-        }
-
-        foreach (var handler in handlers)
-        {
-            try
-            {
-                handler(payload);
-            }
-            catch
-            {
-            }
-        }
-    }
-
     public void CancelAll()
     {
         PendingRequest[] pending;
@@ -270,6 +277,40 @@ public sealed class Multiplexer
         }
 
         internal TaskCompletionSource<byte[]> Promise { get; }
+    }
+
+    private readonly struct NotificationHandler
+    {
+        private readonly Action<byte[]>? _ownedHandler;
+        private readonly Action<ReadOnlyMemory<byte>>? _borrowedHandler;
+
+        private NotificationHandler(Action<byte[]>? ownedHandler, Action<ReadOnlyMemory<byte>>? borrowedHandler)
+        {
+            _ownedHandler = ownedHandler;
+            _borrowedHandler = borrowedHandler;
+        }
+
+        internal static NotificationHandler FromOwned(Action<byte[]> handler)
+        {
+            return new NotificationHandler(handler, null);
+        }
+
+        internal static NotificationHandler FromBorrowed(Action<ReadOnlyMemory<byte>> handler)
+        {
+            return new NotificationHandler(null, handler);
+        }
+
+        internal void Invoke(ReadOnlyMemory<byte> payload, ref byte[]? ownedPayload)
+        {
+            if (_borrowedHandler is not null)
+            {
+                _borrowedHandler(payload);
+                return;
+            }
+
+            ownedPayload ??= payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray();
+            _ownedHandler!(ownedPayload);
+        }
     }
 
     private sealed class NotificationRegistration : IDisposable

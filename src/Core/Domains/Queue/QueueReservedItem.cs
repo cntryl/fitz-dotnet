@@ -9,12 +9,12 @@ namespace Cntryl.Fitz.Domains.Queue;
 /// Provides methods to extend the lease, complete the item, or acknowledge with explicit token.
 /// </summary>
 internal sealed record QueueReservedItem(
-    string Route, 
-    ulong Id, 
-    ulong Token, 
-    ReadOnlyMemory<byte> Body, 
+    string Route,
+    ulong Id,
+    ulong Token,
+    ReadOnlyMemory<byte> Body,
     uint Attempt = 1,
-    Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? RequestFn = null) 
+    Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? RequestFn = null)
     : QueueItem(Route, Id, Token, Body, Attempt)
 {
     internal QueueReservedItem(

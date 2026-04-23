@@ -48,10 +48,10 @@ public sealed class PerfSummary
 
         // Determine status based on targets
         var warnings = new List<string>();
-        
+
         if (p99Target.HasValue && histogram.P99 > p99Target)
             warnings.Add($"p99 {histogram.P99}μs > target {p99Target}μs");
-        
+
         if (throughtputTarget.HasValue && meter.OperationsPerSecond < throughtputTarget)
             warnings.Add($"throughput {meter.OperationsPerSecond:F2} ops/sec < target {throughtputTarget} ops/sec");
 

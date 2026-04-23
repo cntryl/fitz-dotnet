@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Threading.Channels;
 using Cntryl.Fitz;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
@@ -102,6 +104,50 @@ public sealed class ClientTests
         Assert.True(client.IsConnected);
     }
 
+    [Fact]
+    public async Task should_receive_notice_notification_given_connection_backed_subscription()
+    {
+        var transport = new QueuedTransport();
+        await using var client = new Client(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                AuthSettleDelay: TimeSpan.Zero,
+                TransportFactory: _ => transport));
+
+        await client.ConnectAsync();
+
+        var receivedTcs = new TaskCompletionSource<(string Route, byte[] Body)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var subscribeTask = client.Notice().SubscribeAsync("notice://prod/app/*", (message, _) =>
+        {
+            receivedTcs.TrySetResult((message.Route, message.Body.ToArray()));
+            return ValueTask.CompletedTask;
+        });
+
+        using (var subscribeResponse = new BinaryBufferWriter())
+        {
+            subscribeResponse.WriteU8(0);
+            subscribeResponse.WriteU8(1);
+            subscribeResponse.WriteU64(55);
+            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.NoticeSubscribe, subscribeResponse.WrittenSpan));
+        }
+
+        var subscription = await subscribeTask;
+
+        using (var notification = new BinaryBufferWriter())
+        {
+            notification.WriteU64(subscription.SubscriptionId);
+            notification.WriteString("notice://prod/app/events");
+            notification.WriteU32(5);
+            notification.WriteBytes("hello"u8);
+            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.NoticeNotify, notification.WrittenSpan));
+        }
+
+        var result = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.Equal("notice://prod/app/events", result.Route);
+        Assert.Equal("hello", System.Text.Encoding.UTF8.GetString(result.Body));
+    }
+
     private sealed class FakeTransport : ITransport
     {
         private readonly Func<CancellationToken, ValueTask<PooledFrame>> _receive;
@@ -142,6 +188,67 @@ public sealed class ClientTests
 
         public ValueTask DisposeAsync()
         {
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class QueuedTransport : ITransport
+    {
+        private readonly Channel<byte[]> _incoming = Channel.CreateUnbounded<byte[]>();
+        private readonly object _sentFramesGate = new();
+
+        public List<byte[]> SentFrames { get; } = [];
+        public Action<int>? AfterSend { get; set; }
+
+        public string Url => "ws://queued";
+
+        public Task ConnectAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            int sentFrameCount;
+            lock (_sentFramesGate)
+            {
+                SentFrames.Add(data.ToArray());
+                sentFrameCount = SentFrames.Count;
+            }
+
+            AfterSend?.Invoke(sentFrameCount);
+
+            return Task.CompletedTask;
+        }
+
+        public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var frame = await _incoming.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            var buffer = ArrayPool<byte>.Shared.Rent(frame.Length);
+            frame.AsSpan().CopyTo(buffer);
+            return PooledFrame.FromRentedBuffer(buffer, frame.Length);
+        }
+
+        public void QueueIncomingFrame(byte[] frame)
+        {
+            ArgumentNullException.ThrowIfNull(frame);
+            _incoming.Writer.TryWrite(frame);
+        }
+
+        public Task CloseAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _incoming.Writer.TryComplete();
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            _incoming.Writer.TryComplete();
             return ValueTask.CompletedTask;
         }
     }

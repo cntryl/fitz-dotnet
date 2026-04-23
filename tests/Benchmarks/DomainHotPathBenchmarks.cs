@@ -41,27 +41,27 @@ public class DomainHotPathBenchmarks
     }
 
     [Benchmark]
-    public Task<ulong> QueueEnqueue()
+    public async Task<ulong> QueueEnqueue()
     {
-        return _queue.EnqueueAsync("queue://bench/hotpath", Payload);
+        return await _queue.EnqueueAsync("queue://bench/hotpath", Payload).ConfigureAwait(false);
     }
 
     [Benchmark]
-    public Task<ILease> LeaseAcquire()
+    public async Task<ILease> LeaseAcquire()
     {
-        return _lease.AcquireAsync("lease://bench/hotpath", 30);
+        return await _lease.AcquireAsync("lease://bench/hotpath", 30).ConfigureAwait(false);
     }
 
     [Benchmark]
-    public Task NoticePublish()
+    public async Task NoticePublish()
     {
-        return _notice.PublishAsync("notice://bench/hotpath", Payload);
+        await _notice.PublishAsync("notice://bench/hotpath", Payload).ConfigureAwait(false);
     }
 
     [Benchmark]
-    public Task<string?> ScheduleCreate()
+    public async Task<string?> ScheduleCreate()
     {
-        return _schedule.CreateAsync("schedule://bench/hotpath", "*/1 * * * *", Payload);
+        return await _schedule.CreateAsync("schedule://bench/hotpath", "*/1 * * * *", Payload).ConfigureAwait(false);
     }
 
     private static Task<byte[]> KvRequest(ushort messageType, byte[] _, CancellationToken __)

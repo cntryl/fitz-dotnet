@@ -80,10 +80,6 @@ jobs:
         transport: [ws, tcp]
         auth_mode: [anonymous, valid_jwt]
     env:
-      FITZ_DOTNET_RUN_INTEGRATION: "1"
-      FITZ_DOTNET_RUN_INTEGRATION_STREAM: "1"
-      FITZ_DOTNET_RUN_INTEGRATION_LEASE: "1"
-      FITZ_DOTNET_RUN_INTEGRATION_KV: "1"
       FITZ_BROKER_ANON_TCP_ADDR: localhost:4191
       FITZ_BROKER_ANON_WS_ADDR: ws://localhost:4190/ws
       FITZ_BROKER_AUTH_TCP_ADDR: localhost:4091

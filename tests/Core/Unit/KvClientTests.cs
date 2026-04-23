@@ -174,19 +174,19 @@ public sealed class KvClientTests
             using var scan = new BinaryBufferWriter();
             scan.WriteU8(0); // status
             scan.WriteU32(2); // 2 key-value pairs
-            
+
             // First pair
             scan.WriteU32(4);
             scan.WriteBytes("key1"u8.ToArray());
             scan.WriteU32(6);
             scan.WriteBytes("value1"u8.ToArray());
-            
+
             // Second pair
             scan.WriteU32(4);
             scan.WriteBytes("key2"u8.ToArray());
             scan.WriteU32(6);
             scan.WriteBytes("value2"u8.ToArray());
-            
+
             return Task.FromResult(scan.Build());
         });
 

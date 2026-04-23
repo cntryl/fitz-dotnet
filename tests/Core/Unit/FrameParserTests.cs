@@ -72,4 +72,20 @@ public sealed class FrameParserTests
         Assert.Equal([0xA], secondFrame.Payload.ToArray());
         Assert.True(thirdFrame.Payload.IsEmpty);
     }
+
+    [Fact]
+    public void should_return_detached_payloads_given_parse_frames_when_parser_buffer_is_reused()
+    {
+        var parser = new FrameParser();
+        var firstFrames = parser.ParseFrames(FrameCodec.Encode(100, [0x1, 0x2, 0x3]));
+
+        Assert.Single(firstFrames);
+
+        var firstPayload = firstFrames[0].Payload;
+        var secondFrames = parser.ParseFrames(FrameCodec.Encode(101, [0x9, 0x8, 0x7]));
+
+        Assert.Single(secondFrames);
+        Assert.Equal([0x1, 0x2, 0x3], firstPayload.ToArray());
+        Assert.Equal([0x9, 0x8, 0x7], secondFrames[0].Payload.ToArray());
+    }
 }

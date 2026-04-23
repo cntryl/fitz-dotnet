@@ -12,7 +12,7 @@ namespace Cntryl.Fitz.Domains.Queue;
 public sealed class QueueClient : IQueueClient
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
-    private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
+    private readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
     private readonly Dictionary<string, QueueSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -25,7 +25,7 @@ public sealed class QueueClient : IQueueClient
     internal QueueClient(FitzConnection connection)
         : this(
             connection.RequestAsync,
-            connection.RegisterNotificationHandler)
+            connection.RegisterBorrowedNotificationHandler)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -33,13 +33,15 @@ public sealed class QueueClient : IQueueClient
     public QueueClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
-        : this(async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)), registerNotificationHandler)
+        : this(
+            async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
+            NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
     {
     }
 
     internal QueueClient(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
-        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
@@ -97,21 +99,48 @@ public sealed class QueueClient : IQueueClient
             throw new QueueException($"route '{route}' must be queue://{{realm}}/{{area}}/{{resource}} or queue://{{realm}}/{{area}}/*", "INVALID_ROUTE");
         }
 
+        var normalizedBatchSize = batchSize > 0 ? batchSize : 1;
+
+        if (!waitSeconds.HasValue || waitSeconds.Value <= 0)
+        {
+            return await ReserveOnceAsync(route, leaseSeconds, normalizedBatchSize, ct).ConfigureAwait(false);
+        }
+
+        var deadline = DateTime.UtcNow.AddSeconds(waitSeconds.Value);
+        while (true)
+        {
+            var items = await ReserveOnceAsync(route, leaseSeconds, normalizedBatchSize, ct).ConfigureAwait(false);
+            if (items.Length > 0)
+            {
+                return items;
+            }
+
+            var remaining = deadline - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+            {
+                return items;
+            }
+
+            var delay = remaining <= TimeSpan.FromMilliseconds(100)
+                ? remaining
+                : TimeSpan.FromMilliseconds(100);
+            await Task.Delay(delay, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<IQueueReservedItem[]> ReserveOnceAsync(
+        string route,
+        ulong leaseSeconds,
+        int batchSize,
+        CancellationToken ct)
+    {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteU64(leaseSeconds);
-
-        var normalizedBatchSize = batchSize > 0 ? batchSize : 1;
-        writer.WriteU8((byte)(normalizedBatchSize > 0 ? 1 : 0));
-        if (normalizedBatchSize > 0)
+        writer.WriteU8((byte)(batchSize > 0 ? 1 : 0));
+        if (batchSize > 0)
         {
-            writer.WriteU32((uint)normalizedBatchSize);
-        }
-
-        writer.WriteU8((byte)(waitSeconds.HasValue && waitSeconds.Value > 0 ? 1 : 0));
-        if (waitSeconds.HasValue && waitSeconds.Value > 0)
-        {
-            writer.WriteU64((ulong)waitSeconds.Value);
+            writer.WriteU32((uint)batchSize);
         }
 
         var response = await _request(MessageTypes.QueueReserve, writer.WrittenMemory, ct).ConfigureAwait(false);
@@ -310,7 +339,7 @@ public sealed class QueueClient : IQueueClient
         _notificationRegistration = _registerNotificationHandler(MessageTypes.QueueNotify, HandleNotification);
     }
 
-    private void HandleNotification(byte[] payload)
+    private void HandleNotification(ReadOnlyMemory<byte> payload)
     {
         try
         {

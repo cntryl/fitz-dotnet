@@ -44,20 +44,18 @@ Fast local checks:
 ```bash
 dotnet restore Fitz.sln
 dotnet build Fitz.sln -c Release --no-restore
-dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName!~Integration
+dotnet test tests/Core/Core.Tests.csproj -c Release --no-build
 ```
 
-Broker-backed conformance:
+Full broker-backed test run:
 
 ```bash
 docker compose -f ../fitz-go/compose.yml up -d
-CONFORMANCE_TRANSPORT=ws CONFORMANCE_AUTH_MODE=anonymous \
-CONFORMANCE_OUTPUT=artifacts/conformance-results.json \
-dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~Conformance
+dotnet test tests/Core/Core.Tests.csproj -c Release --no-build
 docker compose -f ../fitz-go/compose.yml down --volumes
 ```
 
-The conformance run writes JSON results to `artifacts/conformance-results.json` by default.
+`dotnet test` now includes the broker-backed integration and conformance tests by default. The conformance suite writes JSON results to `artifacts/conformance-results.json` by default.
 
 ## Documentation
 
@@ -70,4 +68,4 @@ The conformance run writes JSON results to `artifacts/conformance-results.json` 
 - `src/Core/Core.csproj`: core SDK package and client implementation
 - `src/Abstractions/Abstractions.csproj`: shared interfaces and contracts
 - `src/DependencyInjection/DependencyInjection.csproj`: DI registration extensions
-- `tests/Core/Core.Tests.csproj`: unit and broker-backed conformance coverage
+- `tests/Core/Core.Tests.csproj`: unit, integration, and broker-backed conformance coverage
