@@ -148,29 +148,29 @@ public sealed class RpcClient : IRpcClient
             }
 
             var connectionClosedToken = _getConnectionClosedToken?.Invoke() ?? CancellationToken.None;
-            using var waitCts = connectionClosedToken.CanBeCanceled
-                ? CancellationTokenSource.CreateLinkedTokenSource(ct, connectionClosedToken)
-                : CancellationTokenSource.CreateLinkedTokenSource(ct);
-            var waitToken = waitCts.Token;
+            using var connectionClosedRegistration = connectionClosedToken.CanBeCanceled
+                ? connectionClosedToken.Register(static state => ((SubscriptionChannel<RpcResponseFrame>)state!).Dispose(), channel)
+                : default;
 
             while (true)
             {
                 SubscriptionReadResult<RpcResponseFrame> result;
                 try
                 {
-                    result = await channel.ReadAsync(waitToken).AsTask().WaitAsync(_responseTimeout, waitToken).ConfigureAwait(false);
+                    result = await channel.ReadAsync(ct).AsTask().WaitAsync(_responseTimeout, ct).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     throw;
                 }
-                catch (OperationCanceledException) when (connectionClosedToken.IsCancellationRequested)
-                {
-                    throw new ConnectionException("Connection closed or reset");
-                }
                 catch (TimeoutException)
                 {
                     throw new RequestTimeoutException($"RPC stream timed out after {_responseTimeout.TotalMilliseconds}ms");
+                }
+
+                if (connectionClosedToken.IsCancellationRequested)
+                {
+                    throw new ConnectionException("Connection closed or reset");
                 }
 
                 if (!result.HasItem)

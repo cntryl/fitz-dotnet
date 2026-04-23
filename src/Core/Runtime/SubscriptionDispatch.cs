@@ -5,18 +5,18 @@ namespace Cntryl.Fitz.Runtime;
 internal sealed class SubscriptionRegistration<TNotification> : IDisposable
 {
     private int _disposed;
+    private CancellationTokenSource? _cancellationSource;
 
     internal SubscriptionRegistration(Channel<TNotification> channel)
     {
         Channel = channel;
-        CancellationSource = new CancellationTokenSource();
     }
 
     internal Channel<TNotification> Channel { get; }
 
-    internal CancellationToken CancellationToken => CancellationSource.Token;
+    internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 
-    private CancellationTokenSource CancellationSource { get; }
+    internal CancellationToken CancellationToken => GetOrCreateCancellationSource().Token;
 
     public void Dispose()
     {
@@ -25,9 +25,34 @@ internal sealed class SubscriptionRegistration<TNotification> : IDisposable
             return;
         }
 
-        CancellationSource.Cancel();
+        var cancellationSource = Interlocked.Exchange(ref _cancellationSource, null);
+        cancellationSource?.Cancel();
         Channel.Writer.TryComplete();
-        CancellationSource.Dispose();
+        cancellationSource?.Dispose();
+    }
+
+    private CancellationTokenSource GetOrCreateCancellationSource()
+    {
+        var existing = Volatile.Read(ref _cancellationSource);
+        if (existing is not null)
+        {
+            return existing;
+        }
+
+        var created = new CancellationTokenSource();
+        var prior = Interlocked.CompareExchange(ref _cancellationSource, created, comparand: null);
+        if (prior is not null)
+        {
+            created.Dispose();
+            return prior;
+        }
+
+        if (IsDisposed)
+        {
+            created.Cancel();
+        }
+
+        return created;
     }
 }
 
@@ -41,22 +66,33 @@ internal static class SubscriptionPump
         {
             try
             {
-                while (await registration.Channel.Reader.WaitToReadAsync(registration.CancellationToken).ConfigureAwait(false))
+                while (await registration.Channel.Reader.WaitToReadAsync().ConfigureAwait(false))
                 {
                     while (registration.Channel.Reader.TryRead(out var message))
                     {
+                        if (registration.IsDisposed)
+                        {
+                            return;
+                        }
+
                         try
                         {
                             await handler(message, registration.CancellationToken).ConfigureAwait(false);
                         }
+                        catch (OperationCanceledException) when (registration.IsDisposed)
+                        {
+                            return;
+                        }
                         catch
                         {
                         }
+
+                        if (registration.IsDisposed)
+                        {
+                            return;
+                        }
                     }
                 }
-            }
-            catch (OperationCanceledException)
-            {
             }
             catch
             {

@@ -36,10 +36,12 @@ public sealed class TcpTransport : ITransport
             NoDelay = true,
         };
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(_timeout);
+        using var timeoutCts = new CancellationTokenSource(_timeout);
+        using var cancellationRegistration = cancellationToken.CanBeCanceled
+            ? cancellationToken.Register(static state => ((CancellationTokenSource)state!).Cancel(), timeoutCts)
+            : default;
 
-        await client.ConnectAsync(_uri.Host, _uri.Port, cts.Token).ConfigureAwait(false);
+        await client.ConnectAsync(_uri.Host, _uri.Port, timeoutCts.Token).ConfigureAwait(false);
 
         _client = client;
         _stream = client.GetStream();
@@ -59,13 +61,15 @@ public sealed class TcpTransport : ITransport
         {
             BinaryPrimitives.WriteUInt32BigEndian(_sendHeaderBuffer, (uint)frameLength);
 
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            cts.CancelAfter(_timeout);
+            using var timeoutCts = new CancellationTokenSource(_timeout);
+            using var cancellationRegistration = cancellationToken.CanBeCanceled
+                ? cancellationToken.Register(static state => ((CancellationTokenSource)state!).Cancel(), timeoutCts)
+                : default;
 
-            await stream.WriteAsync(_sendHeaderBuffer.AsMemory(0, 4), cts.Token).ConfigureAwait(false);
+            await stream.WriteAsync(_sendHeaderBuffer.AsMemory(0, 4), timeoutCts.Token).ConfigureAwait(false);
             if (!data.IsEmpty)
             {
-                await stream.WriteAsync(data, cts.Token).ConfigureAwait(false);
+                await stream.WriteAsync(data, timeoutCts.Token).ConfigureAwait(false);
             }
         }
         finally
