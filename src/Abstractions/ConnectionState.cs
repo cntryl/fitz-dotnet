@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Connection;
+namespace Cntryl.Fitz;
 
 public enum ConnectionState
 {

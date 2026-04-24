@@ -17,4 +17,4 @@ The .NET SDK follows the canonical Fitz client docs in the server repository und
 - [spec-parity-audit.md](spec-parity-audit.md)
 - [spec-parity-gap-matrix.md](spec-parity-gap-matrix.md)
 
-Use the canonical docs for protocol behavior and the local docs for .NET-specific parity evidence.
+Use the canonical docs for protocol behavior and the local docs for .NET-specific verification, parity evidence, and implementation notes.

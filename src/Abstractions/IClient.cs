@@ -7,12 +7,14 @@ using Cntryl.Fitz.Abstractions.Domains.Queue;
 using Cntryl.Fitz.Abstractions.Domains.Rpc;
 using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
+using Cntryl.Fitz;
 
 public interface IClient : IAsyncDisposable
 {
     Task ConnectAsync(CancellationToken cancellationToken = default);
     Task<byte[]> RequestAsync(ushort messageType, byte[] payload, CancellationToken cancellationToken = default);
     bool IsConnected { get; }
+    ConnectionState State { get; }
     IKvClient Kv();
     ILeaseClient Lease();
     INoticeClient Notice();

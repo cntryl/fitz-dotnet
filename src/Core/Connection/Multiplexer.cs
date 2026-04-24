@@ -1,3 +1,4 @@
+using Cntryl.Fitz;
 using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz.Connection;

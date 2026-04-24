@@ -96,6 +96,8 @@ public sealed class Client : IClient
 
     public bool IsConnected => _connection.State == ConnectionState.Authenticated;
 
+    public ConnectionState State => _connection.State;
+
     private async Task<byte[]> RequestAsyncCore(ushort messageType, byte[] payload, CancellationToken cancellationToken)
     {
         var response = await _connection.RequestAsync(messageType, payload, cancellationToken).ConfigureAwait(false);

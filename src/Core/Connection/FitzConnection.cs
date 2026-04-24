@@ -1,4 +1,5 @@
 using System.Text;
+using Cntryl.Fitz;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;

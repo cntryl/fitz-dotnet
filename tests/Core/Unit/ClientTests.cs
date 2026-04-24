@@ -37,6 +37,7 @@ public sealed class ClientTests
         await client.ConnectAsync();
 
         // Assert
+        Assert.Equal(ConnectionState.Authenticated, client.State);
         Assert.True(client.IsConnected);
         Assert.Equal(2, transport.SentFrames.Count);
         var frame = FrameCodec.Decode(transport.SentFrames[0]);
