@@ -1,12 +1,14 @@
 # Fitz-Dotnet Spec/Parity Audit
 
-Date: 2026-03-18
+Date: 2026-04-24
 Audience: fitz-dotnet maintainers and Fitz client platform owners
 Scope: internal parity audit against the shared Fitz client contract
 
 ## Summary
 
 This audit evaluates `fitz-dotnet` against the shared Fitz client contract in `../fitz/docs/clients`, not just against local unit-test health.
+
+Status note: this is a historical audit snapshot; the current implementation status is tracked in [docs/spec-parity-gap-matrix.md](docs/spec-parity-gap-matrix.md).
 
 Baseline facts used in this audit:
 
