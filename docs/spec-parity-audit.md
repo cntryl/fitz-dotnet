@@ -13,7 +13,7 @@ Status note: this is a historical audit snapshot; the current implementation sta
 Baseline facts used in this audit:
 
 - `dotnet test tests/Core/Core.Tests.csproj` passed with 125 tests on 2026-04-23.
-- `fitz-dotnet` now has a shared conformance runner that covers `CS-001` through `CS-015` and writes normalized JSON artifacts.
+- `fitz-dotnet` now has a shared conformance runner that covers `CS-001` through `CS-015`, writes normalized JSON artifacts, and exposes lifecycle state on the public client surface.
 - The shared cross-language suite defines `CS-001` through `CS-015`.
 - `fitz-go` and `fitz-py` already expose dedicated conformance targets aligned to the shared runner contract.
 - `fitz-dotnet` currently supports WebSocket and TCP transports, but shared-suite coverage is still websocket-heavy.
