@@ -6,10 +6,10 @@ public static class TransportResolver
     {
         ArgumentNullException.ThrowIfNull(config);
 
-        return config.Transport.ToLowerInvariant() switch
+        return config.TransportKind switch
         {
-            "ws" or "websocket" => new WebSocketTransport(config.Url, config.Timeout ?? TimeSpan.FromSeconds(30), config.MaxFrameSize),
-            "tcp" => new TcpTransport(config.Url, config.Timeout ?? TimeSpan.FromSeconds(30), config.MaxFrameSize),
+            ClientTransport.WebSocket => new WebSocketTransport(config.Url, config.Timeout ?? TimeSpan.FromSeconds(30), config.MaxFrameSize),
+            ClientTransport.Tcp => new TcpTransport(config.Url, config.Timeout ?? TimeSpan.FromSeconds(30), config.MaxFrameSize),
             _ => throw new NotSupportedException($"Transport '{config.Transport}' is not supported."),
         };
     }

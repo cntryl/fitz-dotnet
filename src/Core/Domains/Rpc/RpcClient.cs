@@ -188,7 +188,7 @@ public sealed class RpcClient : IRpcClient
         }
     }
 
-    public async Task<IDisposable> RegisterWorkerAsync(
+    public async Task<RpcWorkerRegistration> RegisterWorkerAsync(
         string pattern,
         Func<RpcRequest, IRpcResponseWriter, CancellationToken, Task> handler,
         CancellationToken ct = default)
@@ -208,7 +208,7 @@ public sealed class RpcClient : IRpcClient
         EnsureRpcRequestHandlerInitialized();
         _workerReconnectRegistration ??= _onReconnect?.Invoke(ResubscribeWorkersAsync);
 
-        return new RpcWorkerRegistration(this, pattern);
+        return new RpcWorkerRegistration(pattern, unregisterToken => new ValueTask(UnsubscribeWorkerAsync(pattern, unregisterToken)));
     }
 
     private void EnsureRpcRequestHandlerInitialized()
@@ -300,7 +300,7 @@ public sealed class RpcClient : IRpcClient
         }
     }
 
-    private async Task UnsubscribeWorkerAsync(string pattern)
+    private async Task UnsubscribeWorkerAsync(string pattern, CancellationToken ct)
     {
         _workers.Remove(pattern);
         using var writer = new BinaryBufferWriter();
@@ -308,7 +308,7 @@ public sealed class RpcClient : IRpcClient
 
         try
         {
-            var response = await _request(MessageTypes.RpcUnsubscribeWorker, writer.WrittenMemory, CancellationToken.None).ConfigureAwait(false);
+            var response = await _request(MessageTypes.RpcUnsubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
             if (response.IsEmpty)
             {
                 return;
@@ -319,11 +319,6 @@ public sealed class RpcClient : IRpcClient
             if (status != 0)
             {
                 throw new RpcException($"UNREGISTER failed with status {status}", "UNREGISTER_FAILED", status);
-            }
-
-            if (!reader.IsEof)
-            {
-                throw new RpcException("UNREGISTER response has trailing bytes", "UNREGISTER_INVALID_RESPONSE");
             }
         }
         finally
@@ -403,26 +398,4 @@ public sealed class RpcClient : IRpcClient
         }
     }
 
-    private sealed class RpcWorkerRegistration : IDisposable
-    {
-        private readonly RpcClient _owner;
-        private readonly string _pattern;
-        private int _disposed;
-
-        internal RpcWorkerRegistration(RpcClient owner, string pattern)
-        {
-            _owner = owner;
-            _pattern = pattern;
-        }
-
-        public void Dispose()
-        {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            {
-                return;
-            }
-
-            _ = _owner.UnsubscribeWorkerAsync(_pattern);
-        }
-    }
 }

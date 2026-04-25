@@ -282,7 +282,7 @@ public sealed partial class ConformanceSmokeTests
             await workerClient.ConnectAsync();
             await callerClient.ConnectAsync();
 
-            using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (_, writer, ct) =>
+            await using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (_, writer, ct) =>
             {
                 await Task.Delay(2000, ct);
                 await writer.SendAsync("late"u8.ToArray(), isEnd: true, ct);
@@ -340,7 +340,7 @@ public sealed partial class ConformanceSmokeTests
             await workerClient.ConnectAsync();
             await callerClient.ConnectAsync();
 
-            using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (_, writer, ct) =>
+            await using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (_, writer, ct) =>
             {
                 await Task.Delay(2000, ct);
                 await writer.SendAsync("late"u8.ToArray(), isEnd: true, ct);
@@ -404,7 +404,7 @@ public sealed partial class ConformanceSmokeTests
             await workerClient.ConnectAsync();
             await callerClient.ConnectAsync();
 
-            using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (_, writer, ct) =>
+            await using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (_, writer, ct) =>
             {
                 await Task.Delay(3000, ct);
                 await writer.SendAsync("late"u8.ToArray(), isEnd: true, ct);

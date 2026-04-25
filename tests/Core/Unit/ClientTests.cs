@@ -10,6 +10,23 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class ClientTests
 {
     [Fact]
+    public void should_expose_typed_transport_given_typed_client_config()
+    {
+        var config = new ClientConfig("ws://localhost:4190/ws", ClientTransport.WebSocket);
+
+        Assert.Equal(ClientTransport.WebSocket, config.TransportKind);
+        Assert.Equal("ws", config.Transport);
+    }
+
+    [Fact]
+    public void should_normalize_legacy_transport_string_given_client_config()
+    {
+        var config = new ClientConfig("localhost:4191", Transport: "tcp");
+
+        Assert.Equal(ClientTransport.Tcp, config.TransportKind);
+    }
+
+    [Fact]
     public async Task should_set_connected_state_given_valid_transport_when_connecting()
     {
         // Arrange
@@ -98,24 +115,24 @@ public sealed class ClientTests
     {
         // Arrange
         var releaseFirstReceive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var authResponseDelivered = false;
-        var firstTransport = new FakeTransport(async _ =>
+        var firstTransport = new QueuedTransport();
+        firstTransport.AfterSend = sentFrameCount =>
         {
-            if (!authResponseDelivered)
+            if (sentFrameCount != 2)
             {
-                authResponseDelivered = true;
-                using var writer = new BinaryBufferWriter();
-                writer.WriteU8(0);
-                var frame = FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan);
-                var buffer = ArrayPool<byte>.Shared.Rent(frame.Length);
-                frame.CopyTo(buffer);
-                return PooledFrame.FromRentedBuffer(buffer, frame.Length);
+                return;
             }
 
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+        };
+        _ = Task.Run(async () =>
+        {
             await releaseFirstReceive.Task.ConfigureAwait(false);
-            return PooledFrame.Closed;
+            firstTransport.QueueClosed();
         });
-        var secondTransport = new FakeTransport();
+        var secondTransport = new QueuedTransport();
         var factoryCalls = 0;
 
         var client = new Client(
@@ -292,7 +309,7 @@ public sealed class ClientTests
 
     private sealed class QueuedTransport : ITransport
     {
-        private readonly Channel<byte[]> _incoming = Channel.CreateUnbounded<byte[]>();
+        private readonly Channel<PooledFrame> _incoming = Channel.CreateUnbounded<PooledFrame>();
         private readonly object _sentFramesGate = new();
 
         public List<byte[]> SentFrames { get; } = [];
@@ -324,17 +341,21 @@ public sealed class ClientTests
         public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            var frame = await _incoming.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-            var buffer = ArrayPool<byte>.Shared.Rent(frame.Length);
-            frame.AsSpan().CopyTo(buffer);
-            return PooledFrame.FromRentedBuffer(buffer, frame.Length);
+            return await _incoming.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
         }
 
         public void QueueIncomingFrame(byte[] frame)
         {
             ArgumentNullException.ThrowIfNull(frame);
-            _incoming.Writer.TryWrite(frame);
+
+            var buffer = ArrayPool<byte>.Shared.Rent(frame.Length);
+            frame.AsSpan().CopyTo(buffer);
+            _incoming.Writer.TryWrite(PooledFrame.FromRentedBuffer(buffer, frame.Length));
+        }
+
+        public void QueueClosed()
+        {
+            _incoming.Writer.TryWrite(PooledFrame.Closed);
         }
 
         public Task CloseAsync(CancellationToken cancellationToken = default)

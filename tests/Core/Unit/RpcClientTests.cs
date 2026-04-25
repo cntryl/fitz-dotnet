@@ -131,13 +131,15 @@ public sealed class RpcClientTests
                 return new TestRegistration();
             });
 
-        using var registration = await rpc.RegisterWorkerAsync(
+        await using var registration = await rpc.RegisterWorkerAsync(
             "rpc://prod/app/echo",
             (req, _, _) =>
             {
                 requestTcs.TrySetResult(req);
                 return Task.CompletedTask;
             });
+
+        Assert.Equal("rpc://prod/app/echo", registration.Pattern);
 
         // Act
         Assert.NotNull(incomingHandler);
