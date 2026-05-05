@@ -70,7 +70,7 @@ public sealed class StreamClient : IStreamClient
         string route,
         ulong startOffset,
         ulong limit = 100,
-        ulong? maxBytes = null,
+        StreamFilterSet? filter = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         ValidateStreamSelector(route);
@@ -79,10 +79,12 @@ public sealed class StreamClient : IStreamClient
         writer.WriteString(route);
         writer.WriteU64(startOffset);
         writer.WriteU64(limit);
-        writer.WriteU8((byte)(maxBytes.HasValue ? 1 : 0));
-        if (maxBytes.HasValue)
+        var filterBytes = StreamWireHelpers.EncodeStreamFilterSet(filter);
+        writer.WriteU8((byte)(filterBytes.Length > 0 ? 1 : 0));
+        if (filterBytes.Length > 0)
         {
-            writer.WriteU64(maxBytes.Value);
+            writer.WriteU32((uint)filterBytes.Length);
+            writer.WriteBytes(filterBytes);
         }
 
         var response = await _request(MessageTypes.StreamRead, writer.WrittenMemory, ct).ConfigureAwait(false);

@@ -1,4 +1,6 @@
+using System.IO;
 using System.Text.Json;
+using System.Text;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
@@ -7,6 +9,42 @@ namespace Cntryl.Fitz.Domains.Stream;
 
 internal static class StreamWireHelpers
 {
+    internal static byte[] EncodeStreamFilterSet(StreamFilterSet? filter)
+    {
+        if (filter is null || filter.Clauses.Count == 0)
+        {
+            return Array.Empty<byte>();
+        }
+
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
+
+        writer.Write((ulong)filter.Clauses.Count);
+        foreach (var clause in filter.Clauses)
+        {
+            writer.Write((uint)clause.Kind);
+            switch (clause.Kind)
+            {
+                case StreamFilterClauseKind.Equals:
+                case StreamFilterClauseKind.NotEquals:
+                case StreamFilterClauseKind.StartsWith:
+                    WriteBincodeString(writer, clause.Value ?? string.Empty);
+                    break;
+                case StreamFilterClauseKind.AnyOf:
+                    writer.Write((ulong)clause.Values.Count);
+                    foreach (var value in clause.Values)
+                    {
+                        WriteBincodeString(writer, value);
+                    }
+
+                    break;
+            }
+        }
+
+        writer.Flush();
+        return stream.ToArray();
+    }
+
     internal static void EnsureSuccessStatusOnly(ReadOnlyMemory<byte> response, string operation)
     {
         var reader = new BinaryBufferReader(response);
@@ -222,6 +260,13 @@ internal static class StreamWireHelpers
         }
 
         return 0;
+    }
+
+    private static void WriteBincodeString(BinaryWriter writer, string value)
+    {
+        var bytes = Encoding.UTF8.GetBytes(value);
+        writer.Write((ulong)bytes.Length);
+        writer.Write(bytes);
     }
 
     private static void ReadSuccessStatus(BinaryBufferReader reader, string operation)

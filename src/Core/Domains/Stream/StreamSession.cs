@@ -15,7 +15,7 @@ public sealed class StreamSession : IStreamSession
         _sessionId = sessionId;
     }
 
-    public async Task<ulong?> AppendAsync(ulong expectedOffset, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte>? metadata = null, CancellationToken ct = default)
+    public async Task<ulong?> AppendAsync(ulong expectedOffset, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte>? metadata = null, string? discriminator = null, CancellationToken ct = default)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_sessionId);
@@ -27,6 +27,16 @@ public sealed class StreamSession : IStreamSession
             writer.WriteU8(1);
             writer.WriteU32((uint)metadata.Value.Length);
             writer.WriteBytes(metadata.Value.Span);
+        }
+        else
+        {
+            writer.WriteU8(0);
+        }
+
+        if (!string.IsNullOrEmpty(discriminator))
+        {
+            writer.WriteU8(1);
+            writer.WriteString(discriminator);
         }
         else
         {

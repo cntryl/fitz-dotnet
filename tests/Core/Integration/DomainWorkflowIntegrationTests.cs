@@ -1,5 +1,6 @@
 using System.Text;
 using Cntryl.Fitz.Abstractions.Domains.Kv;
+using Cntryl.Fitz.Abstractions.Domains.Stream;
 
 namespace Cntryl.Fitz.Core.Tests.Integration;
 
@@ -43,6 +44,39 @@ public sealed class DomainWorkflowIntegrationTests
         Assert.True(records.Count >= 2, $"expected at least 2 committed stream records, got {records.Count}");
         Assert.Contains("one", records);
         Assert.Contains("two", records);
+    }
+
+    [Fact]
+    public async Task should_round_trip_filtered_stream_records_given_discriminator_filter_workflow()
+    {
+        var route = IntegrationFixture.CreateUniqueRoute("stream");
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+
+        var session = await client.Stream().BeginAsync(route);
+        await session.AppendAsync(0, "alpha"u8.ToArray(), discriminator: "proj.alpha");
+        await session.AppendAsync(1, "beta"u8.ToArray(), discriminator: "audit.beta");
+        await session.CommitAsync();
+
+        var filter = new StreamFilterSet
+        {
+            Clauses = new[]
+            {
+                new StreamFilterClause
+                {
+                    Kind = StreamFilterClauseKind.Equals,
+                    Value = "proj.alpha",
+                },
+            },
+        };
+
+        var records = new List<string>();
+        await foreach (var record in client.Stream().ReadAsync(route, startOffset: 0, limit: 10, filter: filter))
+        {
+            records.Add(Encoding.UTF8.GetString(record.Body));
+        }
+
+        Assert.Equal(new[] { "alpha" }, records);
     }
 
     [Fact]

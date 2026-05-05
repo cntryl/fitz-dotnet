@@ -165,6 +165,61 @@ public sealed class StreamClientTests
     }
 
     [Fact]
+    public async Task should_encode_filter_given_stream_read_when_reading_stream()
+    {
+        // Arrange
+        var requestCount = 0;
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            requestCount++;
+            Assert.Equal(MessageTypes.StreamRead, messageType);
+
+            var request = new BinaryBufferReader(payload);
+            Assert.Equal("stream://prod/app/events", request.ReadString());
+            Assert.Equal((ulong)4, request.ReadU64());
+            Assert.Equal((ulong)2, request.ReadU64());
+            Assert.Equal((byte)1, request.ReadU8());
+            var filterLength = request.ReadU32();
+
+            var expectedFilter = new byte[]
+            {
+                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+                0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                (byte)'p', (byte)'r', (byte)'o', (byte)'j', (byte)'.', (byte)'a', (byte)'l', (byte)'p', (byte)'h', (byte)'a',
+            };
+
+            Assert.Equal((uint)expectedFilter.Length, filterLength);
+            Assert.Equal(expectedFilter, request.ReadBytes((int)filterLength));
+
+            return Task.FromResult(new byte[] { 0 });
+        });
+
+        var filter = new StreamFilterSet
+        {
+            Clauses = new[]
+            {
+                new StreamFilterClause
+                {
+                    Kind = StreamFilterClauseKind.Equals,
+                    Value = "proj.alpha",
+                },
+            },
+        };
+
+        // Act
+        var records = new List<StreamRecord>();
+        await foreach (var record in stream.ReadAsync("stream://prod/app/events", 4, 2, filter))
+        {
+            records.Add(record);
+        }
+
+        // Assert
+        Assert.Empty(records);
+        Assert.Equal(1, requestCount);
+    }
+
+    [Fact]
     public async Task should_return_records_given_wrapped_payload_when_reading_stream()
     {
         // Arrange
@@ -516,6 +571,56 @@ public sealed class StreamClientTests
         Assert.Equal((byte)1, reader.ReadU8());
         Assert.Equal((uint)4, reader.ReadU32());
         Assert.Equal("meta", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(4)));
+    }
+
+    [Fact]
+    public async Task should_encode_discriminator_given_stream_session_when_appending_to_stream_session()
+    {
+        // Arrange
+        var calls = new List<(ushort MessageType, byte[] Payload)>();
+
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            calls.Add((messageType, payload));
+
+            using var writer = new BinaryBufferWriter();
+            if (messageType == MessageTypes.StreamBegin)
+            {
+                writer.WriteU8(0);
+                writer.WriteU8(1);
+                writer.WriteU64(99);
+            }
+            else
+            {
+                writer.WriteU8(0);
+                writer.WriteU8(0);
+                writer.WriteU32(8);
+                writer.WriteU64(1234);
+            }
+
+            return Task.FromResult(writer.Build());
+        });
+
+        var session = await stream.BeginAsync("stream://prod/app/events");
+        var discriminator = "proj.alpha";
+
+        // Act
+        await session.AppendAsync(12, "entry"u8.ToArray(), "meta"u8.ToArray(), discriminator);
+
+        // Assert
+        Assert.Equal(2, calls.Count);
+        Assert.Equal(MessageTypes.StreamAppend, calls[1].MessageType);
+
+        var reader = new BinaryBufferReader(calls[1].Payload);
+        Assert.Equal((ulong)99, reader.ReadU64());
+        Assert.Equal((ulong)12, reader.ReadU64());
+        Assert.Equal((uint)5, reader.ReadU32());
+        Assert.Equal("entry", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(5)));
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal((uint)4, reader.ReadU32());
+        Assert.Equal("meta", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(4)));
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal(discriminator, reader.ReadString());
     }
 
     [Fact]
