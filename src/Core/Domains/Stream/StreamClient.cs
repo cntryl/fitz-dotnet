@@ -71,7 +71,26 @@ public sealed class StreamClient : IStreamClient
         ulong startOffset,
         ulong limit = 100,
         StreamFilterSet? filter = null,
+        ulong? maxBytes = null,
         [EnumeratorCancellation] CancellationToken ct = default)
+    {
+        var page = await ReadPageAsync(route, startOffset, limit, filter, maxBytes, ct).ConfigureAwait(false);
+        foreach (var item in page.Items)
+        {
+            if (item.Kind == StreamReadItemKind.Event && item.Record is not null)
+            {
+                yield return item.Record;
+            }
+        }
+    }
+
+    public async Task<StreamReadPage> ReadPageAsync(
+        string route,
+        ulong startOffset,
+        ulong limit = 100,
+        StreamFilterSet? filter = null,
+        ulong? maxBytes = null,
+        CancellationToken ct = default)
     {
         ValidateStreamSelector(route);
 
@@ -79,6 +98,12 @@ public sealed class StreamClient : IStreamClient
         writer.WriteString(route);
         writer.WriteU64(startOffset);
         writer.WriteU64(limit);
+        writer.WriteU8((byte)(maxBytes.HasValue ? 1 : 0));
+        if (maxBytes.HasValue)
+        {
+            writer.WriteU64(maxBytes.Value);
+        }
+
         var filterBytes = StreamWireHelpers.EncodeStreamFilterSet(filter);
         writer.WriteU8((byte)(filterBytes.Length > 0 ? 1 : 0));
         if (filterBytes.Length > 0)
@@ -89,17 +114,9 @@ public sealed class StreamClient : IStreamClient
 
         var response = await _request(MessageTypes.StreamRead, writer.WrittenMemory, ct).ConfigureAwait(false);
         var data = StreamWireHelpers.ReadOptionalPayload(response, "READ");
-
-        if (data.IsEmpty)
-        {
-            yield break;
-        }
-
-        var records = ParseReadRecords(data);
-        foreach (var record in records)
-        {
-            yield return record;
-        }
+        return data.IsEmpty
+            ? new StreamReadPage(Array.Empty<StreamReadItem>(), new StreamReadCursor(0, null, null, false))
+            : StreamWireHelpers.ReadReadPage(data, "READ");
     }
 
     public async Task<StreamRecord?> PeekAsync(string route, CancellationToken ct = default)
@@ -466,62 +483,4 @@ public sealed class StreamClient : IStreamClient
         }
     }
 
-    private static StreamRecord[] ParseReadRecords(ReadOnlyMemory<byte> data)
-    {
-        var reader = new BinaryBufferReader(data);
-        if (reader.IsEof)
-        {
-            return Array.Empty<StreamRecord>();
-        }
-
-        if (reader.RemainingBytes < 4)
-        {
-            throw new StreamException("READ response missing record count", "READ_INVALID_RESPONSE");
-        }
-
-        var recordCount = reader.ReadU32();
-        if (recordCount == 0)
-        {
-            if (!reader.IsEof)
-            {
-                throw new StreamException("READ response had trailing data", "READ_INVALID_RESPONSE");
-            }
-
-            return Array.Empty<StreamRecord>();
-        }
-
-        if (recordCount > int.MaxValue)
-        {
-            throw new StreamException("READ response record count too large", "READ_INVALID_RESPONSE");
-        }
-
-        var records = new StreamRecord[(int)recordCount];
-        for (var index = 0; index < records.Length; index++)
-        {
-            records[index] = StreamWireHelpers.ReadRecord(reader, "READ");
-        }
-
-        if (reader.RemainingBytes < 8)
-        {
-            throw new StreamException("READ response missing read footer", "READ_INVALID_RESPONSE");
-        }
-
-        _ = reader.ReadU64();
-        _ = StreamWireHelpers.ReadOptionalU64(reader, "READ", "last area offset");
-        _ = StreamWireHelpers.ReadOptionalU64(reader, "READ", "last realm offset");
-
-        if (reader.IsEof)
-        {
-            throw new StreamException("READ response missing has more flag", "READ_INVALID_RESPONSE");
-        }
-
-        _ = reader.ReadU8();
-
-        if (!reader.IsEof)
-        {
-            throw new StreamException("READ response had trailing data", "READ_INVALID_RESPONSE");
-        }
-
-        return records;
-    }
 }

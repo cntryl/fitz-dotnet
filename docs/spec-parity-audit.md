@@ -13,8 +13,8 @@ Status note: this is a historical audit snapshot; the current implementation sta
 Baseline facts used in this audit:
 
 - `dotnet test tests/Core/Core.Tests.csproj` passed with 125 tests on 2026-04-23.
-- `fitz-dotnet` now has a shared conformance runner that covers `CS-001` through `CS-015`, writes normalized JSON artifacts, and exposes lifecycle state on the public client surface.
-- The shared cross-language suite defines `CS-001` through `CS-015`.
+- `fitz-dotnet` now has a shared conformance runner that covers `CS-001` through `CS-016`, writes normalized JSON artifacts, and exposes lifecycle state on the public client surface.
+- The shared cross-language suite defines `CS-001` through `CS-016`.
 - `fitz-go` and `fitz-py` already expose dedicated conformance targets aligned to the shared runner contract.
 - `fitz-dotnet` currently supports WebSocket and TCP transports, but shared-suite coverage is still websocket-heavy.
 
@@ -28,10 +28,10 @@ Overall assessment:
 
 | Severity | Finding | Contracts affected | Recommended order |
 | --- | --- | --- | --- |
-| P1 | Shared conformance runner exists, but matrix-specific CI wiring and transport/auth fan-out still need finishing | Runner contract, `CS-001` to `CS-015` | 1 |
+| P1 | Shared conformance runner exists, but matrix-specific CI wiring and transport/auth fan-out still need finishing | Runner contract, `CS-001` to `CS-016` | 1 |
 | P1 | Connection auth now uses an immediate broker probe and surfaces typed auth failure, but broker-backed proof across transports is still pending | `AC-CONN-002`, `AC-CONN-003`, `AC-CONN-005`, `CS-001`, `CS-002` | 2 |
 | P0 | The current public domain surface does not represent several required Fitz capabilities | Required domains contract, `AC-QUEUE-*`, `AC-NOTICE-*`, `AC-RPC-*`, `AC-SCHEDULE-*`, `AC-STREAM-010` to `AC-STREAM-014` | 3 |
-| P1 | TCP transport exists, but the shared suite still needs broader proof across both transports | Suite required transport matrix, `CS-001` to `CS-015` | 4 |
+| P1 | TCP transport exists, but the shared suite still needs broader proof across both transports | Suite required transport matrix, `CS-001` to `CS-016` | 4 |
 | P1 | Reconnect/backoff and connection-scoped state restoration need fuller contract coverage | `AC-CONN-006`, `CS-009`, `CS-010`, `CS-015` | 5 |
 | P1 | In-flight response correlation depends on FIFO-by-message-type instead of explicit request identity | `CS-014`, `AC-RPC-002`, `AC-RPC-005` | 6 |
 | P2 | Error/reporting shape and repo documentation lag behind parity needs | `CS-004` to `CS-008`, runner aggregate/result shape, release auditability | 7 |
@@ -40,7 +40,7 @@ Overall assessment:
 
 Current evidence:
 
-- `tests/Core/Integration/ConformanceSmokeTests.Runner.cs` parses `cross-language-conformance-suite.yaml`, executes the `CS-001` through `CS-015` scenario set in order, and writes a normalized JSON artifact.
+- `tests/Core/Integration/ConformanceSmokeTests.Runner.cs` parses `cross-language-conformance-suite.yaml`, executes the `CS-001` through `CS-016` scenario set in order, and writes a normalized JSON artifact.
 - `tests/Core/Integration/ConformanceSmokeTests.cs` now delegates to the shared runner instead of hardcoding the scenario list inline.
 - `tests/Core/Integration/ConformanceModels.cs` now carries structured evidence and the suite metadata needed by the shared runner contract.
 - The remaining work is matrix-level CI fan-out and any future tightening needed to keep the emitted artifact perfectly aligned with the cross-language harness contract.
@@ -214,7 +214,7 @@ Remediation will require public-surface decisions in these areas:
 ### 1. Conformance Harness Parity
 
 - Add a dedicated `.NET` conformance target separate from the current smoke integration tests.
-- Execute all scenarios `CS-001` through `CS-015`.
+- Execute all scenarios `CS-001` through `CS-016`.
 - Support shared runner inputs for suite path, transport, auth mode, broker address, and output path.
 - Emit normalized JSON with per-scenario verdicts and aggregate summary fields.
 - Fail CI when any P0 scenario is not `pass`.

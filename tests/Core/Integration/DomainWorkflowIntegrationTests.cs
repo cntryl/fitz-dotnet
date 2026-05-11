@@ -76,7 +76,25 @@ public sealed class DomainWorkflowIntegrationTests
             records.Add(Encoding.UTF8.GetString(record.Body));
         }
 
+        var page = await client.Stream().ReadPageAsync(route, startOffset: 0, limit: 10, filter: filter);
+
         Assert.Equal(new[] { "alpha" }, records);
+        Assert.Equal((ulong)1, page.Cursor.LastResourceOffset);
+        Assert.False(page.Cursor.HasMore);
+        Assert.Collection(
+            page.Items,
+            item =>
+            {
+                Assert.Equal(StreamReadItemKind.Event, item.Kind);
+                Assert.NotNull(item.Record);
+                Assert.Equal("alpha", Encoding.UTF8.GetString(item.Record!.Body));
+            },
+            item =>
+            {
+                Assert.Equal(StreamReadItemKind.Filtered, item.Kind);
+                Assert.Equal((ulong)1, item.Offset);
+                Assert.Equal(StreamFilteredReason.ServerFilter, item.Reason);
+            });
     }
 
     [Fact]

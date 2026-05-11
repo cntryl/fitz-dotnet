@@ -254,12 +254,14 @@ public sealed class RpcClientTests
         // Arrange
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
-        Action<byte[]>? responseHandler = null;
+        var requestPayloadTcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var responseHandlerTcs = new TaskCompletionSource<Action<byte[]>>(TaskCreationOptions.RunContinuationsAsynchronously);
         var rpc = new RpcClient(
             (messageType, payload, _) =>
             {
                 seenMessageType = messageType;
                 seenPayload = payload;
+                requestPayloadTcs.TrySetResult(payload.ToArray());
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
                 return Task.FromResult(writer.Build());
@@ -267,7 +269,7 @@ public sealed class RpcClientTests
             registerNotificationHandler: (messageType, handler) =>
             {
                 Assert.Equal(MessageTypes.RpcResponse, messageType);
-                responseHandler = handler;
+                responseHandlerTcs.TrySetResult(handler);
                 return new TestRegistration();
             });
 
@@ -282,11 +284,11 @@ public sealed class RpcClientTests
             }
         });
 
-        await Task.Delay(25);
-        Assert.NotNull(responseHandler);
+        var responseHandler = await responseHandlerTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var requestPayload = await requestPayloadTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
         using var notification = new BinaryBufferWriter();
         notification.WriteU32(16);
-        var requestReader = new BinaryBufferReader(seenPayload!);
+        var requestReader = new BinaryBufferReader(requestPayload);
         _ = requestReader.ReadU32();
         var correlationId = requestReader.ReadBytes(16);
         notification.WriteBytes(correlationId);

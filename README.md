@@ -37,6 +37,35 @@ await tx.CommitAsync();
 await client.DisposeAsync();
 ```
 
+## Stream replay
+
+```csharp
+using Cntryl.Fitz.Abstractions.Domains.Stream;
+
+var filter = new StreamFilterSet
+{
+    Clauses = new[]
+    {
+        new StreamFilterClause
+        {
+            Kind = StreamFilterClauseKind.Equals,
+            Value = "proj.alpha",
+        },
+    },
+};
+
+await foreach (var record in client.Stream().ReadAsync("stream://realm/app/events", startOffset: 0, limit: 100, filter: filter))
+{
+    _ = record.Body;
+}
+
+var page = await client.Stream().ReadPageAsync("stream://realm/app/events", startOffset: 0, limit: 100, filter: filter);
+
+// ReadAsync preserves the compatibility event-only projection.
+// ReadPageAsync exposes filtered items and cursor advancement.
+_ = page.Cursor.LastResourceOffset;
+```
+
 ## Verification
 
 Fast local checks:

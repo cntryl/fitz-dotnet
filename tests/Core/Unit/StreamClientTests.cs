@@ -148,6 +148,7 @@ public sealed class StreamClientTests
             Assert.Equal((ulong)4, request.ReadU64());
             Assert.Equal((ulong)2, request.ReadU64());
             Assert.Equal((byte)0, request.ReadU8());
+            Assert.Equal((byte)0, request.ReadU8());
 
             return Task.FromResult(new byte[] { 0 });
         });
@@ -178,6 +179,7 @@ public sealed class StreamClientTests
             Assert.Equal("stream://prod/app/events", request.ReadString());
             Assert.Equal((ulong)4, request.ReadU64());
             Assert.Equal((ulong)2, request.ReadU64());
+            Assert.Equal((byte)0, request.ReadU8());
             Assert.Equal((byte)1, request.ReadU8());
             var filterLength = request.ReadU32();
 
@@ -232,9 +234,11 @@ public sealed class StreamClientTests
             Assert.Equal((ulong)4, request.ReadU64());
             Assert.Equal((ulong)2, request.ReadU64());
             Assert.Equal((byte)0, request.ReadU8());
+            Assert.Equal((byte)0, request.ReadU8());
 
             using var data = new BinaryBufferWriter();
             data.WriteU32(2);
+            data.WriteU8((byte)StreamReadItemKind.Event);
             data.WriteU64(4);
             data.WriteU8(0);
             data.WriteU8(0);
@@ -242,6 +246,7 @@ public sealed class StreamClientTests
             data.WriteBytes("one"u8);
             data.WriteU8(0);
             data.WriteU64(111);
+            data.WriteU8((byte)StreamReadItemKind.Event);
             data.WriteU64(5);
             data.WriteU8(0);
             data.WriteU8(0);
@@ -299,6 +304,7 @@ public sealed class StreamClientTests
             Assert.Equal((ulong)4, request.ReadU64());
             Assert.Equal((ulong)2, request.ReadU64());
             Assert.Equal((byte)0, request.ReadU8());
+            Assert.Equal((byte)0, request.ReadU8());
 
             using var flat = new BinaryBufferWriter();
             flat.WriteU64(4);
@@ -343,9 +349,11 @@ public sealed class StreamClientTests
             Assert.Equal((ulong)4, request.ReadU64());
             Assert.Equal((ulong)2, request.ReadU64());
             Assert.Equal((byte)0, request.ReadU8());
+            Assert.Equal((byte)0, request.ReadU8());
 
             using var data = new BinaryBufferWriter();
             data.WriteU32(1);
+            data.WriteU8((byte)StreamReadItemKind.Event);
             data.WriteU64(4);
             data.WriteU8(0);
             data.WriteU8(0);
@@ -379,6 +387,97 @@ public sealed class StreamClientTests
         // Assert
         var ex = await Assert.ThrowsAsync<StreamException>(act);
         Assert.Equal("READ_INVALID_RESPONSE", ex.Code);
+    }
+
+    [Fact]
+    public async Task should_return_raw_page_given_filtered_items_when_reading_stream_page()
+    {
+        var stream = new StreamClient((messageType, payload, _) =>
+        {
+            Assert.Equal(MessageTypes.StreamRead, messageType);
+
+            var request = new BinaryBufferReader(payload);
+            Assert.Equal("stream://prod/app/events", request.ReadString());
+            Assert.Equal((ulong)0, request.ReadU64());
+            Assert.Equal((ulong)10, request.ReadU64());
+            Assert.Equal((byte)0, request.ReadU8());
+            Assert.Equal((byte)1, request.ReadU8());
+            var filterLength = request.ReadU32();
+            Assert.True(filterLength > 0);
+
+            using var data = new BinaryBufferWriter();
+            data.WriteU32(3);
+            data.WriteU8((byte)StreamReadItemKind.Event);
+            data.WriteU64(41);
+            data.WriteU8(1);
+            data.WriteU64(51);
+            data.WriteU8(0);
+            data.WriteU32(5);
+            data.WriteBytes("alpha"u8);
+            data.WriteU8(0);
+            data.WriteU64(111);
+            data.WriteU8((byte)StreamReadItemKind.Filtered);
+            data.WriteU64(42);
+            data.WriteU8((byte)StreamFilteredReason.ServerFilter);
+            data.WriteU8((byte)StreamReadItemKind.FilteredRange);
+            data.WriteU64(43);
+            data.WriteU64(45);
+            data.WriteU8((byte)StreamFilteredReason.Permission);
+            data.WriteU64(45);
+            data.WriteU8(1);
+            data.WriteU64(52);
+            data.WriteU8(0);
+            data.WriteU8(1);
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(0);
+            writer.WriteU32((uint)data.Build().Length);
+            writer.WriteBytes(data.Build());
+            return Task.FromResult(writer.Build());
+        });
+
+        var filter = new StreamFilterSet
+        {
+            Clauses = new[]
+            {
+                new StreamFilterClause
+                {
+                    Kind = StreamFilterClauseKind.Equals,
+                    Value = "proj.alpha",
+                },
+            },
+        };
+
+        var page = await stream.ReadPageAsync("stream://prod/app/events", 0, 10, filter);
+
+        Assert.Equal((ulong)45, page.Cursor.LastResourceOffset);
+        Assert.Equal((ulong)52, page.Cursor.LastAreaOffset);
+        Assert.Null(page.Cursor.LastRealmOffset);
+        Assert.True(page.Cursor.HasMore);
+        Assert.Collection(
+            page.Items,
+            item =>
+            {
+                Assert.Equal(StreamReadItemKind.Event, item.Kind);
+                Assert.NotNull(item.Record);
+                Assert.Equal((ulong)41, item.Record!.Offset);
+                Assert.Equal((ulong)51, item.Record.AreaOffset);
+                Assert.Equal("alpha", System.Text.Encoding.UTF8.GetString(item.Record.Body));
+            },
+            item =>
+            {
+                Assert.Equal(StreamReadItemKind.Filtered, item.Kind);
+                Assert.Equal((ulong)42, item.Offset);
+                Assert.Equal(StreamFilteredReason.ServerFilter, item.Reason);
+            },
+            item =>
+            {
+                Assert.Equal(StreamReadItemKind.FilteredRange, item.Kind);
+                Assert.Equal((ulong)43, item.FromOffset);
+                Assert.Equal((ulong)45, item.ToOffset);
+                Assert.Equal(StreamFilteredReason.Permission, item.Reason);
+            });
     }
 
     [Fact]

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json;
 using System.Text;
+using System.Collections.Generic;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
@@ -157,18 +158,120 @@ internal static class StreamWireHelpers
         }
 
         var offset = reader.ReadU64();
-        _ = ReadOptionalU64(reader, operation, "area offset");
-        _ = ReadOptionalU64(reader, operation, "realm offset");
+        var areaOffset = ReadOptionalU64(reader, operation, "area offset");
+        var realmOffset = ReadOptionalU64(reader, operation, "realm offset");
         var body = ReadLengthPrefixedBytes(reader, operation, "record body");
-        _ = ReadOptionalBytes(reader, operation, "record metadata");
+        var metadata = ReadOptionalBytes(reader, operation, "record metadata")?.ToArray();
 
         if (reader.RemainingBytes < 8)
         {
             throw new StreamException($"{operation} response missing record timestamp", $"{operation}_INVALID_RESPONSE");
         }
 
-        _ = reader.ReadU64();
-        return new StreamRecord(offset, body);
+        var timestamp = reader.ReadU64();
+        return new StreamRecord(offset, areaOffset, realmOffset, body, metadata, timestamp);
+    }
+
+    internal static StreamReadPage ReadReadPage(ReadOnlyMemory<byte> payload, string operation)
+    {
+        var reader = new BinaryBufferReader(payload);
+        if (reader.IsEof)
+        {
+            return new StreamReadPage(Array.Empty<StreamReadItem>(), new StreamReadCursor(0, null, null, false));
+        }
+
+        if (reader.RemainingBytes < 4)
+        {
+            throw new StreamException($"{operation} response missing item count", $"{operation}_INVALID_RESPONSE");
+        }
+
+        var itemCount = reader.ReadU32();
+        if (itemCount > int.MaxValue)
+        {
+            throw new StreamException($"{operation} response item count too large", $"{operation}_INVALID_RESPONSE");
+        }
+
+        var items = new List<StreamReadItem>((int)itemCount);
+        for (var index = 0; index < itemCount; index++)
+        {
+            items.Add(ReadReadItem(reader, operation));
+        }
+
+        if (reader.RemainingBytes < 8)
+        {
+            throw new StreamException($"{operation} response missing read cursor", $"{operation}_INVALID_RESPONSE");
+        }
+
+        var cursor = new StreamReadCursor(
+            reader.ReadU64(),
+            ReadOptionalU64(reader, operation, "last area offset"),
+            ReadOptionalU64(reader, operation, "last realm offset"),
+            ReadBoolFlag(reader, operation, "has more flag"));
+
+        if (!reader.IsEof)
+        {
+            throw new StreamException($"{operation} response had trailing data", $"{operation}_INVALID_RESPONSE");
+        }
+
+        return new StreamReadPage(items, cursor);
+    }
+
+    internal static StreamReadItem ReadReadItem(BinaryBufferReader reader, string operation)
+    {
+        if (reader.IsEof)
+        {
+            throw new StreamException($"{operation} response missing read item tag", $"{operation}_INVALID_RESPONSE");
+        }
+
+        var tag = reader.ReadU8();
+        return tag switch
+        {
+            0 => new StreamReadItem(StreamReadItemKind.Event, Record: ReadRecord(reader, operation)),
+            1 => new StreamReadItem(
+                StreamReadItemKind.Filtered,
+                Offset: reader.ReadU64(),
+                Reason: ReadFilteredReason(reader, operation)),
+            2 => new StreamReadItem(
+                StreamReadItemKind.FilteredRange,
+                FromOffset: reader.ReadU64(),
+                ToOffset: reader.ReadU64(),
+                Reason: ReadFilteredReason(reader, operation)),
+            _ => throw new StreamException($"{operation} response has invalid read item tag {tag}", $"{operation}_INVALID_RESPONSE"),
+        };
+    }
+
+    internal static StreamFilteredReason? ReadFilteredReason(BinaryBufferReader reader, string operation)
+    {
+        if (reader.IsEof)
+        {
+            throw new StreamException($"{operation} response missing filtered reason", $"{operation}_INVALID_RESPONSE");
+        }
+
+        var tag = reader.ReadU8();
+        return tag switch
+        {
+            0 => null,
+            1 => StreamFilteredReason.ServerFilter,
+            2 => StreamFilteredReason.Permission,
+            3 => StreamFilteredReason.Projection,
+            _ => throw new StreamException($"{operation} response has invalid filtered reason tag {tag}", $"{operation}_INVALID_RESPONSE"),
+        };
+    }
+
+    internal static bool ReadBoolFlag(BinaryBufferReader reader, string operation, string fieldName)
+    {
+        if (reader.IsEof)
+        {
+            throw new StreamException($"{operation} response missing {fieldName}", $"{operation}_INVALID_RESPONSE");
+        }
+
+        var flag = reader.ReadU8();
+        return flag switch
+        {
+            0 => false,
+            1 => true,
+            _ => throw new StreamException($"{operation} response has invalid {fieldName} {flag}", $"{operation}_INVALID_RESPONSE"),
+        };
     }
 
     internal static ulong? ReadOptionalU64(BinaryBufferReader reader, string operation, string fieldName)

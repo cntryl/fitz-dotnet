@@ -1,3 +1,5 @@
+using System.IO;
+using System.Net.WebSockets;
 using System.Text;
 using Cntryl.Fitz;
 using Cntryl.Fitz.Errors;
@@ -207,7 +209,7 @@ public sealed class FitzConnection
                 await RestoreReconnectStateAsync(cancellationToken).ConfigureAwait(false);
             }
         }
-        catch
+        catch (Exception ex)
         {
             _multiplexer.SetDisconnected();
             State = ConnectionState.Disconnected;
@@ -224,6 +226,16 @@ public sealed class FitzConnection
                 }
 
                 await detached.DisposeAsync().ConfigureAwait(false);
+            }
+
+            if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+
+            if (_authFailure is not null && (ex is IOException || ex is WebSocketException))
+            {
+                throw new AuthenticationException(DescribeConnectionLoss(ex));
             }
 
             throw;

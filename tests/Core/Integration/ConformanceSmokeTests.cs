@@ -1,4 +1,5 @@
 using System.Text;
+using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Abstractions.Domains.Rpc;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Observability;
@@ -21,7 +22,7 @@ public sealed partial class ConformanceSmokeTests
         var config = IntegrationFixture.GetConformanceRunConfig();
         var aggregate = await RunConformanceSuiteAsync(config);
 
-        Assert.Equal(15, aggregate.Scenarios.Count);
+        Assert.Equal(16, aggregate.Scenarios.Count);
         Assert.Equal(config.ClientName, aggregate.Client);
         Assert.Equal(config.Transport, aggregate.Summary.Transport);
         Assert.Equal(config.AuthMode, aggregate.Summary.AuthMode);
@@ -701,6 +702,122 @@ public sealed partial class ConformanceSmokeTests
         finally
         {
             await client.DisposeAsync();
+        }
+    }
+
+    private static async Task<ScenarioResult> RunCs016FilteredStreamReplay(string transport, string authMode)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var evidence = new List<string>();
+
+        try
+        {
+            await using var client = IntegrationFixture.CreateClientForMode(transport, authMode);
+            await client.ConnectAsync();
+
+            var route = IntegrationFixture.CreateUniqueRoute("stream");
+            var session = await client.Stream().BeginAsync(route);
+
+            var firstOffset = await session.AppendAsync(0, "alpha"u8.ToArray(), discriminator: "proj.alpha");
+            var secondOffset = await session.AppendAsync(1, "beta"u8.ToArray(), discriminator: "audit.beta");
+            await session.CommitAsync();
+
+            if (firstOffset is null || secondOffset is null)
+            {
+                evidence.Add("stream append did not return offsets");
+                return Result("CS-016", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "append returned null offset");
+            }
+
+            evidence.Add($"appended records at offsets {firstOffset.Value} and {secondOffset.Value}");
+
+            var filter = new StreamFilterSet
+            {
+                Clauses = new[]
+                {
+                    new StreamFilterClause
+                    {
+                        Kind = StreamFilterClauseKind.Equals,
+                        Value = "proj.alpha",
+                    },
+                },
+            };
+
+            var records = new List<StreamRecord>();
+            await foreach (var record in client.Stream().ReadAsync(route, 0, 10, filter))
+            {
+                records.Add(record);
+            }
+
+            if (records.Count != 1)
+            {
+                evidence.Add($"compatibility read returned {records.Count} records");
+                return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, $"expected 1 filtered record, got {records.Count}");
+            }
+
+            if (records[0].Offset != firstOffset.Value)
+            {
+                evidence.Add($"compatibility read returned offset {records[0].Offset} instead of {firstOffset.Value}");
+                return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "filtered read did not preserve the matching offset");
+            }
+
+            if (!string.Equals(Encoding.UTF8.GetString(records[0].Body), "alpha", StringComparison.Ordinal))
+            {
+                evidence.Add($"compatibility read returned {Encoding.UTF8.GetString(records[0].Body)}");
+                return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "filtered read returned the wrong body");
+            }
+
+            var page = await client.Stream().ReadPageAsync(route, 0, 10, filter);
+            if (page.Items.Count != 2)
+            {
+                evidence.Add($"page returned {page.Items.Count} items");
+                return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, $"expected 2 page items, got {page.Items.Count}");
+            }
+
+            var firstPageItem = page.Items[0];
+            var firstRecord = firstPageItem.Record;
+            if (firstPageItem.Kind != StreamReadItemKind.Event || firstRecord is null)
+            {
+                evidence.Add($"first page item kind was {firstPageItem.Kind}");
+                return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "expected first page item to be an event");
+            }
+
+            if (firstRecord.Offset != firstOffset.Value)
+            {
+                evidence.Add($"first page item offset was {firstRecord.Offset}");
+                return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "first page item offset mismatch");
+            }
+
+            if (!string.Equals(Encoding.UTF8.GetString(firstRecord.Body), "alpha", StringComparison.Ordinal))
+            {
+                evidence.Add($"first page item body was {Encoding.UTF8.GetString(firstRecord.Body)}");
+                return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "first page item body mismatch");
+            }
+
+            if (page.Items[1].Kind != StreamReadItemKind.Filtered || page.Items[1].Reason != StreamFilteredReason.ServerFilter)
+            {
+                evidence.Add($"second page item kind was {page.Items[1].Kind} with reason {page.Items[1].Reason}");
+                return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "expected synthetic filtered marker");
+            }
+
+            if (page.Items[1].Offset != secondOffset.Value)
+            {
+                evidence.Add($"filtered marker offset was {page.Items[1].Offset}");
+                return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "filtered marker offset mismatch");
+            }
+
+            if (page.Cursor.LastResourceOffset != secondOffset.Value || page.Cursor.HasMore)
+            {
+                evidence.Add($"cursor last_resource_offset={page.Cursor.LastResourceOffset}, has_more={page.Cursor.HasMore}");
+                return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "cursor did not advance through filtered offsets");
+            }
+
+            evidence.Add("filtered replay returned the matching record plus synthetic filtered metadata in order");
+            return Result("CS-016", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
+        }
+        catch (Exception ex)
+        {
+            evidence.Add($"filtered stream replay failed: {ex.GetType().Name}: {ex.Message}");
+            return Result("CS-016", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
         }
     }
 
