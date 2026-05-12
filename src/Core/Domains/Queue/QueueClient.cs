@@ -398,8 +398,7 @@ public sealed class QueueClient : IQueueClient
             foreach (var entry in snapshot)
             {
                 var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
-                entry.Subscription.SubscriptionId = subscriptionId;
-                restoredSubscriptions[entry.Pattern] = entry.Subscription;
+                restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
                 restoredPatternsById[subscriptionId] = entry.Pattern;
             }
 
@@ -432,13 +431,15 @@ public sealed class QueueClient : IQueueClient
             SubscriptionId = subscriptionId;
         }
 
-        public ulong SubscriptionId { get; set; }
+        public ulong SubscriptionId { get; init; }
 
         public Dictionary<long, SubscriptionRegistration<QueueAvailabilityEvent>> Registrations { get; } = new();
 
-        public QueueSubscriptionState Clone()
+        public QueueSubscriptionState Clone() => Clone(SubscriptionId);
+
+        public QueueSubscriptionState Clone(ulong subscriptionId)
         {
-            var clone = new QueueSubscriptionState(SubscriptionId);
+            var clone = new QueueSubscriptionState(subscriptionId);
             foreach (var entry in Registrations)
             {
                 clone.Registrations.Add(entry.Key, entry.Value);

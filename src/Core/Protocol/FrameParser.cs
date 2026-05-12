@@ -2,6 +2,9 @@ using System.Buffers.Binary;
 
 namespace Cntryl.Fitz.Protocol;
 
+/// <summary>
+/// Buffers framed bytes and exposes complete Fitz protocol frames.
+/// </summary>
 public sealed class FrameParser
 {
     private const int InitialCapacity = 1024;
@@ -12,11 +15,17 @@ public sealed class FrameParser
     private int _length;
     private int _readOffset;
 
+    /// <summary>
+    /// Creates a parser with the default maximum buffer size.
+    /// </summary>
     public FrameParser()
         : this(DefaultMaxBufferSize)
     {
     }
 
+    /// <summary>
+    /// Creates a parser with a custom maximum buffer size.
+    /// </summary>
     public FrameParser(int maxBufferSize)
     {
         if (maxBufferSize < ushort.MaxValue + FrameCodec.MaxHeaderSize)
@@ -27,6 +36,9 @@ public sealed class FrameParser
         _maxBufferSize = maxBufferSize;
     }
 
+    /// <summary>
+    /// Appends raw frame bytes to the internal buffer.
+    /// </summary>
     public void Append(ReadOnlySpan<byte> data)
     {
         if (data.IsEmpty)
@@ -39,6 +51,9 @@ public sealed class FrameParser
         _length += data.Length;
     }
 
+    /// <summary>
+    /// Attempts to read the next complete frame from the buffered data.
+    /// </summary>
     public bool TryReadFrame(out Frame frame)
     {
         frame = default;
@@ -73,6 +88,9 @@ public sealed class FrameParser
         return true;
     }
 
+    /// <summary>
+    /// Appends data and returns all complete frames that can be parsed.
+    /// </summary>
     public IReadOnlyList<Frame> ParseFrames(ReadOnlySpan<byte> data)
     {
         Append(data);

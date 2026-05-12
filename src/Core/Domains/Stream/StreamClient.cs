@@ -433,8 +433,7 @@ public sealed class StreamClient : IStreamClient
             foreach (var entry in snapshot)
             {
                 var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
-                entry.Subscription.SubscriptionId = subscriptionId;
-                restoredSubscriptions[entry.Pattern] = entry.Subscription;
+                restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
                 restoredPatternsById[subscriptionId] = entry.Pattern;
             }
 
@@ -467,13 +466,15 @@ public sealed class StreamClient : IStreamClient
             SubscriptionId = subscriptionId;
         }
 
-        public ulong SubscriptionId { get; set; }
+        public ulong SubscriptionId { get; init; }
 
         public Dictionary<long, SubscriptionRegistration<StreamCommitEvent>> Registrations { get; } = new();
 
-        public StreamSubscriptionState Clone()
+        public StreamSubscriptionState Clone() => Clone(SubscriptionId);
+
+        public StreamSubscriptionState Clone(ulong subscriptionId)
         {
-            var clone = new StreamSubscriptionState(SubscriptionId);
+            var clone = new StreamSubscriptionState(subscriptionId);
             foreach (var entry in Registrations)
             {
                 clone.Registrations.Add(entry.Key, entry.Value);

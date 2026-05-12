@@ -374,8 +374,7 @@ public sealed class LeaseClient : ILeaseClient
             foreach (var entry in snapshot)
             {
                 var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
-                entry.Subscription.SubscriptionId = subscriptionId;
-                restoredSubscriptions[entry.Pattern] = entry.Subscription;
+                restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
                 restoredPatternsById[subscriptionId] = entry.Pattern;
             }
 
@@ -408,13 +407,15 @@ public sealed class LeaseClient : ILeaseClient
             SubscriptionId = subscriptionId;
         }
 
-        public ulong SubscriptionId { get; set; }
+        public ulong SubscriptionId { get; init; }
 
         public Dictionary<long, SubscriptionRegistration<LeaseChangeEvent>> Registrations { get; } = new();
 
-        public LeaseSubscriptionState Clone()
+        public LeaseSubscriptionState Clone() => Clone(SubscriptionId);
+
+        public LeaseSubscriptionState Clone(ulong subscriptionId)
         {
-            var clone = new LeaseSubscriptionState(SubscriptionId);
+            var clone = new LeaseSubscriptionState(subscriptionId);
             foreach (var entry in Registrations)
             {
                 clone.Registrations.Add(entry.Key, entry.Value);

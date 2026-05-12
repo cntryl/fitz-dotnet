@@ -250,9 +250,9 @@ public sealed class RpcClient : IRpcClient
             var writer = new RpcResponseWriter(_send, correlationId);
             await handler(new RpcRequest(route, body), writer, CancellationToken.None).ConfigureAwait(false);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            System.Diagnostics.Debug.WriteLine($"RPC handler error: {ex}");
+            // Handler exceptions are intentionally swallowed to avoid tearing down dispatch.
         }
     }
 

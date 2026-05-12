@@ -59,7 +59,7 @@ public sealed class PerfTimer : IDisposable
     {
         using (var timer = new PerfTimer(histogram))
         {
-            await action();
+            await action().ConfigureAwait(false);
             return timer.ElapsedMicroseconds;
         }
     }

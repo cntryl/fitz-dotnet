@@ -372,8 +372,7 @@ public sealed class ScheduleClient : IScheduleClient
             foreach (var entry in snapshot)
             {
                 var subscriptionId = await SubscribeWireAsync(entry.Route, cancellationToken).ConfigureAwait(false);
-                entry.Subscription.SubscriptionId = subscriptionId;
-                restoredSubscriptions[entry.Route] = entry.Subscription;
+                restoredSubscriptions[entry.Route] = entry.Subscription.Clone(subscriptionId);
                 restoredRoutesById[subscriptionId] = entry.Route;
             }
 
@@ -406,13 +405,15 @@ public sealed class ScheduleClient : IScheduleClient
             SubscriptionId = subscriptionId;
         }
 
-        public ulong SubscriptionId { get; set; }
+        public ulong SubscriptionId { get; init; }
 
         public Dictionary<long, SubscriptionRegistration<ScheduleNotification>> Writers { get; } = new();
 
-        public ScheduleSubscriptionState Clone()
+        public ScheduleSubscriptionState Clone() => Clone(SubscriptionId);
+
+        public ScheduleSubscriptionState Clone(ulong subscriptionId)
         {
-            var clone = new ScheduleSubscriptionState(SubscriptionId);
+            var clone = new ScheduleSubscriptionState(subscriptionId);
             foreach (var entry in Writers)
             {
                 clone.Writers.Add(entry.Key, entry.Value);

@@ -3,6 +3,9 @@ using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz.Connection;
 
+/// <summary>
+/// Routes framed responses and notifications to pending requests and handlers.
+/// </summary>
 public sealed class Multiplexer
 {
     private readonly object _gate = new();
@@ -13,6 +16,9 @@ public sealed class Multiplexer
     private ConnectionState _state = ConnectionState.Disconnected;
     private long _nextHandlerId;
 
+    /// <summary>
+    /// Marks the connection as authenticated and ready to dispatch frames.
+    /// </summary>
     public void SetConnected()
     {
         lock (_gate)
@@ -21,6 +27,9 @@ public sealed class Multiplexer
         }
     }
 
+    /// <summary>
+    /// Marks the connection as disconnected and cancels all pending requests.
+    /// </summary>
     public void SetDisconnected()
     {
         lock (_gate)
@@ -32,12 +41,18 @@ public sealed class Multiplexer
         CancelAll();
     }
 
+    /// <summary>
+    /// Registers an owned notification handler for a message type.
+    /// </summary>
     public IDisposable RegisterNotificationHandler(ushort messageType, Action<byte[]> handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
         return RegisterNotificationHandlerCore(messageType, NotificationHandler.FromOwned(handler));
     }
 
+    /// <summary>
+    /// Registers a borrowed notification handler for a message type.
+    /// </summary>
     internal IDisposable RegisterBorrowedNotificationHandler(ushort messageType, Action<ReadOnlyMemory<byte>> handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
@@ -63,6 +78,9 @@ public sealed class Multiplexer
         return new NotificationRegistration(this, messageType, handlerId);
     }
 
+    /// <summary>
+    /// Dispatches a frame payload to a pending request or notification handlers.
+    /// </summary>
     public void Dispatch(ushort messageType, ReadOnlyMemory<byte> payload)
     {
         PendingRequest? pending = null;
@@ -127,12 +145,18 @@ public sealed class Multiplexer
         }
     }
 
+    /// <summary>
+    /// Dispatches a buffered payload to a pending request or notification handlers.
+    /// </summary>
     public void Dispatch(ushort messageType, byte[] payload)
     {
         ArgumentNullException.ThrowIfNull(payload);
         Dispatch(messageType, payload.AsMemory());
     }
 
+    /// <summary>
+    /// Marks the next response for a message type as optional.
+    /// </summary>
     public Action ExpectOptionalResponse(ushort messageType)
     {
         lock (_gate)
@@ -157,6 +181,9 @@ public sealed class Multiplexer
         };
     }
 
+    /// <summary>
+    /// Sends a request frame and awaits the matching response.
+    /// </summary>
     public async Task<byte[]> RequestAsync(
         ushort messageType,
         byte[] frameData,
@@ -202,6 +229,9 @@ public sealed class Multiplexer
         }
     }
 
+    /// <summary>
+    /// Fails all pending requests with a connection-closed error.
+    /// </summary>
     public void CancelAll()
     {
         PendingRequest[] pending;

@@ -295,8 +295,7 @@ public sealed class NoticeClient : INoticeClient
             foreach (var entry in snapshot)
             {
                 var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
-                entry.Subscription.SubscriptionId = subscriptionId;
-                restoredSubscriptions[entry.Pattern] = entry.Subscription;
+                restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
                 restoredPatternsById[subscriptionId] = entry.Pattern;
             }
 
@@ -329,13 +328,15 @@ public sealed class NoticeClient : INoticeClient
             SubscriptionId = subscriptionId;
         }
 
-        public ulong SubscriptionId { get; set; }
+        public ulong SubscriptionId { get; init; }
 
         public Dictionary<long, SubscriptionRegistration<NoticeMessage>> Writers { get; } = new();
 
-        public NoticeSubscriptionState Clone()
+        public NoticeSubscriptionState Clone() => Clone(SubscriptionId);
+
+        public NoticeSubscriptionState Clone(ulong subscriptionId)
         {
-            var clone = new NoticeSubscriptionState(SubscriptionId);
+            var clone = new NoticeSubscriptionState(subscriptionId);
             foreach (var entry in Writers)
             {
                 clone.Writers.Add(entry.Key, entry.Value);
