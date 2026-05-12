@@ -30,8 +30,6 @@ public interface IQueueClient
 public interface IQueueReservedItem
 {
     string Route { get; }
-    ulong Id { get; }
-    ulong Token { get; }
     ReadOnlyMemory<byte> Body { get; }
     uint Attempt { get; }
 

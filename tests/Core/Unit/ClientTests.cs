@@ -201,7 +201,8 @@ public sealed class ClientTests
         await client.ConnectAsync();
 
         // Act
-        var ex = await Assert.ThrowsAsync<RequestTimeoutException>(() => client.RequestAsync(MessageTypes.KvBegin, []));
+        var ex = await Assert.ThrowsAsync<RequestTimeoutException>(() =>
+            client.Kv().BeginAsync("kv://prod/app/users"));
 
         // Assert
         Assert.Contains("Request timeout", ex.Message, StringComparison.OrdinalIgnoreCase);
@@ -246,11 +247,12 @@ public sealed class ClientTests
             transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.NoticeSubscribe, subscribeResponse.WrittenSpan));
         }
 
-        var subscription = await subscribeTask;
+        _ = await subscribeTask;
+        const ulong subscriptionId = 55;
 
         using (var notification = new BinaryBufferWriter())
         {
-            notification.WriteU64(subscription.SubscriptionId);
+            notification.WriteU64(subscriptionId);
             notification.WriteString("notice://prod/app/events");
             notification.WriteU32(5);
             notification.WriteBytes("hello"u8);

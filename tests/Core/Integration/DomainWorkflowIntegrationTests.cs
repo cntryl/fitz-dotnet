@@ -105,7 +105,7 @@ public sealed class DomainWorkflowIntegrationTests
         await client.ConnectAsync();
 
         var lease = await client.Lease().AcquireAsync(route, ttlSecs: 30);
-        Assert.NotEqual((ulong)0, lease.Token);
+        Assert.Equal(route, lease.Route);
 
         var held = await client.Lease().QueryAsync(route);
         Assert.True(held.IsHeld);

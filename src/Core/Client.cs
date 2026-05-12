@@ -44,16 +44,6 @@ public sealed class Client : IClient
         return _connection.ConnectAsync(cancellationToken);
     }
 
-    public Task<byte[]> RequestAsync(ushort messageType, byte[] payload, CancellationToken cancellationToken = default)
-    {
-        return RequestAsyncCore(messageType, payload, cancellationToken);
-    }
-
-    public Task SendAsync(ushort messageType, byte[] payload, CancellationToken cancellationToken = default)
-    {
-        return SendAsyncCore(messageType, payload, cancellationToken);
-    }
-
     public async ValueTask DisposeAsync()
     {
         await _connection.CloseAsync();
@@ -98,14 +88,4 @@ public sealed class Client : IClient
 
     public ConnectionState State => _connection.State;
 
-    private async Task<byte[]> RequestAsyncCore(ushort messageType, byte[] payload, CancellationToken cancellationToken)
-    {
-        var response = await _connection.RequestAsync(messageType, payload, cancellationToken).ConfigureAwait(false);
-        return response.ToArray();
-    }
-
-    private async Task SendAsyncCore(ushort messageType, byte[] payload, CancellationToken cancellationToken)
-    {
-        await _connection.SendAsync(messageType, payload, cancellationToken).ConfigureAwait(false);
-    }
 }

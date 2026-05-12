@@ -17,7 +17,7 @@ public sealed class LeaseHandle : ILease
 
     public string Route { get; }
 
-    public ulong Token { get; private set; }
+    internal ulong Token { get; private set; }
 
     public Task ExtendAsync(ulong ttlSecs, CancellationToken ct = default)
     {

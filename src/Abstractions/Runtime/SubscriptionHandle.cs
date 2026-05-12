@@ -6,16 +6,12 @@ public abstract class SubscriptionHandle : IAsyncDisposable
     private int _unsubscribed;
 
     protected SubscriptionHandle(
-        ulong subscriptionId,
         string pattern,
         Func<CancellationToken, ValueTask> unsubscribe)
     {
-        SubscriptionId = subscriptionId;
         Pattern = pattern;
         _unsubscribe = unsubscribe;
     }
-
-    public ulong SubscriptionId { get; }
 
     public string Pattern { get; }
 

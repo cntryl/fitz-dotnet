@@ -32,7 +32,6 @@ public sealed class LeaseClientTests
         // Assert
         Assert.Equal(MessageTypes.LeaseAcquire, seenMessageType);
         Assert.NotNull(seenPayload);
-        Assert.Equal((ulong)77, lease.Token);
         Assert.Equal("lease://prod/app/lock", lease.Route);
 
         var reader = new BinaryBufferReader(seenPayload!);
@@ -212,7 +211,8 @@ public sealed class LeaseClientTests
         await Task.Delay(25);
         Assert.NotNull(notifyHandler);
         using var notification = new BinaryBufferWriter();
-        notification.WriteU64(subscription.SubscriptionId);
+        const ulong subscriptionId = 555;
+        notification.WriteU64(subscriptionId);
         notification.WriteString("lease://prod/app/lock");
         notifyHandler!(notification.Build());
 
@@ -255,7 +255,6 @@ public sealed class LeaseClientTests
         var lease = await leaseClient.AcquireAsync("lease://prod/app/*", 30);
 
         // Assert
-        Assert.Equal((ulong)77, lease.Token);
         Assert.Equal("lease://prod/app/*", lease.Route);
         Assert.Equal(MessageTypes.LeaseAcquire, seenMessageType);
         var reader = new BinaryBufferReader(seenPayload!);

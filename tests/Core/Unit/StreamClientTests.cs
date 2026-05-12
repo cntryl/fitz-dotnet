@@ -600,11 +600,12 @@ public sealed class StreamClientTests
             receivedTcs.TrySetResult(evt);
             return ValueTask.CompletedTask;
         });
+        const ulong subscriptionId = 55;
 
         await Task.Delay(25);
         Assert.NotNull(notifyHandler);
         using var notification = new BinaryBufferWriter();
-        notification.WriteU64(subscription.SubscriptionId);
+        notification.WriteU64(subscriptionId);
         notification.WriteString("stream://prod/app/events");
         var json = System.Text.Encoding.UTF8.GetBytes("{\"event\":\"committed\",\"last_resource_offset\":19}");
         notification.WriteU32((uint)json.Length);

@@ -165,11 +165,12 @@ public sealed class ScheduleClientTests
             receivedTcs.TrySetResult(notification);
             return ValueTask.CompletedTask;
         });
+        const ulong subscriptionId = 55;
 
         await Task.Delay(25);
         Assert.NotNull(notifyHandler);
         using var notification = new BinaryBufferWriter();
-        notification.WriteU64(subscription.SubscriptionId);
+        notification.WriteU64(subscriptionId);
         notification.WriteU32(4);
         notification.WriteBytes("fire"u8);
         notifyHandler!(notification.Build());

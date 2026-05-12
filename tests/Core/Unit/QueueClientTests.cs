@@ -66,8 +66,6 @@ public sealed class QueueClientTests
         Assert.NotNull(seenPayload);
         Assert.Single(items);
         Assert.Equal("queue://prod/app/tasks", items[0].Route);
-        Assert.Equal((ulong)555, items[0].Id);
-        Assert.Equal((ulong)777, items[0].Token);
         Assert.Equal("job-1", System.Text.Encoding.UTF8.GetString(items[0].Body.Span));
         Assert.Equal((uint)1, items[0].Attempt);
 
@@ -113,7 +111,8 @@ public sealed class QueueClientTests
         // Assert
         Assert.Equal(2, reserveCallCount);
         Assert.Single(items);
-        Assert.Equal((ulong)555, items[0].Id);
+        Assert.Equal("queue://prod/app/tasks", items[0].Route);
+        Assert.Equal((uint)1, items[0].Attempt);
     }
 
     [Fact]
@@ -154,11 +153,12 @@ public sealed class QueueClientTests
             receivedTcs.TrySetResult(evt);
             return ValueTask.CompletedTask;
         });
+        const ulong subscriptionId = 555;
 
         await Task.Delay(25);
         Assert.NotNull(notifyHandler);
         using var notification = new BinaryBufferWriter();
-        notification.WriteU64(subscription.SubscriptionId);
+        notification.WriteU64(subscriptionId);
         notification.WriteString("queue://prod/app/tasks");
         notification.WriteU64(9);
         notifyHandler!(notification.Build());

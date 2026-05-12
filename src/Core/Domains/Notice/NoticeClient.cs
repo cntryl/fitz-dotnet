@@ -93,7 +93,7 @@ public sealed class NoticeClient : INoticeClient
             if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
             {
                 existingSubscription.Writers[handleId] = registration;
-                var existingHandle = CreateSubscription(pattern, handleId, existingSubscription.SubscriptionId);
+                var existingHandle = CreateSubscription(pattern, handleId);
                 SubscriptionPump.Start(registration, handler);
                 return existingHandle;
             }
@@ -104,7 +104,7 @@ public sealed class NoticeClient : INoticeClient
             _subscriptionsByPattern[pattern] = subscription;
             _patternsBySubscriptionId[subscriptionId] = pattern;
 
-            var handle = CreateSubscription(pattern, handleId, subscriptionId);
+            var handle = CreateSubscription(pattern, handleId);
             SubscriptionPump.Start(registration, handler);
             return handle;
         }
@@ -121,11 +121,9 @@ public sealed class NoticeClient : INoticeClient
 
     private NoticeSubscription CreateSubscription(
         string pattern,
-        long handleId,
-        ulong subscriptionId)
+        long handleId)
     {
         return new NoticeSubscription(
-            subscriptionId,
             pattern,
             cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken));
     }

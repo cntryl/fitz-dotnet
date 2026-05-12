@@ -162,12 +162,11 @@ public sealed class QueueClient : IQueueClient
 
             items[i] = new QueueReservedItem(
                 route,
-                itemId,
-                itemToken,
                 body,
                 1,
-                _request
-            );
+                itemId,
+                itemToken,
+                _request);
         }
 
         if (!reader.IsEof)
@@ -210,7 +209,7 @@ public sealed class QueueClient : IQueueClient
             if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
             {
                 existingSubscription.Registrations[handleId] = registration;
-                var existingHandle = CreateSubscription(pattern, handleId, existingSubscription.SubscriptionId);
+                var existingHandle = CreateSubscription(pattern, handleId);
                 SubscriptionPump.Start(registration, handler);
                 return existingHandle;
             }
@@ -221,7 +220,7 @@ public sealed class QueueClient : IQueueClient
             _subscriptionsByPattern[pattern] = subscription;
             _patternsBySubscriptionId[subscriptionId] = pattern;
 
-            var handle = CreateSubscription(pattern, handleId, subscriptionId);
+            var handle = CreateSubscription(pattern, handleId);
             SubscriptionPump.Start(registration, handler);
             return handle;
         }
@@ -236,10 +235,9 @@ public sealed class QueueClient : IQueueClient
         }
     }
 
-    private QueueSubscription CreateSubscription(string pattern, long handleId, ulong subscriptionId)
+    private QueueSubscription CreateSubscription(string pattern, long handleId)
     {
         return new QueueSubscription(
-            subscriptionId,
             pattern,
             cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken));
     }

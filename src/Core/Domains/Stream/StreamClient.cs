@@ -211,7 +211,7 @@ public sealed class StreamClient : IStreamClient
                 if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
                 {
                     existingSubscription.Registrations[handleId] = registration;
-                    existingHandle = CreateSubscription(pattern, handleId, existingSubscription.SubscriptionId);
+                    existingHandle = CreateSubscription(pattern, handleId);
                 }
             }
 
@@ -230,7 +230,7 @@ public sealed class StreamClient : IStreamClient
                 _patternsBySubscriptionId[subscriptionId] = pattern;
             }
 
-            var handle = CreateSubscription(pattern, handleId, subscriptionId);
+            var handle = CreateSubscription(pattern, handleId);
             SubscriptionPump.Start(registration, handler);
             return handle;
         }
@@ -245,10 +245,9 @@ public sealed class StreamClient : IStreamClient
         }
     }
 
-    private StreamSubscription CreateSubscription(string pattern, long handleId, ulong subscriptionId)
+    private StreamSubscription CreateSubscription(string pattern, long handleId)
     {
         return new StreamSubscription(
-            subscriptionId,
             pattern,
             cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken));
     }

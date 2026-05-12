@@ -187,7 +187,7 @@ public sealed class LeaseClient : ILeaseClient
             if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
             {
                 existingSubscription.Registrations[handleId] = registration;
-                var existingHandle = CreateSubscription(pattern, handleId, existingSubscription.SubscriptionId);
+                var existingHandle = CreateSubscription(pattern, handleId);
                 SubscriptionPump.Start(registration, handler);
                 return existingHandle;
             }
@@ -198,7 +198,7 @@ public sealed class LeaseClient : ILeaseClient
             _subscriptionsByPattern[pattern] = subscription;
             _patternsBySubscriptionId[subscriptionId] = pattern;
 
-            var handle = CreateSubscription(pattern, handleId, subscriptionId);
+            var handle = CreateSubscription(pattern, handleId);
             SubscriptionPump.Start(registration, handler);
             return handle;
         }
@@ -213,10 +213,9 @@ public sealed class LeaseClient : ILeaseClient
         }
     }
 
-    private LeaseSubscription CreateSubscription(string pattern, long handleId, ulong subscriptionId)
+    private LeaseSubscription CreateSubscription(string pattern, long handleId)
     {
         return new LeaseSubscription(
-            subscriptionId,
             pattern,
             cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken));
     }

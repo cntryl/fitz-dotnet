@@ -162,7 +162,7 @@ public sealed class ScheduleClient : IScheduleClient
             if (_subscriptionsByRoute.TryGetValue(pattern, out var existingSubscription))
             {
                 existingSubscription.Writers[handleId] = registration;
-                var existingHandle = CreateSubscription(pattern, handleId, existingSubscription.SubscriptionId);
+                var existingHandle = CreateSubscription(pattern, handleId);
                 SubscriptionPump.Start(registration, handler);
                 return existingHandle;
             }
@@ -173,7 +173,7 @@ public sealed class ScheduleClient : IScheduleClient
             _subscriptionsByRoute[pattern] = subscription;
             _routesBySubscriptionId[subscriptionId] = pattern;
 
-            var handle = CreateSubscription(pattern, handleId, subscriptionId);
+            var handle = CreateSubscription(pattern, handleId);
             SubscriptionPump.Start(registration, handler);
             return handle;
         }
@@ -190,11 +190,9 @@ public sealed class ScheduleClient : IScheduleClient
 
     private ScheduleSubscription CreateSubscription(
         string route,
-        long handleId,
-        ulong subscriptionId)
+        long handleId)
     {
         return new ScheduleSubscription(
-            subscriptionId,
             route,
             cancellationToken => UnsubscribeAsync(route, handleId, cancellationToken));
     }

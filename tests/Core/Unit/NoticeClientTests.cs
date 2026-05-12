@@ -73,12 +73,13 @@ public sealed class NoticeClientTests
             receivedTcs.TrySetResult(message);
             return ValueTask.CompletedTask;
         });
+        const ulong subscriptionId = 55;
 
         await Task.Delay(25);
         Assert.NotNull(notifyHandler);
         Assert.Equal("notice://prod/app/*", subscription.Pattern);
         using var notification = new BinaryBufferWriter();
-        notification.WriteU64(subscription.SubscriptionId);
+        notification.WriteU64(subscriptionId);
         notification.WriteString("notice://prod/app/events");
         notification.WriteU32(5);
         notification.WriteBytes("hello"u8);
@@ -143,10 +144,11 @@ public sealed class NoticeClientTests
                 handlerCanceled.TrySetResult();
             }
         });
+        const ulong subscriptionId = 55;
 
         Assert.NotNull(notifyHandler);
         using var notification = new BinaryBufferWriter();
-        notification.WriteU64(subscription.SubscriptionId);
+        notification.WriteU64(subscriptionId);
         notification.WriteString("notice://prod/app/events");
         notification.WriteU32(5);
         notification.WriteBytes("hello"u8);
@@ -204,10 +206,11 @@ public sealed class NoticeClientTests
                 await releaseFirstHandler.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
             }
         });
+        const ulong subscriptionId = 55;
 
         Assert.NotNull(notifyHandler);
         using var firstNotification = new BinaryBufferWriter();
-        firstNotification.WriteU64(subscription.SubscriptionId);
+        firstNotification.WriteU64(subscriptionId);
         firstNotification.WriteString("notice://prod/app/first");
         firstNotification.WriteU32(5);
         firstNotification.WriteBytes("first"u8);
@@ -216,7 +219,7 @@ public sealed class NoticeClientTests
         await firstHandlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         using var secondNotification = new BinaryBufferWriter();
-        secondNotification.WriteU64(subscription.SubscriptionId);
+        secondNotification.WriteU64(subscriptionId);
         secondNotification.WriteString("notice://prod/app/second");
         secondNotification.WriteU32(6);
         secondNotification.WriteBytes("second"u8);
