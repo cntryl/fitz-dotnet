@@ -58,7 +58,7 @@ internal static class ConformanceResultBuilder
         IReadOnlyList<ScenarioResult> scenarios)
     {
         var p0 = scenarios.Where(s => s.ScenarioId is "CS-001" or "CS-002" or "CS-003" or "CS-004" or "CS-005" or "CS-006" or "CS-007" or "CS-008").ToList();
-        var p1 = scenarios.Where(s => s.ScenarioId is "CS-009" or "CS-010" or "CS-011" or "CS-012" or "CS-013" or "CS-014" or "CS-015" or "CS-016").ToList();
+        var p1 = scenarios.Where(s => s.ScenarioId is "CS-009" or "CS-010" or "CS-011" or "CS-012" or "CS-013" or "CS-014" or "CS-015" or "CS-016" or "CS-017").ToList();
 
         static double PassRate(IEnumerable<ScenarioResult> input)
         {

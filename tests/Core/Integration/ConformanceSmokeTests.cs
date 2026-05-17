@@ -22,7 +22,7 @@ public sealed partial class ConformanceSmokeTests
         var config = IntegrationFixture.GetConformanceRunConfig();
         var aggregate = await RunConformanceSuiteAsync(config);
 
-        Assert.Equal(16, aggregate.Scenarios.Count);
+        Assert.Equal(17, aggregate.Scenarios.Count);
         Assert.Equal(config.ClientName, aggregate.Client);
         Assert.Equal(config.Transport, aggregate.Summary.Transport);
         Assert.Equal(config.AuthMode, aggregate.Summary.AuthMode);
@@ -702,6 +702,61 @@ public sealed partial class ConformanceSmokeTests
         finally
         {
             await client.DisposeAsync();
+        }
+    }
+
+    private static async Task<ScenarioResult> RunCs017BoundedConcurrencyUnderBurstLoad(string transport, string authMode)
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var evidence = new List<string>();
+
+        try
+        {
+            await using var client = IntegrationFixture.CreateClientForMode(
+                transport,
+                authMode,
+                timeout: TimeSpan.FromMilliseconds(750),
+                maxInFlightRequests: 1);
+
+            await client.ConnectAsync();
+
+            var route = IntegrationFixture.CreateUniqueRoute("rpc");
+
+            async Task ConsumeRpcAsync(ReadOnlyMemory<byte> body)
+            {
+                try
+                {
+                    await foreach (var _ in client.Rpc().CallAsync(route, body))
+                    {
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            var firstTask = ConsumeRpcAsync("first"u8.ToArray());
+            var secondTask = ConsumeRpcAsync("second"u8.ToArray());
+
+            await Task.Delay(100);
+            if (secondTask.IsCompleted)
+            {
+                evidence.Add("second RPC call completed too early");
+                return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "second call should stay queued behind the first");
+            }
+
+            evidence.Add("second RPC call remained pending while first was in flight");
+            evidence.Add("configured maxInFlightRequests=1 and burst size=2");
+
+            await client.DisposeAsync();
+            await Task.WhenAll(firstTask, secondTask);
+
+            return Result("CS-017", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
+        }
+        catch (Exception ex)
+        {
+            evidence.Add($"bounded concurrency scenario failed: {ex.GetType().Name}: {ex.Message}");
+            return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
         }
     }
 

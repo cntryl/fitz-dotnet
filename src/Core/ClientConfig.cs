@@ -10,6 +10,7 @@ public sealed record ClientConfig(
     Func<CancellationToken, ValueTask<string>>? TokenProvider = null,
     ReconnectOptions? Reconnect = null,
     int MaxFrameSize = 64 * 1024,
+    int MaxInFlightRequests = 256,
     Func<ClientConfig, ITransport>? TransportFactory = null
 )
 {
@@ -21,6 +22,7 @@ public sealed record ClientConfig(
         Func<CancellationToken, ValueTask<string>>? TokenProvider = null,
         ReconnectOptions? Reconnect = null,
         int MaxFrameSize = 64 * 1024,
+        int MaxInFlightRequests = 256,
         Func<ClientConfig, ITransport>? TransportFactory = null)
         : this(
             Url,
@@ -30,6 +32,7 @@ public sealed record ClientConfig(
             TokenProvider,
             Reconnect,
             MaxFrameSize,
+            MaxInFlightRequests,
             TransportFactory)
     {
     }

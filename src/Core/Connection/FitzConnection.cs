@@ -13,6 +13,7 @@ public sealed class FitzConnection
 {
     private readonly object _gate = new();
     private readonly ClientConfig _config;
+    private readonly SemaphoreSlim _requestGate;
     private readonly Func<ITransport> _transportFactory;
     private readonly Multiplexer _multiplexer = new();
     private readonly FrameParser _frameParser;
@@ -32,6 +33,8 @@ public sealed class FitzConnection
         _config = config;
         _transportFactory = transportFactory;
         _frameParser = new FrameParser(config.MaxFrameSize + FrameCodec.MaxHeaderSize);
+        var maxInFlightRequests = Math.Max(1, config.MaxInFlightRequests);
+        _requestGate = new SemaphoreSlim(maxInFlightRequests, maxInFlightRequests);
     }
 
     public ConnectionState State { get; private set; } = ConnectionState.Disconnected;
@@ -54,21 +57,31 @@ public sealed class FitzConnection
     public async ValueTask<ReadOnlyMemory<byte>> RequestAsync(ushort messageType, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)
     {
         EnsureAuthenticated();
-        var transport = EnsureTransport();
-        var frame = FrameCodec.Encode(messageType, payload.Span);
-        var timeout = _config.Timeout ?? TimeSpan.FromSeconds(30);
 
         try
         {
-            var response = await _multiplexer.RequestAsync(
-                messageType,
-                frame,
-                (data, token) => transport.SendAsync(data, token),
-                timeout,
-                cancellationToken
-            ).ConfigureAwait(false);
+            await AcquireRequestSlotAsync(cancellationToken).ConfigureAwait(false);
 
-            return response;
+            try
+            {
+                var transport = EnsureTransport();
+                var frame = FrameCodec.Encode(messageType, payload.Span);
+                var timeout = _config.Timeout ?? TimeSpan.FromSeconds(30);
+
+                var response = await _multiplexer.RequestAsync(
+                    messageType,
+                    frame,
+                    (data, token) => transport.SendAsync(data, token),
+                    timeout,
+                    cancellationToken
+                ).ConfigureAwait(false);
+
+                return response;
+            }
+            finally
+            {
+                _requestGate.Release();
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -92,11 +105,20 @@ public sealed class FitzConnection
     public async ValueTask SendAsync(ushort messageType, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)
     {
         EnsureAuthenticated();
-        var frame = FrameCodec.Encode(messageType, payload.Span);
 
         try
         {
-            await EnsureTransport().SendAsync(frame, cancellationToken).ConfigureAwait(false);
+            await AcquireRequestSlotAsync(cancellationToken).ConfigureAwait(false);
+
+            try
+            {
+                var frame = FrameCodec.Encode(messageType, payload.Span);
+                await EnsureTransport().SendAsync(frame, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                _requestGate.Release();
+            }
         }
         catch (Exception ex)
         {
@@ -467,6 +489,25 @@ public sealed class FitzConnection
     private TimeSpan GetDefaultAuthSettleDelay()
     {
         return TimeSpan.FromSeconds(5);
+    }
+
+    private async Task AcquireRequestSlotAsync(CancellationToken cancellationToken)
+    {
+        var connectionClosedToken = ConnectionClosedToken;
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, connectionClosedToken);
+
+        try
+        {
+            await _requestGate.WaitAsync(linkedCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (connectionClosedToken.IsCancellationRequested)
+        {
+            throw new ConnectionException("Connection closed");
+        }
     }
 
     private async Task ProbeAuthenticationAsync(ITransport transport, CancellationToken cancellationToken)

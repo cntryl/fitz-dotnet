@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Threading.Channels;
 using Cntryl.Fitz;
+using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Transport;
@@ -24,6 +25,22 @@ public sealed class ClientTests
         var config = new ClientConfig("localhost:4191", Transport: "tcp");
 
         Assert.Equal(ClientTransport.Tcp, config.TransportKind);
+    }
+
+    [Fact]
+    public void should_default_max_in_flight_requests_when_not_specified()
+    {
+        var client = new Client(new ClientConfig("ws://localhost:4190/ws"));
+
+        Assert.Equal(256, client.Config.MaxInFlightRequests);
+    }
+
+    [Fact]
+    public void should_preserve_max_in_flight_requests_given_client_config()
+    {
+        var client = new Client(new ClientConfig("ws://localhost:4190/ws", MaxInFlightRequests: 12));
+
+        Assert.Equal(12, client.Config.MaxInFlightRequests);
     }
 
     [Fact]
@@ -113,7 +130,6 @@ public sealed class ClientTests
     [Fact]
     public async Task should_not_reconnect_given_close_during_reconnect_backoff()
     {
-        // Arrange
         var releaseFirstReceive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var firstTransport = new QueuedTransport();
         firstTransport.AfterSend = sentFrameCount =>
@@ -149,34 +165,16 @@ public sealed class ClientTests
         releaseFirstReceive.SetResult();
         await WaitForConditionAsync(() => !client.IsConnected, TimeSpan.FromSeconds(1));
 
-        // Act
         await client.DisposeAsync();
 
-        // Assert
         Assert.Equal(1, factoryCalls);
         Assert.Empty(secondTransport.SentFrames);
         Assert.False(client.IsConnected);
-
-        static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
-        {
-            var deadline = DateTimeOffset.UtcNow + timeout;
-
-            while (!condition())
-            {
-                if (DateTimeOffset.UtcNow >= deadline)
-                {
-                    throw new TimeoutException("Timed out waiting for the connection to disconnect.");
-                }
-
-                await Task.Delay(10).ConfigureAwait(false);
-            }
-        }
     }
 
     [Fact]
     public async Task should_remain_connected_given_request_timeout_when_receive_loop_is_idle()
     {
-        // Arrange
         var transport = new QueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
@@ -200,13 +198,57 @@ public sealed class ClientTests
 
         await client.ConnectAsync();
 
-        // Act
         var ex = await Assert.ThrowsAsync<RequestTimeoutException>(() =>
             client.Kv().BeginAsync("kv://prod/app/users"));
 
-        // Assert
         Assert.Contains("Request timeout", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.True(client.IsConnected);
+    }
+
+    [Fact]
+    public async Task should_bound_concurrent_outbound_requests_given_max_one_when_second_request_starts()
+    {
+        var transport = new QueuedTransport();
+        transport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount != 2)
+            {
+                return;
+            }
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+        };
+        var connection = new FitzConnection(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                AuthSettleDelay: TimeSpan.Zero,
+                MaxInFlightRequests: 1,
+                TokenProvider: _ => ValueTask.FromResult("token-123")
+            ),
+            () => transport
+        );
+
+        await connection.ConnectAsync();
+
+        var firstRequest = connection.RequestAsync(77, "first"u8.ToArray());
+        await WaitForConditionAsync(() => transport.SentFrames.Count == 3, TimeSpan.FromSeconds(1));
+
+        var secondRequest = connection.RequestAsync(77, "second"u8.ToArray());
+
+        await Task.Delay(50);
+        Assert.False(secondRequest.IsCompleted);
+        Assert.Equal(3, transport.SentFrames.Count);
+
+        transport.QueueIncomingFrame(FrameCodec.Encode(77, "ok"u8));
+        Assert.Equal("ok", System.Text.Encoding.UTF8.GetString((await firstRequest).Span));
+
+        await WaitForConditionAsync(() => transport.SentFrames.Count == 4, TimeSpan.FromSeconds(1));
+        transport.QueueIncomingFrame(FrameCodec.Encode(77, "done"u8));
+        Assert.Equal("done", System.Text.Encoding.UTF8.GetString((await secondRequest).Span));
+
+        await connection.CloseAsync();
     }
 
     [Fact]
@@ -263,6 +305,21 @@ public sealed class ClientTests
 
         Assert.Equal("notice://prod/app/events", result.Route);
         Assert.Equal("hello", System.Text.Encoding.UTF8.GetString(result.Body));
+    }
+
+    private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+
+        while (!condition())
+        {
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                throw new TimeoutException("Timed out waiting for the requested condition.");
+            }
+
+            await Task.Delay(10).ConfigureAwait(false);
+        }
     }
 
     private sealed class FakeTransport : ITransport

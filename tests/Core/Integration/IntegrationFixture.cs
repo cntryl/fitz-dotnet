@@ -121,12 +121,22 @@ internal static class IntegrationFixture
         return Path.Combine(GetRepositoryRoot(), "artifacts", "conformance-results.json");
     }
 
-    internal static Client CreateAnonymousClient(string url, string? transport = null, TimeSpan? timeout = null, ReconnectOptions? reconnect = null)
+    internal static Client CreateAnonymousClient(
+        string url,
+        string? transport = null,
+        TimeSpan? timeout = null,
+        ReconnectOptions? reconnect = null,
+        int? maxInFlightRequests = null)
     {
-        return CreateClient(url, transport, timeout, reconnect, tokenProvider: null);
+        return CreateClient(url, transport, timeout, reconnect, tokenProvider: null, maxInFlightRequests);
     }
 
-    internal static Client CreateValidJwtClient(string url, string? transport = null, TimeSpan? timeout = null, ReconnectOptions? reconnect = null)
+    internal static Client CreateValidJwtClient(
+        string url,
+        string? transport = null,
+        TimeSpan? timeout = null,
+        ReconnectOptions? reconnect = null,
+        int? maxInFlightRequests = null)
     {
         var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "test-secret-key";
         var audience = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_AUDIENCE") ?? "fitz";
@@ -137,10 +147,16 @@ internal static class IntegrationFixture
             transport,
             timeout,
             reconnect,
-            _ => ValueTask.FromResult(validToken));
+            _ => ValueTask.FromResult(validToken),
+            maxInFlightRequests);
     }
 
-    internal static Client CreateInvalidJwtClient(string url, string? transport = null, TimeSpan? timeout = null, ReconnectOptions? reconnect = null)
+    internal static Client CreateInvalidJwtClient(
+        string url,
+        string? transport = null,
+        TimeSpan? timeout = null,
+        ReconnectOptions? reconnect = null,
+        int? maxInFlightRequests = null)
     {
         var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "test-secret-key";
         var audience = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_AUDIENCE") ?? "fitz";
@@ -151,17 +167,23 @@ internal static class IntegrationFixture
             transport,
             timeout,
             reconnect,
-            _ => ValueTask.FromResult(invalidToken));
+            _ => ValueTask.FromResult(invalidToken),
+            maxInFlightRequests);
     }
 
-    internal static Client CreateClientForMode(string transport, string authMode, TimeSpan? timeout = null, ReconnectOptions? reconnect = null)
+    internal static Client CreateClientForMode(
+        string transport,
+        string authMode,
+        TimeSpan? timeout = null,
+        ReconnectOptions? reconnect = null,
+        int? maxInFlightRequests = null)
     {
         var url = GetBrokerUrl(transport, authMode);
         return authMode.ToLowerInvariant() switch
         {
-            "valid_jwt" => CreateValidJwtClient(url, transport, timeout, reconnect),
-            "invalid_jwt" => CreateInvalidJwtClient(url, transport, timeout, reconnect),
-            _ => CreateAnonymousClient(url, transport, timeout, reconnect)
+            "valid_jwt" => CreateValidJwtClient(url, transport, timeout, reconnect, maxInFlightRequests),
+            "invalid_jwt" => CreateInvalidJwtClient(url, transport, timeout, reconnect, maxInFlightRequests),
+            _ => CreateAnonymousClient(url, transport, timeout, reconnect, maxInFlightRequests)
         };
     }
 
@@ -201,7 +223,8 @@ internal static class IntegrationFixture
         string? transport,
         TimeSpan? timeout,
         ReconnectOptions? reconnect,
-        Func<CancellationToken, ValueTask<string>>? tokenProvider)
+        Func<CancellationToken, ValueTask<string>>? tokenProvider,
+        int? maxInFlightRequests = null)
     {
         var normalizedTransport = NormalizeTransport(transport);
         var timeoutScale = GetConformanceTimeoutScale();
@@ -221,6 +244,7 @@ internal static class IntegrationFixture
                 Transport: normalizedTransport,
                 Timeout: scaledTimeout,
                 AuthSettleDelay: TimeSpan.FromSeconds(5),
+                MaxInFlightRequests: maxInFlightRequests ?? 256,
                 TokenProvider: tokenProvider,
                 Reconnect: reconnect
             )
