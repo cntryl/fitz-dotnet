@@ -18,6 +18,7 @@ public sealed class QueueClient : IQueueClient
     private readonly Dictionary<string, QueueSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
     private readonly Dictionary<ulong, string> _patternsBySubscriptionId = new();
     private IDisposable? _notificationRegistration;
+    private readonly Func<Action, IDisposable>? _registerOnDisconnect;
     private bool _notificationHandlerInitialized;
     private long _nextHandleId;
     private readonly IDisposable? _reconnectRegistration;
@@ -25,7 +26,8 @@ public sealed class QueueClient : IQueueClient
     internal QueueClient(FitzConnection connection)
         : this(
             connection.RequestAsync,
-            connection.RegisterBorrowedNotificationHandler)
+            connection.RegisterBorrowedNotificationHandler,
+            connection.OnDisconnect)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -41,10 +43,12 @@ public sealed class QueueClient : IQueueClient
 
     internal QueueClient(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
-        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null,
+        Func<Action, IDisposable>? registerOnDisconnect = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
+        _registerOnDisconnect = registerOnDisconnect;
     }
 
     public async ValueTask<ulong> EnqueueAsync(
@@ -166,7 +170,8 @@ public sealed class QueueClient : IQueueClient
                 1,
                 itemId,
                 itemToken,
-                _request);
+                _request,
+                _registerOnDisconnect);
         }
 
         if (!reader.IsEof)

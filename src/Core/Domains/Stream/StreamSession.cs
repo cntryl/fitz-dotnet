@@ -1,4 +1,5 @@
-﻿using Cntryl.Fitz.Abstractions.Domains.Stream;
+using System.Threading;
+using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
@@ -8,15 +9,23 @@ public sealed class StreamSession : IStreamSession
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly ulong _sessionId;
+    private readonly IDisposable? _disconnectRegistration;
+    private int _closed;
 
-    internal StreamSession(Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request, ulong sessionId)
+    internal StreamSession(
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
+        ulong sessionId,
+        Func<Action, IDisposable>? registerOnDisconnect = null)
     {
         _request = request;
         _sessionId = sessionId;
+        _disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
     }
 
     public async Task<ulong?> AppendAsync(ulong expectedOffset, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte>? metadata = null, string? discriminator = null, CancellationToken ct = default)
     {
+        ThrowIfClosed();
+
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_sessionId);
         writer.WriteU64(expectedOffset);
@@ -56,6 +65,8 @@ public sealed class StreamSession : IStreamSession
 
     public Task CommitAsync(CancellationToken ct = default)
     {
+        ThrowIfClosed();
+
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_sessionId);
         writer.WriteU8(0);
@@ -64,6 +75,8 @@ public sealed class StreamSession : IStreamSession
 
     public Task RollbackAsync(CancellationToken ct = default)
     {
+        ThrowIfClosed();
+
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_sessionId);
         return ExpectStatusAsync(MessageTypes.StreamRollback, writer.WrittenMemory, "ROLLBACK", ct);
@@ -71,7 +84,28 @@ public sealed class StreamSession : IStreamSession
 
     private async Task ExpectStatusAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct)
     {
+        ThrowIfClosed();
         var response = await _request(messageType, payload, ct).ConfigureAwait(false);
         StreamWireHelpers.EnsureSuccessStatusOnly(response, operation);
+    }
+
+    private void ThrowIfClosed()
+    {
+        if (Volatile.Read(ref _closed) == 0)
+        {
+            return;
+        }
+
+        throw new StreamException("Stream session already closed", "SESSION_CLOSED");
+    }
+
+    private void MarkClosed()
+    {
+        if (Interlocked.Exchange(ref _closed, 1) != 0)
+        {
+            return;
+        }
+
+        _disconnectRegistration?.Dispose();
     }
 }

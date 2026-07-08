@@ -1,7 +1,9 @@
 ﻿using Cntryl.Fitz.Abstractions.Domains.Queue;
+using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Domains.Queue;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
+using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -259,5 +261,210 @@ public sealed class QueueClientTests
         Assert.Equal(MessageTypes.QueueEnqueue, seenMessageType);
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("queue://prod/app/*", reader.ReadString());
+    }
+
+    [Fact]
+    public async Task should_mark_reserved_item_as_closed_after_disconnect()
+    {
+        // Arrange
+        Action? onDisconnect = null;
+        var unsubscribeCount = 0;
+
+        var queue = new QueueClient(
+            (messageType, payload, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                writer.WriteU32(1);
+                writer.WriteU64(555);
+                writer.WriteU64(777);
+                writer.WriteU32(5);
+                writer.WriteBytes("job-1"u8);
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
+            },
+            registerNotificationHandler: null,
+            registerOnDisconnect: disconnect =>
+            {
+                onDisconnect = disconnect;
+                return new TestRegistration(() => unsubscribeCount++);
+            });
+
+        var items = await queue.ReserveAsync("queue://prod/app/tasks", 30);
+        var item = Assert.Single(items);
+
+        // Act
+        onDisconnect?.Invoke();
+
+        var ex = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(10));
+
+        // Assert
+        Assert.Equal("ITEM_CLOSED", ex.Code);
+        Assert.Equal("Queue item is no longer valid after disconnect", ex.Message);
+        Assert.Equal(1, unsubscribeCount);
+    }
+
+    [Fact]
+    public async Task should_mark_reserved_item_as_closed_after_reconnect()
+    {
+        var firstTransport = new TestQueuedTransport();
+        var secondTransport = new TestQueuedTransport();
+        var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        firstTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 2)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 3)
+            {
+                using var reserveWriter = new BinaryBufferWriter();
+                reserveWriter.WriteU8(0);
+                reserveWriter.WriteU32(1);
+                reserveWriter.WriteU64(555);
+                reserveWriter.WriteU64(777);
+                reserveWriter.WriteU32(5);
+                reserveWriter.WriteBytes("job-1"u8);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueReserve, reserveWriter.WrittenSpan));
+            }
+        };
+
+        secondTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount != 2)
+            {
+                return;
+            }
+
+            using var authProbeWriter = new BinaryBufferWriter();
+            authProbeWriter.WriteU8(0);
+            secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            reconnected.TrySetResult();
+        };
+
+        var transportFactoryCalls = 0;
+        Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
+        var connection = new FitzConnection(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            transportFactory);
+        var queue = new QueueClient(connection);
+
+        await connection.ConnectAsync();
+        var items = await queue.ReserveAsync("queue://prod/app/tasks", 30);
+        var item = Assert.Single(items);
+
+        firstTransport.QueueClosed();
+        await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        var ex = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(10));
+
+        Assert.Equal("ITEM_CLOSED", ex.Code);
+        Assert.Equal("Queue item is no longer valid after disconnect", ex.Message);
+
+        await connection.CloseAsync();
+    }
+
+    [Fact]
+    public async Task should_restore_queue_subscription_after_reconnect()
+    {
+        var firstTransport = new TestQueuedTransport();
+        var secondTransport = new TestQueuedTransport();
+        var firstNotification = new TaskCompletionSource<QueueAvailabilityEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondNotification = new TaskCompletionSource<QueueAvailabilityEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var notificationCount = 0;
+
+        firstTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 2)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 3)
+            {
+                using var subscribeWriter = new BinaryBufferWriter();
+                subscribeWriter.WriteU8(0);
+                subscribeWriter.WriteU8(1);
+                subscribeWriter.WriteU64(555);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueSubscribe, subscribeWriter.WrittenSpan));
+            }
+        };
+
+        secondTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 2)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 3)
+            {
+                using var subscribeWriter = new BinaryBufferWriter();
+                subscribeWriter.WriteU8(0);
+                subscribeWriter.WriteU8(1);
+                subscribeWriter.WriteU64(777);
+                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueSubscribe, subscribeWriter.WrittenSpan));
+
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(50).ConfigureAwait(false);
+                    using var notification = new BinaryBufferWriter();
+                    notification.WriteU64(777);
+                    notification.WriteString("queue://prod/app/tasks");
+                    notification.WriteU64(9);
+                    secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueNotify, notification.WrittenSpan));
+                });
+            }
+        };
+
+        var transportFactoryCalls = 0;
+        Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
+        var connection = new FitzConnection(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            transportFactory);
+        var queue = new QueueClient(connection);
+
+        await connection.ConnectAsync();
+        var subscription = await queue.SubscribeAsync("queue://prod/app/*", (evt, _) =>
+        {
+            var seen = Interlocked.Increment(ref notificationCount);
+            if (seen == 1)
+            {
+                firstNotification.TrySetResult(evt);
+            }
+            else if (seen == 2)
+            {
+                secondNotification.TrySetResult(evt);
+            }
+
+            return ValueTask.CompletedTask;
+        });
+
+        using (var notification = new BinaryBufferWriter())
+        {
+            notification.WriteU64(555);
+            notification.WriteString("queue://prod/app/tasks");
+            notification.WriteU64(3);
+            firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueNotify, notification.WrittenSpan));
+        }
+
+        var initialEvent = await firstNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal((ulong)3, initialEvent.MessageCount);
+
+        firstTransport.QueueClosed();
+
+        var restoredEvent = await secondNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal("queue://prod/app/tasks", restoredEvent.Route);
+        Assert.Equal((ulong)9, restoredEvent.MessageCount);
+
+        await connection.CloseAsync();
     }
 }

@@ -18,6 +18,7 @@ public sealed class FitzConnection
     private readonly Multiplexer _multiplexer = new();
     private readonly FrameParser _frameParser;
     private readonly Dictionary<long, Func<CancellationToken, ValueTask>> _reconnectListeners = new();
+    private readonly Dictionary<long, Action> _disconnectListeners = new();
     private CancellationTokenSource _connectionClosedCts = new();
 
     private ITransport? _transport;
@@ -27,6 +28,7 @@ public sealed class FitzConnection
     private Task? _reconnectTask;
     private bool _closeRequested;
     private long _nextReconnectListenerId;
+    private long _nextDisconnectListenerId;
 
     public FitzConnection(ClientConfig config, Func<ITransport> transportFactory)
     {
@@ -151,10 +153,25 @@ public sealed class FitzConnection
         return new ReconnectRegistration(this, listenerId);
     }
 
+    public IDisposable OnDisconnect(Action listener)
+    {
+        ArgumentNullException.ThrowIfNull(listener);
+
+        long listenerId;
+        lock (_gate)
+        {
+            listenerId = ++_nextDisconnectListenerId;
+            _disconnectListeners[listenerId] = listener;
+        }
+
+        return new DisconnectRegistration(this, listenerId);
+    }
+
     public async Task CloseAsync(CancellationToken cancellationToken = default)
     {
         _closeRequested = true;
         State = ConnectionState.Closed;
+        NotifyDisconnect();
         SignalConnectionClosed();
         _authFailure?.TrySetException(new ConnectionException("Connection closed"));
         _multiplexer.SetDisconnected();
@@ -202,6 +219,7 @@ public sealed class FitzConnection
         _transport = transport;
 
         State = ConnectionState.Connected;
+        _multiplexer.BeginSession();
         StartReceiveLoop();
 
         State = ConnectionState.Authenticating;
@@ -335,6 +353,7 @@ public sealed class FitzConnection
     private async Task HandleConnectionLossAsync(Exception exception)
     {
         SignalConnectionClosed();
+        NotifyDisconnect();
         _multiplexer.SetDisconnected();
 
         if (State == ConnectionState.Authenticating)
@@ -462,11 +481,39 @@ public sealed class FitzConnection
         }
     }
 
+    private void NotifyDisconnect()
+    {
+        Action[] listeners;
+        lock (_gate)
+        {
+            listeners = _disconnectListeners.Values.ToArray();
+        }
+
+        foreach (var listener in listeners)
+        {
+            try
+            {
+                listener();
+            }
+            catch
+            {
+            }
+        }
+    }
+
     private void RemoveReconnectListener(long listenerId)
     {
         lock (_gate)
         {
             _reconnectListeners.Remove(listenerId);
+        }
+    }
+
+    private void RemoveDisconnectListener(long listenerId)
+    {
+        lock (_gate)
+        {
+            _disconnectListeners.Remove(listenerId);
         }
     }
 
@@ -562,6 +609,29 @@ public sealed class FitzConnection
             }
 
             _owner.RemoveReconnectListener(_listenerId);
+        }
+    }
+
+    private sealed class DisconnectRegistration : IDisposable
+    {
+        private readonly FitzConnection _owner;
+        private readonly long _listenerId;
+        private int _disposed;
+
+        internal DisconnectRegistration(FitzConnection owner, long listenerId)
+        {
+            _owner = owner;
+            _listenerId = listenerId;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            _owner.RemoveDisconnectListener(_listenerId);
         }
     }
 }

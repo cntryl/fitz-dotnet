@@ -1,4 +1,5 @@
-﻿using Cntryl.Fitz.Abstractions.Domains.Lease;
+using System.Threading;
+using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
@@ -7,12 +8,19 @@ namespace Cntryl.Fitz.Domains.Lease;
 public sealed class LeaseHandle : ILease
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
+    private readonly IDisposable? _disconnectRegistration;
+    private int _closed;
 
-    internal LeaseHandle(Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request, string route, ulong token)
+    internal LeaseHandle(
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
+        string route,
+        ulong token,
+        Func<Action, IDisposable>? registerOnDisconnect = null)
     {
         _request = request;
         Route = route;
         Token = token;
+        _disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
     }
 
     public string Route { get; }
@@ -21,11 +29,14 @@ public sealed class LeaseHandle : ILease
 
     public Task ExtendAsync(ulong ttlSecs, CancellationToken ct = default)
     {
+        ThrowIfClosed();
         return SendTokenTtlAsync(MessageTypes.LeaseRenew, ttlSecs, "EXTEND", ct);
     }
 
     public async Task ReleaseAsync(CancellationToken ct = default)
     {
+        ThrowIfClosed();
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(Route);
         writer.WriteString(string.Empty);
@@ -49,6 +60,8 @@ public sealed class LeaseHandle : ILease
 
     private async Task SendTokenTtlAsync(ushort messageType, ulong ttlSecs, string operation, CancellationToken ct)
     {
+        ThrowIfClosed();
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(Route);
         writer.WriteString(string.Empty);
@@ -70,5 +83,25 @@ public sealed class LeaseHandle : ILease
                 throw new LeaseException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
             }
         }
+    }
+
+    private void ThrowIfClosed()
+    {
+        if (Volatile.Read(ref _closed) == 0)
+        {
+            return;
+        }
+
+        throw new LeaseException("Lease handle is no longer valid after disconnect", "CLOSED");
+    }
+
+    private void MarkClosed()
+    {
+        if (Interlocked.Exchange(ref _closed, 1) != 0)
+        {
+            return;
+        }
+
+        _disconnectRegistration?.Dispose();
     }
 }

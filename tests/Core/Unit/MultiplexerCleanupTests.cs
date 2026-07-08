@@ -77,6 +77,34 @@ public sealed class MultiplexerCleanupTests
     }
 
     [Fact]
+    public async Task should_not_deliver_stale_response_to_following_request_after_timeout()
+    {
+        var mux = new Multiplexer();
+        mux.SetConnected();
+
+        var timedOutRequest = mux.RequestAsync(
+            108,
+            [0x1],
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromMilliseconds(20)
+        );
+
+        await Assert.ThrowsAnyAsync<RequestTimeoutException>(() => timedOutRequest);
+
+        var followUp = mux.RequestAsync(
+            108,
+            [0x2],
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromSeconds(1)
+        );
+
+        mux.Dispatch(108, [0xAA]);
+        mux.Dispatch(108, [0xBB]);
+
+        Assert.Equal([0xBB], await followUp);
+    }
+
+    [Fact]
     public async Task should_handle_cancellation_before_send()
     {
         var mux = new Multiplexer();

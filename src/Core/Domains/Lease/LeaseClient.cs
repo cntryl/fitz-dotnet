@@ -13,6 +13,7 @@ public sealed class LeaseClient : ILeaseClient
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
+    private readonly Func<Action, IDisposable>? _registerOnDisconnect;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
     private readonly Dictionary<string, LeaseSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -25,7 +26,8 @@ public sealed class LeaseClient : ILeaseClient
     internal LeaseClient(FitzConnection connection)
         : this(
             connection.RequestAsync,
-            connection.RegisterBorrowedNotificationHandler)
+            connection.RegisterBorrowedNotificationHandler,
+            connection.OnDisconnect)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -41,10 +43,12 @@ public sealed class LeaseClient : ILeaseClient
 
     internal LeaseClient(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
-        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null,
+        Func<Action, IDisposable>? registerOnDisconnect = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
+        _registerOnDisconnect = registerOnDisconnect;
     }
 
     public async ValueTask<ILease> AcquireAsync(string route, ulong ttlSecs, CancellationToken ct = default)
@@ -74,7 +78,7 @@ public sealed class LeaseClient : ILeaseClient
                 throw new LeaseException("ACQUIRE response has trailing bytes", "ACQUIRE_INVALID_RESPONSE");
             }
 
-            return new LeaseHandle(_request, route, token);
+            return new LeaseHandle(_request, route, token, _registerOnDisconnect);
         }
 
         if (reader.RemainingBytes < 9)
@@ -94,7 +98,7 @@ public sealed class LeaseClient : ILeaseClient
             throw new LeaseException("ACQUIRE response has trailing bytes", "ACQUIRE_INVALID_RESPONSE");
         }
 
-        return new LeaseHandle(_request, route, fencedToken);
+        return new LeaseHandle(_request, route, fencedToken, _registerOnDisconnect);
     }
 
     public async ValueTask<LeaseInfo> QueryAsync(string route, CancellationToken ct = default)

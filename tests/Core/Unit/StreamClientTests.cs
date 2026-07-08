@@ -1,7 +1,9 @@
 ﻿using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Domains.Stream;
+using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
+using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -185,9 +187,10 @@ public sealed class StreamClientTests
 
             var expectedFilter = new byte[]
             {
-                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x00, 0x00, 0x00, 0x00,
-                0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x00, 0xF1,
+                0x00, 0x00, 0x00, 0x01,
+                0x00,
+                0x00, 0x00, 0x00, 0x0A,
                 (byte)'p', (byte)'r', (byte)'o', (byte)'j', (byte)'.', (byte)'a', (byte)'l', (byte)'p', (byte)'h', (byte)'a',
             };
 
@@ -819,5 +822,207 @@ public sealed class StreamClientTests
 
         var rollbackReader = new BinaryBufferReader(calls[1].Payload);
         Assert.Equal((ulong)44, rollbackReader.ReadU64());
+    }
+
+    [Fact]
+    public async Task should_mark_stream_session_as_closed_after_disconnect()
+    {
+        var transport = new TestQueuedTransport();
+        transport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 2)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 3)
+            {
+                using var beginWriter = new BinaryBufferWriter();
+                beginWriter.WriteU8(0);
+                beginWriter.WriteU8(1);
+                beginWriter.WriteU64(44);
+                transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamBegin, beginWriter.WrittenSpan));
+            }
+        };
+
+        var config = new ClientConfig("ws://localhost:4190/ws", TransportFactory: _ => transport);
+        var connection = new FitzConnection(config, () => transport);
+        var stream = new StreamClient(connection);
+
+        await connection.ConnectAsync();
+        var session = await stream.BeginAsync("stream://prod/app/events");
+
+        await connection.CloseAsync();
+
+        var ex = await Assert.ThrowsAsync<StreamException>(() => session.AppendAsync(12, "entry"u8.ToArray()));
+
+        Assert.Equal("SESSION_CLOSED", ex.Code);
+        Assert.Equal("Stream session already closed", ex.Message);
+    }
+
+    [Fact]
+    public async Task should_mark_stream_session_as_closed_after_reconnect()
+    {
+        var firstTransport = new TestQueuedTransport();
+        var secondTransport = new TestQueuedTransport();
+        var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        firstTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 2)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 3)
+            {
+                using var beginWriter = new BinaryBufferWriter();
+                beginWriter.WriteU8(0);
+                beginWriter.WriteU8(1);
+                beginWriter.WriteU64(44);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamBegin, beginWriter.WrittenSpan));
+            }
+        };
+
+        secondTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount != 2)
+            {
+                return;
+            }
+
+            using var authProbeWriter = new BinaryBufferWriter();
+            authProbeWriter.WriteU8(0);
+            secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            reconnected.TrySetResult();
+        };
+
+        var transportFactoryCalls = 0;
+        Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
+        var connection = new FitzConnection(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            transportFactory);
+        var stream = new StreamClient(connection);
+
+        await connection.ConnectAsync();
+        var session = await stream.BeginAsync("stream://prod/app/events");
+
+        firstTransport.QueueClosed();
+        await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        var ex = await Assert.ThrowsAsync<StreamException>(() => session.AppendAsync(12, "entry"u8.ToArray()));
+
+        Assert.Equal("SESSION_CLOSED", ex.Code);
+        Assert.Equal("Stream session already closed", ex.Message);
+
+        await connection.CloseAsync();
+    }
+
+    [Fact]
+    public async Task should_restore_stream_subscription_after_reconnect()
+    {
+        var firstTransport = new TestQueuedTransport();
+        var secondTransport = new TestQueuedTransport();
+        var firstNotification = new TaskCompletionSource<StreamCommitEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondNotification = new TaskCompletionSource<StreamCommitEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var notificationCount = 0;
+
+        firstTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 2)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 3)
+            {
+                using var subscribeWriter = new BinaryBufferWriter();
+                subscribeWriter.WriteU8(0);
+                subscribeWriter.WriteU8(1);
+                subscribeWriter.WriteU64(555);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamSubscribe, subscribeWriter.WrittenSpan));
+            }
+        };
+
+        secondTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 2)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 3)
+            {
+                using var subscribeWriter = new BinaryBufferWriter();
+                subscribeWriter.WriteU8(0);
+                subscribeWriter.WriteU8(1);
+                subscribeWriter.WriteU64(777);
+                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamSubscribe, subscribeWriter.WrittenSpan));
+
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(50).ConfigureAwait(false);
+                    using var notification = new BinaryBufferWriter();
+                    notification.WriteU64(777);
+                    notification.WriteString("stream://prod/app/events");
+                    var json = System.Text.Encoding.UTF8.GetBytes("{\"event\":\"committed\",\"last_resource_offset\":29}");
+                    notification.WriteU32((uint)json.Length);
+                    notification.WriteBytes(json);
+                    secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamNotify, notification.WrittenSpan));
+                });
+            }
+        };
+
+        var transportFactoryCalls = 0;
+        Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
+        var connection = new FitzConnection(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            transportFactory);
+        var stream = new StreamClient(connection);
+
+        await connection.ConnectAsync();
+        var subscription = await stream.SubscribeAsync("stream://prod/*/*", (evt, _) =>
+        {
+            var seen = Interlocked.Increment(ref notificationCount);
+            if (seen == 1)
+            {
+                firstNotification.TrySetResult(evt);
+            }
+            else if (seen == 2)
+            {
+                secondNotification.TrySetResult(evt);
+            }
+
+            return ValueTask.CompletedTask;
+        });
+
+        using (var notification = new BinaryBufferWriter())
+        {
+            notification.WriteU64(555);
+            notification.WriteString("stream://prod/app/events");
+            var json = System.Text.Encoding.UTF8.GetBytes("{\"event\":\"committed\",\"last_resource_offset\":19}");
+            notification.WriteU32((uint)json.Length);
+            notification.WriteBytes(json);
+            firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamNotify, notification.WrittenSpan));
+        }
+
+        var initialEvent = await firstNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal((ulong)19, initialEvent.CommitOffset);
+
+        firstTransport.QueueClosed();
+
+        var restoredEvent = await secondNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal("stream://prod/app/events", restoredEvent.Route);
+        Assert.Equal((ulong)29, restoredEvent.CommitOffset);
+
+        await connection.CloseAsync();
     }
 }

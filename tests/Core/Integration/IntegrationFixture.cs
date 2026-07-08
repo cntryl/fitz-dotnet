@@ -75,7 +75,7 @@ internal static class IntegrationFixture
                 : Path.GetFullPath(Path.Combine(GetRepositoryRoot(), configured));
         }
 
-        return Path.GetFullPath(Path.Combine(GetRepositoryRoot(), "..", "fitz", "docs", "clients", "cross-language-conformance-suite.yaml"));
+        return Path.GetFullPath(Path.Combine(GetRepositoryRoot(), "..", "..", "fitz", "docs", "clients", "cross-language-conformance-suite.yaml"));
     }
 
     internal static string GetConformanceClientName()

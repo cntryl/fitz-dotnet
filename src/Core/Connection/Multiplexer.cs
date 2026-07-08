@@ -9,18 +9,37 @@ namespace Cntryl.Fitz.Connection;
 public sealed class Multiplexer
 {
     private readonly object _gate = new();
-    private readonly Dictionary<ushort, PendingRequest> _pending = new();
+    private readonly Dictionary<ushort, LinkedList<PendingRequest>> _pending = new();
     private readonly Dictionary<ushort, SemaphoreSlim> _requestLanes = new();
     private readonly Dictionary<ushort, Dictionary<long, NotificationHandler>> _notificationHandlers = new();
     private readonly Dictionary<ushort, int> _optionalResponses = new();
     private ConnectionState _state = ConnectionState.Disconnected;
+    private CancellationTokenSource _laneStateCts = new();
     private long _nextHandlerId;
+
+    /// <summary>
+    /// Resets request-lane state for a new transport session before auth completes.
+    /// </summary>
+    public void BeginSession()
+    {
+        lock (_gate)
+        {
+            if (!_laneStateCts.IsCancellationRequested)
+            {
+                return;
+            }
+
+            _laneStateCts.Dispose();
+            _laneStateCts = new CancellationTokenSource();
+        }
+    }
 
     /// <summary>
     /// Marks the connection as authenticated and ready to dispatch frames.
     /// </summary>
     public void SetConnected()
     {
+        BeginSession();
         lock (_gate)
         {
             _state = ConnectionState.Authenticated;
@@ -32,12 +51,18 @@ public sealed class Multiplexer
     /// </summary>
     public void SetDisconnected()
     {
+        CancellationTokenSource? laneStateCts = null;
         lock (_gate)
         {
             _state = ConnectionState.Disconnected;
             _optionalResponses.Clear();
+            if (!_laneStateCts.IsCancellationRequested)
+            {
+                laneStateCts = _laneStateCts;
+            }
         }
 
+        laneStateCts?.Cancel();
         CancelAll();
     }
 
@@ -85,19 +110,42 @@ public sealed class Multiplexer
     {
         PendingRequest? pending = null;
         NotificationHandler[]? handlers = null;
+        var ignoredOptionalResponse = false;
 
         lock (_gate)
         {
-            if (_pending.TryGetValue(messageType, out pending))
+            if (_pending.TryGetValue(messageType, out var pendingQueue) && pendingQueue.Count > 0)
             {
-                _pending.Remove(messageType);
+                pending = FindPendingRequestByPayload(pendingQueue, payload);
+                if (ShouldConsumeOptionalResponse(messageType, pending))
+                {
+                    ignoredOptionalResponse = true;
+                }
+                else if (pending is null)
+                {
+                    if (_notificationHandlers.TryGetValue(messageType, out var registeredHandlers) && registeredHandlers.Count > 0)
+                    {
+                        handlers = new NotificationHandler[registeredHandlers.Count];
+                        registeredHandlers.Values.CopyTo(handlers, 0);
+                    }
+                }
+                else
+                {
+                    pendingQueue.Remove(pending.QueueNode!);
+                    if (pendingQueue.Count == 0)
+                    {
+                        _pending.Remove(messageType);
+                    }
+                }
             }
-            else if (_notificationHandlers.TryGetValue(messageType, out var registeredHandlers) && registeredHandlers.Count > 0)
+
+            if (pending is null && handlers is null && _notificationHandlers.TryGetValue(messageType, out var registeredHandlersNoPending) && registeredHandlersNoPending.Count > 0)
             {
-                handlers = new NotificationHandler[registeredHandlers.Count];
-                registeredHandlers.Values.CopyTo(handlers, 0);
+                handlers = new NotificationHandler[registeredHandlersNoPending.Count];
+                registeredHandlersNoPending.Values.CopyTo(handlers, 0);
             }
-            else
+
+            if (pending is null && handlers is null)
             {
                 var optional = _optionalResponses.GetValueOrDefault(messageType);
                 if (optional > 0)
@@ -119,6 +167,11 @@ public sealed class Multiplexer
                     return;
                 }
             }
+        }
+
+        if (ignoredOptionalResponse)
+        {
+            return;
         }
 
         if (pending is not null)
@@ -189,13 +242,31 @@ public sealed class Multiplexer
         byte[] frameData,
         Func<ReadOnlyMemory<byte>, CancellationToken, Task> send,
         TimeSpan timeout,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Func<ReadOnlyMemory<byte>, bool>? responseMatcher = null)
     {
-        var lane = GetLane(messageType);
-        await lane.WaitAsync(cancellationToken).ConfigureAwait(false);
+        SemaphoreSlim? lane = null;
+        CancellationTokenSource? laneWaitCts = null;
+        if (responseMatcher is null)
+        {
+            lane = GetLane(messageType);
+            laneWaitCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, GetLaneWaitToken());
+            try
+            {
+                await lane.WaitAsync(laneWaitCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException)
+            {
+                throw new ConnectionException("Connection closed or reset");
+            }
+        }
 
         var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var request = new PendingRequest(this, messageType, timeout, cancellationToken, tcs);
+        var request = new PendingRequest(this, messageType, timeout, cancellationToken, tcs, responseMatcher);
 
         using var timeoutCts = timeout == Timeout.InfiniteTimeSpan ? null : new CancellationTokenSource(timeout);
         using var cancellationRegistration = cancellationToken.CanBeCanceled
@@ -203,29 +274,36 @@ public sealed class Multiplexer
             : default;
         using var timeoutRegistration = timeoutCts?.Token.Register(static state => ((PendingRequest)state!).Timeout(), request) ?? default;
 
-        lock (_gate)
-        {
-            if (_pending.ContainsKey(messageType))
-            {
-                throw new InvalidOperationException($"A request is already pending for message type {messageType}.");
-            }
-
-            _pending[messageType] = request;
-        }
-
         try
         {
+            lock (_gate)
+            {
+                if (_laneStateCts.IsCancellationRequested)
+                {
+                    throw new ConnectionException("Connection closed or reset");
+                }
+
+                if (!_pending.TryGetValue(messageType, out var pendingQueue))
+                {
+                    pendingQueue = new LinkedList<PendingRequest>();
+                    _pending[messageType] = pendingQueue;
+                }
+
+                request.QueueNode = pendingQueue.AddLast(request);
+            }
+
             await send(frameData, cancellationToken).ConfigureAwait(false);
             return await tcs.Task.ConfigureAwait(false);
         }
         catch
         {
-            RemovePending(messageType, request);
+            request.MarkCanceledAndFail(new ConnectionException("Request was canceled before sending a frame"));
             throw;
         }
         finally
         {
-            lane.Release();
+            laneWaitCts?.Dispose();
+            lane?.Release();
         }
     }
 
@@ -237,14 +315,46 @@ public sealed class Multiplexer
         PendingRequest[] pending;
         lock (_gate)
         {
-            pending = new PendingRequest[_pending.Count];
-            _pending.Values.CopyTo(pending, 0);
+            pending = _pending
+                .SelectMany(pair => pair.Value)
+                .ToArray();
             _pending.Clear();
         }
 
         foreach (var request in pending)
         {
             request.Promise.TrySetException(new ConnectionException("Connection closed or reset"));
+        }
+    }
+
+    private void RemoveRequest(PendingRequest request)
+    {
+        lock (_gate)
+        {
+            if (request.MessageType == 0)
+            {
+                return;
+            }
+
+            if (_pending.TryGetValue(request.MessageType, out var queue))
+            {
+                if (request.QueueNode is not null)
+                {
+                    if (request.QueueNode.List == queue)
+                    {
+                        queue.Remove(request.QueueNode);
+                    }
+
+                    request.QueueNode = null;
+                }
+
+                if (queue.Count == 0)
+                {
+                    _pending.Remove(request.MessageType);
+                }
+            }
+
+            request.QueueNode = null;
         }
     }
 
@@ -263,14 +373,52 @@ public sealed class Multiplexer
         }
     }
 
+    private CancellationToken GetLaneWaitToken()
+    {
+        lock (_gate)
+        {
+            return _laneStateCts.Token;
+        }
+    }
+
+    private bool ShouldConsumeOptionalResponse(ushort messageType, PendingRequest? pending)
+    {
+        if (pending is not null && pending.IsCorrelated)
+        {
+            return false;
+        }
+
+        var optional = _optionalResponses.GetValueOrDefault(messageType);
+        if (optional <= 0)
+        {
+            return false;
+        }
+
+        if (optional == 1)
+        {
+            _optionalResponses.Remove(messageType);
+        }
+        else
+        {
+            _optionalResponses[messageType] = optional - 1;
+        }
+
+        return true;
+    }
+
+    private void MarkOptionalResponse(ushort messageType)
+    {
+        lock (_gate)
+        {
+            _optionalResponses[messageType] = _optionalResponses.GetValueOrDefault(messageType) + 1;
+        }
+    }
+
     private void RemovePending(ushort messageType, PendingRequest request)
     {
         lock (_gate)
         {
-            if (_pending.TryGetValue(messageType, out var existing) && ReferenceEquals(existing, request))
-            {
-                _pending.Remove(messageType);
-            }
+            RemoveRequest(request);
         }
     }
 
@@ -297,34 +445,104 @@ public sealed class Multiplexer
         private readonly ushort _messageType;
         private readonly TimeSpan _timeout;
         private readonly CancellationToken _cancellationToken;
+        private readonly Func<ReadOnlyMemory<byte>, bool>? _responseMatcher;
 
         internal PendingRequest(
             Multiplexer owner,
             ushort messageType,
             TimeSpan timeout,
             CancellationToken cancellationToken,
-            TaskCompletionSource<byte[]> promise)
+            TaskCompletionSource<byte[]> promise,
+            Func<ReadOnlyMemory<byte>, bool>? responseMatcher = null)
         {
             _owner = owner;
             _messageType = messageType;
             _timeout = timeout;
             _cancellationToken = cancellationToken;
+            _responseMatcher = responseMatcher;
             Promise = promise;
         }
 
+        internal LinkedListNode<PendingRequest>? QueueNode { get; set; }
+
+        internal ushort MessageType => _messageType;
+
         internal TaskCompletionSource<byte[]> Promise { get; }
+
+        internal bool MatchesResponse(ReadOnlyMemory<byte> payload)
+        {
+            if (_responseMatcher is null)
+            {
+                return false;
+            }
+
+            try
+            {
+                return _responseMatcher(payload);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        internal bool IsCorrelated => _responseMatcher is not null;
 
         internal void Cancel()
         {
-            _owner.RemovePending(_messageType, this);
+            _owner.RemoveRequest(this);
             Promise.TrySetCanceled(_cancellationToken);
         }
 
         internal void Timeout()
         {
-            _owner.RemovePending(_messageType, this);
+            if (!IsCorrelated)
+            {
+                _owner.MarkOptionalResponse(_messageType);
+            }
+
+            _owner.RemoveRequest(this);
             Promise.TrySetException(new RequestTimeoutException($"Request timeout for message type {_messageType} after {_timeout.TotalMilliseconds}ms"));
         }
+
+        internal void MarkCanceledAndFail(Exception failure)
+        {
+            _owner.RemoveRequest(this);
+            Promise.TrySetException(failure);
+        }
+    }
+
+    private static PendingRequest? FindPendingRequestByPayload(
+        LinkedList<PendingRequest> pendingQueue,
+        ReadOnlyMemory<byte> payload)
+    {
+        if (pendingQueue.Count <= 0)
+        {
+            return null;
+        }
+
+        if (!pendingQueue.Any(pending => pending.IsCorrelated))
+        {
+            return pendingQueue.First!.Value;
+        }
+
+        PendingRequest? firstUncorrelated = null;
+        for (var candidateNode = pendingQueue.First; candidateNode is not null; candidateNode = candidateNode.Next)
+        {
+            var candidate = candidateNode.Value;
+            if (!candidate.IsCorrelated)
+            {
+                firstUncorrelated ??= candidate;
+                continue;
+            }
+
+            if (candidate.MatchesResponse(payload))
+            {
+                return candidate;
+            }
+        }
+
+        return firstUncorrelated;
     }
 
     private readonly struct NotificationHandler

@@ -17,13 +17,13 @@ internal static class StreamWireHelpers
             return Array.Empty<byte>();
         }
 
-        using var stream = new MemoryStream();
-        using var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
-
-        writer.Write((ulong)filter.Clauses.Count);
+        using var writer = new BinaryBufferWriter();
+        writer.WriteU8(0);
+        writer.WriteU8(0xF1);
+        writer.WriteU32((uint)filter.Clauses.Count);
         foreach (var clause in filter.Clauses)
         {
-            writer.Write((uint)clause.Kind);
+            writer.WriteU8((byte)clause.Kind);
             switch (clause.Kind)
             {
                 case StreamFilterClauseKind.Equals:
@@ -32,7 +32,7 @@ internal static class StreamWireHelpers
                     WriteBincodeString(writer, clause.Value ?? string.Empty);
                     break;
                 case StreamFilterClauseKind.AnyOf:
-                    writer.Write((ulong)clause.Values.Count);
+                    writer.WriteU32((uint)clause.Values.Count);
                     foreach (var value in clause.Values)
                     {
                         WriteBincodeString(writer, value);
@@ -42,8 +42,7 @@ internal static class StreamWireHelpers
             }
         }
 
-        writer.Flush();
-        return stream.ToArray();
+        return writer.Build();
     }
 
     internal static void EnsureSuccessStatusOnly(ReadOnlyMemory<byte> response, string operation)
@@ -365,11 +364,11 @@ internal static class StreamWireHelpers
         return 0;
     }
 
-    private static void WriteBincodeString(BinaryWriter writer, string value)
+    private static void WriteBincodeString(BinaryBufferWriter writer, string value)
     {
         var bytes = Encoding.UTF8.GetBytes(value);
-        writer.Write((ulong)bytes.Length);
-        writer.Write(bytes);
+        writer.WriteU32((uint)bytes.Length);
+        writer.WriteBytes(bytes);
     }
 
     private static void ReadSuccessStatus(BinaryBufferReader reader, string operation)

@@ -13,6 +13,7 @@ public sealed class StreamClient : IStreamClient
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
+    private readonly Func<Action, IDisposable>? _registerOnDisconnect;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
     private readonly Dictionary<string, StreamSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -23,7 +24,7 @@ public sealed class StreamClient : IStreamClient
     private readonly IDisposable? _reconnectRegistration;
 
     internal StreamClient(FitzConnection connection)
-        : this(connection.RequestAsync, connection.RegisterBorrowedNotificationHandler)
+        : this(connection.RequestAsync, connection.RegisterBorrowedNotificationHandler, connection.OnDisconnect)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -39,10 +40,12 @@ public sealed class StreamClient : IStreamClient
 
     internal StreamClient(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
-        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null,
+        Func<Action, IDisposable>? registerOnDisconnect = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
+        _registerOnDisconnect = registerOnDisconnect;
     }
 
     public async Task<IStreamSession> BeginAsync(string route, ReadOnlyMemory<byte>? ingestMetadata = null, CancellationToken ct = default)
@@ -63,7 +66,7 @@ public sealed class StreamClient : IStreamClient
         }
 
         var response = await _request(MessageTypes.StreamBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
-        return new StreamSession(_request, StreamWireHelpers.ReadExpectedSessionId(response, "BEGIN", "MISSING_SESSION_ID"));
+        return new StreamSession(_request, StreamWireHelpers.ReadExpectedSessionId(response, "BEGIN", "MISSING_SESSION_ID"), _registerOnDisconnect);
     }
 
     public async IAsyncEnumerable<StreamRecord> ReadAsync(

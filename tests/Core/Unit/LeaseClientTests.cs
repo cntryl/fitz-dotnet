@@ -1,7 +1,9 @@
 ﻿using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Domains.Lease;
 using Cntryl.Fitz.Errors;
+using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Protocol;
+using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -259,5 +261,202 @@ public sealed class LeaseClientTests
         Assert.Equal(MessageTypes.LeaseAcquire, seenMessageType);
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("lease://prod/app/*", reader.ReadString());
+    }
+
+    [Fact]
+    public async Task should_mark_lease_as_closed_after_disconnect()
+    {
+        // Arrange
+        var transport = new TestQueuedTransport();
+        transport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 2)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 3)
+            {
+                using var acquireWriter = new BinaryBufferWriter();
+                acquireWriter.WriteU8(0);
+                acquireWriter.WriteU8(1);
+                acquireWriter.WriteU64(77);
+                transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseAcquire, acquireWriter.WrittenSpan));
+            }
+        };
+
+        var config = new ClientConfig("ws://localhost:4190/ws", TransportFactory: _ => transport);
+        var connection = new FitzConnection(config, () => transport);
+        var leaseClient = new LeaseClient(connection);
+
+        await connection.ConnectAsync();
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+
+        await connection.CloseAsync();
+
+        var ex = await Assert.ThrowsAsync<LeaseException>(() => lease.ExtendAsync(60));
+
+        // Assert
+        Assert.Equal("CLOSED", ex.Code);
+        Assert.Equal("Lease handle is no longer valid after disconnect", ex.Message);
+    }
+
+    [Fact]
+    public async Task should_mark_lease_as_closed_after_reconnect()
+    {
+        var firstTransport = new TestQueuedTransport();
+        var secondTransport = new TestQueuedTransport();
+        var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        firstTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 2)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 3)
+            {
+                using var acquireWriter = new BinaryBufferWriter();
+                acquireWriter.WriteU8(0);
+                acquireWriter.WriteU8(1);
+                acquireWriter.WriteU64(77);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseAcquire, acquireWriter.WrittenSpan));
+            }
+        };
+
+        secondTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount != 2)
+            {
+                return;
+            }
+
+            using var authProbeWriter = new BinaryBufferWriter();
+            authProbeWriter.WriteU8(0);
+            secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            reconnected.TrySetResult();
+        };
+
+        var transportFactoryCalls = 0;
+        Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
+        var connection = new FitzConnection(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            transportFactory);
+        var leaseClient = new LeaseClient(connection);
+
+        await connection.ConnectAsync();
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+
+        firstTransport.QueueClosed();
+        await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        var ex = await Assert.ThrowsAsync<LeaseException>(() => lease.ExtendAsync(60));
+
+        Assert.Equal("CLOSED", ex.Code);
+        Assert.Equal("Lease handle is no longer valid after disconnect", ex.Message);
+
+        await connection.CloseAsync();
+    }
+
+    [Fact]
+    public async Task should_restore_lease_subscription_after_reconnect()
+    {
+        var firstTransport = new TestQueuedTransport();
+        var secondTransport = new TestQueuedTransport();
+        var firstNotification = new TaskCompletionSource<LeaseChangeEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondNotification = new TaskCompletionSource<LeaseChangeEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var notificationCount = 0;
+
+        firstTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 2)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 3)
+            {
+                using var subscribeWriter = new BinaryBufferWriter();
+                subscribeWriter.WriteU8(0);
+                subscribeWriter.WriteU8(1);
+                subscribeWriter.WriteU64(555);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseSubscribe, subscribeWriter.WrittenSpan));
+            }
+        };
+
+        secondTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 2)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 3)
+            {
+                using var subscribeWriter = new BinaryBufferWriter();
+                subscribeWriter.WriteU8(0);
+                subscribeWriter.WriteU8(1);
+                subscribeWriter.WriteU64(777);
+                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseSubscribe, subscribeWriter.WrittenSpan));
+
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(50).ConfigureAwait(false);
+                    using var notification = new BinaryBufferWriter();
+                    notification.WriteU64(777);
+                    notification.WriteString("lease://prod/app/lock");
+                    secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseNotify, notification.WrittenSpan));
+                });
+            }
+        };
+
+        var transportFactoryCalls = 0;
+        Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
+        var connection = new FitzConnection(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            transportFactory);
+        var leaseClient = new LeaseClient(connection);
+
+        await connection.ConnectAsync();
+        var subscription = await leaseClient.SubscribeAsync("lease://prod/app/lock", (evt, _) =>
+        {
+            var seen = Interlocked.Increment(ref notificationCount);
+            if (seen == 1)
+            {
+                firstNotification.TrySetResult(evt);
+            }
+            else if (seen == 2)
+            {
+                secondNotification.TrySetResult(evt);
+            }
+
+            return ValueTask.CompletedTask;
+        });
+
+        using (var notification = new BinaryBufferWriter())
+        {
+            notification.WriteU64(555);
+            notification.WriteString("lease://prod/app/lock");
+            firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseNotify, notification.WrittenSpan));
+        }
+
+        var initialEvent = await firstNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal("lease://prod/app/lock", initialEvent.Route);
+
+        firstTransport.QueueClosed();
+
+        var restoredEvent = await secondNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal("lease://prod/app/lock", restoredEvent.Route);
+
+        await connection.CloseAsync();
     }
 }
