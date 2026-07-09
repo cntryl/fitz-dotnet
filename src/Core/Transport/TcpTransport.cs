@@ -9,17 +9,19 @@ public sealed class TcpTransport : ITransport
     private readonly Uri _uri;
     private readonly TimeSpan _timeout;
     private readonly int _maxFrameSize;
+    private readonly HeartbeatOptions _heartbeat;
     private readonly byte[] _receiveHeaderBuffer = new byte[4];
     private readonly byte[] _sendHeaderBuffer = new byte[4];
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private TcpClient? _client;
     private NetworkStream? _stream;
 
-    public TcpTransport(string url, TimeSpan timeout, int maxFrameSize)
+    public TcpTransport(string url, TimeSpan timeout, int maxFrameSize, HeartbeatOptions? heartbeat = null)
     {
         _uri = CreateUri(url);
         _timeout = timeout;
         _maxFrameSize = maxFrameSize;
+        _heartbeat = heartbeat ?? new HeartbeatOptions();
     }
 
     public string Url => _uri.ToString();
@@ -42,6 +44,10 @@ public sealed class TcpTransport : ITransport
             : default;
 
         await client.ConnectAsync(_uri.Host, _uri.Port, timeoutCts.Token).ConfigureAwait(false);
+        if (_heartbeat.Enabled)
+        {
+            client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+        }
 
         _client = client;
         _stream = client.GetStream();

@@ -13,6 +13,7 @@ public sealed class QueueClient : IQueueClient
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
+    private readonly Func<Func<CancellationToken, ValueTask>, bool>? _dispatchAsyncHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
     private readonly Dictionary<string, QueueSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -27,7 +28,8 @@ public sealed class QueueClient : IQueueClient
         : this(
             connection.RequestAsync,
             connection.RegisterBorrowedNotificationHandler,
-            connection.OnDisconnect)
+            connection.OnDisconnect,
+            connection.TryDispatchAsyncHandler)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -44,11 +46,13 @@ public sealed class QueueClient : IQueueClient
     internal QueueClient(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
         Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null,
-        Func<Action, IDisposable>? registerOnDisconnect = null)
+        Func<Action, IDisposable>? registerOnDisconnect = null,
+        Func<Func<CancellationToken, ValueTask>, bool>? dispatchAsyncHandler = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
         _registerOnDisconnect = registerOnDisconnect;
+        _dispatchAsyncHandler = dispatchAsyncHandler;
     }
 
     public async ValueTask<ulong> EnqueueAsync(
@@ -215,7 +219,7 @@ public sealed class QueueClient : IQueueClient
             {
                 existingSubscription.Registrations[handleId] = registration;
                 var existingHandle = CreateSubscription(pattern, handleId);
-                SubscriptionPump.Start(registration, handler);
+                SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
                 return existingHandle;
             }
 
@@ -226,7 +230,7 @@ public sealed class QueueClient : IQueueClient
             _patternsBySubscriptionId[subscriptionId] = pattern;
 
             var handle = CreateSubscription(pattern, handleId);
-            SubscriptionPump.Start(registration, handler);
+            SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
             return handle;
         }
         catch

@@ -44,13 +44,29 @@ public sealed class ClientTests
     }
 
     [Fact]
+    public void should_default_transport_to_auto_and_infer_websocket_and_tcp_urls()
+    {
+        var websocket = new ClientConfig("ws://localhost:4190/ws");
+        var tcp = new ClientConfig("localhost:4191");
+
+        Assert.Equal(ClientTransport.Auto, websocket.TransportKind);
+        Assert.Equal(ClientTransport.WebSocket, websocket.ResolvedTransportKind);
+        Assert.Equal(ClientTransport.Auto, tcp.TransportKind);
+        Assert.Equal(ClientTransport.Tcp, tcp.ResolvedTransportKind);
+        Assert.Equal(1024, websocket.MaxRequestQueueSize);
+        Assert.True(websocket.ResolvedReconnect.Enabled);
+        Assert.True(websocket.ResolvedRetry.Enabled);
+        Assert.True(websocket.ResolvedHeartbeat.Enabled);
+    }
+
+    [Fact]
     public async Task should_set_connected_state_given_valid_transport_when_connecting()
     {
         // Arrange
         var transport = new QueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
-            if (sentFrameCount != 2)
+            if (sentFrameCount != 1)
             {
                 return;
             }
@@ -73,15 +89,10 @@ public sealed class ClientTests
         // Assert
         Assert.Equal(ConnectionState.Authenticated, client.State);
         Assert.True(client.IsConnected);
-        Assert.Equal(2, transport.SentFrames.Count);
+        Assert.Single(transport.SentFrames);
         var frame = FrameCodec.Decode(transport.SentFrames[0]);
         Assert.Equal(MessageTypes.Connect, frame.MessageType);
         Assert.Equal("token-123", System.Text.Encoding.UTF8.GetString(frame.Payload.Span));
-
-        var probeFrame = FrameCodec.Decode(transport.SentFrames[1]);
-        Assert.Equal(MessageTypes.LeaseQuery, probeFrame.MessageType);
-        var probeReader = new BinaryBufferReader(probeFrame.Payload.ToArray());
-        Assert.Equal("lease://fitz/system/auth-probe", probeReader.ReadString());
     }
 
     [Fact]
@@ -128,13 +139,109 @@ public sealed class ClientTests
     }
 
     [Fact]
+    public async Task should_retry_startup_transport_failures_given_connect_when_ready()
+    {
+        var attempts = 0;
+        await using var client = new Client(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                Timeout: TimeSpan.FromMilliseconds(100),
+                AuthSettleDelay: TimeSpan.Zero,
+                TransportFactory: _ =>
+                {
+                    attempts++;
+                    return attempts < 2
+                        ? new FailingConnectTransport(new IOException("dial failed"))
+                        : new IdleTransport();
+                }));
+
+        await client.ConnectWhenReadyAsync(new ConnectWhenReadyOptions(
+            Timeout: TimeSpan.FromMilliseconds(1000),
+            Backoff: TimeSpan.FromMilliseconds(1),
+            MaxBackoff: TimeSpan.FromMilliseconds(1)));
+
+        Assert.Equal(2, attempts);
+        Assert.True(client.IsConnected);
+    }
+
+    [Fact]
+    public async Task should_not_retry_authentication_failures_given_connect_when_ready()
+    {
+        var attempts = 0;
+        await using var client = new Client(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                AuthSettleDelay: TimeSpan.FromMilliseconds(200),
+                TransportFactory: _ =>
+                {
+                    attempts++;
+                    return new FakeTransport(_ => new ValueTask<PooledFrame>(PooledFrame.Closed));
+                }));
+
+        await Assert.ThrowsAsync<AuthenticationException>(() =>
+            client.ConnectWhenReadyAsync(new ConnectWhenReadyOptions(
+                Timeout: TimeSpan.FromMilliseconds(250),
+                Backoff: TimeSpan.FromMilliseconds(1),
+                MaxBackoff: TimeSpan.FromMilliseconds(1))));
+
+        Assert.Equal(1, attempts);
+    }
+
+    [Fact]
+    public async Task should_timeout_given_connect_when_ready_total_deadline_expires()
+    {
+        var attempts = 0;
+        await using var client = new Client(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                TransportFactory: _ =>
+                {
+                    attempts++;
+                    return new FailingConnectTransport(new IOException("dial failed"));
+                }));
+
+        await Assert.ThrowsAsync<TimeoutException>(() =>
+            client.ConnectWhenReadyAsync(new ConnectWhenReadyOptions(
+                Timeout: TimeSpan.FromMilliseconds(50),
+                Backoff: TimeSpan.FromMilliseconds(1),
+                MaxBackoff: TimeSpan.FromMilliseconds(1))));
+
+        Assert.True(attempts >= 1);
+    }
+
+    [Fact]
+    public async Task should_coalesce_concurrent_connect_calls_onto_one_inflight_attempt()
+    {
+        var releaseConnect = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        await using var client = new Client(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                TransportFactory: _ =>
+                {
+                    attempts++;
+                    return new BlockingConnectTransport(releaseConnect.Task);
+                }));
+
+        var first = client.ConnectAsync();
+        var second = client.ConnectAsync();
+        await Task.Delay(25);
+
+        Assert.Equal(1, attempts);
+
+        releaseConnect.TrySetResult();
+        await Task.WhenAll(first, second);
+        Assert.True(client.IsConnected);
+    }
+
+    [Fact]
     public async Task should_not_reconnect_given_close_during_reconnect_backoff()
     {
         var releaseFirstReceive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var firstTransport = new QueuedTransport();
         firstTransport.AfterSend = sentFrameCount =>
         {
-            if (sentFrameCount != 2)
+            if (sentFrameCount != 1)
             {
                 return;
             }
@@ -178,7 +285,7 @@ public sealed class ClientTests
         var transport = new QueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
-            if (sentFrameCount != 2)
+            if (sentFrameCount != 1)
             {
                 return;
             }
@@ -211,7 +318,7 @@ public sealed class ClientTests
         var transport = new QueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
-            if (sentFrameCount != 2)
+            if (sentFrameCount != 1)
             {
                 return;
             }
@@ -233,22 +340,60 @@ public sealed class ClientTests
         await connection.ConnectAsync();
 
         var firstRequest = connection.RequestAsync(77, "first"u8.ToArray());
-        await WaitForConditionAsync(() => transport.SentFrames.Count == 3, TimeSpan.FromSeconds(1));
+        await WaitForConditionAsync(() => transport.SentFrames.Count == 2, TimeSpan.FromSeconds(1));
 
         var secondRequest = connection.RequestAsync(77, "second"u8.ToArray());
 
         await Task.Delay(50);
         Assert.False(secondRequest.IsCompleted);
-        Assert.Equal(3, transport.SentFrames.Count);
+        Assert.Equal(2, transport.SentFrames.Count);
 
         transport.QueueIncomingFrame(FrameCodec.Encode(77, "ok"u8));
         Assert.Equal("ok", System.Text.Encoding.UTF8.GetString((await firstRequest).Span));
 
-        await WaitForConditionAsync(() => transport.SentFrames.Count == 4, TimeSpan.FromSeconds(1));
+        await WaitForConditionAsync(() => transport.SentFrames.Count == 3, TimeSpan.FromSeconds(1));
         transport.QueueIncomingFrame(FrameCodec.Encode(77, "done"u8));
         Assert.Equal("done", System.Text.Encoding.UTF8.GetString((await secondRequest).Span));
 
         await connection.CloseAsync();
+    }
+
+    [Fact]
+    public async Task should_throw_request_queue_full_given_waiter_limit_reached()
+    {
+        var transport = new QueuedTransport();
+        var connection = new FitzConnection(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                AuthSettleDelay: TimeSpan.Zero,
+                MaxInFlightRequests: 1,
+                MaxRequestQueueSize: 1),
+            () => transport);
+        try
+        {
+            await connection.ConnectAsync();
+
+            var first = connection.RequestAsync(88, "first"u8.ToArray());
+            await WaitForConditionAsync(() => transport.SentFrames.Count == 2, TimeSpan.FromSeconds(1));
+
+            var second = connection.RequestAsync(88, "second"u8.ToArray());
+            await Task.Delay(25);
+            Assert.False(second.IsCompleted);
+
+            var ex = await Assert.ThrowsAsync<RequestQueueFullException>(() =>
+                connection.RequestAsync(88, "third"u8.ToArray()).AsTask());
+
+            Assert.Contains("queue", ex.Message, StringComparison.OrdinalIgnoreCase);
+
+            transport.QueueIncomingFrame(FrameCodec.Encode(88, "ok"u8));
+            await WaitForConditionAsync(() => transport.SentFrames.Count == 3, TimeSpan.FromSeconds(1));
+            transport.QueueIncomingFrame(FrameCodec.Encode(88, "done"u8));
+            await Task.WhenAll(first.AsTask(), second.AsTask());
+        }
+        finally
+        {
+            await connection.CloseAsync();
+        }
     }
 
     [Fact]
@@ -257,7 +402,7 @@ public sealed class ClientTests
         var transport = new QueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
-            if (sentFrameCount != 2)
+            if (sentFrameCount != 1)
             {
                 return;
             }
@@ -352,6 +497,122 @@ public sealed class ClientTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return _receive(cancellationToken);
+        }
+
+        public Task CloseAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class FailingConnectTransport : ITransport
+    {
+        private readonly Exception _exception;
+
+        public FailingConnectTransport(Exception exception)
+        {
+            _exception = exception;
+        }
+
+        public string Url => "ws://failing";
+
+        public Task ConnectAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromException(_exception);
+        }
+
+        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return new ValueTask<PooledFrame>(PooledFrame.Closed);
+        }
+
+        public Task CloseAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class IdleTransport : ITransport
+    {
+        public string Url => "ws://idle";
+
+        public Task ConnectAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            return PooledFrame.Closed;
+        }
+
+        public Task CloseAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private sealed class BlockingConnectTransport : ITransport
+    {
+        private readonly Task _connectSignal;
+
+        public BlockingConnectTransport(Task connectSignal)
+        {
+            _connectSignal = connectSignal;
+        }
+
+        public string Url => "ws://blocking";
+
+        public async Task ConnectAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await _connectSignal.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            return PooledFrame.Closed;
         }
 
         public Task CloseAsync(CancellationToken cancellationToken = default)

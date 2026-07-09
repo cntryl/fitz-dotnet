@@ -1,7 +1,9 @@
 ﻿using Cntryl.Fitz.Abstractions.Domains.Kv;
+using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Domains.Kv;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
+using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -253,5 +255,65 @@ public sealed class KvClientTests
         Assert.Equal("INVALID_ROUTE", ex.Code);
         Assert.Contains("must be kv://{realm}/{area}/{resource}", ex.Message, StringComparison.Ordinal);
         Assert.Equal(0, requestCount);
+    }
+
+    [Fact]
+    public async Task should_mark_transaction_as_closed_after_reconnect()
+    {
+        var firstTransport = new TestQueuedTransport();
+        var secondTransport = new TestQueuedTransport();
+        var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        firstTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 1)
+            {
+                using var authWriter = new BinaryBufferWriter();
+                authWriter.WriteU8(0);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 2)
+            {
+                using var beginWriter = new BinaryBufferWriter();
+                beginWriter.WriteU8(0);
+                beginWriter.WriteU64(77);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.KvBegin, beginWriter.WrittenSpan));
+            }
+        };
+
+        secondTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount != 1)
+            {
+                return;
+            }
+
+            using var authWriter = new BinaryBufferWriter();
+            authWriter.WriteU8(0);
+            secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authWriter.WrittenSpan));
+            reconnected.TrySetResult();
+        };
+
+        var transportFactoryCalls = 0;
+        Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
+        var connection = new FitzConnection(
+            new ClientConfig(
+                "ws://localhost:4190/ws",
+                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            transportFactory);
+        var kv = new KvClient(connection);
+
+        await connection.ConnectAsync();
+        var tx = await kv.BeginAsync("kv://prod/app/users");
+
+        firstTransport.QueueClosed();
+        await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        var ex = await Assert.ThrowsAsync<KvException>(() => tx.GetAsync("user:1"u8.ToArray()));
+
+        Assert.Equal("TX_CLOSED", ex.Code);
+        Assert.Equal("Transaction is no longer valid after disconnect", ex.Message);
+
+        await connection.CloseAsync();
     }
 }

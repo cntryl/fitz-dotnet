@@ -24,8 +24,8 @@ public sealed partial class ConformanceSmokeTests
 
         Assert.Equal(17, aggregate.Scenarios.Count);
         Assert.Equal(config.ClientName, aggregate.Client);
-        Assert.Equal(config.Transport, aggregate.Summary.Transport);
-        Assert.Equal(config.AuthMode, aggregate.Summary.AuthMode);
+        Assert.Equal(config.Transport, aggregate.Transport);
+        Assert.Equal(config.AuthMode, aggregate.AuthMode);
         Assert.True(File.Exists(config.OutputPath));
     }
 
@@ -456,34 +456,184 @@ public sealed partial class ConformanceSmokeTests
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var evidence = new List<string>();
+        var disconnectObserved = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reconnectObserved = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lifecycleEvents = new List<string>();
+        var lifecycleGate = new object();
+        var reconnect = new ReconnectOptions(true, MaxAttempts: 20, Backoff: TimeSpan.FromMilliseconds(100), MaxBackoff: TimeSpan.FromMilliseconds(500));
+        var observability = new FitzObservabilityOptions(
+            OnLifecycleEvent: evt =>
+            {
+                lock (lifecycleGate)
+                {
+                    lifecycleEvents.Add(evt.Event);
+                }
+
+                if (string.Equals(evt.Event, "connection_lost", StringComparison.Ordinal))
+                {
+                    disconnectObserved.TrySetResult(true);
+                }
+
+                if (string.Equals(evt.Event, "reconnect_succeeded", StringComparison.Ordinal))
+                {
+                    reconnectObserved.TrySetResult(true);
+                }
+            });
+        await using var client = IntegrationFixture.CreateClientForMode(
+            transport,
+            authMode,
+            timeout: TimeSpan.FromSeconds(5),
+            reconnect: reconnect,
+            observability: observability);
+        await using var responderClient = IntegrationFixture.CreateClientForMode(
+            transport,
+            authMode,
+            timeout: TimeSpan.FromSeconds(5),
+            reconnect: new ReconnectOptions(false));
+        var releasePendingCall = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        RpcWorkerRegistration? restoredWorker = null;
+        RpcWorkerRegistration? responderWorker = null;
+        Client? verifierClient = null;
 
         try
         {
-            await using var client = IntegrationFixture.CreateClientForMode(
+            await client.ConnectAsync();
+            await responderClient.ConnectAsync();
+            evidence.Add("client connected with reconnect enabled");
+            evidence.Add("responder client connected");
+
+            var kvRoute = IntegrationFixture.CreateUniqueRoute("kv");
+            var kvTransaction = await client.Kv().BeginAsync(kvRoute);
+
+            var queueRoute = IntegrationFixture.CreateUniqueRoute("queue");
+            await client.Queue().EnqueueAsync(queueRoute, "queued-before-reconnect"u8.ToArray());
+            var reservedItems = await client.Queue().ReserveAsync(queueRoute, leaseSeconds: 30, batchSize: 1);
+            var reservedItem = Assert.Single(reservedItems);
+
+            var leaseRoute = IntegrationFixture.CreateUniqueRoute("lease");
+            var lease = await client.Lease().AcquireAsync(leaseRoute, ttlSecs: 30);
+
+            var streamRoute = IntegrationFixture.CreateUniqueRoute("stream");
+            var streamSession = await client.Stream().BeginAsync(streamRoute);
+
+            var restoredWorkerRoute = IntegrationFixture.CreateUniqueRoute("rpc");
+            restoredWorker = await client.Rpc().RegisterWorkerAsync(restoredWorkerRoute, async (_, writer, ct) =>
+            {
+                await writer.SendAsync("same-client-worker"u8.ToArray(), isEnd: true, ct);
+            });
+            evidence.Add("client registered session-bound handles and an rpc worker");
+
+            var pendingCallRoute = IntegrationFixture.CreateUniqueRoute("rpc");
+            var pendingCallStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            responderWorker = await responderClient.Rpc().RegisterWorkerAsync(pendingCallRoute, async (_, writer, ct) =>
+            {
+                pendingCallStarted.TrySetResult(true);
+                await releasePendingCall.Task.WaitAsync(ct).ConfigureAwait(false);
+                await writer.SendAsync("late"u8.ToArray(), isEnd: true, ct);
+            });
+
+            var pendingCallTask = Task.Run(async () =>
+            {
+                await foreach (var _ in client.Rpc().CallAsync(pendingCallRoute, "block"u8.ToArray()))
+                {
+                }
+            });
+
+            await pendingCallStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            evidence.Add("started a pending rpc call before forcing disconnect");
+
+            await IntegrationFixture.RestartBrokerForModeAsync(transport, authMode);
+            evidence.Add("restarted the live broker service");
+
+            await disconnectObserved.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            evidence.Add("client observed connection loss on the same instance");
+
+            await client.ConnectWhenReadyAsync(new ConnectWhenReadyOptions(
+                Timeout: TimeSpan.FromSeconds(20),
+                Backoff: TimeSpan.FromMilliseconds(100),
+                MaxBackoff: TimeSpan.FromMilliseconds(500)));
+            await reconnectObserved.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            evidence.Add("same client returned to authenticated state after reconnect");
+
+            var rpcDisconnect = await CaptureExceptionAsync(() => pendingCallTask);
+            if (rpcDisconnect is not ConnectionException and not RequestTimeoutException)
+            {
+                evidence.Add($"pending rpc call surfaced {rpcDisconnect?.GetType().Name ?? "no error"}");
+                return Result("CS-010", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, rpcDisconnect?.Message ?? "pending rpc call unexpectedly succeeded");
+            }
+
+            evidence.Add($"pending rpc call terminated with {rpcDisconnect!.GetType().Name}");
+
+            await AssertReconnectInvalidationAsync(
+                () => kvTransaction.GetAsync("after-reconnect"u8.ToArray()),
+                ex => ex is KvException kv && string.Equals(kv.Code, "TX_CLOSED", StringComparison.Ordinal),
+                "kv transaction invalidated after disconnect",
+                evidence);
+            await AssertReconnectInvalidationAsync(
+                () => reservedItem.CompleteAsync(),
+                ex => ex is QueueException queue && string.Equals(queue.Code, "ITEM_CLOSED", StringComparison.Ordinal),
+                "queue handle invalidated after disconnect",
+                evidence);
+            await AssertReconnectInvalidationAsync(
+                () => lease.ExtendAsync(30),
+                ex => ex is LeaseException leaseError && string.Equals(leaseError.Code, "CLOSED", StringComparison.Ordinal),
+                "lease handle invalidated after disconnect",
+                evidence);
+            await AssertReconnectInvalidationAsync(
+                () => streamSession.AppendAsync(0, "after-reconnect"u8.ToArray()),
+                ex => ex is StreamException stream && string.Equals(stream.Code, "SESSION_CLOSED", StringComparison.Ordinal),
+                "stream session invalidated after disconnect",
+                evidence);
+
+            await client.ConnectWhenReadyAsync(new ConnectWhenReadyOptions(
+                Timeout: TimeSpan.FromSeconds(20),
+                Backoff: TimeSpan.FromMilliseconds(100),
+                MaxBackoff: TimeSpan.FromMilliseconds(500)));
+            var postReconnectRoute = IntegrationFixture.CreateUniqueRoute("kv");
+            var postReconnectTx = await client.Kv().BeginAsync(postReconnectRoute);
+            await postReconnectTx.PutAsync("post-reconnect"u8.ToArray(), "ok"u8.ToArray());
+            await postReconnectTx.CommitAsync();
+            evidence.Add("same client completed a new kv transaction after reconnect");
+
+            verifierClient = IntegrationFixture.CreateClientForMode(
                 transport,
                 authMode,
-                reconnect: new ReconnectOptions(true, MaxAttempts: 3, Backoff: TimeSpan.FromMilliseconds(100), MaxBackoff: TimeSpan.FromMilliseconds(500)));
+                timeout: TimeSpan.FromSeconds(5),
+                reconnect: new ReconnectOptions(false));
+            await verifierClient.ConnectAsync();
 
-            await client.ConnectAsync();
-            evidence.Add("client connected with reconnect enabled");
+            var rpcResponses = new List<string>();
+            await foreach (var frame in verifierClient.Rpc().CallAsync(restoredWorkerRoute, "verify"u8.ToArray()))
+            {
+                rpcResponses.Add(Encoding.UTF8.GetString(frame.Body.Span));
+            }
 
-            await client.DisposeAsync();
-            evidence.Add("client disposed cleanly");
+            if (rpcResponses.Count != 1 || !string.Equals(rpcResponses[0], "same-client-worker", StringComparison.Ordinal))
+            {
+                evidence.Add($"restored worker returned {rpcResponses.Count} frames");
+                return Result("CS-010", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "rpc worker was not restored on the reconnected client");
+            }
 
-            await using var reconnected = IntegrationFixture.CreateClientForMode(transport, authMode);
-            await reconnected.ConnectAsync();
-            var route = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await reconnected.Kv().BeginAsync(route);
-            await tx.PutAsync("after-reconnect"u8.ToArray(), "ok"u8.ToArray());
-            await tx.CommitAsync();
-            evidence.Add("new requests succeed after reconnect/new client");
+            evidence.Add("same-client rpc worker was restored after reconnect");
+
+            lock (lifecycleGate)
+            {
+                evidence.Add($"lifecycle events: {string.Join(", ", lifecycleEvents)}");
+            }
 
             return Result("CS-010", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
         }
         catch (Exception ex)
         {
             evidence.Add($"reconnect scenario failed: {ex.GetType().Name}: {ex.Message}");
-            return Result("CS-010", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, ex.Message);
+            return Result("CS-010", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
+        }
+        finally
+        {
+            releasePendingCall.TrySetResult(true);
+            await DisposeQuietlyAsync(verifierClient).ConfigureAwait(false);
+            await DisposeQuietlyAsync(responderWorker).ConfigureAwait(false);
+            await DisposeQuietlyAsync(restoredWorker).ConfigureAwait(false);
         }
     }
 
@@ -715,41 +865,57 @@ public sealed partial class ConformanceSmokeTests
             await using var client = IntegrationFixture.CreateClientForMode(
                 transport,
                 authMode,
-                timeout: TimeSpan.FromMilliseconds(750),
-                maxInFlightRequests: 1);
+                timeout: TimeSpan.FromMilliseconds(1500),
+                maxInFlightRequests: 16);
+            await using var workerClient = IntegrationFixture.CreateClientForMode(
+                transport,
+                authMode,
+                timeout: TimeSpan.FromSeconds(5),
+                asyncHandlers: new AsyncHandlerOptions(MaxConcurrency: 1));
 
             await client.ConnectAsync();
+            await workerClient.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("rpc");
-
-            async Task ConsumeRpcAsync(ReadOnlyMemory<byte> body)
+            await using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (req, writer, ct) =>
             {
-                try
-                {
-                    await foreach (var _ in client.Rpc().CallAsync(route, body))
-                    {
-                    }
-                }
-                catch
-                {
-                }
-            }
+                await Task.Delay(500, ct);
+                await writer.SendAsync(req.Body, isEnd: true, ct);
+            });
 
-            var firstTask = ConsumeRpcAsync("first"u8.ToArray());
-            var secondTask = ConsumeRpcAsync("second"u8.ToArray());
+            await using var firstEnumerator = client.Rpc().CallAsync(route, "first"u8.ToArray()).GetAsyncEnumerator();
+            await using var secondEnumerator = client.Rpc().CallAsync(route, "second"u8.ToArray()).GetAsyncEnumerator();
 
-            await Task.Delay(100);
-            if (secondTask.IsCompleted)
+            var firstNext = firstEnumerator.MoveNextAsync().AsTask();
+            var secondNext = secondEnumerator.MoveNextAsync().AsTask();
+            var secondSettledEarly = await Task.WhenAny(secondNext, Task.Delay(100)) == secondNext;
+
+            if (secondSettledEarly)
             {
                 evidence.Add("second RPC call completed too early");
                 return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "second call should stay queued behind the first");
             }
 
             evidence.Add("second RPC call remained pending while first was in flight");
-            evidence.Add("configured maxInFlightRequests=1 and burst size=2");
+            evidence.Add("configured maxInFlightRequests=16, worker maxConcurrency=1, and burst size=2");
 
-            await client.DisposeAsync();
-            await Task.WhenAll(firstTask, secondTask);
+            if (!await firstNext.ConfigureAwait(false) || !await secondNext.ConfigureAwait(false))
+            {
+                return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "expected both RPC calls to yield one response frame");
+            }
+
+            if (!string.Equals(Encoding.UTF8.GetString(firstEnumerator.Current.Body.Span), "first", StringComparison.Ordinal)
+                || !string.Equals(Encoding.UTF8.GetString(secondEnumerator.Current.Body.Span), "second", StringComparison.Ordinal))
+            {
+                return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "burst RPC responses were not correlated to their request bodies");
+            }
+
+            if (await firstEnumerator.MoveNextAsync().ConfigureAwait(false) || await secondEnumerator.MoveNextAsync().ConfigureAwait(false))
+            {
+                return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "expected single-frame RPC responses");
+            }
+
+            evidence.Add("both burst RPC calls completed with correlated responses");
 
             return Result("CS-017", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
         }
@@ -878,15 +1044,66 @@ public sealed partial class ConformanceSmokeTests
 
     private static ScenarioResult Result(string scenarioId, string transport, string authMode, string verdict, long latencyMs, IReadOnlyList<string> evidence, string notes = "", IReadOnlyDictionary<string, object?>? evidenceFields = null)
     {
+        var metadata = ConformanceScenarioCatalog.Get(scenarioId);
+        var renderedEvidence = evidenceFields is null
+            ? evidence.ToArray()
+            : evidence.Concat(evidenceFields.Select(entry => $"{entry.Key}={entry.Value}")).ToArray();
         return new ScenarioResult(
             scenarioId,
+            metadata.Title,
+            metadata.Priority,
             IntegrationFixture.GetConformanceClientName(),
             transport,
             authMode,
             verdict,
             latencyMs,
-            ConformanceEvidenceBuilder.Build(evidence, evidenceFields),
-            notes
+            renderedEvidence,
+            string.IsNullOrWhiteSpace(notes) ? null : notes
         );
+    }
+
+    private static async Task AssertReconnectInvalidationAsync(Func<Task> operation, Func<Exception, bool> predicate, string successEvidence, ICollection<string> evidence)
+    {
+        var ex = await CaptureExceptionAsync(operation).ConfigureAwait(false);
+        if (ex is null)
+        {
+            throw new InvalidOperationException($"{successEvidence} did not throw after reconnect.");
+        }
+
+        if (!predicate(ex))
+        {
+            throw new InvalidOperationException($"{successEvidence} surfaced {ex.GetType().Name}: {ex.Message}");
+        }
+
+        evidence.Add(successEvidence);
+    }
+
+    private static async Task<Exception?> CaptureExceptionAsync(Func<Task> operation)
+    {
+        try
+        {
+            await operation().ConfigureAwait(false);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return ex;
+        }
+    }
+
+    private static async Task DisposeQuietlyAsync(IAsyncDisposable? resource)
+    {
+        if (resource is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await resource.DisposeAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+        }
     }
 }

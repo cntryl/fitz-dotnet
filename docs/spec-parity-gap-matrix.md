@@ -1,37 +1,28 @@
-# Fitz-Dotnet Spec/Parity Gap Matrix
+# fitz-dotnet Spec/Parity Gap Matrix
 
-Date: 2026-04-24
+Date: 2026-07-09
 
 Status legend:
 
-- `implemented`: capability is represented and has direct evidence in the repo
-- `partially implemented`: some core behavior exists, but the full contract is not covered
-- `untested`: capability may exist, but there is no direct parity evidence
-- `missing`: the public .NET surface cannot represent the contract behavior
-- `contract-drift`: implementation exists, but behavior or artifact shape diverges from the shared Fitz contract
+- `implemented`: represented in the public surface and backed by current tests or conformance artifacts
+- `historical`: older audit trail retained elsewhere; not current truth
 
-Current status: the shared conformance runner, transport matrix, and public domain surface are implemented; the remaining documented gaps are narrower protocol-shape items such as request correlation and error classification.
+Current status: `fitz-dotnet` is aligned to the current shared 17-scenario Fitz client suite. The repo-owned broker baseline, CI matrix, conformance artifact shape, and runtime defaults now match the corrected TS client truth surface.
 
-| Capability | .NET public surface | Acceptance criteria / scenarios | Current evidence | Status | Notes |
-| --- | --- | --- | --- | --- | --- |
-| Conformance runner | `tests/Core/Integration/ConformanceSmokeTests.Runner.cs`, `ConformanceSmokeTests.cs`, and `ConformanceModels.cs` | Runner contract, `CS-001` to `CS-015` | Shared runner parses the suite file, executes `CS-001` to `CS-015` in order, and writes normalized JSON output | `implemented` | CI fans out by transport and auth mode and uploads the conformance artifact |
-| Transport matrix | `ClientConfig.Transport`, `TransportResolver.Resolve` | Suite required transports, `CS-001` to `CS-015` | WebSocket and TCP transports exist and are exercised in the CI spec matrix | `implemented` | Both transports are part of the shared conformance job |
-| Connect and auth lifecycle | `IClient.ConnectAsync`, `IClient.State`, `Client`, `FitzConnection` | `AC-CONN-001` to `AC-CONN-005`, `CS-001`, `CS-002` | Connect performs an immediate auth probe, invalid JWT surfaces as `AuthenticationException`, and lifecycle state is exposed through the public client surface | `implemented` | Broker-backed tests cover anonymous and JWT auth across WebSocket and TCP |
-| Reconnect contract | `ClientConfig`, `Client`, connection layer | `AC-CONN-006`, `CS-009`, `CS-010`, `CS-015` | Reconnect options exist; `FitzConnection` performs backoff reconnect and domain handlers rebuild connection-scoped state | `partially implemented` | End-to-end reconnect and shutdown proof is present, but this remains the most protocol-sensitive area |
-| KV basic transaction lifecycle | `IKvClient`, `IKvTransaction` | `AC-KV-001` to `AC-KV-004`, `CS-003` | Begin/get/put/insert/delete/delete-range/scan/commit/rollback APIs exist and are unit-tested | `implemented` | The public surface now covers the KV contract that the old TODO called out |
-| Queue producer/consumer lifecycle | `IQueueClient` | `AC-QUEUE-001` to `AC-QUEUE-008` | Public API exposes enqueue, reserve, subscribe, extend, complete, and completion-token handling | `implemented` | Queue operations are represented and covered by unit tests |
-| Notice publish/subscribe | `INoticeClient` | `AC-NOTICE-001` to `AC-NOTICE-009` | Public API exposes publish and pattern subscriptions | `implemented` | Subscribe/unsubscribe and handler dispatch are present |
-| RPC caller/worker lifecycle | `IRpcClient` | `AC-RPC-001` to `AC-RPC-008`, `CS-004`, `CS-007`, `CS-014` | Public API exposes streaming calls plus worker registration and response handling | `implemented` | The old “missing” surface has been replaced with a contract-shaped API |
-| Lease lifecycle | `ILeaseClient`, `ILease` | `AC-LEASE-001` to `AC-LEASE-010` | Acquire/query plus extend/renew/release/subscribe APIs exist | `implemented` | Lease behavior is present and tested |
-| Schedule lifecycle | `IScheduleClient` | `AC-SCHEDULE-001` to `AC-SCHEDULE-008` | Create/cancel/list/subscribe APIs exist | `implemented` | Scheduling now covers the listed contract operations |
-| Stream ingest/read lifecycle | `IStreamClient`, `IStreamSession` | `AC-STREAM-001` to `AC-STREAM-005`, `AC-STREAM-010` to `AC-STREAM-014`, `CS-011` to `CS-013` | Begin/read/peek/metadata/subscribe APIs exist | `implemented` | The remaining design questions are about protocol nuances, not absence of surface |
-| Timeout and cancellation | `ClientConfig.Timeout`, `FitzConnection.RequestAsync`, `Multiplexer.RequestAsync` | `CS-007`, `CS-008` | Unit tests and conformance scenarios prove timeout and cancellation behavior | `implemented` | The timeout/cancel behavior is already exercised in the shared suite |
-| Disconnect and shutdown behavior | `Client.DisposeAsync`, `FitzConnection.CloseAsync` | `CS-009`, `CS-015` | Close cancels receive loop and pending requests; shutdown during reconnect backoff stays closed | `implemented` | The close/reconnect regression is covered and the client does not revive after shutdown |
-| Response correlation and concurrency | `Multiplexer`, `RpcClient` | `CS-014`, `AC-RPC-002`, `AC-RPC-005` | Pending work is keyed by `messageType` FIFO; unit tests assert FIFO matching | `contract-drift` | Same-type concurrency depends on ordering, not explicit request identity |
-| Error typing and retryability | Domain exceptions under `src/Core/Errors` | Error handling section, `CS-004` to `CS-008` | Domain exceptions expose `Code` and `Status`; no retryability classification | `contract-drift` | Auth and disconnect error mapping are still the main polish item |
-| DI and service registration | `ServiceCollectionExtensions.AddFitzClient` | Operational parity support only | Basic singleton registration exists | `implemented` | Fine for current scope; not a parity blocker by itself |
+| Capability | .NET surface / evidence | Shared contract coverage | Status | Notes |
+| --- | --- | --- | --- | --- |
+| Shared conformance runner | `tests/Core/Integration/ConformanceSmokeTests.Runner.cs`, `ConformanceModels.cs`, `conformance/cross-language-conformance-suite.yaml` | `CS-001` to `CS-017` | `implemented` | Runner enforces suite completeness against the local YAML and emits the shared artifact schema |
+| Transport and auth matrix | `ClientTransport.Auto`, `TransportResolver`, `.github/workflows/ci.yml`, `compose.yml` | WebSocket, TCP, anonymous, valid JWT, invalid JWT | `implemented` | CI retains one artifact per `websocket|tcp` x `anonymous|valid_jwt` leg and separately checks invalid JWT auth failure |
+| Connect lifecycle and startup readiness | `IClient.ConnectAsync`, `IClient.ConnectWhenReadyAsync`, `Client`, `FitzConnection` | `CS-001`, `CS-002` | `implemented` | Startup retry is bounded, auth settles on transport survival instead of probe traffic, and concurrent connect callers coalesce |
+| Same-client reconnect path | `FitzConnection`, `Client.ConnectWhenReadyAsync`, `tests/Core/Integration/ConformanceSmokeTests.cs` | `CS-009`, `CS-010`, `CS-015` | `implemented` | Broker-backed `CS-010` forces a live disconnect, waits for same-client recovery, checks stale-handle invalidation, and proves post-reconnect requests succeed |
+| Retry execution and request classification | `RetryOptions`, `RetryOperation`, connection retry path, domain retry hooks | `CS-003` to `CS-008`, `CS-010` | `implemented` | Replayable reads retry centrally; session-bound mutations and auth paths stay terminal |
+| Request gating and bounded queueing | `RequestGate`, `RequestQueueFullException`, `ClientConfig.MaxRequestQueueSize` | `CS-014`, `CS-017` | `implemented` | In-flight concurrency and waiter saturation are bounded and covered by unit plus conformance tests |
+| Heartbeat and silent transport loss handling | `HeartbeatOptions`, transport keepalive wiring, `FitzConnection` idle watchdog | `CS-009`, reconnect runtime coverage | `implemented` | Heartbeat timeout is treated as a reconnect-worthy transport failure |
+| Async handler execution controls | `AsyncHandlerOptions`, `AsyncHandlerDispatcher`, subscription and RPC worker dispatch | subscription and worker reconnect/runtime behavior | `implemented` | Handler concurrency and timeout are shared across subscriptions and RPC workers |
+| Observability primitives | `src/Core/Observability/FitzObservability.cs`, lifecycle hooks in `FitzConnection` | lifecycle, retry, timeout, saturation evidence | `implemented` | Core stays dependency-light and exposes logger/tracer/meter/lifecycle callbacks |
+| Domain parity | KV, Queue, Notice, RPC, Lease, Schedule, Stream abstractions and runtime clients | shared acceptance criteria plus `CS-003` to `CS-017` | `implemented` | Public APIs now cover the same runtime features tracked in TS for the shared suite |
+| Repo-owned broker baseline and docs | `compose.yml`, `README.md`, this matrix | local and CI verification flow | `implemented` | The repo no longer depends on sibling checkout paths for conformance or broker setup |
 
-## Notes
+## Open Gaps
 
-- `fitz-dotnet` now has the shared conformance runner, the transport/auth matrix in CI, and the full public domain surface represented in the abstractions layer.
-- The remaining parity questions are narrower: request correlation/concurrency and a small amount of error-classification/reporting polish.
+None are tracked against the current shared suite. Historical findings remain in [spec-parity-audit.md](spec-parity-audit.md) for context, but they should not be read as current status.

@@ -1,8 +1,8 @@
 namespace Cntryl.Fitz;
 
-public sealed record ReconnectOptions(
+public sealed record RetryOptions(
     bool Enabled = true,
-    int MaxAttempts = int.MaxValue,
+    int MaxAttempts = 3,
     TimeSpan? Backoff = null,
     TimeSpan? MaxBackoff = null
 );

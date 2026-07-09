@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using Cntryl.Fitz.Abstractions.Domains.Rpc;
 using Cntryl.Fitz.Connection;
@@ -11,11 +12,19 @@ namespace Cntryl.Fitz.Domains.Rpc;
 
 public sealed class RpcClient : IRpcClient
 {
+    private const int CorrelationIdLength = 16;
+    private const byte RpcResponseFlagStreamEnd = 0x01;
+    private const uint RpcErrorCodeMin = 6001;
+    private const uint RpcErrorCodeMax = 6010;
+    private const int DefaultWorkerMaxConcurrency = 1;
+    private const uint RpcBackpressureErrorCode = 6003;
+
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
     private readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
     private readonly Func<Func<CancellationToken, ValueTask>, IDisposable>? _onReconnect;
     private readonly Func<CancellationToken>? _getConnectionClosedToken;
+    private readonly Func<Func<CancellationToken, ValueTask>, bool>? _dispatchAsyncHandler;
     private readonly TimeSpan _responseTimeout;
     private readonly Dictionary<string, Func<RpcRequest, IRpcResponseWriter, CancellationToken, Task>> _workers = new(StringComparer.Ordinal);
 
@@ -29,6 +38,7 @@ public sealed class RpcClient : IRpcClient
             connection.RegisterNotificationHandler,
             connection.OnReconnect,
             () => connection.ConnectionClosedToken,
+            connection.TryDispatchAsyncHandler,
             connectionTimeout: connection.Timeout)
     {
     }
@@ -39,6 +49,7 @@ public sealed class RpcClient : IRpcClient
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null,
         Func<Func<CancellationToken, ValueTask>, IDisposable>? onReconnect = null,
         Func<CancellationToken>? getConnectionClosedToken = null,
+        Func<Func<CancellationToken, ValueTask>, bool>? dispatchAsyncHandler = null,
         TimeSpan? connectionTimeout = null)
         : this(
             async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
@@ -48,6 +59,7 @@ public sealed class RpcClient : IRpcClient
             registerNotificationHandler,
             onReconnect,
             getConnectionClosedToken,
+            dispatchAsyncHandler,
             connectionTimeout)
     {
     }
@@ -58,6 +70,7 @@ public sealed class RpcClient : IRpcClient
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null,
         Func<Func<CancellationToken, ValueTask>, IDisposable>? onReconnect = null,
         Func<CancellationToken>? getConnectionClosedToken = null,
+        Func<Func<CancellationToken, ValueTask>, bool>? dispatchAsyncHandler = null,
         TimeSpan? connectionTimeout = null)
     {
         _request = request;
@@ -65,6 +78,7 @@ public sealed class RpcClient : IRpcClient
         _registerNotificationHandler = registerNotificationHandler;
         _onReconnect = onReconnect;
         _getConnectionClosedToken = getConnectionClosedToken;
+        _dispatchAsyncHandler = dispatchAsyncHandler;
         _responseTimeout = connectionTimeout ?? TimeSpan.FromSeconds(30);
     }
 
@@ -87,30 +101,57 @@ public sealed class RpcClient : IRpcClient
         RandomNumberGenerator.Fill(correlationId);
 
         var channel = new SubscriptionChannel<RpcResponseFrame>();
+        ExceptionDispatchInfo? terminalError = null;
         IDisposable? registration = null;
         registration = _registerNotificationHandler(MessageTypes.RpcResponse, payload =>
         {
             try
             {
                 var reader = new BinaryBufferReader(payload);
-                var corrLen = reader.ReadU32();
-                if (corrLen != 16)
+                if (reader.RemainingBytes < CorrelationIdLength + 8 + 1 + 4)
                 {
                     return;
                 }
 
-                var receivedCorrelationId = reader.ReadBytes((int)corrLen);
+                var receivedCorrelationId = reader.ReadBytes(CorrelationIdLength);
                 if (!receivedCorrelationId.AsSpan().SequenceEqual(correlationId))
                 {
                     return;
                 }
 
                 var sequence = reader.ReadU64();
-                var bodyLength = reader.ReadU32();
-                var responseBody = reader.ReadBytes((int)bodyLength);
-                var streamEnd = !reader.IsEof && reader.ReadU8() == 1;
+                var flags = reader.ReadU8();
+                if ((flags & ~RpcResponseFlagStreamEnd) != 0)
+                {
+                    return;
+                }
 
-                channel.PostNotification(new RpcResponseFrame(responseBody.AsMemory(), sequence));
+                var bodyLength = reader.ReadU32();
+                if (reader.RemainingBytes < bodyLength)
+                {
+                    return;
+                }
+
+                var responseBody = reader.ReadBytes((int)bodyLength);
+                var streamEnd = (flags & RpcResponseFlagStreamEnd) != 0;
+                if (!reader.IsEof)
+                {
+                    return;
+                }
+
+                if (streamEnd && TryDecodeTerminalError(responseBody, out var rpcError))
+                {
+                    terminalError = ExceptionDispatchInfo.Capture(rpcError);
+                    registration?.Dispose();
+                    channel.Dispose();
+                    return;
+                }
+
+                if (!streamEnd || responseBody.Length > 0)
+                {
+                    channel.PostNotification(new RpcResponseFrame(responseBody.AsMemory(), sequence));
+                }
+
                 if (streamEnd)
                 {
                     registration?.Dispose();
@@ -125,27 +166,14 @@ public sealed class RpcClient : IRpcClient
         });
 
         using var writer = new BinaryBufferWriter();
-        writer.WriteU32((uint)correlationId.Length);
         writer.WriteBytes(correlationId);
         writer.WriteString(route);
-        writer.WriteString(string.Empty);
         writer.WriteU32((uint)body.Length);
         writer.WriteBytes(body.Span);
 
         try
         {
-            var response = await _request(MessageTypes.RpcRequest, writer.WrittenMemory, ct).ConfigureAwait(false);
-            var reader = new BinaryBufferReader(response);
-            var status = reader.ReadU8();
-            if (status != 0)
-            {
-                throw new RpcException($"CALL failed with status {status}", "CALL_FAILED", status);
-            }
-
-            if (reader.RemainingBytes > 0)
-            {
-                _ = reader.ReadBytes(reader.RemainingBytes);
-            }
+            await _send(MessageTypes.RpcRequest, writer.WrittenMemory, ct).ConfigureAwait(false);
 
             var connectionClosedToken = _getConnectionClosedToken?.Invoke() ?? CancellationToken.None;
             using var connectionClosedRegistration = connectionClosedToken.CanBeCanceled
@@ -166,6 +194,11 @@ public sealed class RpcClient : IRpcClient
                 catch (TimeoutException)
                 {
                     throw new RequestTimeoutException($"RPC stream timed out after {_responseTimeout.TotalMilliseconds}ms");
+                }
+
+                if (terminalError is not null)
+                {
+                    terminalError.Throw();
                 }
 
                 if (connectionClosedToken.IsCancellationRequested)
@@ -221,26 +254,43 @@ public sealed class RpcClient : IRpcClient
         _rpcRequestHandlerInitialized = true;
         _registerNotificationHandler(MessageTypes.RpcRequest, payload =>
         {
-            _ = HandleIncomingRequestAsync(payload);
+            if (_dispatchAsyncHandler is not null)
+            {
+                if (!_dispatchAsyncHandler(token => new ValueTask(HandleIncomingRequestAsync(payload, token))))
+                {
+                    _ = TrySendBackpressureResponseAsync(payload);
+                }
+
+                return;
+            }
+
+            _ = HandleIncomingRequestAsync(payload, CancellationToken.None);
         });
     }
 
-    private async Task HandleIncomingRequestAsync(byte[] payload)
+    private async Task HandleIncomingRequestAsync(byte[] payload, CancellationToken cancellationToken)
     {
         try
         {
             var reader = new BinaryBufferReader(payload);
-            var corrLen = reader.ReadU32();
-            if (corrLen != 16)
+            if (reader.RemainingBytes < CorrelationIdLength)
             {
                 return;
             }
 
-            var correlationId = reader.ReadBytes((int)corrLen);
+            var correlationId = reader.ReadBytes(CorrelationIdLength);
             var route = reader.ReadString();
-            _ = reader.ReadString(); // reply route, currently unused by the broker.
             var bodyLength = reader.ReadU32();
+            if (reader.RemainingBytes < bodyLength)
+            {
+                return;
+            }
+
             var body = reader.ReadBytes((int)bodyLength);
+            if (!reader.IsEof)
+            {
+                return;
+            }
 
             if (!TryGetWorker(route, out var handler))
             {
@@ -248,7 +298,7 @@ public sealed class RpcClient : IRpcClient
             }
 
             var writer = new RpcResponseWriter(_send, correlationId);
-            await handler(new RpcRequest(route, body), writer, CancellationToken.None).ConfigureAwait(false);
+            await handler(new RpcRequest(route, body), writer, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception)
         {
@@ -280,6 +330,7 @@ public sealed class RpcClient : IRpcClient
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
+        writer.WriteU32(DefaultWorkerMaxConcurrency);
 
         var response = await _request(MessageTypes.RpcSubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
@@ -339,6 +390,125 @@ public sealed class RpcClient : IRpcClient
         }
     }
 
+    private async ValueTask TrySendBackpressureResponseAsync(byte[] payload)
+    {
+        try
+        {
+            if (!TryDecodeInboundRequest(payload, out var correlationId, out _))
+            {
+                return;
+            }
+
+            var writer = new RpcResponseWriter(_send, correlationId);
+            await writer.SendAsync(EncodeTerminalErrorBody(RpcBackpressureErrorCode, "Local RPC worker is overloaded"), isEnd: true).ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+    }
+
+    private static bool TryDecodeInboundRequest(byte[] payload, out byte[] correlationId, out string route)
+    {
+        correlationId = Array.Empty<byte>();
+        route = string.Empty;
+
+        try
+        {
+            var reader = new BinaryBufferReader(payload);
+            if (reader.RemainingBytes < CorrelationIdLength)
+            {
+                return false;
+            }
+
+            correlationId = reader.ReadBytes(CorrelationIdLength);
+            route = reader.ReadString();
+            if (reader.RemainingBytes < 4)
+            {
+                return false;
+            }
+
+            var bodyLength = reader.ReadU32();
+            if (reader.RemainingBytes < bodyLength)
+            {
+                return false;
+            }
+
+            _ = reader.ReadBytes((int)bodyLength);
+            return reader.IsEof;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryDecodeTerminalError(ReadOnlySpan<byte> payload, out RpcException rpcError)
+    {
+        rpcError = null!;
+
+        try
+        {
+            if (payload.Length < 5)
+            {
+                return false;
+            }
+
+            var reader = new BinaryBufferReader(payload.ToArray());
+            if (reader.ReadU8() != 1)
+            {
+                return false;
+            }
+
+            var code = reader.ReadU32();
+            if (code < RpcErrorCodeMin || code > RpcErrorCodeMax)
+            {
+                return false;
+            }
+
+            var message = reader.ReadString();
+            if (!reader.IsEof)
+            {
+                return false;
+            }
+
+            rpcError = new RpcException(
+                string.IsNullOrWhiteSpace(message) ? "RPC error" : message,
+                MapRpcErrorCode(code));
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static byte[] EncodeTerminalErrorBody(uint code, string message)
+    {
+        using var writer = new BinaryBufferWriter();
+        writer.WriteU8(1);
+        writer.WriteU32(code);
+        writer.WriteString(message);
+        return writer.Build();
+    }
+
+    private static string MapRpcErrorCode(uint code)
+    {
+        return code switch
+        {
+            6001 => "TIMEOUT",
+            6002 => "WORKER_NOT_FOUND",
+            6003 => "BACKPRESSURE",
+            6004 => "ROUTE_NOT_REGISTERED",
+            6005 => "CORRELATION_NOT_FOUND",
+            6006 => "INVALID_SEQUENCE",
+            6007 => "DUPLICATE_CORRELATION",
+            6008 => "WRONG_WORKER",
+            6009 => "UNAUTHORIZED",
+            6010 => "BACKEND_ERROR",
+            _ => "DOMAIN_ERROR",
+        };
+    }
+
     private static bool RouteMatchesPattern(string route, string pattern)
     {
         var routeSegments = route.Split('/', StringSplitOptions.None);
@@ -387,12 +557,11 @@ public sealed class RpcClient : IRpcClient
         public async ValueTask SendAsync(ReadOnlyMemory<byte> body, bool isEnd = false, CancellationToken ct = default)
         {
             using var writer = new BinaryBufferWriter();
-            writer.WriteU32((uint)_correlationId.Length);
             writer.WriteBytes(_correlationId);
             writer.WriteU64(_sequence++);
+            writer.WriteU8(isEnd ? RpcResponseFlagStreamEnd : (byte)0);
             writer.WriteU32((uint)body.Length);
             writer.WriteBytes(body.Span);
-            writer.WriteU8(isEnd ? (byte)1 : (byte)0);
 
             await _send(MessageTypes.RpcResponse, writer.WrittenMemory, ct).ConfigureAwait(false);
         }

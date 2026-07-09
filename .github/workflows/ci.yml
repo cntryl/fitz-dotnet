@@ -111,7 +111,7 @@ jobs:
           fi
 
       - name: Start broker stack
-        run: docker compose -f ../fitz-go/compose.yml up -d
+        run: docker compose -f compose.yml up -d
 
       - name: Restore
         run: dotnet restore Fitz.sln
@@ -135,14 +135,16 @@ jobs:
         run: |
           python - <<'PY'
           import json
+          import re
           from pathlib import Path
-          required = {f"CS-{index:03d}" for index in range(1, 16)}
+          suite_path = Path("conformance/cross-language-conformance-suite.yaml")
+          required = set(re.findall(r'^\s*-\s+id:\s+"([^"]+)"', suite_path.read_text(encoding="utf-8"), flags=re.MULTILINE))
           path = Path("artifacts/conformance-results.json")
           data = json.loads(path.read_text(encoding="utf-8"))
           observed = {s["scenario_id"] for s in data["scenarios"]}
           missing = sorted(required - observed)
           failing = sorted(s["scenario_id"] for s in data["scenarios"] if s["scenario_id"] in required and s["verdict"] != "pass")
-          print(f"transport={data['transport']} auth={data['auth_mode']} p0={data['p0_pass_rate']:.0%} p1={data['p1_pass_rate']:.0%} failing={failing} missing={missing}")
+          print(f"transport={data['transport']} auth={data['auth_mode']} scenarios={len(observed)}/{len(required)} p0={data['p0_pass_rate']:.0%} p1={data['p1_pass_rate']:.0%} failing={failing} missing={missing}")
           if data.get("overall_status") != "pass" or failing or missing:
               raise SystemExit(1)
           PY
@@ -156,4 +158,4 @@ jobs:
 
       - name: Stop broker stack
         if: always()
-        run: docker compose -f ../fitz-go/compose.yml down --volumes
+        run: docker compose -f compose.yml down --volumes

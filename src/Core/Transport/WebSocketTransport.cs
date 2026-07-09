@@ -8,10 +8,17 @@ public sealed class WebSocketTransport : ITransport
     private readonly Uri _uri;
     private readonly TimeSpan _timeout;
     private readonly int _maxFrameSize;
+    private readonly WebSocketOptions? _options;
+    private readonly HeartbeatOptions _heartbeat;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
     private ClientWebSocket? _socket;
 
-    public WebSocketTransport(string url, TimeSpan timeout, int maxFrameSize)
+    public WebSocketTransport(
+        string url,
+        TimeSpan timeout,
+        int maxFrameSize,
+        WebSocketOptions? options = null,
+        HeartbeatOptions? heartbeat = null)
     {
         if (maxFrameSize <= 0)
         {
@@ -21,6 +28,8 @@ public sealed class WebSocketTransport : ITransport
         _uri = new Uri(url);
         _timeout = timeout;
         _maxFrameSize = maxFrameSize;
+        _options = options;
+        _heartbeat = heartbeat ?? new HeartbeatOptions();
     }
 
     public string Url => _uri.ToString();
@@ -33,6 +42,19 @@ public sealed class WebSocketTransport : ITransport
         }
 
         _socket = new ClientWebSocket();
+        if (_heartbeat.Enabled)
+        {
+            _socket.Options.KeepAliveInterval = _heartbeat.Interval ?? TimeSpan.FromSeconds(10);
+        }
+
+        if (_options?.Headers is not null)
+        {
+            foreach (var header in _options.Headers)
+            {
+                _socket.Options.SetRequestHeader(header.Key, header.Value);
+            }
+        }
+
         using var timeoutCts = new CancellationTokenSource(_timeout);
         using var cancellationRegistration = cancellationToken.CanBeCanceled
             ? cancellationToken.Register(static state => ((CancellationTokenSource)state!).Cancel(), timeoutCts)

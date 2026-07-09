@@ -16,49 +16,43 @@ internal sealed record ConformanceRunConfig(
 
 internal sealed record ScenarioResult(
     [property: JsonPropertyName("scenario_id")] string ScenarioId,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("priority")] string Priority,
     [property: JsonPropertyName("client")] string Client,
     [property: JsonPropertyName("transport")] string Transport,
     [property: JsonPropertyName("auth_mode")] string AuthMode,
     [property: JsonPropertyName("verdict")] string Verdict,
     [property: JsonPropertyName("latency_ms")] long LatencyMs,
-    [property: JsonPropertyName("evidence")] IReadOnlyDictionary<string, object?> Evidence,
-    [property: JsonPropertyName("notes")] string Notes
-);
-
-internal sealed record ConformanceSummary(
-    [property: JsonPropertyName("client")] string Client,
-    [property: JsonPropertyName("transport")] string Transport,
-    [property: JsonPropertyName("auth_mode")] string AuthMode,
-    [property: JsonPropertyName("total_scenarios")] int TotalScenarios,
-    [property: JsonPropertyName("passed_scenarios")] int PassedScenarios,
-    [property: JsonPropertyName("failed_scenarios")] int FailedScenarios,
-    [property: JsonPropertyName("p0_pass_rate")] double P0PassRate,
-    [property: JsonPropertyName("p1_pass_rate")] double P1PassRate,
-    [property: JsonPropertyName("overall_status")] string OverallStatus
+    [property: JsonPropertyName("evidence")] IReadOnlyList<string> Evidence,
+    [property: JsonPropertyName("error")] string? Error = null
 );
 
 internal sealed record AggregateResult(
+    [property: JsonPropertyName("suite")] string Suite,
+    [property: JsonPropertyName("version")] string Version,
+    [property: JsonPropertyName("generated_at")] DateTimeOffset GeneratedAt,
     [property: JsonPropertyName("client")] string Client,
-    [property: JsonPropertyName("suite_version")] string SuiteVersion,
-    [property: JsonPropertyName("run_started_at")] DateTimeOffset RunStartedAt,
-    [property: JsonPropertyName("run_finished_at")] DateTimeOffset RunFinishedAt,
-    [property: JsonPropertyName("scenarios")] IReadOnlyList<ScenarioResult> Scenarios,
-    [property: JsonPropertyName("summary")] ConformanceSummary Summary
+    [property: JsonPropertyName("transport")] string Transport,
+    [property: JsonPropertyName("auth_mode")] string AuthMode,
+    [property: JsonPropertyName("p0_pass_rate")] double P0PassRate,
+    [property: JsonPropertyName("p1_pass_rate")] double P1PassRate,
+    [property: JsonPropertyName("overall_status")] string OverallStatus,
+    [property: JsonPropertyName("scenarios")] IReadOnlyList<ScenarioResult> Scenarios
 );
 
 internal static class ConformanceResultBuilder
 {
     internal static AggregateResult BuildAggregate(
+        string suite,
         string client,
         string suiteVersion,
         string transport,
         string authMode,
-        DateTimeOffset runStartedAt,
-        DateTimeOffset runFinishedAt,
+        DateTimeOffset generatedAt,
         IReadOnlyList<ScenarioResult> scenarios)
     {
-        var p0 = scenarios.Where(s => s.ScenarioId is "CS-001" or "CS-002" or "CS-003" or "CS-004" or "CS-005" or "CS-006" or "CS-007" or "CS-008").ToList();
-        var p1 = scenarios.Where(s => s.ScenarioId is "CS-009" or "CS-010" or "CS-011" or "CS-012" or "CS-013" or "CS-014" or "CS-015" or "CS-016" or "CS-017").ToList();
+        var p0 = scenarios.Where(s => string.Equals(s.Priority, "P0", StringComparison.Ordinal)).ToList();
+        var p1 = scenarios.Where(s => string.Equals(s.Priority, "P1", StringComparison.Ordinal)).ToList();
 
         static double PassRate(IEnumerable<ScenarioResult> input)
         {
@@ -74,50 +68,41 @@ internal static class ConformanceResultBuilder
 
         var p0PassRate = PassRate(p0);
         var p1PassRate = PassRate(p1);
-        var passedScenarios = scenarios.Count(s => s.Verdict == "pass");
-        var failedScenarios = scenarios.Count - passedScenarios;
         var overall = p0.Any(r => r.Verdict != "pass") ? "fail" : (p1.Any(r => r.Verdict is "partial" or "fail") ? "partial" : "pass");
 
         return new AggregateResult(
-            client,
+            suite,
             suiteVersion,
-            runStartedAt,
-            runFinishedAt,
-            scenarios,
-            new ConformanceSummary(
-                client,
-                transport,
-                authMode,
-                scenarios.Count,
-                passedScenarios,
-                failedScenarios,
-                p0PassRate,
-                p1PassRate,
-                overall
-            )
+            generatedAt,
+            client,
+            transport,
+            authMode,
+            p0PassRate,
+            p1PassRate,
+            overall,
+            scenarios
         );
     }
 }
 
-internal static class ConformanceEvidenceBuilder
+internal static class ConformanceScenarioCatalog
 {
-    internal static IReadOnlyDictionary<string, object?> Build(IReadOnlyList<string> trace, IReadOnlyDictionary<string, object?>? additionalFields = null)
+    private static readonly Lazy<IReadOnlyDictionary<string, (string Title, string Priority)>> Definitions = new(() =>
     {
-        var evidence = new Dictionary<string, object?>(StringComparer.Ordinal)
-        {
-            ["trace"] = trace.ToArray(),
-        };
+        var suite = ConformanceSmokeTests.ConformanceSuiteDefinition.Load(IntegrationFixture.GetConformanceSuitePath());
+        return suite.Scenarios.ToDictionary(
+            scenario => scenario.ScenarioId,
+            scenario => (scenario.Title, scenario.Priority),
+            StringComparer.Ordinal);
+    });
 
-        if (additionalFields is null)
+    internal static (string Title, string Priority) Get(string scenarioId)
+    {
+        if (!Definitions.Value.TryGetValue(scenarioId, out var metadata))
         {
-            return evidence;
+            throw new InvalidOperationException($"Missing conformance metadata for '{scenarioId}'.");
         }
 
-        foreach (var pair in additionalFields)
-        {
-            evidence[pair.Key] = pair.Value;
-        }
-
-        return evidence;
+        return metadata;
     }
 }

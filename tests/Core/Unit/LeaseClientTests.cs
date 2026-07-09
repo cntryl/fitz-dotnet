@@ -270,13 +270,13 @@ public sealed class LeaseClientTests
         var transport = new TestQueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
-            if (sentFrameCount == 2)
+            if (sentFrameCount == 1)
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
                 transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
             }
-            else if (sentFrameCount == 3)
+            else if (sentFrameCount == 2)
             {
                 using var acquireWriter = new BinaryBufferWriter();
                 acquireWriter.WriteU8(0);
@@ -311,13 +311,13 @@ public sealed class LeaseClientTests
 
         firstTransport.AfterSend = sentFrameCount =>
         {
-            if (sentFrameCount == 2)
+            if (sentFrameCount == 1)
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
                 firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
             }
-            else if (sentFrameCount == 3)
+            else if (sentFrameCount == 2)
             {
                 using var acquireWriter = new BinaryBufferWriter();
                 acquireWriter.WriteU8(0);
@@ -329,7 +329,7 @@ public sealed class LeaseClientTests
 
         secondTransport.AfterSend = sentFrameCount =>
         {
-            if (sentFrameCount != 2)
+            if (sentFrameCount != 1)
             {
                 return;
             }
@@ -374,13 +374,13 @@ public sealed class LeaseClientTests
 
         firstTransport.AfterSend = sentFrameCount =>
         {
-            if (sentFrameCount == 2)
+            if (sentFrameCount == 1)
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
                 firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
             }
-            else if (sentFrameCount == 3)
+            else if (sentFrameCount == 2)
             {
                 using var subscribeWriter = new BinaryBufferWriter();
                 subscribeWriter.WriteU8(0);
@@ -392,13 +392,13 @@ public sealed class LeaseClientTests
 
         secondTransport.AfterSend = sentFrameCount =>
         {
-            if (sentFrameCount == 2)
+            if (sentFrameCount == 1)
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
                 secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
             }
-            else if (sentFrameCount == 3)
+            else if (sentFrameCount == 2)
             {
                 using var subscribeWriter = new BinaryBufferWriter();
                 subscribeWriter.WriteU8(0);

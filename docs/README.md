@@ -1,20 +1,13 @@
 # fitz-dotnet Documentation
 
-The .NET SDK follows the canonical Fitz client docs in the server repository under [../../fitz/docs/clients](../../fitz/docs/clients).
-
-## Canonical Docs
-
-- [CLIENT_SPEC.md](../../fitz/docs/clients/CLIENT_SPEC.md)
-- [CLIENT_ACCEPTANCE_CRITERIA.md](../../fitz/docs/clients/CLIENT_ACCEPTANCE_CRITERIA.md)
-- [CLIENT_IMPLEMENTATION_GUIDE.md](../../fitz/docs/clients/CLIENT_IMPLEMENTATION_GUIDE.md)
-- [CONNECTION_FLOW.md](../../fitz/docs/clients/CONNECTION_FLOW.md)
-
-## Local Docs
+Use the local repo docs as the current source of truth for the .NET client:
 
 - [../README.md](../README.md)
 - [../CLIENT_SPEC.md](../CLIENT_SPEC.md)
 - [../CLIENT_ACCEPTANCE_CRITERIA.md](../CLIENT_ACCEPTANCE_CRITERIA.md)
-- [spec-parity-audit.md](spec-parity-audit.md)
+- [../conformance/cross-language-conformance-suite.yaml](../conformance/cross-language-conformance-suite.yaml)
+- [../compose.yml](../compose.yml)
 - [spec-parity-gap-matrix.md](spec-parity-gap-matrix.md)
+- [spec-parity-audit.md](spec-parity-audit.md)
 
-Use the canonical docs for protocol behavior and the local docs for .NET-specific verification, parity evidence, and implementation notes.
+The parity matrix tracks current status. The audit document is historical only.

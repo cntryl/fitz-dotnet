@@ -9,9 +9,18 @@ namespace Cntryl.Fitz.Domains.Kv;
 public sealed class KvClient : IKvClient
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
+    private readonly Func<Action, IDisposable>? _registerOnDisconnect;
+    private readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
 
     internal KvClient(FitzConnection connection)
-        : this(connection.RequestAsync)
+        : this(
+            connection.RequestAsync,
+            connection.OnDisconnect,
+            (operation, messageType, payload, cancellationToken) =>
+                connection.ExecuteWithRetryAsync(
+                    operation,
+                    innerToken => connection.RequestAsync(messageType, payload, innerToken),
+                    cancellationToken))
     {
     }
 
@@ -20,9 +29,14 @@ public sealed class KvClient : IKvClient
     {
     }
 
-    internal KvClient(Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request)
+    internal KvClient(
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
+        Func<Action, IDisposable>? registerOnDisconnect = null,
+        Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null)
     {
         _request = request;
+        _registerOnDisconnect = registerOnDisconnect;
+        _retryRequest = retryRequest;
     }
 
     public async Task<IKvTransaction> BeginAsync(
@@ -60,6 +74,6 @@ public sealed class KvClient : IKvClient
             throw new KvException("BEGIN response has trailing bytes", "BEGIN_INVALID_RESPONSE");
         }
 
-        return new KvTransaction(_request, route, txId);
+        return new KvTransaction(_request, route, txId, _registerOnDisconnect, _retryRequest);
     }
 }

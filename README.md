@@ -1,6 +1,6 @@
 # fitz-dotnet
 
-`fitz-dotnet` is the .NET SDK for Fitz.
+`fitz-dotnet` is the .NET Fitz client SDK. The repo now tracks the same shared 17-scenario conformance suite as `fitz-ts`, runs against both WebSocket and TCP, and includes a repo-owned broker baseline in [compose.yml](compose.yml).
 
 ## Packages
 
@@ -23,78 +23,82 @@ using Cntryl.Fitz;
 
 await using var client = new Client(
     new ClientConfig(
-        "ws://localhost:4190/ws",
+        "ws://127.0.0.1:4190/ws",
         TokenProvider: _ => ValueTask.FromResult("your-jwt-token")
     )
 );
 
-await client.ConnectAsync();
+await client.ConnectWhenReadyAsync();
 
 var tx = await client.Kv().BeginAsync("kv://realm/app/users");
 await tx.PutAsync("user-1"u8.ToArray(), """{"name":"Alice"}"""u8.ToArray());
 await tx.CommitAsync();
-
-await client.DisposeAsync();
 ```
 
-## Stream replay
+Runtime defaults now match the TS client truth surface:
 
-```csharp
-using Cntryl.Fitz.Abstractions.Domains.Stream;
+- transport defaults to `auto`
+- reconnect is enabled
+- retry is enabled
+- heartbeat is enabled
+- async handler timeout defaults to the client timeout
+- request queue size defaults to `1024`
 
-var filter = new StreamFilterSet
-{
-    Clauses = new[]
-    {
-        new StreamFilterClause
-        {
-            Kind = StreamFilterClauseKind.Equals,
-            Value = "proj.alpha",
-        },
-    },
-};
-
-await foreach (var record in client.Stream().ReadAsync("stream://realm/app/events", startOffset: 0, limit: 100, filter: filter))
-{
-    _ = record.Body;
-}
-
-var page = await client.Stream().ReadPageAsync("stream://realm/app/events", startOffset: 0, limit: 100, filter: filter);
-
-// ReadAsync preserves the compatibility event-only projection.
-// ReadPageAsync exposes filtered items and cursor advancement.
-_ = page.Cursor.LastResourceOffset;
-```
-
-## Verification
+## Local Verification
 
 Fast local checks:
 
 ```bash
 dotnet restore Fitz.sln
 dotnet build Fitz.sln -c Release --no-restore
-dotnet test tests/Core/Core.Tests.csproj -c Release --no-build
+dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter "FullyQualifiedName!~Integration"
 ```
 
-Full broker-backed test run:
+Broker-backed integration and conformance run:
 
 ```bash
-docker compose -f ../fitz-go/compose.yml up -d
+docker compose -f compose.yml up -d
 dotnet test tests/Core/Core.Tests.csproj -c Release --no-build
-docker compose -f ../fitz-go/compose.yml down --volumes
+docker compose -f compose.yml down --volumes
 ```
 
-`dotnet test` now includes the broker-backed integration and conformance tests by default. The conformance suite writes JSON results to `artifacts/conformance-results.json` by default.
+Run a single conformance matrix leg and write the normalized artifact:
+
+```bash
+docker compose -f compose.yml up -d
+CONFORMANCE_TRANSPORT=websocket \
+CONFORMANCE_AUTH_MODE=anonymous \
+CONFORMANCE_OUTPUT=artifacts/conformance-results.json \
+dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~Conformance
+docker compose -f compose.yml down --volumes
+```
+
+The conformance artifact uses the shared schema:
+
+- top-level `suite`, `version`, `generated_at`, `client`, `transport`, `auth_mode`, `p0_pass_rate`, `p1_pass_rate`, `overall_status`, and `scenarios`
+- 17 scenarios from [conformance/cross-language-conformance-suite.yaml](conformance/cross-language-conformance-suite.yaml)
+- one CI artifact per `websocket|tcp` x `anonymous|valid_jwt` leg
+
+## Broker Baseline
+
+[compose.yml](compose.yml) is the repo-owned local broker stack used by CI and local verification.
+
+- `fitz-anon`: `ws://127.0.0.1:4190/ws` and `127.0.0.1:4191`
+- `fitz-auth`: `ws://127.0.0.1:4090/ws` and `127.0.0.1:4091`
+- default JWT secret: `test-secret-key`
+- default JWT audience: `fitz`
 
 ## Documentation
 
 - [docs/README.md](docs/README.md)
 - [CLIENT_SPEC.md](CLIENT_SPEC.md)
 - [CLIENT_ACCEPTANCE_CRITERIA.md](CLIENT_ACCEPTANCE_CRITERIA.md)
+- [docs/spec-parity-gap-matrix.md](docs/spec-parity-gap-matrix.md)
+- [docs/spec-parity-audit.md](docs/spec-parity-audit.md)
 
 ## Repository Layout
 
-- `src/Core/Core.csproj`: core SDK package and client implementation
+- `src/Core/Core.csproj`: core SDK package and client runtime
 - `src/Abstractions/Abstractions.csproj`: shared interfaces and contracts
 - `src/DependencyInjection/DependencyInjection.csproj`: DI registration extensions
-- `tests/Core/Core.Tests.csproj`: unit, integration, and broker-backed conformance coverage
+- `tests/Core/Core.Tests.csproj`: unit, integration, and shared-suite conformance coverage

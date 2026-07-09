@@ -12,8 +12,10 @@ namespace Cntryl.Fitz.Domains.Lease;
 public sealed class LeaseClient : ILeaseClient
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
+    private readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
     private readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     private readonly Func<Action, IDisposable>? _registerOnDisconnect;
+    private readonly Func<Func<CancellationToken, ValueTask>, bool>? _dispatchAsyncHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
     private readonly Dictionary<string, LeaseSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -27,7 +29,13 @@ public sealed class LeaseClient : ILeaseClient
         : this(
             connection.RequestAsync,
             connection.RegisterBorrowedNotificationHandler,
-            connection.OnDisconnect)
+            connection.OnDisconnect,
+            connection.TryDispatchAsyncHandler,
+            (operation, messageType, payload, cancellationToken) =>
+                connection.ExecuteWithRetryAsync(
+                    operation,
+                    innerToken => connection.RequestAsync(messageType, payload, innerToken),
+                    cancellationToken))
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -44,11 +52,15 @@ public sealed class LeaseClient : ILeaseClient
     internal LeaseClient(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
         Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null,
-        Func<Action, IDisposable>? registerOnDisconnect = null)
+        Func<Action, IDisposable>? registerOnDisconnect = null,
+        Func<Func<CancellationToken, ValueTask>, bool>? dispatchAsyncHandler = null,
+        Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
         _registerOnDisconnect = registerOnDisconnect;
+        _dispatchAsyncHandler = dispatchAsyncHandler;
+        _retryRequest = retryRequest;
     }
 
     public async ValueTask<ILease> AcquireAsync(string route, ulong ttlSecs, CancellationToken ct = default)
@@ -110,7 +122,13 @@ public sealed class LeaseClient : ILeaseClient
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        var response = await _request(MessageTypes.LeaseQuery, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = _retryRequest is null
+            ? await _request(MessageTypes.LeaseQuery, writer.WrittenMemory, ct).ConfigureAwait(false)
+            : await _retryRequest(
+                new RetryOperation("lease", "query", RetryClass.ReplayableRead),
+                MessageTypes.LeaseQuery,
+                writer.WrittenMemory,
+                ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -192,7 +210,7 @@ public sealed class LeaseClient : ILeaseClient
             {
                 existingSubscription.Registrations[handleId] = registration;
                 var existingHandle = CreateSubscription(pattern, handleId);
-                SubscriptionPump.Start(registration, handler);
+                SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
                 return existingHandle;
             }
 
@@ -203,7 +221,7 @@ public sealed class LeaseClient : ILeaseClient
             _patternsBySubscriptionId[subscriptionId] = pattern;
 
             var handle = CreateSubscription(pattern, handleId);
-            SubscriptionPump.Start(registration, handler);
+            SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
             return handle;
         }
         catch

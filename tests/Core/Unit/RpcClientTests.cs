@@ -9,7 +9,7 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class RpcClientTests
 {
     [Fact]
-    public async Task should_accept_success_status_given_valid_request_when_invoking_rpc()
+    public async Task should_send_rpc_request_and_yield_response_frames_given_valid_stream_when_invoking_rpc()
     {
         // Arrange
         ushort seenMessageType = 0;
@@ -21,11 +21,7 @@ public sealed class RpcClientTests
             {
                 seenMessageType = messageType;
                 seenPayload = payload;
-
-                using var writer = new BinaryBufferWriter();
-                writer.WriteU8(0);
-                writer.WriteString("ready");
-                return Task.FromResult(writer.Build());
+                return Task.FromResult(Array.Empty<byte>());
             },
             registerNotificationHandler: (messageType, handler) =>
             {
@@ -48,15 +44,13 @@ public sealed class RpcClientTests
         await Task.Delay(25);
         Assert.NotNull(responseHandler);
         using var notification = new BinaryBufferWriter();
-        notification.WriteU32(16);
         var requestReader = new BinaryBufferReader(seenPayload!);
-        _ = requestReader.ReadU32();
         var correlationId = requestReader.ReadBytes(16);
         notification.WriteBytes(correlationId);
         notification.WriteU64(0);
+        notification.WriteU8(1);
         notification.WriteU32(4);
         notification.WriteBytes("pong"u8);
-        notification.WriteU8(1);
         responseHandler!(notification.Build());
 
         await task;
@@ -68,29 +62,45 @@ public sealed class RpcClientTests
         Assert.Equal("pong", System.Text.Encoding.UTF8.GetString(frames[0].Body.Span));
 
         var reader = new BinaryBufferReader(seenPayload!);
-        var corrLen = reader.ReadU32();
-        Assert.Equal((uint)16, corrLen);
-        _ = reader.ReadBytes((int)corrLen);
+        _ = reader.ReadBytes(16);
         Assert.Equal("rpc://prod/app/echo", reader.ReadString());
-        Assert.Equal(string.Empty, reader.ReadString());
         Assert.Equal((uint)4, reader.ReadU32());
         Assert.Equal("ping", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(4)));
+        Assert.True(reader.IsEof);
     }
 
     [Fact]
-    public async Task should_throw_rpc_exception_given_non_zero_status_when_calling_rpc()
+    public async Task should_throw_rpc_exception_given_terminal_error_response_when_calling_rpc()
     {
-        // Arrange
+        Action<byte[]>? responseHandler = null;
         var rpc = new RpcClient(
-            (_, _, _) =>
+            (_, payload, _) =>
             {
-                using var writer = new BinaryBufferWriter();
-                writer.WriteU8(7);
-                return Task.FromResult(writer.Build());
-            },
-            registerNotificationHandler: (_, _) => new TestRegistration());
+                var reader = new BinaryBufferReader(payload);
+                var correlationId = reader.ReadBytes(16);
 
-        // Act
+                using var notification = new BinaryBufferWriter();
+                notification.WriteBytes(correlationId);
+                notification.WriteU64(0);
+                notification.WriteU8(1);
+
+                using var errorBody = new BinaryBufferWriter();
+                errorBody.WriteU8(1);
+                errorBody.WriteU32(6002);
+                errorBody.WriteString("worker missing");
+
+                notification.WriteU32((uint)errorBody.WrittenMemory.Length);
+                notification.WriteBytes(errorBody.WrittenSpan);
+                responseHandler?.Invoke(notification.Build());
+
+                return Task.FromResult(Array.Empty<byte>());
+            },
+            registerNotificationHandler: (_, handler) =>
+            {
+                responseHandler = handler;
+                return new TestRegistration();
+            });
+
         var ex = await Assert.ThrowsAsync<RpcException>(async () =>
         {
             await foreach (var _ in rpc.CallAsync("rpc://prod/app/echo", new ReadOnlyMemory<byte>("ping"u8.ToArray())))
@@ -99,8 +109,9 @@ public sealed class RpcClientTests
         });
 
         // Assert
-        Assert.Equal("CALL_FAILED", ex.Code);
-        Assert.Equal((byte)7, ex.Status);
+        Assert.Equal("WORKER_NOT_FOUND", ex.Code);
+        Assert.Null(ex.Status);
+        Assert.Contains("worker missing", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -120,7 +131,6 @@ public sealed class RpcClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
-                writer.WriteU64(42);
                 return Task.FromResult(writer.Build());
             },
             (_, _, _) => Task.CompletedTask,
@@ -144,10 +154,8 @@ public sealed class RpcClientTests
         // Act
         Assert.NotNull(incomingHandler);
         using var incoming = new BinaryBufferWriter();
-        incoming.WriteU32(16);
         incoming.WriteBytes(new byte[16]);
         incoming.WriteString("rpc://prod/app/echo");
-        incoming.WriteString(string.Empty);
         incoming.WriteU32(4);
         incoming.WriteBytes("ping"u8);
         incomingHandler!(incoming.Build());
@@ -162,6 +170,8 @@ public sealed class RpcClientTests
 
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("rpc://prod/app/echo", reader.ReadString());
+        Assert.Equal((uint)1, reader.ReadU32());
+        Assert.True(reader.IsEof);
     }
 
     [Fact]
@@ -172,8 +182,7 @@ public sealed class RpcClientTests
             (_, _, _) =>
             {
                 using var writer = new BinaryBufferWriter();
-                writer.WriteU8(0);
-                return Task.FromResult(writer.Build());
+                return Task.FromResult(Array.Empty<byte>());
             },
             registerNotificationHandler: (_, _) => new TestRegistration(),
             connectionTimeout: TimeSpan.FromMilliseconds(50));
@@ -198,8 +207,7 @@ public sealed class RpcClientTests
             (_, _, _) =>
             {
                 using var writer = new BinaryBufferWriter();
-                writer.WriteU8(0);
-                return Task.FromResult(writer.Build());
+                return Task.FromResult(Array.Empty<byte>());
             },
             registerNotificationHandler: (_, _) => new TestRegistration(),
             connectionTimeout: TimeSpan.FromSeconds(1));
@@ -224,8 +232,7 @@ public sealed class RpcClientTests
             (_, _, _) =>
             {
                 using var writer = new BinaryBufferWriter();
-                writer.WriteU8(0);
-                return Task.FromResult(writer.Build());
+                return Task.FromResult(Array.Empty<byte>());
             },
             registerNotificationHandler: (_, _) => new TestRegistration(),
             getConnectionClosedToken: () => connectionClosed.Token,
@@ -262,9 +269,7 @@ public sealed class RpcClientTests
                 seenMessageType = messageType;
                 seenPayload = payload;
                 requestPayloadTcs.TrySetResult(payload.ToArray());
-                using var writer = new BinaryBufferWriter();
-                writer.WriteU8(0);
-                return Task.FromResult(writer.Build());
+                return Task.FromResult(Array.Empty<byte>());
             },
             registerNotificationHandler: (messageType, handler) =>
             {
@@ -287,15 +292,13 @@ public sealed class RpcClientTests
         var responseHandler = await responseHandlerTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
         var requestPayload = await requestPayloadTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
         using var notification = new BinaryBufferWriter();
-        notification.WriteU32(16);
         var requestReader = new BinaryBufferReader(requestPayload);
-        _ = requestReader.ReadU32();
         var correlationId = requestReader.ReadBytes(16);
         notification.WriteBytes(correlationId);
         notification.WriteU64(0);
+        notification.WriteU8(1);
         notification.WriteU32(4);
         notification.WriteBytes("pong"u8);
-        notification.WriteU8(1);
         responseHandler!(notification.Build());
 
         await task;
@@ -304,8 +307,9 @@ public sealed class RpcClientTests
         Assert.Single(frames);
         Assert.Equal(MessageTypes.RpcRequest, seenMessageType);
         var reader = new BinaryBufferReader(seenPayload!);
-        _ = reader.ReadU32();
         _ = reader.ReadBytes(16);
         Assert.Equal("rpc://prod/app/*", reader.ReadString());
+        Assert.Equal((uint)4, reader.ReadU32());
+        Assert.Equal("ping", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(4)));
     }
 }

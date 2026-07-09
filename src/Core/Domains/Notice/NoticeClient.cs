@@ -14,6 +14,7 @@ public sealed class NoticeClient : INoticeClient
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _request;
     private readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
+    private readonly Func<Func<CancellationToken, ValueTask>, bool>? _dispatchAsyncHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
     private readonly Dictionary<string, NoticeSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -27,7 +28,8 @@ public sealed class NoticeClient : INoticeClient
         : this(
             connection.SendAsync,
             connection.RequestAsync,
-            connection.RegisterBorrowedNotificationHandler)
+            connection.RegisterBorrowedNotificationHandler,
+            connection.TryDispatchAsyncHandler)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -48,11 +50,13 @@ public sealed class NoticeClient : INoticeClient
     internal NoticeClient(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send,
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? request = null,
-        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null,
+        Func<Func<CancellationToken, ValueTask>, bool>? dispatchAsyncHandler = null)
     {
         _send = send;
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
+        _dispatchAsyncHandler = dispatchAsyncHandler;
     }
 
     public ValueTask PublishAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default)
@@ -94,7 +98,7 @@ public sealed class NoticeClient : INoticeClient
             {
                 existingSubscription.Writers[handleId] = registration;
                 var existingHandle = CreateSubscription(pattern, handleId);
-                SubscriptionPump.Start(registration, handler);
+                SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
                 return existingHandle;
             }
 
@@ -105,7 +109,7 @@ public sealed class NoticeClient : INoticeClient
             _patternsBySubscriptionId[subscriptionId] = pattern;
 
             var handle = CreateSubscription(pattern, handleId);
-            SubscriptionPump.Start(registration, handler);
+            SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
             return handle;
         }
         catch

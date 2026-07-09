@@ -1,0 +1,59 @@
+# Fitz broker baseline for fitz-dotnet conformance and local integration testing.
+#
+# Local-only stack:
+# - fitz-auth on localhost:4090/ws and localhost:4091 with JWT auth required
+# - fitz-anon on localhost:4190/ws and localhost:4191 with anonymous access enabled
+#
+# The stack mirrors the fitz-ts local broker semantics: loopback-only ports,
+# local disk-backed volumes, and separate auth/anonymous brokers.
+
+x-broker-common: &broker-common
+  image: ghcr.io/cntryl/fitz:latest
+  restart: unless-stopped
+  stop_grace_period: 15s
+  healthcheck:
+    disable: true
+
+x-broker-common-env: &broker-common-env
+  FITZ_STORAGE_MODE: "local"
+  FITZ_STORAGE_PATH: "/data"
+  RUST_LOG: "info,fitz=trace"
+
+services:
+  fitz-auth:
+    <<: *broker-common
+    container_name: fitz-auth
+    ports:
+      - "127.0.0.1:${FITZ_AUTH_HOST_HTTP_PORT:-4090}:${FITZ_AUTH_HTTP_PORT:-4090}"
+      - "127.0.0.1:${FITZ_AUTH_HOST_TCP_PORT:-4091}:${FITZ_AUTH_TCP_PORT:-4091}"
+    environment:
+      <<: *broker-common-env
+      FITZ_AUTH_REQUIRED: "true"
+      FITZ_ADMIN_AUTH_MODE: "open"
+      FITZ_HTTP_PORT: "${FITZ_AUTH_HTTP_PORT:-4090}"
+      FITZ_TCP_PORT: "${FITZ_AUTH_TCP_PORT:-4091}"
+      FITZ_JWT_HMAC_SECRET: "${FITZ_JWT_HMAC_SECRET:-test-secret-key}"
+      FITZ_JWT_AUDIENCE: "${FITZ_JWT_AUDIENCE:-fitz}"
+      FITZ_ROUTE_FAMILY_MAP: "dev=1"
+      FITZ_WS_ALLOWED_ORIGINS: "http://localhost:${FITZ_AUTH_HOST_HTTP_PORT:-4090},http://127.0.0.1:${FITZ_AUTH_HOST_HTTP_PORT:-4090}"
+    volumes:
+      - fitz_auth_data:/data
+
+  fitz-anon:
+    <<: *broker-common
+    container_name: fitz-anon
+    ports:
+      - "127.0.0.1:${FITZ_ANON_HOST_HTTP_PORT:-4190}:${FITZ_ANON_HTTP_PORT:-4090}"
+      - "127.0.0.1:${FITZ_ANON_HOST_TCP_PORT:-4191}:${FITZ_ANON_TCP_PORT:-4091}"
+    environment:
+      <<: *broker-common-env
+      FITZ_AUTH_REQUIRED: "false"
+      FITZ_ADMIN_AUTH_MODE: "open"
+      FITZ_HTTP_PORT: "${FITZ_ANON_HTTP_PORT:-4090}"
+      FITZ_TCP_PORT: "${FITZ_ANON_TCP_PORT:-4091}"
+    volumes:
+      - fitz_anon_data:/data
+
+volumes:
+  fitz_auth_data:
+  fitz_anon_data:

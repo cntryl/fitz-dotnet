@@ -12,8 +12,10 @@ namespace Cntryl.Fitz.Domains.Stream;
 public sealed class StreamClient : IStreamClient
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
+    private readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
     private readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     private readonly Func<Action, IDisposable>? _registerOnDisconnect;
+    private readonly Func<Func<CancellationToken, ValueTask>, bool>? _dispatchAsyncHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
     private readonly Dictionary<string, StreamSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -24,7 +26,16 @@ public sealed class StreamClient : IStreamClient
     private readonly IDisposable? _reconnectRegistration;
 
     internal StreamClient(FitzConnection connection)
-        : this(connection.RequestAsync, connection.RegisterBorrowedNotificationHandler, connection.OnDisconnect)
+        : this(
+            connection.RequestAsync,
+            connection.RegisterBorrowedNotificationHandler,
+            connection.OnDisconnect,
+            connection.TryDispatchAsyncHandler,
+            (operation, messageType, payload, cancellationToken) =>
+                connection.ExecuteWithRetryAsync(
+                    operation,
+                    innerToken => connection.RequestAsync(messageType, payload, innerToken),
+                    cancellationToken))
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -41,11 +52,15 @@ public sealed class StreamClient : IStreamClient
     internal StreamClient(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
         Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null,
-        Func<Action, IDisposable>? registerOnDisconnect = null)
+        Func<Action, IDisposable>? registerOnDisconnect = null,
+        Func<Func<CancellationToken, ValueTask>, bool>? dispatchAsyncHandler = null,
+        Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null)
     {
         _request = request;
         _registerNotificationHandler = registerNotificationHandler;
         _registerOnDisconnect = registerOnDisconnect;
+        _dispatchAsyncHandler = dispatchAsyncHandler;
+        _retryRequest = retryRequest;
     }
 
     public async Task<IStreamSession> BeginAsync(string route, ReadOnlyMemory<byte>? ingestMetadata = null, CancellationToken ct = default)
@@ -115,7 +130,11 @@ public sealed class StreamClient : IStreamClient
             writer.WriteBytes(filterBytes);
         }
 
-        var response = await _request(MessageTypes.StreamRead, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await RequestWithRetryAsync(
+            new RetryOperation("stream", "read", RetryClass.ReplayableRead),
+            MessageTypes.StreamRead,
+            writer.WrittenMemory,
+            ct).ConfigureAwait(false);
         var data = StreamWireHelpers.ReadOptionalPayload(response, "READ");
         return data.IsEmpty
             ? new StreamReadPage(Array.Empty<StreamReadItem>(), new StreamReadCursor(0, null, null, false))
@@ -129,7 +148,11 @@ public sealed class StreamClient : IStreamClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
 
-        var response = await _request(MessageTypes.StreamLast, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await RequestWithRetryAsync(
+            new RetryOperation("stream", "last", RetryClass.ReplayableRead),
+            MessageTypes.StreamLast,
+            writer.WrittenMemory,
+            ct).ConfigureAwait(false);
         var data = StreamWireHelpers.ReadOptionalPayload(response, "LAST");
         if (data.IsEmpty)
         {
@@ -145,7 +168,11 @@ public sealed class StreamClient : IStreamClient
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        var response = await _request(MessageTypes.StreamGetMetadata, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await RequestWithRetryAsync(
+            new RetryOperation("stream", "metadata", RetryClass.ReplayableRead),
+            MessageTypes.StreamGetMetadata,
+            writer.WrittenMemory,
+            ct).ConfigureAwait(false);
         var data = StreamWireHelpers.ReadOptionalPayload(response, "METADATA");
 
         if (data.IsEmpty)
@@ -220,7 +247,7 @@ public sealed class StreamClient : IStreamClient
 
             if (existingHandle is not null)
             {
-                SubscriptionPump.Start(registration, handler);
+                SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
                 return existingHandle;
             }
 
@@ -234,7 +261,7 @@ public sealed class StreamClient : IStreamClient
             }
 
             var handle = CreateSubscription(pattern, handleId);
-            SubscriptionPump.Start(registration, handler);
+            SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
             return handle;
         }
         catch
@@ -459,6 +486,20 @@ public sealed class StreamClient : IStreamClient
         {
             _subscriptionGate.Release();
         }
+    }
+
+    private ValueTask<ReadOnlyMemory<byte>> RequestWithRetryAsync(
+        RetryOperation operation,
+        ushort messageType,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken)
+    {
+        if (_retryRequest is null)
+        {
+            return _request(messageType, payload, cancellationToken);
+        }
+
+        return _retryRequest(operation, messageType, payload, cancellationToken);
     }
 
     private sealed class StreamSubscriptionState

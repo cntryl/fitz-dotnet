@@ -15,6 +15,7 @@ using Cntryl.Fitz.Domains.Rpc;
 using Cntryl.Fitz.Domains.Schedule;
 using Cntryl.Fitz.Domains.Stream;
 using Cntryl.Fitz.Transport;
+using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz;
 
@@ -29,6 +30,7 @@ public sealed class Client : IClient
     private RpcClient? _rpcClient;
     private ScheduleClient? _scheduleClient;
     private StreamClient? _streamClient;
+    private bool _disposed;
 
     public Client(ClientConfig config)
     {
@@ -41,11 +43,89 @@ public sealed class Client : IClient
 
     public Task ConnectAsync(CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         return _connection.ConnectAsync(cancellationToken);
+    }
+
+    public async Task ConnectWhenReadyAsync(ConnectWhenReadyOptions? options = null, CancellationToken cancellationToken = default)
+    {
+        ThrowIfDisposed();
+
+        options ??= new ConnectWhenReadyOptions();
+        var timeout = ResolveDelay(options.Timeout, _config.Timeout ?? TimeSpan.FromSeconds(30), allowZero: true);
+        var backoff = ResolveDelay(options.Backoff, TimeSpan.FromMilliseconds(250));
+        var maxBackoff = ResolveDelay(options.MaxBackoff, TimeSpan.FromSeconds(2));
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        var attempts = 0;
+
+        while (true)
+        {
+            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
+            attempts++;
+
+            var remaining = deadline - DateTimeOffset.UtcNow;
+            if (timeout == TimeSpan.Zero && attempts > 1)
+            {
+                throw new TimeoutException("Timed out waiting for Fitz to become ready.");
+            }
+
+            using var attemptCts = timeout == System.Threading.Timeout.InfiniteTimeSpan
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+                : CreateAttemptCancellationSource(cancellationToken, remaining);
+
+            try
+            {
+                await ConnectAsync(attemptCts.Token).ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeout != System.Threading.Timeout.InfiniteTimeSpan && DateTimeOffset.UtcNow >= deadline)
+            {
+                throw new TimeoutException("Timed out waiting for Fitz to become ready.");
+            }
+            catch (AuthenticationException)
+            {
+                throw;
+            }
+            catch (ConnectionException) when (_disposed || State == ConnectionState.Closed)
+            {
+                throw;
+            }
+            catch (Exception) when (timeout != System.Threading.Timeout.InfiniteTimeSpan && DateTimeOffset.UtcNow >= deadline)
+            {
+                throw new TimeoutException("Timed out waiting for Fitz to become ready.");
+            }
+            catch (Exception) when (IsStartupReadinessFailure(State))
+            {
+                var remainingDelay = timeout == System.Threading.Timeout.InfiniteTimeSpan
+                    ? maxBackoff
+                    : deadline - DateTimeOffset.UtcNow;
+                if (timeout != System.Threading.Timeout.InfiniteTimeSpan && remainingDelay <= TimeSpan.Zero)
+                {
+                    throw new TimeoutException("Timed out waiting for Fitz to become ready.");
+                }
+
+                var actualDelay = timeout == System.Threading.Timeout.InfiniteTimeSpan
+                    ? backoff
+                    : Min(backoff, remainingDelay);
+                if (actualDelay > TimeSpan.Zero)
+                {
+                    await Task.Delay(actualDelay, cancellationToken).ConfigureAwait(false);
+                }
+
+                backoff = Min(TimeSpan.FromMilliseconds(backoff.TotalMilliseconds * 2), maxBackoff);
+            }
+        }
     }
 
     public async ValueTask DisposeAsync()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
         await _connection.CloseAsync();
     }
 
@@ -86,6 +166,45 @@ public sealed class Client : IClient
 
     public bool IsConnected => _connection.State == ConnectionState.Authenticated;
 
-    public ConnectionState State => _connection.State;
+    public ConnectionState State => _disposed ? ConnectionState.Closed : _connection.State;
 
+    private static CancellationTokenSource CreateAttemptCancellationSource(CancellationToken cancellationToken, TimeSpan remaining)
+    {
+        var timeout = remaining <= TimeSpan.Zero ? TimeSpan.Zero : remaining;
+        return CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, new CancellationTokenSource(timeout).Token);
+    }
+
+    private static bool IsStartupReadinessFailure(ConnectionState state)
+    {
+        return state is not ConnectionState.Closed;
+    }
+
+    private static TimeSpan Min(TimeSpan left, TimeSpan right)
+    {
+        return left <= right ? left : right;
+    }
+
+    private static TimeSpan ResolveDelay(TimeSpan? value, TimeSpan fallback, bool allowZero = false)
+    {
+        var resolved = value ?? fallback;
+        if (resolved == System.Threading.Timeout.InfiniteTimeSpan)
+        {
+            return resolved;
+        }
+
+        if (resolved <= TimeSpan.Zero)
+        {
+            return allowZero ? TimeSpan.Zero : TimeSpan.FromMilliseconds(1);
+        }
+
+        return resolved;
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (_disposed)
+        {
+            throw new ConnectionException("Client is closed.");
+        }
+    }
 }

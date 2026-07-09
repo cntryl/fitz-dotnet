@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Cntryl.Fitz.Errors;
+using Cntryl.Fitz.Observability;
+using System.Diagnostics;
 
 namespace Cntryl.Fitz.Core.Tests.Integration;
 
@@ -75,7 +77,7 @@ internal static class IntegrationFixture
                 : Path.GetFullPath(Path.Combine(GetRepositoryRoot(), configured));
         }
 
-        return Path.GetFullPath(Path.Combine(GetRepositoryRoot(), "..", "..", "fitz", "docs", "clients", "cross-language-conformance-suite.yaml"));
+        return Path.GetFullPath(Path.Combine(GetRepositoryRoot(), "conformance", "cross-language-conformance-suite.yaml"));
     }
 
     internal static string GetConformanceClientName()
@@ -108,6 +110,26 @@ internal static class IntegrationFixture
 
     internal static string GetConformanceBrokerAddress(string transport, string authMode) => GetBrokerUrl(transport, authMode);
 
+    internal static string GetBrokerComposePath()
+    {
+        var configured = Environment.GetEnvironmentVariable("FITZ_BROKER_COMPOSE_PATH");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return Path.IsPathRooted(configured)
+                ? configured
+                : Path.GetFullPath(Path.Combine(GetRepositoryRoot(), configured));
+        }
+
+        return Path.GetFullPath(Path.Combine(GetRepositoryRoot(), "compose.yml"));
+    }
+
+    internal static async Task RestartBrokerForModeAsync(string transport, string authMode, CancellationToken cancellationToken = default)
+    {
+        var serviceName = GetBrokerServiceName(authMode);
+        await RunProcessAsync("docker", $"compose -f \"{GetBrokerComposePath()}\" restart {serviceName}", cancellationToken).ConfigureAwait(false);
+        await WaitForBrokerReadyAsync(transport, authMode, TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
+    }
+
     internal static string GetOutputPath()
     {
         var outputPath = Environment.GetEnvironmentVariable("CONFORMANCE_OUTPUT");
@@ -126,9 +148,11 @@ internal static class IntegrationFixture
         string? transport = null,
         TimeSpan? timeout = null,
         ReconnectOptions? reconnect = null,
-        int? maxInFlightRequests = null)
+        int? maxInFlightRequests = null,
+        FitzObservabilityOptions? observability = null,
+        AsyncHandlerOptions? asyncHandlers = null)
     {
-        return CreateClient(url, transport, timeout, reconnect, tokenProvider: null, maxInFlightRequests);
+        return CreateClient(url, transport, timeout, reconnect, tokenProvider: null, maxInFlightRequests, observability, asyncHandlers);
     }
 
     internal static Client CreateValidJwtClient(
@@ -136,7 +160,9 @@ internal static class IntegrationFixture
         string? transport = null,
         TimeSpan? timeout = null,
         ReconnectOptions? reconnect = null,
-        int? maxInFlightRequests = null)
+        int? maxInFlightRequests = null,
+        FitzObservabilityOptions? observability = null,
+        AsyncHandlerOptions? asyncHandlers = null)
     {
         var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "test-secret-key";
         var audience = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_AUDIENCE") ?? "fitz";
@@ -148,7 +174,9 @@ internal static class IntegrationFixture
             timeout,
             reconnect,
             _ => ValueTask.FromResult(validToken),
-            maxInFlightRequests);
+            maxInFlightRequests,
+            observability,
+            asyncHandlers);
     }
 
     internal static Client CreateInvalidJwtClient(
@@ -156,7 +184,9 @@ internal static class IntegrationFixture
         string? transport = null,
         TimeSpan? timeout = null,
         ReconnectOptions? reconnect = null,
-        int? maxInFlightRequests = null)
+        int? maxInFlightRequests = null,
+        FitzObservabilityOptions? observability = null,
+        AsyncHandlerOptions? asyncHandlers = null)
     {
         var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "test-secret-key";
         var audience = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_AUDIENCE") ?? "fitz";
@@ -168,7 +198,9 @@ internal static class IntegrationFixture
             timeout,
             reconnect,
             _ => ValueTask.FromResult(invalidToken),
-            maxInFlightRequests);
+            maxInFlightRequests,
+            observability,
+            asyncHandlers);
     }
 
     internal static Client CreateClientForMode(
@@ -176,14 +208,16 @@ internal static class IntegrationFixture
         string authMode,
         TimeSpan? timeout = null,
         ReconnectOptions? reconnect = null,
-        int? maxInFlightRequests = null)
+        int? maxInFlightRequests = null,
+        FitzObservabilityOptions? observability = null,
+        AsyncHandlerOptions? asyncHandlers = null)
     {
         var url = GetBrokerUrl(transport, authMode);
         return authMode.ToLowerInvariant() switch
         {
-            "valid_jwt" => CreateValidJwtClient(url, transport, timeout, reconnect, maxInFlightRequests),
-            "invalid_jwt" => CreateInvalidJwtClient(url, transport, timeout, reconnect, maxInFlightRequests),
-            _ => CreateAnonymousClient(url, transport, timeout, reconnect, maxInFlightRequests)
+            "valid_jwt" => CreateValidJwtClient(url, transport, timeout, reconnect, maxInFlightRequests, observability, asyncHandlers),
+            "invalid_jwt" => CreateInvalidJwtClient(url, transport, timeout, reconnect, maxInFlightRequests, observability, asyncHandlers),
+            _ => CreateAnonymousClient(url, transport, timeout, reconnect, maxInFlightRequests, observability, asyncHandlers)
         };
     }
 
@@ -224,7 +258,9 @@ internal static class IntegrationFixture
         TimeSpan? timeout,
         ReconnectOptions? reconnect,
         Func<CancellationToken, ValueTask<string>>? tokenProvider,
-        int? maxInFlightRequests = null)
+        int? maxInFlightRequests = null,
+        FitzObservabilityOptions? observability = null,
+        AsyncHandlerOptions? asyncHandlers = null)
     {
         var normalizedTransport = NormalizeTransport(transport);
         var timeoutScale = GetConformanceTimeoutScale();
@@ -243,10 +279,11 @@ internal static class IntegrationFixture
                 url,
                 Transport: normalizedTransport,
                 Timeout: scaledTimeout,
-                AuthSettleDelay: TimeSpan.FromSeconds(5),
                 MaxInFlightRequests: maxInFlightRequests ?? 256,
                 TokenProvider: tokenProvider,
-                Reconnect: reconnect
+                Reconnect: reconnect,
+                Observability: observability,
+                AsyncHandlers: asyncHandlers
             )
         );
     }
@@ -258,10 +295,15 @@ internal static class IntegrationFixture
 
     private static string CreateInvalidSignatureJwt(string secret, string audience)
     {
-        return CreateTestJwt($"{secret}-invalid", audience, DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds());
+        return CreateTestJwt($"{secret}-invalid", audience, GetJwtTenant(), DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds());
     }
 
     private static string CreateTestJwt(string secret, string audience, long expiresAtSeconds)
+    {
+        return CreateTestJwt(secret, audience, GetJwtTenant(), expiresAtSeconds);
+    }
+
+    private static string CreateTestJwt(string secret, string audience, string tenant, long expiresAtSeconds)
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var header = Base64UrlEncode(
@@ -280,22 +322,19 @@ internal static class IntegrationFixture
                 {
                     iss = string.Empty,
                     aud = audience,
-                    sub = "fitz-dotnet-tests",
-                    tid = "fitz-dotnet-tests",
+                    sub = tenant,
+                    tid = tenant,
                     exp = expiresAtSeconds,
                     iat = now,
-                    fitz = new
+                    permissions = new[]
                     {
-                        permissions = new[]
-                        {
-                            "kv://**#*",
-                            "queue://**#*",
-                            "notice://**#*",
-                            "stream://**#*",
-                            "rpc://**#*",
-                            "lease://**#*",
-                            "schedule://**#*",
-                        },
+                        "kv://**#*",
+                        "queue://**#*",
+                        "notice://**#*",
+                        "stream://**#*",
+                        "rpc://**#*",
+                        "lease://**#*",
+                        "schedule://**#*",
                     },
                 }
             )
@@ -309,6 +348,88 @@ internal static class IntegrationFixture
     private static string Base64UrlEncode(byte[] value)
     {
         return Convert.ToBase64String(value).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
+    private static string GetJwtTenant()
+    {
+        return Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_TENANT") ?? "dev";
+    }
+
+    private static string GetBrokerServiceName(string authMode)
+    {
+        return string.Equals(authMode, "valid_jwt", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(authMode, "invalid_jwt", StringComparison.OrdinalIgnoreCase)
+            ? "fitz-auth"
+            : "fitz-anon";
+    }
+
+    private static async Task WaitForBrokerReadyAsync(string transport, string authMode, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        Exception? lastError = null;
+
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                await using var probe = CreateClientForMode(
+                    transport,
+                    authMode,
+                    timeout: TimeSpan.FromSeconds(2),
+                    reconnect: new ReconnectOptions(false));
+                await probe.ConnectWhenReadyAsync(
+                    new ConnectWhenReadyOptions(
+                        Timeout: TimeSpan.FromSeconds(2),
+                        Backoff: TimeSpan.FromMilliseconds(100),
+                        MaxBackoff: TimeSpan.FromMilliseconds(250)),
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        throw new TimeoutException($"Broker '{GetBrokerServiceName(authMode)}' did not become ready within {timeout.TotalSeconds:F0}s. Last error: {lastError?.Message}");
+    }
+
+    private static async Task RunProcessAsync(string fileName, string arguments, CancellationToken cancellationToken)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            }
+        };
+
+        if (!process.Start())
+        {
+            throw new InvalidOperationException($"Failed to start process '{fileName} {arguments}'.");
+        }
+
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+
+        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+
+        var stdout = await stdoutTask.ConfigureAwait(false);
+        var stderr = await stderrTask.ConfigureAwait(false);
+        if (process.ExitCode == 0)
+        {
+            return;
+        }
+
+        var details = string.Join(Environment.NewLine, new[] { stdout.Trim(), stderr.Trim() }.Where(value => !string.IsNullOrWhiteSpace(value)));
+        throw new InvalidOperationException($"Process '{fileName} {arguments}' failed with exit code {process.ExitCode}.{Environment.NewLine}{details}".TrimEnd());
     }
 
     private static string GetRepositoryRoot()

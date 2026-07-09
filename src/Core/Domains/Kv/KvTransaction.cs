@@ -1,5 +1,6 @@
 ﻿using System.Runtime.CompilerServices;
 using Cntryl.Fitz.Abstractions.Domains.Kv;
+using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
@@ -8,28 +9,40 @@ namespace Cntryl.Fitz.Domains.Kv;
 public sealed class KvTransaction : IKvTransaction
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
+    private readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
     private readonly string _route;
     private readonly ulong _txId;
+    private readonly IDisposable? _disconnectRegistration;
+    private int _closed;
 
     internal KvTransaction(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
         string route,
-        ulong txId)
+        ulong txId,
+        Func<Action, IDisposable>? registerOnDisconnect = null,
+        Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null)
     {
         _request = request;
         _route = route;
         _txId = txId;
+        _retryRequest = retryRequest;
+        _disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
     }
 
     public async Task<KvGetResult> GetAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
     {
+        ThrowIfClosed();
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_txId);
         writer.WriteString(_route);
         writer.WriteU32((uint)key.Length);
         writer.WriteBytes(key.Span);
 
-        var response = await _request(MessageTypes.KvGet, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await RequestWithRetryAsync(
+            new RetryOperation("kv", "get", RetryClass.ReplayableRead),
+            MessageTypes.KvGet,
+            writer.WrittenMemory,
+            ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -75,16 +88,19 @@ public sealed class KvTransaction : IKvTransaction
 
     public Task PutAsync(ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value, CancellationToken ct = default)
     {
+        ThrowIfClosed();
         return WriteAsync(MessageTypes.KvPut, key, value, "PUT", ct);
     }
 
     public Task InsertAsync(ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value, CancellationToken ct = default)
     {
+        ThrowIfClosed();
         return WriteAsync(MessageTypes.KvInsert, key, value, "INSERT", ct);
     }
 
     public Task DeleteAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
     {
+        ThrowIfClosed();
         var writer = new BinaryBufferWriter();
         writer.WriteU64(_txId);
         writer.WriteString(_route);
@@ -95,6 +111,7 @@ public sealed class KvTransaction : IKvTransaction
 
     public Task DeleteRangeAsync(ReadOnlyMemory<byte> startKey, ReadOnlyMemory<byte> endKey, CancellationToken ct = default)
     {
+        ThrowIfClosed();
         var writer = new BinaryBufferWriter();
         writer.WriteU64(_txId);
         writer.WriteString(_route);
@@ -107,6 +124,7 @@ public sealed class KvTransaction : IKvTransaction
 
     public async IAsyncEnumerable<KvPair> ScanAsync(KvScanQuery query, [EnumeratorCancellation] CancellationToken ct = default)
     {
+        ThrowIfClosed();
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_txId);
         writer.WriteString(_route);
@@ -145,7 +163,11 @@ public sealed class KvTransaction : IKvTransaction
         // Encode reverse flag
         writer.WriteU8(query.Reverse ? (byte)1 : (byte)0);
 
-        var response = await _request(MessageTypes.KvScan, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await RequestWithRetryAsync(
+            new RetryOperation("kv", "scan", RetryClass.ReplayableRead),
+            MessageTypes.KvScan,
+            writer.WrittenMemory,
+            ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -171,11 +193,17 @@ public sealed class KvTransaction : IKvTransaction
 
     public Task CommitAsync(CancellationToken ct = default)
     {
+        ThrowIfClosed();
         return FinalizeAsync(MessageTypes.KvCommit, "COMMIT", ct);
     }
 
     public Task RollbackAsync(CancellationToken ct = default)
     {
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return Task.CompletedTask;
+        }
+
         return FinalizeAsync(MessageTypes.KvRollback, "ROLLBACK", ct);
     }
 
@@ -197,10 +225,12 @@ public sealed class KvTransaction : IKvTransaction
         writer.WriteU64(_txId);
         writer.WriteString(_route);
         await ExpectStatusAsync(messageType, writer.WrittenMemory, operation, ct).ConfigureAwait(false);
+        MarkClosed();
     }
 
     private async Task ExpectStatusAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct)
     {
+        ThrowIfClosed();
         var response = await _request(messageType, payload, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
@@ -227,5 +257,39 @@ public sealed class KvTransaction : IKvTransaction
         {
             await ExpectStatusAsync(messageType, writer.WrittenMemory, operation, ct).ConfigureAwait(false);
         }
+    }
+
+    private ValueTask<ReadOnlyMemory<byte>> RequestWithRetryAsync(
+        RetryOperation operation,
+        ushort messageType,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken)
+    {
+        if (_retryRequest is null)
+        {
+            return _request(messageType, payload, cancellationToken);
+        }
+
+        return _retryRequest(operation, messageType, payload, cancellationToken);
+    }
+
+    private void ThrowIfClosed()
+    {
+        if (Volatile.Read(ref _closed) == 0)
+        {
+            return;
+        }
+
+        throw new KvException("Transaction is no longer valid after disconnect", "TX_CLOSED");
+    }
+
+    private void MarkClosed()
+    {
+        if (Interlocked.Exchange(ref _closed, 1) != 0)
+        {
+            return;
+        }
+
+        _disconnectRegistration?.Dispose();
     }
 }
