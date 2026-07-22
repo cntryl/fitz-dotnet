@@ -1,5 +1,6 @@
 using System.Text;
 using Cntryl.Fitz.Abstractions.Domains.Kv;
+using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
 
 namespace Cntryl.Fitz.Core.Tests.Integration;
@@ -124,7 +125,7 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
 
-        var id = await client.Schedule().CreateAsync(route, "*/5 * * * *", "schedule-body"u8.ToArray());
+        var id = await client.Schedule().CreateAsync(route, "*/5 * * * *", ScheduleDeliveryMode.Broadcast, "schedule-body"u8.ToArray());
         Assert.False(string.IsNullOrWhiteSpace(id));
 
         // Dotnet API currently cancels by route.

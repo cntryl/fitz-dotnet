@@ -1,6 +1,7 @@
 ﻿using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Jobs;
 using Cntryl.Fitz.Abstractions.Domains.Lease;
+using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Domains.Kv;
 using Cntryl.Fitz.Domains.Lease;
 using Cntryl.Fitz.Domains.Notice;
@@ -61,7 +62,7 @@ public class DomainHotPathBenchmarks
     [Benchmark]
     public async Task<string?> ScheduleCreate()
     {
-        return await _schedule.CreateAsync("schedule://bench/hotpath", "*/1 * * * *", Payload).ConfigureAwait(false);
+        return await _schedule.CreateAsync("schedule://bench/hotpath", "*/1 * * * *", ScheduleDeliveryMode.Broadcast, Payload).ConfigureAwait(false);
     }
 
     private static Task<byte[]> KvRequest(ushort messageType, byte[] _, CancellationToken __)

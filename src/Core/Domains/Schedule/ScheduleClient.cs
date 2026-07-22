@@ -51,13 +51,18 @@ public sealed class ScheduleClient : IScheduleClient
         _dispatchAsyncHandler = dispatchAsyncHandler;
     }
 
-    public async ValueTask<string?> CreateAsync(string route, string cron, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+    public async ValueTask<string?> CreateAsync(string route, string cron, ScheduleDeliveryMode deliveryMode, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
         ValidateScheduleRoute(route);
+        if (deliveryMode is not ScheduleDeliveryMode.Broadcast and not ScheduleDeliveryMode.Single)
+        {
+            throw new ArgumentOutOfRangeException(nameof(deliveryMode), deliveryMode, "Unknown schedule delivery mode");
+        }
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteString(cron);
+        writer.WriteU8((byte)deliveryMode);
         writer.WriteU32((uint)payload.Length);
         writer.WriteBytes(payload.Span);
         var data = await AssertSuccessAsync(MessageTypes.ScheduleCreate, writer.WrittenMemory, "CREATE", ct).ConfigureAwait(false);
@@ -129,9 +134,15 @@ public sealed class ScheduleClient : IScheduleClient
 
             var route = reader.ReadString();
             var cron = reader.ReadString();
+            var deliveryModeValue = reader.ReadU8();
+            if (!Enum.IsDefined(typeof(ScheduleDeliveryMode), deliveryModeValue))
+            {
+                throw new ScheduleException($"LIST response has invalid delivery mode {deliveryModeValue}", "LIST_INVALID_RESPONSE");
+            }
+            var deliveryMode = (ScheduleDeliveryMode)deliveryModeValue;
             var payloadLength = reader.ReadU32();
             var payload = reader.ReadBytes((int)payloadLength);
-            entries.Add(new ScheduleEntry(route, route, cron, payload));
+            entries.Add(new ScheduleEntry(route, route, cron, deliveryMode, payload));
         }
 
         if (!reader.IsEof)
@@ -432,6 +443,16 @@ public sealed class ScheduleClient : IScheduleClient
         var status = reader.ReadU8();
         if (status != 0)
         {
+            if (status == 1)
+            {
+                var domainCode = reader.ReadU32();
+                var message = reader.ReadString();
+                if (!reader.IsEof)
+                {
+                    throw new ScheduleException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE", status, domainCode);
+                }
+                throw new ScheduleException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+            }
             throw new ScheduleException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
         }
 

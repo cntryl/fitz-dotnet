@@ -8,6 +8,24 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class ScheduleClientTests
 {
     [Fact]
+    public async Task should_preserve_domain_code_given_schedule_error_response()
+    {
+        var schedule = new ScheduleClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(1);
+            writer.WriteU32(7008);
+            writer.WriteString("invalid delivery mode");
+            return Task.FromResult(writer.Build());
+        });
+
+        var error = await Assert.ThrowsAsync<ScheduleException>(async () =>
+            await schedule.CreateAsync("schedule://prod/app/jobs/run", "*/5 * * * *", ScheduleDeliveryMode.Single, ReadOnlyMemory<byte>.Empty));
+
+        Assert.Equal((uint)7008, error.DomainCode);
+    }
+
+    [Fact]
     public async Task should_return_schedule_id_given_success_response_when_creating_schedule()
     {
         // Arrange
@@ -27,7 +45,7 @@ public sealed class ScheduleClientTests
         });
 
         // Act
-        var id = await schedule.CreateAsync("schedule://prod/app/jobs/run", "*/5 * * * *", "job"u8.ToArray());
+        var id = await schedule.CreateAsync("schedule://prod/app/jobs/run", "*/5 * * * *", ScheduleDeliveryMode.Single, "job"u8.ToArray());
 
         // Assert
         Assert.Equal("sched-123", id);
@@ -37,6 +55,7 @@ public sealed class ScheduleClientTests
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("schedule://prod/app/jobs/run", reader.ReadString());
         Assert.Equal("*/5 * * * *", reader.ReadString());
+        Assert.Equal((byte)1, reader.ReadU8());
         Assert.Equal((uint)3, reader.ReadU32());
         Assert.Equal("job", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(3)));
     }
@@ -144,6 +163,7 @@ public sealed class ScheduleClientTests
             writer.WriteU8(1);
             writer.WriteString("schedule://prod/app/jobs/run");
             writer.WriteString("*/5 * * * *");
+            writer.WriteU8((byte)ScheduleDeliveryMode.Single);
             writer.WriteU32(3);
             writer.WriteBytes("job"u8);
             writer.WriteU8(0);
@@ -158,6 +178,7 @@ public sealed class ScheduleClientTests
         Assert.Single(entries);
         Assert.Equal("schedule://prod/app/jobs/run", entries[0].Route);
         Assert.Equal("*/5 * * * *", entries[0].Cron);
+        Assert.Equal(ScheduleDeliveryMode.Single, entries[0].DeliveryMode);
         Assert.Equal("job", System.Text.Encoding.UTF8.GetString(entries[0].Payload));
 
         var reader = new BinaryBufferReader(seenPayload!);
