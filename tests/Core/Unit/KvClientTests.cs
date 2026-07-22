@@ -208,33 +208,6 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task should_forward_wildcard_route_without_local_validation_when_beginning_transaction()
-    {
-        // Arrange
-        ushort seenMessageType = 0;
-        byte[]? seenPayload = null;
-        var kv = new KvClient((messageType, payload, _) =>
-        {
-            seenMessageType = messageType;
-            seenPayload = payload;
-
-            using var writer = new BinaryBufferWriter();
-            writer.WriteU8(0);
-            writer.WriteU64(42);
-            return Task.FromResult(writer.Build());
-        });
-
-        // Act
-        var tx = await kv.BeginAsync("kv://prod/*/*");
-
-        // Assert
-        Assert.NotNull(tx);
-        Assert.Equal(MessageTypes.KvBegin, seenMessageType);
-        var reader = new BinaryBufferReader(seenPayload!);
-        Assert.Equal("kv://prod/*/*", reader.ReadString());
-    }
-
-    [Fact]
     public async Task should_reject_empty_route_before_beginning_transaction()
     {
         // Arrange

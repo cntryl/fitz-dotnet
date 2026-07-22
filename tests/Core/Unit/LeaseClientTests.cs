@@ -236,34 +236,6 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task should_forward_wildcard_route_without_local_validation_when_acquiring_lease()
-    {
-        // Arrange
-        ushort seenMessageType = 0;
-        byte[]? seenPayload = null;
-        var leaseClient = new LeaseClient((messageType, payload, _) =>
-        {
-            seenMessageType = messageType;
-            seenPayload = payload;
-
-            using var writer = new BinaryBufferWriter();
-            writer.WriteU8(0);
-            writer.WriteU8(1);
-            writer.WriteU64(77);
-            return Task.FromResult(writer.Build());
-        });
-
-        // Act
-        var lease = await leaseClient.AcquireAsync("lease://prod/app/*", 30);
-
-        // Assert
-        Assert.Equal("lease://prod/app/*", lease.Route);
-        Assert.Equal(MessageTypes.LeaseAcquire, seenMessageType);
-        var reader = new BinaryBufferReader(seenPayload!);
-        Assert.Equal("lease://prod/app/*", reader.ReadString());
-    }
-
-    [Fact]
     public async Task should_mark_lease_as_closed_after_disconnect()
     {
         // Arrange

@@ -1,4 +1,5 @@
 using System;
+using System.Text;
 
 namespace Cntryl.Fitz.Core;
 
@@ -29,23 +30,96 @@ internal static class RouteValidation
 
     internal static bool TryValidateConcreteRoute(string route, string scheme, out RouteValidationFailure failure)
     {
-        _ = scheme;
-        failure = RouteValidationFailure.InvalidShape;
-        return !string.IsNullOrWhiteSpace(route);
+        return TryScan(route, scheme, expectedSegments: 0, allowWildcards: false, allowRealmWildcard: false, out _, out failure);
     }
 
     internal static bool TryValidateFixedRoute(string route, string scheme, int segmentCount, out RouteValidationFailure failure)
     {
-        _ = (scheme, segmentCount);
-        failure = RouteValidationFailure.InvalidShape;
-        return !string.IsNullOrWhiteSpace(route);
+        return TryScan(route, scheme, segmentCount, allowWildcards: false, allowRealmWildcard: false, out _, out failure);
     }
 
     internal static bool TryValidateSelectorRoute(string route, string scheme, int segmentCount, bool allowRealmWildcard, out RouteValidationFailure failure)
     {
-        _ = (scheme, segmentCount, allowRealmWildcard);
-        failure = RouteValidationFailure.InvalidShape;
-        return !string.IsNullOrWhiteSpace(route);
+        return TryScan(route, scheme, segmentCount, allowWildcards: true, allowRealmWildcard, out _, out failure);
+    }
+
+    private static bool TryScan(
+        string route,
+        string scheme,
+        int expectedSegments,
+        bool allowWildcards,
+        bool allowRealmWildcard,
+        out int segmentCount,
+        out RouteValidationFailure failure)
+    {
+        segmentCount = 0;
+        if (!TryGetPathStart(route, scheme, out var pathStart, out failure))
+        {
+            return false;
+        }
+
+        var firstWildcard = -1;
+        var wildcardSuffix = true;
+        var segmentStart = pathStart;
+        for (var index = pathStart; index <= route.Length; index++)
+        {
+            if (index != route.Length && route[index] != '/')
+            {
+                continue;
+            }
+
+            var length = index - segmentStart;
+            if (length == 0)
+            {
+                failure = RouteValidationFailure.EmptySegment;
+                return false;
+            }
+
+            var wildcard = IsWildcardSegment(route, segmentStart, length);
+            if (wildcard)
+            {
+                if (!allowWildcards || IsDoubleWildcard(route, segmentStart, length))
+                {
+                    failure = RouteValidationFailure.ContainsWildcard;
+                    return false;
+                }
+                firstWildcard = firstWildcard < 0 ? segmentCount : firstWildcard;
+            }
+            else
+            {
+                for (var cursor = segmentStart; cursor < index; cursor++)
+                {
+                    if (route[cursor] == '*')
+                    {
+                        failure = RouteValidationFailure.ContainsWildcard;
+                        return false;
+                    }
+                }
+                wildcardSuffix &= firstWildcard < 0;
+            }
+
+            segmentCount++;
+            segmentStart = index + 1;
+        }
+
+        if (expectedSegments > 0 && segmentCount != expectedSegments)
+        {
+            failure = RouteValidationFailure.InvalidShape;
+            return false;
+        }
+        if (firstWildcard == 0 || !wildcardSuffix)
+        {
+            failure = RouteValidationFailure.InvalidShape;
+            return false;
+        }
+        if (firstWildcard >= 0 && firstWildcard != segmentCount - 1 && !(allowRealmWildcard && firstWildcard == 1))
+        {
+            failure = RouteValidationFailure.InvalidShape;
+            return false;
+        }
+
+        failure = default;
+        return true;
     }
 
     private static bool TryGetPathStart(string route, string scheme, out int pathStart, out RouteValidationFailure failure)
@@ -55,6 +129,11 @@ internal static class RouteValidation
 
         if (string.IsNullOrWhiteSpace(route) || string.IsNullOrWhiteSpace(scheme))
         {
+            return false;
+        }
+        if (route.Length > ushort.MaxValue || (!IsAscii(route) && Encoding.UTF8.GetByteCount(route) > ushort.MaxValue))
+        {
+            failure = RouteValidationFailure.InvalidShape;
             return false;
         }
 
@@ -87,6 +166,18 @@ internal static class RouteValidation
     private static bool IsConcreteSegment(string route, int start, int length)
     {
         return !IsWildcardSegment(route, start, length);
+    }
+
+    private static bool IsAscii(string value)
+    {
+        foreach (var character in value)
+        {
+            if (character > 0x7f)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static bool IsWildcardSegment(string route, int start, int length)

@@ -238,32 +238,6 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task should_forward_wildcard_route_without_local_validation_when_enqueueing()
-    {
-        // Arrange
-        ushort seenMessageType = 0;
-        byte[]? seenPayload = null;
-        var queue = new QueueClient((messageType, payload, _) =>
-        {
-            seenMessageType = messageType;
-            seenPayload = payload;
-
-            using var writer = new BinaryBufferWriter();
-            writer.WriteU8(0);
-            return Task.FromResult(writer.Build());
-        });
-
-        // Act
-        var messageId = await queue.EnqueueAsync("queue://prod/app/*", "job-1"u8.ToArray());
-
-        // Assert
-        Assert.Equal((ulong)0, messageId);
-        Assert.Equal(MessageTypes.QueueEnqueue, seenMessageType);
-        var reader = new BinaryBufferReader(seenPayload!);
-        Assert.Equal("queue://prod/app/*", reader.ReadString());
-    }
-
-    [Fact]
     public async Task should_mark_reserved_item_as_closed_after_disconnect()
     {
         // Arrange
