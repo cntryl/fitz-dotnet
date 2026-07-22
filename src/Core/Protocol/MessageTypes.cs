@@ -26,7 +26,6 @@ public static class MessageTypes
     public const ushort RpcUnsubscribeWorker = 301;
     public const ushort RpcRequest = 302;
     public const ushort RpcResponse = 303;
-    public const ushort RpcAck = 304;
 
     public const ushort LeaseAcquire = 400;
     public const ushort LeaseRenew = 401;
