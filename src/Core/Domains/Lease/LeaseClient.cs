@@ -113,6 +113,130 @@ public sealed class LeaseClient : ILeaseClient
         return new LeaseHandle(_request, route, fencedToken, _registerOnDisconnect);
     }
 
+    public async ValueTask<T> WithLeaseAsync<T>(
+        string route,
+        ulong ttlSecs,
+        Func<CancellationToken, ValueTask<T>> callback,
+        LeaseExecutionOptions? options = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        ct.ThrowIfCancellationRequested();
+        if (ttlSecs == 0 || ttlSecs > uint.MaxValue / 1000)
+        {
+            throw new LeaseException("ttlSecs must be positive and schedulable", "INVALID_TTL");
+        }
+
+        ILease lease;
+        var delayMilliseconds = 50;
+        while (true)
+        {
+            try
+            {
+                lease = await AcquireAsync(route, ttlSecs, ct).ConfigureAwait(false);
+                break;
+            }
+            catch (LeaseException error) when (
+                options?.WaitForAvailability == true &&
+                (error.Code is "ACQUIRE_NOT_ACQUIRED" or "LEASE_HELD" or "LEASE_QUEUED"))
+            {
+                await Task.Delay(Random.Shared.Next(delayMilliseconds + 1), ct).ConfigureAwait(false);
+                delayMilliseconds = Math.Min(delayMilliseconds * 2, 1000);
+            }
+        }
+
+        using var lifecycle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        Task<T> callbackTask;
+        try
+        {
+            callbackTask = callback(lifecycle.Token).AsTask();
+        }
+        catch (Exception error)
+        {
+            callbackTask = Task.FromException<T>(error);
+        }
+
+        Exception? leaseLoss = null;
+        while (!callbackTask.IsCompleted)
+        {
+            var delay = Task.Delay(TimeSpan.FromSeconds(ttlSecs / 3d), CancellationToken.None);
+            var completed = await Task.WhenAny(callbackTask, delay).ConfigureAwait(false);
+            if (completed == callbackTask)
+            {
+                break;
+            }
+
+            try
+            {
+                await lease.ExtendAsync(ttlSecs, CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                leaseLoss = new LeaseException("Lease ownership was lost", "LEASE_LOST", error);
+                lifecycle.Cancel();
+                break;
+            }
+        }
+
+        T? value = default;
+        Exception? callbackError = null;
+        try
+        {
+            value = await callbackTask.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (lifecycle.IsCancellationRequested)
+        {
+            // The underlying lifecycle cause is returned below.
+        }
+        catch (Exception error)
+        {
+            callbackError = error;
+        }
+
+        Exception? releaseError = null;
+        if (leaseLoss is null)
+        {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await lease.ReleaseAsync(cleanup.Token).ConfigureAwait(false);
+            }
+            catch (Exception error)
+            {
+                releaseError = error;
+            }
+        }
+
+        var failures = new List<Exception>(3);
+        if (leaseLoss is not null) failures.Add(leaseLoss);
+        if (callbackError is not null) failures.Add(callbackError);
+        if (releaseError is not null) failures.Add(releaseError);
+        if (ct.IsCancellationRequested) failures.Insert(0, new OperationCanceledException(ct));
+        if (failures.Count > 1) throw new AggregateException(failures);
+        if (failures.Count == 1) throw failures[0];
+        return value!;
+    }
+
+    public async ValueTask WithLeaseAsync(
+        string route,
+        ulong ttlSecs,
+        Func<CancellationToken, ValueTask> callback,
+        LeaseExecutionOptions? options = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        await WithLeaseAsync(
+            route,
+            ttlSecs,
+            async token =>
+            {
+                await callback(token).ConfigureAwait(false);
+                return true;
+            },
+            options,
+            ct).ConfigureAwait(false);
+    }
+
     public async ValueTask<LeaseInfo> QueryAsync(string route, CancellationToken ct = default)
     {
         if (!RouteValidation.IsFixedRoute(route, "lease", 3))

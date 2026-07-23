@@ -10,6 +10,7 @@ public sealed class LeaseHandle : ILease
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly IDisposable? _disconnectRegistration;
     private int _closed;
+    private readonly SemaphoreSlim _operationGate = new(1, 1);
 
     internal LeaseHandle(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
@@ -27,34 +28,59 @@ public sealed class LeaseHandle : ILease
 
     internal ulong Token { get; private set; }
 
-    public Task ExtendAsync(ulong ttlSecs, CancellationToken ct = default)
+    public async Task ExtendAsync(ulong ttlSecs, CancellationToken ct = default)
     {
-        ThrowIfClosed();
-        return SendTokenTtlAsync(MessageTypes.LeaseRenew, ttlSecs, "EXTEND", ct);
+        await _operationGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            ThrowIfClosed();
+            try
+            {
+                await SendTokenTtlAsync(MessageTypes.LeaseRenew, ttlSecs, "EXTEND", ct).ConfigureAwait(false);
+            }
+            catch
+            {
+                MarkClosed();
+                throw;
+            }
+        }
+        finally
+        {
+            _operationGate.Release();
+        }
     }
 
     public async Task ReleaseAsync(CancellationToken ct = default)
     {
-        ThrowIfClosed();
-
-        using var writer = new BinaryBufferWriter();
-        writer.WriteString(Route);
-        writer.WriteString(string.Empty);
-        writer.WriteU64(Token);
-        var response = await _request(MessageTypes.LeaseRelease, writer.WrittenMemory, ct).ConfigureAwait(false);
-        if (response.Length > 0 && response.Span[0] != 0)
+        await _operationGate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            throw new LeaseException($"RELEASE failed with status {response.Span[0]}", "RELEASE_FAILED", response.Span[0]);
-        }
+            ThrowIfClosed();
+            MarkClosed();
 
-        if (response.Length > 0)
-        {
-            var reader = new BinaryBufferReader(response);
-            _ = reader.ReadU8();
-            if (!reader.IsEof)
+            using var writer = new BinaryBufferWriter();
+            writer.WriteString(Route);
+            writer.WriteString(string.Empty);
+            writer.WriteU64(Token);
+            var response = await _request(MessageTypes.LeaseRelease, writer.WrittenMemory, ct).ConfigureAwait(false);
+            if (response.Length > 0 && response.Span[0] != 0)
             {
-                throw new LeaseException("RELEASE response has trailing bytes", "RELEASE_INVALID_RESPONSE");
+                throw new LeaseException($"RELEASE failed with status {response.Span[0]}", "RELEASE_FAILED", response.Span[0]);
             }
+
+            if (response.Length > 0)
+            {
+                var reader = new BinaryBufferReader(response);
+                _ = reader.ReadU8();
+                if (!reader.IsEof)
+                {
+                    throw new LeaseException("RELEASE response has trailing bytes", "RELEASE_INVALID_RESPONSE");
+                }
+            }
+        }
+        finally
+        {
+            _operationGate.Release();
         }
     }
 
@@ -82,6 +108,10 @@ public sealed class LeaseHandle : ILease
             {
                 throw new LeaseException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
             }
+        }
+        else
+        {
+            throw new LeaseException($"{operation} response missing fencing token", $"{operation}_INVALID_RESPONSE");
         }
     }
 

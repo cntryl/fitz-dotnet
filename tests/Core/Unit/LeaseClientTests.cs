@@ -113,6 +113,10 @@ public sealed class LeaseClientTests
                 writer.WriteU8(1);
                 writer.WriteU64(77);
             }
+            else if (messageType == MessageTypes.LeaseRenew)
+            {
+                writer.WriteU64(78);
+            }
 
             return Task.FromResult(writer.Build());
         });

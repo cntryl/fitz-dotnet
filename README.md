@@ -96,6 +96,13 @@ The conformance artifact uses the shared schema:
 - [docs/spec-parity-gap-matrix.md](docs/spec-parity-gap-matrix.md)
 - [docs/spec-parity-audit.md](docs/spec-parity-audit.md)
 
+## Managed leases
+
+`ILeaseClient.WithLeaseAsync` owns acquisition, renewal, callback cancellation, and release
+for `ValueTask` callbacks. Set `LeaseExecutionOptions.WaitForAvailability` to retry typed
+contention. Callback code must honor its cancellation token promptly. Low-level handles
+remain available, serialize fencing-token rotation, and close on uncertain renewal.
+
 ## Repository Layout
 
 - `src/Core/Core.csproj`: core SDK package and client runtime

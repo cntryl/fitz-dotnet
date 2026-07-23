@@ -9,6 +9,12 @@ public sealed class LeaseException : FitzException
         Status = status;
     }
 
+    public LeaseException(string message, string code, Exception innerException)
+        : base(message, innerException)
+    {
+        Code = code;
+    }
+
     public string Code { get; }
 
     public byte? Status { get; }
