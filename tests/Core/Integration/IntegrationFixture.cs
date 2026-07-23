@@ -164,7 +164,7 @@ internal static class IntegrationFixture
         FitzObservabilityOptions? observability = null,
         AsyncHandlerOptions? asyncHandlers = null)
     {
-        var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "test-secret-key";
+        var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "dev-test-secret";
         var audience = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_AUDIENCE") ?? "fitz";
         var validToken = CreateTestJwt(secret, audience, DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds());
 
@@ -188,7 +188,7 @@ internal static class IntegrationFixture
         FitzObservabilityOptions? observability = null,
         AsyncHandlerOptions? asyncHandlers = null)
     {
-        var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "test-secret-key";
+        var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "dev-test-secret";
         var audience = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_AUDIENCE") ?? "fitz";
         var invalidToken = CreateInvalidSignatureJwt(secret, audience);
 
