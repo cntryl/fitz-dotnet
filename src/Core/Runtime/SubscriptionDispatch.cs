@@ -69,7 +69,7 @@ internal static class SubscriptionPump
             preferLocal: false);
     }
 
-    private static async ValueTask RunAsync<TNotification>(
+    private static async Task RunAsync<TNotification>(
         SubscriptionRegistration<TNotification> registration,
         Func<TNotification, CancellationToken, ValueTask> handler,
         Func<Func<CancellationToken, ValueTask>, bool>? dispatch)

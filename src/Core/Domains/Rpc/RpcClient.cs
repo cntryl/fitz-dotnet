@@ -390,7 +390,7 @@ public sealed class RpcClient : IRpcClient
         }
     }
 
-    private async ValueTask TrySendBackpressureResponseAsync(byte[] payload)
+    private async Task TrySendBackpressureResponseAsync(byte[] payload)
     {
         try
         {

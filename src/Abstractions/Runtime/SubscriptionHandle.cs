@@ -22,6 +22,7 @@ public abstract class SubscriptionHandle : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
+        GC.SuppressFinalize(this);
         return UnsubscribeCoreAsync(CancellationToken.None);
     }
 
