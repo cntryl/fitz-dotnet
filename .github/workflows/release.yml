@@ -28,26 +28,7 @@ jobs:
         run: dotnet pack Fitz.sln -c Release --no-restore --output artifacts/packages
 
       - name: Smoke restore packed packages
-        run: |
-          dotnet new console -o artifacts/smoke/sample --framework net10.0
-          cat <<'CS' > artifacts/smoke/sample/Program.cs
-          using Cntryl.Fitz;
-          using Cntryl.Fitz.Abstractions.Domains.Kv;
-          using Cntryl.Fitz.DependencyInjection;
-          using Microsoft.Extensions.DependencyInjection;
-
-          var services = new ServiceCollection();
-          services.AddFitzClient(new ClientConfig("ws://localhost:4190/ws"));
-
-          Console.WriteLine(typeof(Client).FullName);
-          Console.WriteLine(typeof(IKvClient).FullName);
-          Console.WriteLine(typeof(ServiceCollectionExtensions).FullName);
-          CS
-          cd artifacts/smoke/sample
-          dotnet add package Cntryl.Fitz --version 0.1.0 --source ../../packages
-          dotnet add package Cntryl.Fitz.Abstractions --version 0.1.0 --source ../../packages
-          dotnet add package Cntryl.Fitz.DependencyInjection --version 0.1.0 --source ../../packages
-          dotnet build -c Release
+        run: dotnet restore tests/PackageConsumer/PackageConsumer.csproj --source artifacts/packages --source https://api.nuget.org/v3/index.json && dotnet build tests/PackageConsumer/PackageConsumer.csproj -c Release --no-restore
 
       - name: Publish packages to NuGet
         env:
