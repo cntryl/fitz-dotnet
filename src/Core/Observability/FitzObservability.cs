@@ -19,7 +19,7 @@ public interface IFitzSpan
 {
     void SetAttribute(string key, object? value);
     void RecordException(Exception exception);
-    void End();
+    void Finish();
 }
 
 public interface IFitzTracer
@@ -38,7 +38,7 @@ public sealed record FitzLifecycleEvent(
     string Event,
     ConnectionState State,
     string? Transport = null,
-    string? Url = null,
+    Uri? Url = null,
     int? Attempt = null,
     string? Error = null
 );

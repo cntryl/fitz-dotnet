@@ -16,7 +16,7 @@ public sealed class QueueClientTests
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        var queue = new QueueClient((messageType, payload, _) =>
+        using var queue = new QueueClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -46,7 +46,7 @@ public sealed class QueueClientTests
     {
         // Arrange
         byte[]? seenPayload = null;
-        var queue = new QueueClient((messageType, payload, _) =>
+        using var queue = new QueueClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.QueueReserve, messageType);
             seenPayload = payload;
@@ -84,7 +84,7 @@ public sealed class QueueClientTests
     {
         // Arrange
         var reserveCallCount = 0;
-        var queue = new QueueClient((messageType, payload, _) =>
+        using var queue = new QueueClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.QueueReserve, messageType);
             reserveCallCount++;
@@ -128,7 +128,7 @@ public sealed class QueueClientTests
         CancellationToken seenCancellationToken = default;
         var receivedTcs = new TaskCompletionSource<QueueAvailabilityEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var queue = new QueueClient(
+        using var queue = new QueueClient(
             (messageType, payload, _) =>
             {
                 seenMessageType = messageType;
@@ -188,7 +188,7 @@ public sealed class QueueClientTests
     {
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
-        var queue = new QueueClient((messageType, payload, _) =>
+        using var queue = new QueueClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -244,7 +244,7 @@ public sealed class QueueClientTests
         Action? onDisconnect = null;
         var unsubscribeCount = 0;
 
-        var queue = new QueueClient(
+        using var queue = new QueueClient(
             (messageType, payload, _) =>
             {
                 using var writer = new BinaryBufferWriter();
@@ -280,8 +280,8 @@ public sealed class QueueClientTests
     [Fact]
     public async Task should_mark_reserved_item_as_closed_after_reconnect()
     {
-        var firstTransport = new TestQueuedTransport();
-        var secondTransport = new TestQueuedTransport();
+        await using var firstTransport = new TestQueuedTransport();
+        await using var secondTransport = new TestQueuedTransport();
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         firstTransport.AfterSend = sentFrameCount =>
@@ -320,12 +320,12 @@ public sealed class QueueClientTests
 
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
-        var connection = new FitzConnection(
+        await using var connection = new FitzConnection(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        var queue = new QueueClient(connection);
+        using var queue = new QueueClient(connection);
 
         await connection.ConnectAsync();
         var items = await queue.ReserveAsync("queue://prod/app/tasks", 30);
@@ -345,8 +345,8 @@ public sealed class QueueClientTests
     [Fact]
     public async Task should_restore_queue_subscription_after_reconnect()
     {
-        var firstTransport = new TestQueuedTransport();
-        var secondTransport = new TestQueuedTransport();
+        await using var firstTransport = new TestQueuedTransport();
+        await using var secondTransport = new TestQueuedTransport();
         var firstNotification = new TaskCompletionSource<QueueAvailabilityEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondNotification = new TaskCompletionSource<QueueAvailabilityEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
         var notificationCount = 0;
@@ -387,7 +387,7 @@ public sealed class QueueClientTests
 
                 _ = Task.Run(async () =>
                 {
-                    await Task.Delay(50).ConfigureAwait(false);
+                    await Task.Delay(50);
                     using var notification = new BinaryBufferWriter();
                     notification.WriteU64(777);
                     notification.WriteString("queue://prod/app/tasks");
@@ -399,12 +399,12 @@ public sealed class QueueClientTests
 
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
-        var connection = new FitzConnection(
+        await using var connection = new FitzConnection(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        var queue = new QueueClient(connection);
+        using var queue = new QueueClient(connection);
 
         await connection.ConnectAsync();
         var subscription = await queue.SubscribeAsync("queue://prod/app/*", (evt, _) =>

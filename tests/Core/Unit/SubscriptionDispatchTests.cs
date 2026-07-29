@@ -23,7 +23,7 @@ public sealed class SubscriptionDispatchTests
             SubscriptionPump.Start(registration, async (_, _) =>
             {
                 handlerStarted.TrySetResult();
-                await releaseHandler.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                await releaseHandler.Task.WaitAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
             }));
 
         await startTask.WaitAsync(TimeSpan.FromSeconds(1));
@@ -49,7 +49,7 @@ public sealed class SubscriptionDispatchTests
             handlerStarted.TrySetResult(cancellationToken);
             try
             {
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -91,7 +91,7 @@ public sealed class SubscriptionDispatchTests
             if (message == 1)
             {
                 firstHandlerStarted.TrySetResult();
-                await releaseFirstHandler.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                await releaseFirstHandler.Task.WaitAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
             }
         });
 

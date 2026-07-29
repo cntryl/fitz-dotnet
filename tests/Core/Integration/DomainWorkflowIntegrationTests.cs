@@ -8,6 +8,52 @@ namespace Cntryl.Fitz.Core.Tests.Integration;
 public sealed class DomainWorkflowIntegrationTests
 {
     [Fact]
+    public async Task should_round_trip_rpc_response_given_registered_worker()
+    {
+        var route = IntegrationFixture.CreateUniqueRoute("rpc");
+        await using var workerClient = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await using var callerClient = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await workerClient.ConnectAsync();
+        await callerClient.ConnectAsync();
+
+        await using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (request, writer, ct) =>
+        {
+            Assert.Equal("ping", Encoding.UTF8.GetString(request.Body.Span));
+            await writer.SendAsync("pong"u8.ToArray(), isEnd: true, ct);
+        });
+
+        var responses = new List<string>();
+        await foreach (var response in callerClient.Rpc().CallAsync(route, "ping"u8.ToArray()))
+        {
+            responses.Add(Encoding.UTF8.GetString(response.Body.Span));
+        }
+
+        Assert.Equal("pong", Assert.Single(responses));
+    }
+
+    [Fact]
+    public async Task should_deliver_notice_given_subscribe_publish_workflow()
+    {
+        var route = IntegrationFixture.CreateUniqueRoute("notice");
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+
+        var received = new TaskCompletionSource<(string Route, string Body)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var subscription = await client.Notice().SubscribeAsync(route, (message, _) =>
+        {
+            received.TrySetResult((message.Route, Encoding.UTF8.GetString(message.Body.Span)));
+            return ValueTask.CompletedTask;
+        });
+
+        await client.Notice().PublishAsync(route, "notice-body"u8.ToArray());
+        var delivered = await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(route, delivered.Route);
+        Assert.Equal("notice-body", delivered.Body);
+    }
+
+    [Fact]
     public async Task should_round_trip_queue_message_given_enqueue_reserve_complete_workflow()
     {
         var route = IntegrationFixture.CreateUniqueRoute("queue");
@@ -79,7 +125,7 @@ public sealed class DomainWorkflowIntegrationTests
 
         var page = await client.Stream().ReadPageAsync(route, startOffset: 0, limit: 10, filter: filter);
 
-        Assert.Equal(new[] { "alpha" }, records);
+        Assert.Equal("alpha", Assert.Single(records));
         Assert.Equal((ulong)1, page.Cursor.LastResourceOffset);
         Assert.False(page.Cursor.HasMore);
         Assert.Collection(

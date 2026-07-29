@@ -55,7 +55,7 @@ public sealed class FrameCodecEdgeCaseTests
     [Fact]
     public void should_round_trip_empty_payload()
     {
-        var payload = new byte[0];
+        var payload = Array.Empty<byte>();
         var encoded = FrameCodec.Encode(100, payload);
         var decoded = FrameCodec.Decode(encoded);
         Assert.True(decoded.Payload.IsEmpty);

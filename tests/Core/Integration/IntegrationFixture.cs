@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Diagnostics.CodeAnalysis;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Observability;
 using System.Diagnostics;
@@ -9,6 +10,18 @@ namespace Cntryl.Fitz.Core.Tests.Integration;
 
 internal static class IntegrationFixture
 {
+    private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
+    private static readonly string[] BrokerPermissions =
+    [
+        "kv://**#*",
+        "queue://**#*",
+        "notice://**#*",
+        "stream://**#*",
+        "rpc://**#*",
+        "lease://**#*",
+        "schedule://**#*",
+    ];
+
     internal static ConformanceRunConfig GetConformanceRunConfig()
     {
         var transport = GetConformanceTransport();
@@ -34,7 +47,12 @@ internal static class IntegrationFixture
 
     internal static string GetConformanceAuthMode()
     {
-        return (Environment.GetEnvironmentVariable("CONFORMANCE_AUTH_MODE") ?? "anonymous").ToLowerInvariant();
+        return (Environment.GetEnvironmentVariable("CONFORMANCE_AUTH_MODE") ?? "anonymous").ToUpperInvariant() switch
+        {
+            "VALID_JWT" => "valid_jwt",
+            "INVALID_JWT" => "invalid_jwt",
+            _ => "anonymous",
+        };
     }
 
     internal static string GetBrokerUrl(string transport, string authMode)
@@ -46,18 +64,18 @@ internal static class IntegrationFixture
         }
 
         var normalizedTransport = NormalizeTransport(transport);
-        var normalizedAuthMode = authMode.ToLowerInvariant();
+        var normalizedAuthMode = authMode.ToUpperInvariant();
 
         return (normalizedTransport, normalizedAuthMode) switch
         {
-            ("ws", "valid_jwt") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws",
-            ("ws", "invalid_jwt") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws",
+            ("ws", "VALID_JWT") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws",
+            ("ws", "INVALID_JWT") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws",
             ("ws", _) => Environment.GetEnvironmentVariable("FITZ_BROKER_ANON_WS_ADDR") ?? "ws://localhost:4190/ws",
-            ("websocket", "valid_jwt") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws",
-            ("websocket", "invalid_jwt") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws",
+            ("websocket", "VALID_JWT") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws",
+            ("websocket", "INVALID_JWT") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_WS_ADDR") ?? "ws://localhost:4090/ws",
             ("websocket", _) => Environment.GetEnvironmentVariable("FITZ_BROKER_ANON_WS_ADDR") ?? "ws://localhost:4190/ws",
-            ("tcp", "valid_jwt") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_TCP_ADDR") ?? "localhost:4091",
-            ("tcp", "invalid_jwt") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_TCP_ADDR") ?? "localhost:4091",
+            ("tcp", "VALID_JWT") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_TCP_ADDR") ?? "localhost:4091",
+            ("tcp", "INVALID_JWT") => Environment.GetEnvironmentVariable("FITZ_BROKER_AUTH_TCP_ADDR") ?? "localhost:4091",
             ("tcp", _) => Environment.GetEnvironmentVariable("FITZ_BROKER_ANON_TCP_ADDR") ?? "localhost:4191",
             _ => throw new NotSupportedException($"Unsupported transport '{transport}'.")
         };
@@ -126,8 +144,8 @@ internal static class IntegrationFixture
     internal static async Task RestartBrokerForModeAsync(string transport, string authMode, CancellationToken cancellationToken = default)
     {
         var serviceName = GetBrokerServiceName(authMode);
-        await RunProcessAsync("docker", $"compose -f \"{GetBrokerComposePath()}\" restart {serviceName}", cancellationToken).ConfigureAwait(false);
-        await WaitForBrokerReadyAsync(transport, authMode, TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
+        await RunProcessAsync("docker", $"compose -f \"{GetBrokerComposePath()}\" restart {serviceName}", cancellationToken);
+        await WaitForBrokerReadyAsync(transport, authMode, TimeSpan.FromSeconds(30), cancellationToken);
     }
 
     internal static string GetOutputPath()
@@ -213,10 +231,10 @@ internal static class IntegrationFixture
         AsyncHandlerOptions? asyncHandlers = null)
     {
         var url = GetBrokerUrl(transport, authMode);
-        return authMode.ToLowerInvariant() switch
+        return authMode.ToUpperInvariant() switch
         {
-            "valid_jwt" => CreateValidJwtClient(url, transport, timeout, reconnect, maxInFlightRequests, observability, asyncHandlers),
-            "invalid_jwt" => CreateInvalidJwtClient(url, transport, timeout, reconnect, maxInFlightRequests, observability, asyncHandlers),
+            "VALID_JWT" => CreateValidJwtClient(url, transport, timeout, reconnect, maxInFlightRequests, observability, asyncHandlers),
+            "INVALID_JWT" => CreateInvalidJwtClient(url, transport, timeout, reconnect, maxInFlightRequests, observability, asyncHandlers),
             _ => CreateAnonymousClient(url, transport, timeout, reconnect, maxInFlightRequests, observability, asyncHandlers)
         };
     }
@@ -241,7 +259,7 @@ internal static class IntegrationFixture
 
         await File.WriteAllTextAsync(
             outputPath,
-            JsonSerializer.Serialize(aggregate, new JsonSerializerOptions { WriteIndented = true })
+            JsonSerializer.Serialize(aggregate, IndentedJson)
         );
     }
 
@@ -263,6 +281,12 @@ internal static class IntegrationFixture
         AsyncHandlerOptions? asyncHandlers = null)
     {
         var normalizedTransport = NormalizeTransport(transport);
+        var transportKind = normalizedTransport == "tcp"
+            ? ClientTransport.Tcp
+            : ClientTransport.WebSocket;
+        var normalizedUrl = normalizedTransport == "tcp" && !url.Contains("://", StringComparison.Ordinal)
+            ? $"tcp://{url}"
+            : url;
         var timeoutScale = GetConformanceTimeoutScale();
         TimeSpan? scaledTimeout = timeout is { } timeoutValue
             ? TimeSpan.FromMilliseconds(timeoutValue.TotalMilliseconds * timeoutScale)
@@ -276,8 +300,8 @@ internal static class IntegrationFixture
 
         return new Client(
             new ClientConfig(
-                url,
-                Transport: normalizedTransport,
+                new Uri(normalizedUrl),
+                Transport: transportKind,
                 Timeout: scaledTimeout,
                 MaxInFlightRequests: maxInFlightRequests ?? 256,
                 TokenProvider: tokenProvider,
@@ -326,16 +350,7 @@ internal static class IntegrationFixture
                     tid = tenant,
                     exp = expiresAtSeconds,
                     iat = now,
-                    permissions = new[]
-                    {
-                        "kv://**#*",
-                        "queue://**#*",
-                        "notice://**#*",
-                        "stream://**#*",
-                        "rpc://**#*",
-                        "lease://**#*",
-                        "schedule://**#*",
-                    },
+                    permissions = BrokerPermissions,
                 }
             )
         );
@@ -363,6 +378,7 @@ internal static class IntegrationFixture
             : "fitz-anon";
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The reconnect probe retries every client failure until its bounded deadline.")]
     private static async Task WaitForBrokerReadyAsync(string transport, string authMode, TimeSpan timeout, CancellationToken cancellationToken)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
@@ -384,13 +400,13 @@ internal static class IntegrationFixture
                         Timeout: TimeSpan.FromSeconds(2),
                         Backoff: TimeSpan.FromMilliseconds(100),
                         MaxBackoff: TimeSpan.FromMilliseconds(250)),
-                    cancellationToken).ConfigureAwait(false);
+                    cancellationToken);
                 return;
             }
             catch (Exception ex)
             {
                 lastError = ex;
-                await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(250, cancellationToken);
             }
         }
 
@@ -419,10 +435,10 @@ internal static class IntegrationFixture
         var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
 
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        await process.WaitForExitAsync(cancellationToken);
 
-        var stdout = await stdoutTask.ConfigureAwait(false);
-        var stderr = await stderrTask.ConfigureAwait(false);
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
         if (process.ExitCode == 0)
         {
             return;

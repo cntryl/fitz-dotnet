@@ -233,8 +233,8 @@ public sealed class KvClientTests
     [Fact]
     public async Task should_mark_transaction_as_closed_after_reconnect()
     {
-        var firstTransport = new TestQueuedTransport();
-        var secondTransport = new TestQueuedTransport();
+        await using var firstTransport = new TestQueuedTransport();
+        await using var secondTransport = new TestQueuedTransport();
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         firstTransport.AfterSend = sentFrameCount =>
@@ -269,9 +269,9 @@ public sealed class KvClientTests
 
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
-        var connection = new FitzConnection(
+        await using var connection = new FitzConnection(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
         var kv = new KvClient(connection);

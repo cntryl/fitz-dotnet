@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Cntryl.Fitz.Runtime;
 
@@ -69,6 +70,7 @@ internal static class SubscriptionPump
             preferLocal: false);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Subscription pumps isolate arbitrary user callback and channel shutdown failures.")]
     private static async Task RunAsync<TNotification>(
         SubscriptionRegistration<TNotification> registration,
         Func<TNotification, CancellationToken, ValueTask> handler,

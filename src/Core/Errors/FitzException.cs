@@ -11,4 +11,8 @@ public class FitzException : Exception
         : base(message, innerException)
     {
     }
+
+    public FitzException()
+    {
+    }
 }

@@ -6,6 +6,8 @@
     <RootNamespace>Cntryl.Fitz.Core.Tests</RootNamespace>
     <Description>Unit and integration tests for Fitz .NET client.</Description>
     <IsPackable>false</IsPackable>
+    <!-- xUnit requires public test classes, permits descriptive underscores, and manages their async context. -->
+    <NoWarn>$(NoWarn);CA1515;CA1707;CA2007</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

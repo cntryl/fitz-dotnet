@@ -7,7 +7,7 @@ namespace Cntryl.Fitz.Benchmarks;
 [SimpleJob]
 [MemoryDiagnoser]
 [PlainExporter]
-public class FrameParserBenchmarks
+internal sealed class FrameParserBenchmarks
 {
     private FrameParser _parser = null!;
     private byte[] _singleFrame = null!;

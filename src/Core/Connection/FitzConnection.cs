@@ -1,6 +1,7 @@
 using System.IO;
 using System.Net.WebSockets;
 using System.Text;
+using System.Diagnostics.CodeAnalysis;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Observability;
 using Cntryl.Fitz.Protocol;
@@ -9,7 +10,7 @@ using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Connection;
 
-public sealed class FitzConnection
+public sealed class FitzConnection : IAsyncDisposable
 {
     private static readonly TaskCompletionSource<bool> CompletedStateSignal = CreateCompletedStateSignal();
 
@@ -31,6 +32,7 @@ public sealed class FitzConnection
     private TaskCompletionSource<bool>? _authFailure;
     private Task? _connectTask;
     private Task? _reconnectTask;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The timer is atomically detached and disposed by StopHeartbeat and DisposeAsync.")]
     private Timer? _heartbeatTimer;
     private bool _authAttemptIsReconnect;
     private bool _closeRequested;
@@ -231,7 +233,7 @@ public sealed class FitzConnection
                 frame,
                 (data, token) => transport.SendAsync(data, token),
                 Timeout,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken: cancellationToken).ConfigureAwait(false);
 
             return response;
         }
@@ -322,6 +324,7 @@ public sealed class FitzConnection
         return new DisconnectRegistration(this, listenerId);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Connection teardown is best-effort and must complete after transport or receive-loop failures.")]
     public async Task CloseAsync(CancellationToken cancellationToken = default)
     {
         _closeRequested = true;
@@ -333,7 +336,10 @@ public sealed class FitzConnection
         _authFailure?.TrySetException(new ConnectionException("Connection closed"));
         _requestGate.Close();
         _multiplexer.SetDisconnected();
-        _receiveLoopCts?.Cancel();
+        if (_receiveLoopCts is not null)
+        {
+            await _receiveLoopCts.CancelAsync().ConfigureAwait(false);
+        }
 
         var transport = DetachTransport();
         if (transport is not null)
@@ -369,7 +375,17 @@ public sealed class FitzConnection
         EmitLifecycleEvent("closed");
     }
 
-    private Task TrackConnectTask(Func<Task> operation)
+    public async ValueTask DisposeAsync()
+    {
+        await CloseAsync().ConfigureAwait(false);
+        Interlocked.Exchange(ref _heartbeatTimer, null)?.Dispose();
+        _receiveLoopCts?.Dispose();
+        _connectionClosedCts.Dispose();
+        _multiplexer.Dispose();
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The background connect runner must transfer every failure to its tracked task.")]
+    private Task<bool> TrackConnectTask(Func<Task> operation)
     {
         ArgumentNullException.ThrowIfNull(operation);
 
@@ -413,6 +429,7 @@ public sealed class FitzConnection
         EnsureAuthenticated();
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Authentication failure handling must normalize and clean up every transport failure.")]
     private async Task OpenAndAuthenticateAsync(bool isReconnect, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -548,6 +565,7 @@ public sealed class FitzConnection
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The receive-loop boundary converts every unexpected transport or protocol failure into connection loss.")]
     private void StartReceiveLoop()
     {
         _receiveLoopCts?.Cancel();
@@ -613,6 +631,7 @@ public sealed class FitzConnection
         await HandleConnectionLossAsync(exception).ConfigureAwait(false);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Connection-loss teardown is best-effort and must continue after transport close failures.")]
     private async Task HandleConnectionLossAsync(Exception exception)
     {
         StopHeartbeat();
@@ -675,6 +694,7 @@ public sealed class FitzConnection
         await reconnectTask.ConfigureAwait(false);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect retries apply to every connection attempt failure except explicit shutdown or auth rejection.")]
     private async Task ReconnectLoopAsync()
     {
         var reconnect = _config.ResolvedReconnect;
@@ -784,6 +804,7 @@ public sealed class FitzConnection
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Disconnect listeners are user callbacks and must be isolated from connection teardown.")]
     private void NotifyDisconnect()
     {
         Action[] listeners;
@@ -858,7 +879,7 @@ public sealed class FitzConnection
         }
     }
 
-    private IDisposable? TryAcquireReadyWaitSlot()
+    private ReadyWaitRegistration? TryAcquireReadyWaitSlot()
     {
         if (State == ConnectionState.Authenticated || GetReadyFailure() is not null)
         {
@@ -1104,7 +1125,7 @@ public sealed class FitzConnection
             : "connection closed during CONNECT";
     }
 
-    private TimeSpan GetDefaultAuthSettleDelay()
+    private static TimeSpan GetDefaultAuthSettleDelay()
     {
         return TimeSpan.FromMilliseconds(100);
     }

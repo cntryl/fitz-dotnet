@@ -13,45 +13,44 @@ public sealed class ClientTests
     [Fact]
     public void should_expose_typed_transport_given_typed_client_config()
     {
-        var config = new ClientConfig("ws://localhost:4190/ws", ClientTransport.WebSocket);
+        var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), ClientTransport.WebSocket);
 
-        Assert.Equal(ClientTransport.WebSocket, config.TransportKind);
-        Assert.Equal("ws", config.Transport);
+        Assert.Equal(ClientTransport.WebSocket, config.Transport);
     }
 
     [Fact]
-    public void should_normalize_legacy_transport_string_given_client_config()
+    public void should_preserve_explicit_transport_given_client_config()
     {
-        var config = new ClientConfig("localhost:4191", Transport: "tcp");
+        var config = new ClientConfig(new Uri("tcp://localhost:4191"), Transport: ClientTransport.Tcp);
 
-        Assert.Equal(ClientTransport.Tcp, config.TransportKind);
+        Assert.Equal(ClientTransport.Tcp, config.Transport);
     }
 
     [Fact]
     public void should_default_max_in_flight_requests_when_not_specified()
     {
-        var client = new Client(new ClientConfig("ws://localhost:4190/ws"));
+        var config = new ClientConfig(new Uri("ws://localhost:4190/ws"));
 
-        Assert.Equal(256, client.Config.MaxInFlightRequests);
+        Assert.Equal(256, config.MaxInFlightRequests);
     }
 
     [Fact]
     public void should_preserve_max_in_flight_requests_given_client_config()
     {
-        var client = new Client(new ClientConfig("ws://localhost:4190/ws", MaxInFlightRequests: 12));
+        var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), MaxInFlightRequests: 12);
 
-        Assert.Equal(12, client.Config.MaxInFlightRequests);
+        Assert.Equal(12, config.MaxInFlightRequests);
     }
 
     [Fact]
     public void should_default_transport_to_auto_and_infer_websocket_and_tcp_urls()
     {
-        var websocket = new ClientConfig("ws://localhost:4190/ws");
-        var tcp = new ClientConfig("localhost:4191");
+        var websocket = new ClientConfig(new Uri("ws://localhost:4190/ws"));
+        var tcp = new ClientConfig(new Uri("tcp://localhost:4191"));
 
-        Assert.Equal(ClientTransport.Auto, websocket.TransportKind);
+        Assert.Equal(ClientTransport.Auto, websocket.Transport);
         Assert.Equal(ClientTransport.WebSocket, websocket.ResolvedTransportKind);
-        Assert.Equal(ClientTransport.Auto, tcp.TransportKind);
+        Assert.Equal(ClientTransport.Auto, tcp.Transport);
         Assert.Equal(ClientTransport.Tcp, tcp.ResolvedTransportKind);
         Assert.Equal(1024, websocket.MaxRequestQueueSize);
         Assert.True(websocket.ResolvedReconnect.Enabled);
@@ -63,7 +62,7 @@ public sealed class ClientTests
     public async Task should_set_connected_state_given_valid_transport_when_connecting()
     {
         // Arrange
-        var transport = new QueuedTransport();
+        await using var transport = new QueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
             if (sentFrameCount != 1)
@@ -76,12 +75,12 @@ public sealed class ClientTests
             transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
         };
         var config = new ClientConfig(
-            "ws://localhost:4190/ws",
+            new Uri("ws://localhost:4190/ws"),
             AuthSettleDelay: TimeSpan.Zero,
             TransportFactory: _ => transport,
             TokenProvider: _ => ValueTask.FromResult("token-123")
         );
-        var client = new Client(config);
+        await using var client = new Client(config);
 
         // Act
         await client.ConnectAsync();
@@ -99,17 +98,17 @@ public sealed class ClientTests
     public async Task should_throw_operation_canceled_given_canceled_token_when_connecting()
     {
         // Arrange
-        var transport = new FakeTransport();
-        var client = new Client(
+        await using var transport = new FakeTransport();
+        await using var client = new Client(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 AuthSettleDelay: TimeSpan.FromSeconds(5),
                 TransportFactory: _ => transport
             )
         );
 
         using var cts = new CancellationTokenSource();
-        cts.Cancel();
+        await cts.CancelAsync();
 
         // Act
         var act = () => client.ConnectAsync(cts.Token);
@@ -122,10 +121,10 @@ public sealed class ClientTests
     public async Task should_throw_authentication_exception_given_transport_close_during_authentication()
     {
         // Arrange
-        var transport = new FakeTransport(receive: _ => new ValueTask<PooledFrame>(PooledFrame.Closed));
-        var client = new Client(
+        await using var transport = new FakeTransport(receive: _ => new ValueTask<PooledFrame>(PooledFrame.Closed));
+        await using var client = new Client(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 AuthSettleDelay: TimeSpan.FromMilliseconds(200),
                 TransportFactory: _ => transport
             )
@@ -144,7 +143,7 @@ public sealed class ClientTests
         var attempts = 0;
         await using var client = new Client(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 Timeout: TimeSpan.FromMilliseconds(100),
                 AuthSettleDelay: TimeSpan.Zero,
                 TransportFactory: _ =>
@@ -170,7 +169,7 @@ public sealed class ClientTests
         var attempts = 0;
         await using var client = new Client(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 AuthSettleDelay: TimeSpan.FromMilliseconds(200),
                 TransportFactory: _ =>
                 {
@@ -193,7 +192,7 @@ public sealed class ClientTests
         var attempts = 0;
         await using var client = new Client(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 TransportFactory: _ =>
                 {
                     attempts++;
@@ -216,7 +215,7 @@ public sealed class ClientTests
         var attempts = 0;
         await using var client = new Client(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 TransportFactory: _ =>
                 {
                     attempts++;
@@ -238,7 +237,7 @@ public sealed class ClientTests
     public async Task should_not_reconnect_given_close_during_reconnect_backoff()
     {
         var releaseFirstReceive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var firstTransport = new QueuedTransport();
+        await using var firstTransport = new QueuedTransport();
         firstTransport.AfterSend = sentFrameCount =>
         {
             if (sentFrameCount != 1)
@@ -252,15 +251,15 @@ public sealed class ClientTests
         };
         _ = Task.Run(async () =>
         {
-            await releaseFirstReceive.Task.ConfigureAwait(false);
+            await releaseFirstReceive.Task;
             firstTransport.QueueClosed();
         });
-        var secondTransport = new QueuedTransport();
+        await using var secondTransport = new QueuedTransport();
         var factoryCalls = 0;
 
-        var client = new Client(
+        await using var client = new Client(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 AuthSettleDelay: TimeSpan.Zero,
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(250), MaxBackoff: TimeSpan.FromMilliseconds(250)),
                 TransportFactory: _ => factoryCalls++ == 0 ? firstTransport : secondTransport
@@ -282,7 +281,7 @@ public sealed class ClientTests
     [Fact]
     public async Task should_remain_connected_given_request_timeout_when_receive_loop_is_idle()
     {
-        var transport = new QueuedTransport();
+        await using var transport = new QueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
             if (sentFrameCount != 1)
@@ -294,9 +293,9 @@ public sealed class ClientTests
             writer.WriteU8(0);
             transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
         };
-        var client = new Client(
+        await using var client = new Client(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 Timeout: TimeSpan.FromMilliseconds(50),
                 AuthSettleDelay: TimeSpan.Zero,
                 TransportFactory: _ => transport
@@ -315,7 +314,7 @@ public sealed class ClientTests
     [Fact]
     public async Task should_bound_concurrent_outbound_requests_given_max_one_when_second_request_starts()
     {
-        var transport = new QueuedTransport();
+        await using var transport = new QueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
             if (sentFrameCount != 1)
@@ -327,9 +326,9 @@ public sealed class ClientTests
             writer.WriteU8(0);
             transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
         };
-        var connection = new FitzConnection(
+        await using var connection = new FitzConnection(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 AuthSettleDelay: TimeSpan.Zero,
                 MaxInFlightRequests: 1,
                 TokenProvider: _ => ValueTask.FromResult("token-123")
@@ -361,10 +360,10 @@ public sealed class ClientTests
     [Fact]
     public async Task should_throw_request_queue_full_given_waiter_limit_reached()
     {
-        var transport = new QueuedTransport();
-        var connection = new FitzConnection(
+        await using var transport = new QueuedTransport();
+        await using var connection = new FitzConnection(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 AuthSettleDelay: TimeSpan.Zero,
                 MaxInFlightRequests: 1,
                 MaxRequestQueueSize: 1),
@@ -399,7 +398,7 @@ public sealed class ClientTests
     [Fact]
     public async Task should_receive_notice_notification_given_connection_backed_subscription()
     {
-        var transport = new QueuedTransport();
+        await using var transport = new QueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
             if (sentFrameCount != 1)
@@ -413,7 +412,7 @@ public sealed class ClientTests
         };
         await using var client = new Client(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 AuthSettleDelay: TimeSpan.Zero,
                 TransportFactory: _ => transport));
 
@@ -463,7 +462,7 @@ public sealed class ClientTests
                 throw new TimeoutException("Timed out waiting for the requested condition.");
             }
 
-            await Task.Delay(10).ConfigureAwait(false);
+            await Task.Delay(10);
         }
     }
 
@@ -478,7 +477,7 @@ public sealed class ClientTests
 
         public List<byte[]> SentFrames { get; } = [];
 
-        public string Url => "ws://fake";
+        public Uri Url { get; } = new("ws://fake");
 
         public Task ConnectAsync(CancellationToken cancellationToken = default)
         {
@@ -520,7 +519,7 @@ public sealed class ClientTests
             _exception = exception;
         }
 
-        public string Url => "ws://failing";
+        public Uri Url { get; } = new("ws://failing");
 
         public Task ConnectAsync(CancellationToken cancellationToken = default)
         {
@@ -554,7 +553,7 @@ public sealed class ClientTests
 
     private sealed class IdleTransport : ITransport
     {
-        public string Url => "ws://idle";
+        public Uri Url { get; } = new("ws://idle");
 
         public Task ConnectAsync(CancellationToken cancellationToken = default)
         {
@@ -570,7 +569,7 @@ public sealed class ClientTests
 
         public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
         {
-            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken);
             return PooledFrame.Closed;
         }
 
@@ -595,12 +594,12 @@ public sealed class ClientTests
             _connectSignal = connectSignal;
         }
 
-        public string Url => "ws://blocking";
+        public Uri Url { get; } = new("ws://blocking");
 
         public async Task ConnectAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await _connectSignal.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await _connectSignal.WaitAsync(cancellationToken);
         }
 
         public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
@@ -611,7 +610,7 @@ public sealed class ClientTests
 
         public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
         {
-            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken);
             return PooledFrame.Closed;
         }
 
@@ -635,7 +634,7 @@ public sealed class ClientTests
         public List<byte[]> SentFrames { get; } = [];
         public Action<int>? AfterSend { get; set; }
 
-        public string Url => "ws://queued";
+        public Uri Url { get; } = new("ws://queued");
 
         public Task ConnectAsync(CancellationToken cancellationToken = default)
         {
@@ -661,7 +660,7 @@ public sealed class ClientTests
         public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return await _incoming.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+            return await _incoming.Reader.ReadAsync(cancellationToken);
         }
 
         public void QueueIncomingFrame(byte[] frame)

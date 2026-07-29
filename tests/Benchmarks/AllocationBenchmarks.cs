@@ -1,6 +1,7 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Jobs;
 using System.Buffers;
+using System.Security.Cryptography;
 
 namespace Cntryl.Fitz.Benchmarks;
 
@@ -11,7 +12,7 @@ namespace Cntryl.Fitz.Benchmarks;
 [SimpleJob]
 [MemoryDiagnoser]
 [PlainExporter]
-public class AllocationBenchmarks
+internal sealed class AllocationBenchmarks
 {
     private byte[] _buffer = null!;
     private const int PayloadSize = 1024;
@@ -20,7 +21,7 @@ public class AllocationBenchmarks
     public void Setup()
     {
         _buffer = new byte[PayloadSize];
-        System.Random.Shared.NextBytes(_buffer);
+        RandomNumberGenerator.Fill(_buffer);
     }
 
     /// <summary>

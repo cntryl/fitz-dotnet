@@ -13,7 +13,7 @@ internal sealed class TestQueuedTransport : ITransport
 
     public Action<int>? AfterSend { get; set; }
 
-    public string Url => "ws://queued";
+    public Uri Url { get; } = new("ws://queued");
 
     public Task ConnectAsync(CancellationToken cancellationToken = default)
     {

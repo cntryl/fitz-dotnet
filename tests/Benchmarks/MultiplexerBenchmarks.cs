@@ -12,7 +12,7 @@ namespace Cntryl.Fitz.Benchmarks;
 [ThreadingDiagnoser]
 [MemoryDiagnoser]
 [PlainExporter]
-public class MultiplexerBenchmarks
+internal sealed class MultiplexerBenchmarks
 {
     private ConcurrentDictionary<ushort, object> _correlations = null!;
     private object[] _handlers = null!;

@@ -14,7 +14,7 @@ public sealed class NoticeClientTests
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        var notice = new NoticeClient((messageType, payload, _) =>
+        using var notice = new NoticeClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -45,7 +45,7 @@ public sealed class NoticeClientTests
         CancellationToken seenCancellationToken = default;
         var receivedTcs = new TaskCompletionSource<NoticeMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var notice = new NoticeClient(
+        using var notice = new NoticeClient(
             (_, _, _) => Task.CompletedTask,
             (messageType, payload, _) =>
             {
@@ -108,7 +108,7 @@ public sealed class NoticeClientTests
     {
         Action<byte[]>? notifyHandler = null;
 
-        var notice = new NoticeClient(
+        using var notice = new NoticeClient(
             (_, _, _) => Task.CompletedTask,
             (messageType, _, _) =>
             {
@@ -137,7 +137,7 @@ public sealed class NoticeClientTests
             handlerStarted.TrySetResult(cancellationToken);
             try
             {
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -168,7 +168,7 @@ public sealed class NoticeClientTests
     {
         Action<byte[]>? notifyHandler = null;
 
-        var notice = new NoticeClient(
+        using var notice = new NoticeClient(
             (_, _, _) => Task.CompletedTask,
             (messageType, _, _) =>
             {
@@ -203,7 +203,7 @@ public sealed class NoticeClientTests
             if (message.Route == "notice://prod/app/first")
             {
                 firstHandlerStarted.TrySetResult();
-                await releaseFirstHandler.Task.WaitAsync(TimeSpan.FromSeconds(1)).ConfigureAwait(false);
+                await releaseFirstHandler.Task.WaitAsync(TimeSpan.FromSeconds(1), CancellationToken.None);
             }
         });
         const ulong subscriptionId = 55;

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Notice;
 using Cntryl.Fitz.Connection;
@@ -9,7 +10,7 @@ using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Notice;
 
-public sealed class NoticeClient : INoticeClient
+public sealed class NoticeClient : INoticeClient, IDisposable
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _request;
@@ -88,17 +89,22 @@ public sealed class NoticeClient : INoticeClient
             SingleReader = true,
             SingleWriter = false,
         });
-        var registration = new SubscriptionRegistration<NoticeMessage>(channel);
+        SubscriptionRegistration<NoticeMessage>? registration = null;
 
         var handleId = Interlocked.Increment(ref _nextHandleId);
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
+        var gateAcquired = false;
         try
         {
+            registration = new SubscriptionRegistration<NoticeMessage>(channel);
+            await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
+            gateAcquired = true;
+
             if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
             {
                 existingSubscription.Writers[handleId] = registration;
                 var existingHandle = CreateSubscription(pattern, handleId);
                 SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
+                registration = null;
                 return existingHandle;
             }
 
@@ -110,16 +116,17 @@ public sealed class NoticeClient : INoticeClient
 
             var handle = CreateSubscription(pattern, handleId);
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
+            registration = null;
             return handle;
-        }
-        catch
-        {
-            registration.Dispose();
-            throw;
         }
         finally
         {
-            _subscriptionGate.Release();
+            if (gateAcquired)
+            {
+                _subscriptionGate.Release();
+            }
+
+            registration?.Dispose();
         }
     }
 
@@ -160,9 +167,8 @@ public sealed class NoticeClient : INoticeClient
         finally
         {
             _subscriptionGate.Release();
+            registration?.Dispose();
         }
-
-        registration?.Dispose();
 
         if (subscriptionId.HasValue)
         {
@@ -237,6 +243,7 @@ public sealed class NoticeClient : INoticeClient
         _notificationRegistration = _registerNotificationHandler(MessageTypes.NoticeNotify, HandleNotification);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Malformed broker notifications are dropped without disrupting the receive loop.")]
     private void HandleNotification(ReadOnlyMemory<byte> payload)
     {
         try
@@ -321,6 +328,27 @@ public sealed class NoticeClient : INoticeClient
         {
             _subscriptionGate.Release();
         }
+    }
+
+    public void Dispose()
+    {
+        _notificationRegistration?.Dispose();
+        _reconnectRegistration?.Dispose();
+        lock (_gate)
+        {
+            foreach (var subscription in _subscriptionsByPattern.Values)
+            {
+                foreach (var registration in subscription.Writers.Values)
+                {
+                    registration.Dispose();
+                }
+            }
+
+            _subscriptionsByPattern.Clear();
+            _patternsBySubscriptionId.Clear();
+        }
+
+        _subscriptionGate.Dispose();
     }
 
     private sealed class NoticeSubscriptionState

@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using Cntryl.Fitz.Abstractions.Domains.Rpc;
 using Cntryl.Fitz.Connection;
@@ -82,6 +83,7 @@ public sealed class RpcClient : IRpcClient
         _responseTimeout = connectionTimeout ?? TimeSpan.FromSeconds(30);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Malformed or user-generated RPC response callbacks must terminate only their own call.")]
     public async IAsyncEnumerable<RpcResponseFrame> CallAsync(
         string route,
         ReadOnlyMemory<byte> body,
@@ -268,6 +270,7 @@ public sealed class RpcClient : IRpcClient
         });
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "RPC worker callbacks are user code and must not break notification dispatch.")]
     private async Task HandleIncomingRequestAsync(byte[] payload, CancellationToken cancellationToken)
     {
         try
@@ -390,6 +393,7 @@ public sealed class RpcClient : IRpcClient
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A best-effort overload response must not break notification dispatch.")]
     private async Task TrySendBackpressureResponseAsync(byte[] payload)
     {
         try
@@ -407,6 +411,7 @@ public sealed class RpcClient : IRpcClient
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Try-decode treats every malformed untrusted frame as a non-match.")]
     private static bool TryDecodeInboundRequest(byte[] payload, out byte[] correlationId, out string route)
     {
         correlationId = Array.Empty<byte>();
@@ -442,6 +447,7 @@ public sealed class RpcClient : IRpcClient
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Try-decode treats every malformed untrusted frame as a non-match.")]
     private static bool TryDecodeTerminalError(ReadOnlySpan<byte> payload, out RpcException rpcError)
     {
         rpcError = null!;

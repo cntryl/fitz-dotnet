@@ -124,6 +124,7 @@ public sealed class KvTransaction : IKvTransaction
 
     public async IAsyncEnumerable<KvPair> ScanAsync(KvScanQuery query, [EnumeratorCancellation] CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(query);
         ThrowIfClosed();
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_txId);

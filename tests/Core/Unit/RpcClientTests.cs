@@ -247,7 +247,7 @@ public sealed class RpcClientTests
 
         // Act
         await Task.Delay(50);
-        connectionClosed.Cancel();
+        await connectionClosed.CancelAsync();
 
         var ex = await Assert.ThrowsAsync<ConnectionException>(() => callTask);
 

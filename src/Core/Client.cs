@@ -72,7 +72,7 @@ public sealed class Client : IClient
 
             using var attemptCts = timeout == System.Threading.Timeout.InfiniteTimeSpan
                 ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-                : CreateAttemptCancellationSource(cancellationToken, remaining);
+                : CreateAttemptCancellationSource(remaining, cancellationToken);
 
             try
             {
@@ -126,7 +126,12 @@ public sealed class Client : IClient
         }
 
         _disposed = true;
-        await _connection.CloseAsync();
+        _leaseClient?.Dispose();
+        _noticeClient?.Dispose();
+        _queueClient?.Dispose();
+        _scheduleClient?.Dispose();
+        _streamClient?.Dispose();
+        await _connection.DisposeAsync().ConfigureAwait(false);
     }
 
     public IKvClient Kv()
@@ -168,10 +173,12 @@ public sealed class Client : IClient
 
     public ConnectionState State => _disposed ? ConnectionState.Closed : _connection.State;
 
-    private static CancellationTokenSource CreateAttemptCancellationSource(CancellationToken cancellationToken, TimeSpan remaining)
+    private static CancellationTokenSource CreateAttemptCancellationSource(TimeSpan remaining, CancellationToken cancellationToken)
     {
         var timeout = remaining <= TimeSpan.Zero ? TimeSpan.Zero : remaining;
-        return CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, new CancellationTokenSource(timeout).Token);
+        var source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        source.CancelAfter(timeout);
+        return source;
     }
 
     private static bool IsStartupReadinessFailure(ConnectionState state)

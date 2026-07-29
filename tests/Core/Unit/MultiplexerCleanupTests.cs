@@ -8,7 +8,7 @@ public sealed class MultiplexerCleanupTests
     [Fact]
     public async Task should_clean_up_on_send_failure()
     {
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var act = () => mux.RequestAsync(
@@ -29,7 +29,7 @@ public sealed class MultiplexerCleanupTests
     [Fact]
     public async Task should_allow_next_request_after_send_failure()
     {
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var firstTask = mux.RequestAsync(
@@ -60,7 +60,7 @@ public sealed class MultiplexerCleanupTests
     [Fact]
     public async Task should_not_dispatch_to_timed_out_request()
     {
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var requestTask = mux.RequestAsync(
@@ -79,7 +79,7 @@ public sealed class MultiplexerCleanupTests
     [Fact]
     public async Task should_not_deliver_stale_response_to_following_request_after_timeout()
     {
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var timedOutRequest = mux.RequestAsync(
@@ -107,20 +107,19 @@ public sealed class MultiplexerCleanupTests
     [Fact]
     public async Task should_handle_cancellation_before_send()
     {
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
         using var cts = new CancellationTokenSource();
 
         var requestTask = mux.RequestAsync(
             103,
             [0x1],
-            (_, _) =>
+            async (_, _) =>
             {
-                cts.Cancel();
-                return Task.CompletedTask;
+                await cts.CancelAsync();
             },
             TimeSpan.FromSeconds(5),
-            cts.Token
+            cancellationToken: cts.Token
         );
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => requestTask);
@@ -129,20 +128,20 @@ public sealed class MultiplexerCleanupTests
     [Fact]
     public async Task should_handle_cancellation_after_send()
     {
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
         using var cts = new CancellationTokenSource();
 
         var requestTask = mux.RequestAsync(
             104,
             [0x1],
-            static async (_, _) => await Task.Delay(100),
+            static async (_, token) => await Task.Delay(100, token),
             TimeSpan.FromSeconds(5),
-            cts.Token
+            cancellationToken: cts.Token
         );
 
         await Task.Delay(50);
-        cts.Cancel();
+        await cts.CancelAsync();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => requestTask);
     }
@@ -150,7 +149,7 @@ public sealed class MultiplexerCleanupTests
     [Fact]
     public async Task should_serialize_concurrent_requests_and_handle_cancel()
     {
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
         var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -160,7 +159,7 @@ public sealed class MultiplexerCleanupTests
             [0x1],
             static (_, _) => Task.CompletedTask,
             TimeSpan.FromSeconds(5),
-            firstCts.Token
+            cancellationToken: firstCts.Token
         );
 
         await Task.Delay(10);
@@ -176,7 +175,7 @@ public sealed class MultiplexerCleanupTests
             TimeSpan.FromSeconds(5)
         );
 
-        firstCts.Cancel();
+        await firstCts.CancelAsync();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
         await secondStarted.Task;
 
@@ -188,7 +187,7 @@ public sealed class MultiplexerCleanupTests
     [Fact]
     public async Task should_cancel_all_on_disconnect()
     {
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         // Use short timeout combined with disconnect to ensure shutdown message wins
@@ -245,7 +244,7 @@ public sealed class MultiplexerCleanupTests
     [Fact]
     public async Task should_handle_mixed_timeout_durations()
     {
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var shortTimeout = mux.RequestAsync(
@@ -274,7 +273,7 @@ public sealed class MultiplexerCleanupTests
     [Fact]
     public async Task should_not_leak_on_rapid_timeouts()
     {
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         for (int i = 0; i < 10; i++)

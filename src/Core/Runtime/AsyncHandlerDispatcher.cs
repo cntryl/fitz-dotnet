@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Cntryl.Fitz.Runtime;
 
@@ -102,6 +103,7 @@ internal sealed class AsyncHandlerDispatcher
         _ = task.ContinueWith(static (completed, state) => ((AsyncHandlerDispatcher)state!).OnTaskCompleted(completed), this, TaskScheduler.Default);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The dispatcher isolates arbitrary user callback failures and reports them through the configured error sink.")]
     private async Task RunAsync(Func<CancellationToken, ValueTask> handler)
     {
         using var timeoutCts = _timeout == System.Threading.Timeout.InfiniteTimeSpan

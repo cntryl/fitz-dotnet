@@ -14,25 +14,23 @@ public sealed class WebSocketTransport : ITransport
     private ClientWebSocket? _socket;
 
     public WebSocketTransport(
-        string url,
+        Uri url,
         TimeSpan timeout,
         int maxFrameSize,
         WebSocketOptions? options = null,
         HeartbeatOptions? heartbeat = null)
     {
-        if (maxFrameSize <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(maxFrameSize));
-        }
+        ArgumentNullException.ThrowIfNull(url);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxFrameSize);
 
-        _uri = new Uri(url);
+        _uri = url;
         _timeout = timeout;
         _maxFrameSize = maxFrameSize;
         _options = options;
         _heartbeat = heartbeat ?? new HeartbeatOptions();
     }
 
-    public string Url => _uri.ToString();
+    public Uri Url => _uri;
 
     public async Task ConnectAsync(CancellationToken cancellationToken = default)
     {
@@ -174,6 +172,7 @@ public sealed class WebSocketTransport : ITransport
     public async ValueTask DisposeAsync()
     {
         await CloseAsync().ConfigureAwait(false);
+        _sendLock.Dispose();
     }
 
     private ClientWebSocket EnsureSocket()

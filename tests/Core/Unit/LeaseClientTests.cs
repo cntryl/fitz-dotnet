@@ -16,7 +16,7 @@ public sealed class LeaseClientTests
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        var leaseClient = new LeaseClient((messageType, payload, _) =>
+        using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -46,7 +46,7 @@ public sealed class LeaseClientTests
     public async Task should_return_held_lease_info_given_holder_present_when_querying_lease()
     {
         // Arrange
-        var leaseClient = new LeaseClient((messageType, payload, _) =>
+        using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.LeaseQuery, messageType);
 
@@ -74,7 +74,7 @@ public sealed class LeaseClientTests
     public async Task should_ignore_pending_waiters_given_success_response_when_querying_lease()
     {
         // Arrange
-        var leaseClient = new LeaseClient((messageType, payload, _) =>
+        using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.LeaseQuery, messageType);
 
@@ -102,7 +102,7 @@ public sealed class LeaseClientTests
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
 
-        var leaseClient = new LeaseClient((messageType, payload, _) =>
+        using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -144,7 +144,7 @@ public sealed class LeaseClientTests
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
 
-        var leaseClient = new LeaseClient((messageType, payload, _) =>
+        using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -186,7 +186,7 @@ public sealed class LeaseClientTests
         CancellationToken seenCancellationToken = default;
         var receivedTcs = new TaskCompletionSource<LeaseChangeEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var leaseClient = new LeaseClient(
+        using var leaseClient = new LeaseClient(
             (messageType, payload, _) =>
             {
                 seenMessageType = messageType;
@@ -243,7 +243,7 @@ public sealed class LeaseClientTests
     public async Task should_mark_lease_as_closed_after_disconnect()
     {
         // Arrange
-        var transport = new TestQueuedTransport();
+        await using var transport = new TestQueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
             if (sentFrameCount == 1)
@@ -262,9 +262,9 @@ public sealed class LeaseClientTests
             }
         };
 
-        var config = new ClientConfig("ws://localhost:4190/ws", TransportFactory: _ => transport);
-        var connection = new FitzConnection(config, () => transport);
-        var leaseClient = new LeaseClient(connection);
+        var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), TransportFactory: _ => transport);
+        await using var connection = new FitzConnection(config, () => transport);
+        using var leaseClient = new LeaseClient(connection);
 
         await connection.ConnectAsync();
         var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
@@ -281,8 +281,8 @@ public sealed class LeaseClientTests
     [Fact]
     public async Task should_mark_lease_as_closed_after_reconnect()
     {
-        var firstTransport = new TestQueuedTransport();
-        var secondTransport = new TestQueuedTransport();
+        await using var firstTransport = new TestQueuedTransport();
+        await using var secondTransport = new TestQueuedTransport();
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         firstTransport.AfterSend = sentFrameCount =>
@@ -318,12 +318,12 @@ public sealed class LeaseClientTests
 
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
-        var connection = new FitzConnection(
+        await using var connection = new FitzConnection(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        var leaseClient = new LeaseClient(connection);
+        using var leaseClient = new LeaseClient(connection);
 
         await connection.ConnectAsync();
         var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
@@ -342,8 +342,8 @@ public sealed class LeaseClientTests
     [Fact]
     public async Task should_restore_lease_subscription_after_reconnect()
     {
-        var firstTransport = new TestQueuedTransport();
-        var secondTransport = new TestQueuedTransport();
+        await using var firstTransport = new TestQueuedTransport();
+        await using var secondTransport = new TestQueuedTransport();
         var firstNotification = new TaskCompletionSource<LeaseChangeEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondNotification = new TaskCompletionSource<LeaseChangeEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
         var notificationCount = 0;
@@ -384,7 +384,7 @@ public sealed class LeaseClientTests
 
                 _ = Task.Run(async () =>
                 {
-                    await Task.Delay(50).ConfigureAwait(false);
+                    await Task.Delay(50);
                     using var notification = new BinaryBufferWriter();
                     notification.WriteU64(777);
                     notification.WriteString("lease://prod/app/lock");
@@ -395,12 +395,12 @@ public sealed class LeaseClientTests
 
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
-        var connection = new FitzConnection(
+        await using var connection = new FitzConnection(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        var leaseClient = new LeaseClient(connection);
+        using var leaseClient = new LeaseClient(connection);
 
         await connection.ConnectAsync();
         var subscription = await leaseClient.SubscribeAsync("lease://prod/app/lock", (evt, _) =>

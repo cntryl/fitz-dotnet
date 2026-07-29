@@ -14,7 +14,7 @@ namespace Cntryl.Fitz.Benchmarks;
 [SimpleJob]
 [MemoryDiagnoser]
 [PlainExporter]
-public class DomainHotPathBenchmarks
+internal sealed class DomainHotPathBenchmarks : IDisposable
 {
     private static readonly byte[] Payload = "payload"u8.ToArray();
 
@@ -34,11 +34,20 @@ public class DomainHotPathBenchmarks
         _schedule = new ScheduleClient(ScheduleRequest);
     }
 
+    [GlobalCleanup]
+    public void Dispose()
+    {
+        _queue.Dispose();
+        _lease.Dispose();
+        _notice.Dispose();
+        _schedule.Dispose();
+    }
+
     [Benchmark]
     public async Task KvBeginGet()
     {
-        var tx = await _kv.BeginAsync("kv://bench/hotpath");
-        _ = await tx.GetAsync(Payload);
+        var tx = await _kv.BeginAsync("kv://bench/hotpath").ConfigureAwait(false);
+        _ = await tx.GetAsync(Payload).ConfigureAwait(false);
     }
 
     [Benchmark]

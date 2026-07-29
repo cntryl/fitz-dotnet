@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Globalization;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -24,7 +25,7 @@ public sealed class ConformanceContractTests
             "1.0",
             "ws",
             "anonymous",
-            DateTimeOffset.Parse("2026-07-09T00:00:00Z"),
+            DateTimeOffset.Parse("2026-07-09T00:00:00Z", CultureInfo.InvariantCulture),
             [
                 new Cntryl.Fitz.Core.Tests.Integration.ScenarioResult(
                     "CS-001",

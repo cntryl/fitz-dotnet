@@ -1,12 +1,13 @@
 using Cntryl.Fitz;
 using Cntryl.Fitz.Errors;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Cntryl.Fitz.Connection;
 
 /// <summary>
 /// Routes framed responses and notifications to pending requests and handlers.
 /// </summary>
-public sealed class Multiplexer
+public sealed class Multiplexer : IDisposable
 {
     private readonly object _gate = new();
     private readonly Dictionary<ushort, LinkedList<PendingRequest>> _pending = new();
@@ -85,7 +86,7 @@ public sealed class Multiplexer
         return RegisterNotificationHandlerCore(messageType, NotificationHandler.FromBorrowed(handler));
     }
 
-    private IDisposable RegisterNotificationHandlerCore(ushort messageType, NotificationHandler handler)
+    private NotificationRegistration RegisterNotificationHandlerCore(ushort messageType, NotificationHandler handler)
     {
         long handlerId;
         lock (_gate)
@@ -106,6 +107,7 @@ public sealed class Multiplexer
     /// <summary>
     /// Dispatches a frame payload to a pending request or notification handlers.
     /// </summary>
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Notification handlers are user callbacks and must not break frame dispatch.")]
     public void Dispatch(ushort messageType, ReadOnlyMemory<byte> payload)
     {
         PendingRequest? pending = null;
@@ -242,9 +244,11 @@ public sealed class Multiplexer
         byte[] frameData,
         Func<ReadOnlyMemory<byte>, CancellationToken, Task> send,
         TimeSpan timeout,
-        CancellationToken cancellationToken = default,
-        Func<ReadOnlyMemory<byte>, bool>? responseMatcher = null)
+        Func<ReadOnlyMemory<byte>, bool>? responseMatcher = null,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(send);
+
         SemaphoreSlim? lane = null;
         CancellationTokenSource? laneWaitCts = null;
         if (responseMatcher is null)
@@ -266,7 +270,7 @@ public sealed class Multiplexer
         }
 
         var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var request = new PendingRequest(this, messageType, timeout, cancellationToken, tcs, responseMatcher);
+        var request = new PendingRequest(this, messageType, timeout, tcs, responseMatcher, cancellationToken);
 
         using var timeoutCts = timeout == Timeout.InfiniteTimeSpan ? null : new CancellationTokenSource(timeout);
         using var cancellationRegistration = cancellationToken.CanBeCanceled
@@ -324,6 +328,23 @@ public sealed class Multiplexer
         foreach (var request in pending)
         {
             request.Promise.TrySetException(new ConnectionException("Connection closed or reset"));
+        }
+    }
+
+    public void Dispose()
+    {
+        SetDisconnected();
+
+        lock (_gate)
+        {
+            _laneStateCts.Dispose();
+            foreach (var lane in _requestLanes.Values)
+            {
+                lane.Dispose();
+            }
+
+            _requestLanes.Clear();
+            _notificationHandlers.Clear();
         }
     }
 
@@ -451,9 +472,9 @@ public sealed class Multiplexer
             Multiplexer owner,
             ushort messageType,
             TimeSpan timeout,
-            CancellationToken cancellationToken,
             TaskCompletionSource<byte[]> promise,
-            Func<ReadOnlyMemory<byte>, bool>? responseMatcher = null)
+            Func<ReadOnlyMemory<byte>, bool>? responseMatcher,
+            CancellationToken cancellationToken)
         {
             _owner = owner;
             _messageType = messageType;
@@ -469,6 +490,7 @@ public sealed class Multiplexer
 
         internal TaskCompletionSource<byte[]> Promise { get; }
 
+        [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A user-supplied response matcher must not break frame dispatch.")]
         internal bool MatchesResponse(ReadOnlyMemory<byte> payload)
         {
             if (_responseMatcher is null)

@@ -45,6 +45,8 @@ public sealed class PerfTimer : IDisposable
     /// </summary>
     public static long Measure(Action action, LatencyHistogram? histogram = null)
     {
+        ArgumentNullException.ThrowIfNull(action);
+
         using (var timer = new PerfTimer(histogram))
         {
             action();
@@ -57,6 +59,8 @@ public sealed class PerfTimer : IDisposable
     /// </summary>
     public static async Task<long> MeasureAsync(Func<Task> action, LatencyHistogram? histogram = null)
     {
+        ArgumentNullException.ThrowIfNull(action);
+
         using (var timer = new PerfTimer(histogram))
         {
             await action().ConfigureAwait(false);

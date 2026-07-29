@@ -10,7 +10,7 @@ namespace Cntryl.Fitz.Benchmarks;
 [SimpleJob(warmupCount: 3, iterationCount: 5)]
 [MemoryDiagnoser]
 [PlainExporter]
-public class FrameCodecBenchmarks
+internal sealed class FrameCodecBenchmarks
 {
     private byte[]? _payload64;
     private byte[]? _payload256;

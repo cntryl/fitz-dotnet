@@ -1,4 +1,6 @@
 using System.Runtime.CompilerServices;
+using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Connection;
@@ -9,7 +11,7 @@ using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Lease;
 
-public sealed class LeaseClient : ILeaseClient
+public sealed class LeaseClient : ILeaseClient, IDisposable
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
@@ -113,6 +115,7 @@ public sealed class LeaseClient : ILeaseClient
         return new LeaseHandle(_request, route, fencedToken, _registerOnDisconnect);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Lease execution must aggregate arbitrary user callback, renewal, and cleanup failures.")]
     public async ValueTask<T> WithLeaseAsync<T>(
         string route,
         ulong ttlSecs,
@@ -140,7 +143,7 @@ public sealed class LeaseClient : ILeaseClient
                 options?.WaitForAvailability == true &&
                 (error.Code is "ACQUIRE_NOT_ACQUIRED" or "LEASE_HELD" or "LEASE_QUEUED"))
             {
-                await Task.Delay(Random.Shared.Next(delayMilliseconds + 1), ct).ConfigureAwait(false);
+                await Task.Delay(RandomNumberGenerator.GetInt32(delayMilliseconds + 1), ct).ConfigureAwait(false);
                 delayMilliseconds = Math.Min(delayMilliseconds * 2, 1000);
             }
         }
@@ -173,7 +176,7 @@ public sealed class LeaseClient : ILeaseClient
             catch (Exception error)
             {
                 leaseLoss = new LeaseException("Lease ownership was lost", "LEASE_LOST", error);
-                lifecycle.Cancel();
+                await lifecycle.CancelAsync().ConfigureAwait(false);
                 break;
             }
         }
@@ -324,17 +327,22 @@ public sealed class LeaseClient : ILeaseClient
             SingleReader = true,
             SingleWriter = false,
         });
-        var registration = new SubscriptionRegistration<LeaseChangeEvent>(channel);
+        SubscriptionRegistration<LeaseChangeEvent>? registration = null;
         var handleId = Interlocked.Increment(ref _nextHandleId);
+        var gateAcquired = false;
 
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            registration = new SubscriptionRegistration<LeaseChangeEvent>(channel);
+            await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
+            gateAcquired = true;
+
             if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
             {
                 existingSubscription.Registrations[handleId] = registration;
                 var existingHandle = CreateSubscription(pattern, handleId);
                 SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
+                registration = null;
                 return existingHandle;
             }
 
@@ -346,16 +354,17 @@ public sealed class LeaseClient : ILeaseClient
 
             var handle = CreateSubscription(pattern, handleId);
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
+            registration = null;
             return handle;
-        }
-        catch
-        {
-            registration.Dispose();
-            throw;
         }
         finally
         {
-            _subscriptionGate.Release();
+            if (gateAcquired)
+            {
+                _subscriptionGate.Release();
+            }
+
+            registration?.Dispose();
         }
     }
 
@@ -435,9 +444,8 @@ public sealed class LeaseClient : ILeaseClient
         finally
         {
             _subscriptionGate.Release();
+            registration?.Dispose();
         }
-
-        registration?.Dispose();
 
         if (shouldUnsubscribe)
         {
@@ -461,6 +469,7 @@ public sealed class LeaseClient : ILeaseClient
         _notificationRegistration = _registerNotificationHandler(MessageTypes.LeaseNotify, HandleNotification);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Malformed broker notifications are dropped without disrupting the receive loop.")]
     private void HandleNotification(ReadOnlyMemory<byte> payload)
     {
         try
@@ -543,6 +552,27 @@ public sealed class LeaseClient : ILeaseClient
         {
             _subscriptionGate.Release();
         }
+    }
+
+    public void Dispose()
+    {
+        _notificationRegistration?.Dispose();
+        _reconnectRegistration?.Dispose();
+        lock (_gate)
+        {
+            foreach (var subscription in _subscriptionsByPattern.Values)
+            {
+                foreach (var registration in subscription.Registrations.Values)
+                {
+                    registration.Dispose();
+                }
+            }
+
+            _subscriptionsByPattern.Clear();
+            _patternsBySubscriptionId.Clear();
+        }
+
+        _subscriptionGate.Dispose();
     }
 
     private sealed class LeaseSubscriptionState

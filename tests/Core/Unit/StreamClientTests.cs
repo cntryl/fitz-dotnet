@@ -17,7 +17,7 @@ public sealed class StreamClientTests
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -48,7 +48,7 @@ public sealed class StreamClientTests
     public async Task should_allow_optional_payload_given_begin_response_when_beginning_stream()
     {
         // Arrange
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamBegin, messageType);
 
@@ -72,7 +72,7 @@ public sealed class StreamClientTests
     {
         // Arrange
         var requestCount = 0;
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             requestCount++;
             Assert.Equal(MessageTypes.StreamRead, messageType);
@@ -104,7 +104,7 @@ public sealed class StreamClientTests
     {
         // Arrange
         var requestCount = 0;
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             requestCount++;
             Assert.Equal(MessageTypes.StreamRead, messageType);
@@ -160,7 +160,7 @@ public sealed class StreamClientTests
     public async Task should_return_records_given_wrapped_payload_when_reading_stream()
     {
         // Arrange
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamRead, messageType);
 
@@ -229,7 +229,7 @@ public sealed class StreamClientTests
     {
         // Arrange
         var requestCount = 0;
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             requestCount++;
             Assert.Equal(MessageTypes.StreamRead, messageType);
@@ -275,7 +275,7 @@ public sealed class StreamClientTests
     public async Task should_reject_trailing_bytes_given_count_prefixed_payload_when_reading_stream()
     {
         // Arrange
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamRead, messageType);
 
@@ -327,7 +327,7 @@ public sealed class StreamClientTests
     [Fact]
     public async Task should_return_raw_page_given_filtered_items_when_reading_stream_page()
     {
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamRead, messageType);
 
@@ -419,7 +419,7 @@ public sealed class StreamClientTests
     public async Task should_return_metadata_given_wrapped_payload_when_reading_stream_metadata()
     {
         // Arrange
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamGetMetadata, messageType);
 
@@ -457,7 +457,7 @@ public sealed class StreamClientTests
     public async Task should_return_last_record_given_wrapped_payload_when_peeking_stream()
     {
         // Arrange
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamLast, messageType);
 
@@ -498,7 +498,7 @@ public sealed class StreamClientTests
         StreamCommitEvent? received = null;
         CancellationToken seenCancellationToken = default;
         var receivedTcs = new TaskCompletionSource<StreamCommitEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var stream = new StreamClient(
+        using var stream = new StreamClient(
             (messageType, payload, _) =>
             {
                 var request = new BinaryBufferReader(payload);
@@ -566,7 +566,7 @@ public sealed class StreamClientTests
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
 
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -614,7 +614,7 @@ public sealed class StreamClientTests
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
 
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -664,7 +664,7 @@ public sealed class StreamClientTests
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
 
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -698,7 +698,7 @@ public sealed class StreamClientTests
     public async Task should_ignore_commit_payload_given_success_response_when_committing()
     {
         // Arrange
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -727,7 +727,7 @@ public sealed class StreamClientTests
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
 
-        var stream = new StreamClient((messageType, payload, _) =>
+        using var stream = new StreamClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -759,7 +759,7 @@ public sealed class StreamClientTests
     [Fact]
     public async Task should_mark_stream_session_as_closed_after_disconnect()
     {
-        var transport = new TestQueuedTransport();
+        await using var transport = new TestQueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
             if (sentFrameCount == 1)
@@ -778,9 +778,9 @@ public sealed class StreamClientTests
             }
         };
 
-        var config = new ClientConfig("ws://localhost:4190/ws", TransportFactory: _ => transport);
-        var connection = new FitzConnection(config, () => transport);
-        var stream = new StreamClient(connection);
+        var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), TransportFactory: _ => transport);
+        await using var connection = new FitzConnection(config, () => transport);
+        using var stream = new StreamClient(connection);
 
         await connection.ConnectAsync();
         var session = await stream.BeginAsync("stream://prod/app/events");
@@ -796,8 +796,8 @@ public sealed class StreamClientTests
     [Fact]
     public async Task should_mark_stream_session_as_closed_after_reconnect()
     {
-        var firstTransport = new TestQueuedTransport();
-        var secondTransport = new TestQueuedTransport();
+        await using var firstTransport = new TestQueuedTransport();
+        await using var secondTransport = new TestQueuedTransport();
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         firstTransport.AfterSend = sentFrameCount =>
@@ -833,12 +833,12 @@ public sealed class StreamClientTests
 
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
-        var connection = new FitzConnection(
+        await using var connection = new FitzConnection(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        var stream = new StreamClient(connection);
+        using var stream = new StreamClient(connection);
 
         await connection.ConnectAsync();
         var session = await stream.BeginAsync("stream://prod/app/events");
@@ -857,8 +857,8 @@ public sealed class StreamClientTests
     [Fact]
     public async Task should_restore_stream_subscription_after_reconnect()
     {
-        var firstTransport = new TestQueuedTransport();
-        var secondTransport = new TestQueuedTransport();
+        await using var firstTransport = new TestQueuedTransport();
+        await using var secondTransport = new TestQueuedTransport();
         var firstNotification = new TaskCompletionSource<StreamCommitEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
         var secondNotification = new TaskCompletionSource<StreamCommitEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
         var notificationCount = 0;
@@ -899,7 +899,7 @@ public sealed class StreamClientTests
 
                 _ = Task.Run(async () =>
                 {
-                    await Task.Delay(50).ConfigureAwait(false);
+                    await Task.Delay(50);
                     using var notification = new BinaryBufferWriter();
                     notification.WriteU64(777);
                     notification.WriteString("stream://prod/app/events");
@@ -913,12 +913,12 @@ public sealed class StreamClientTests
 
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
-        var connection = new FitzConnection(
+        await using var connection = new FitzConnection(
             new ClientConfig(
-                "ws://localhost:4190/ws",
+                new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        var stream = new StreamClient(connection);
+        using var stream = new StreamClient(connection);
 
         await connection.ConnectAsync();
         var subscription = await stream.SubscribeAsync("stream://prod/*/*", (evt, _) =>

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Connection;
@@ -9,7 +10,7 @@ using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Schedule;
 
-public sealed class ScheduleClient : IScheduleClient
+public sealed class ScheduleClient : IScheduleClient, IDisposable
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
@@ -167,18 +168,23 @@ public sealed class ScheduleClient : IScheduleClient
             SingleReader = true,
             SingleWriter = false,
         });
-        var registration = new SubscriptionRegistration<ScheduleNotification>(channel);
+        SubscriptionRegistration<ScheduleNotification>? registration = null;
 
         var handleId = Interlocked.Increment(ref _nextHandleId);
+        var gateAcquired = false;
 
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            registration = new SubscriptionRegistration<ScheduleNotification>(channel);
+            await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
+            gateAcquired = true;
+
             if (_subscriptionsByRoute.TryGetValue(pattern, out var existingSubscription))
             {
                 existingSubscription.Writers[handleId] = registration;
                 var existingHandle = CreateSubscription(pattern, handleId);
                 SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
+                registration = null;
                 return existingHandle;
             }
 
@@ -190,16 +196,17 @@ public sealed class ScheduleClient : IScheduleClient
 
             var handle = CreateSubscription(pattern, handleId);
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
+            registration = null;
             return handle;
-        }
-        catch
-        {
-            registration.Dispose();
-            throw;
         }
         finally
         {
-            _subscriptionGate.Release();
+            if (gateAcquired)
+            {
+                _subscriptionGate.Release();
+            }
+
+            registration?.Dispose();
         }
     }
 
@@ -240,9 +247,8 @@ public sealed class ScheduleClient : IScheduleClient
         finally
         {
             _subscriptionGate.Release();
+            registration?.Dispose();
         }
-
-        registration?.Dispose();
 
         if (shouldUnsubscribe)
         {
@@ -302,6 +308,7 @@ public sealed class ScheduleClient : IScheduleClient
         _notificationRegistration = _registerNotificationHandler(MessageTypes.ScheduleNotify, HandleNotification);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Malformed broker notifications are dropped without disrupting the receive loop.")]
     private void HandleNotification(ReadOnlyMemory<byte> payload)
     {
         try
@@ -409,6 +416,27 @@ public sealed class ScheduleClient : IScheduleClient
         {
             _subscriptionGate.Release();
         }
+    }
+
+    public void Dispose()
+    {
+        _notificationRegistration?.Dispose();
+        _reconnectRegistration?.Dispose();
+        lock (_gate)
+        {
+            foreach (var subscription in _subscriptionsByRoute.Values)
+            {
+                foreach (var registration in subscription.Writers.Values)
+                {
+                    registration.Dispose();
+                }
+            }
+
+            _subscriptionsByRoute.Clear();
+            _routesBySubscriptionId.Clear();
+        }
+
+        _subscriptionGate.Dispose();
     }
 
     private sealed class ScheduleSubscriptionState

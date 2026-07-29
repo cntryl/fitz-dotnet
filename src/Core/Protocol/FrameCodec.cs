@@ -10,10 +10,7 @@ public static class FrameCodec
 
     public static int MaxEncodedSize(int payloadLength)
     {
-        if (payloadLength < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(payloadLength));
-        }
+        ArgumentOutOfRangeException.ThrowIfNegative(payloadLength);
 
         return checked(MaxHeaderSize + payloadLength);
     }

@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Collections.Generic;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
@@ -334,6 +335,7 @@ internal static class StreamWireHelpers
         return reader.ReadMemory(payloadLengthInt);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort metadata parsing treats malformed broker payloads as an absent offset.")]
     internal static ulong TryParseCommitOffset(ReadOnlySpan<byte> payload)
     {
         try

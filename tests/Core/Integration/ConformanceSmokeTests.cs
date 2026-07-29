@@ -1,4 +1,5 @@
 using System.Text;
+using System.Diagnostics.CodeAnalysis;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Abstractions.Domains.Rpc;
 using Cntryl.Fitz.Errors;
@@ -6,6 +7,7 @@ using Cntryl.Fitz.Observability;
 
 namespace Cntryl.Fitz.Core.Tests.Integration;
 
+[SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Conformance scenarios intentionally capture arbitrary client failures as structured result evidence.")]
 public sealed partial class ConformanceSmokeTests
 {
     [Fact]
@@ -358,7 +360,7 @@ public sealed partial class ConformanceSmokeTests
             });
 
             await Task.Delay(100);
-            cts.Cancel();
+            await cts.CancelAsync();
 
             Exception? caught = null;
             try
@@ -454,6 +456,7 @@ public sealed partial class ConformanceSmokeTests
         }
     }
 
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The verifier client is conditionally created and disposed in the method's finally block.")]
     private static async Task<ScenarioResult> RunCs010ReconnectAndRetryBehavior(string transport, string authMode)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -530,7 +533,7 @@ public sealed partial class ConformanceSmokeTests
             responderWorker = await responderClient.Rpc().RegisterWorkerAsync(pendingCallRoute, async (_, writer, ct) =>
             {
                 pendingCallStarted.TrySetResult(true);
-                await releasePendingCall.Task.WaitAsync(ct).ConfigureAwait(false);
+                await releasePendingCall.Task.WaitAsync(ct);
                 await writer.SendAsync("late"u8.ToArray(), isEnd: true, ct);
             });
 
@@ -633,9 +636,9 @@ public sealed partial class ConformanceSmokeTests
         finally
         {
             releasePendingCall.TrySetResult(true);
-            await DisposeQuietlyAsync(verifierClient).ConfigureAwait(false);
-            await DisposeQuietlyAsync(responderWorker).ConfigureAwait(false);
-            await DisposeQuietlyAsync(restoredWorker).ConfigureAwait(false);
+            await DisposeQuietlyAsync(verifierClient);
+            await DisposeQuietlyAsync(responderWorker);
+            await DisposeQuietlyAsync(restoredWorker);
         }
     }
 
@@ -901,7 +904,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("second RPC call remained pending while first was in flight");
             evidence.Add("configured maxInFlightRequests=16, worker maxConcurrency=1, and burst size=2");
 
-            if (!await firstNext.ConfigureAwait(false) || !await secondNext.ConfigureAwait(false))
+            if (!await firstNext || !await secondNext)
             {
                 return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "expected both RPC calls to yield one response frame");
             }
@@ -912,7 +915,7 @@ public sealed partial class ConformanceSmokeTests
                 return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "burst RPC responses were not correlated to their request bodies");
             }
 
-            if (await firstEnumerator.MoveNextAsync().ConfigureAwait(false) || await secondEnumerator.MoveNextAsync().ConfigureAwait(false))
+            if (await firstEnumerator.MoveNextAsync() || await secondEnumerator.MoveNextAsync())
             {
                 return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "expected single-frame RPC responses");
             }
@@ -1064,9 +1067,9 @@ public sealed partial class ConformanceSmokeTests
         );
     }
 
-    private static async Task AssertReconnectInvalidationAsync(Func<Task> operation, Func<Exception, bool> predicate, string successEvidence, ICollection<string> evidence)
+    private static async Task AssertReconnectInvalidationAsync(Func<Task> operation, Func<Exception, bool> predicate, string successEvidence, List<string> evidence)
     {
-        var ex = await CaptureExceptionAsync(operation).ConfigureAwait(false);
+        var ex = await CaptureExceptionAsync(operation);
         if (ex is null)
         {
             throw new InvalidOperationException($"{successEvidence} did not throw after reconnect.");
@@ -1084,7 +1087,7 @@ public sealed partial class ConformanceSmokeTests
     {
         try
         {
-            await operation().ConfigureAwait(false);
+            await operation();
             return null;
         }
         catch (Exception ex)
@@ -1102,7 +1105,7 @@ public sealed partial class ConformanceSmokeTests
 
         try
         {
-            await resource.DisposeAsync().ConfigureAwait(false);
+            await resource.DisposeAsync();
         }
         catch
         {

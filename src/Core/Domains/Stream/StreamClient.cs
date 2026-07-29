@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Connection;
@@ -9,7 +10,7 @@ using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Stream;
 
-public sealed class StreamClient : IStreamClient
+public sealed class StreamClient : IStreamClient, IDisposable
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
@@ -229,12 +230,16 @@ public sealed class StreamClient : IStreamClient
             SingleReader = true,
             SingleWriter = false,
         });
-        var registration = new SubscriptionRegistration<StreamCommitEvent>(channel);
+        SubscriptionRegistration<StreamCommitEvent>? registration = null;
         var handleId = Interlocked.Increment(ref _nextHandleId);
+        var gateAcquired = false;
 
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            registration = new SubscriptionRegistration<StreamCommitEvent>(channel);
+            await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
+            gateAcquired = true;
+
             StreamSubscription? existingHandle = null;
             lock (_gate)
             {
@@ -248,6 +253,7 @@ public sealed class StreamClient : IStreamClient
             if (existingHandle is not null)
             {
                 SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
+                registration = null;
                 return existingHandle;
             }
 
@@ -262,16 +268,17 @@ public sealed class StreamClient : IStreamClient
 
             var handle = CreateSubscription(pattern, handleId);
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
+            registration = null;
             return handle;
-        }
-        catch
-        {
-            registration.Dispose();
-            throw;
         }
         finally
         {
-            _subscriptionGate.Release();
+            if (gateAcquired)
+            {
+                _subscriptionGate.Release();
+            }
+
+            registration?.Dispose();
         }
     }
 
@@ -331,9 +338,8 @@ public sealed class StreamClient : IStreamClient
         finally
         {
             _subscriptionGate.Release();
+            registration?.Dispose();
         }
-
-        registration?.Dispose();
 
         if (shouldUnsubscribe)
         {
@@ -357,6 +363,7 @@ public sealed class StreamClient : IStreamClient
         _notificationRegistration = _registerNotificationHandler(MessageTypes.StreamNotify, HandleNotification);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Malformed broker notifications are dropped without disrupting the receive loop.")]
     private void HandleNotification(ReadOnlyMemory<byte> payload)
     {
         try
@@ -500,6 +507,27 @@ public sealed class StreamClient : IStreamClient
         }
 
         return _retryRequest(operation, messageType, payload, cancellationToken);
+    }
+
+    public void Dispose()
+    {
+        _notificationRegistration?.Dispose();
+        _reconnectRegistration?.Dispose();
+        lock (_gate)
+        {
+            foreach (var subscription in _subscriptionsByPattern.Values)
+            {
+                foreach (var registration in subscription.Registrations.Values)
+                {
+                    registration.Dispose();
+                }
+            }
+
+            _subscriptionsByPattern.Clear();
+            _patternsBySubscriptionId.Clear();
+        }
+
+        _subscriptionGate.Dispose();
     }
 
     private sealed class StreamSubscriptionState

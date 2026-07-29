@@ -34,6 +34,9 @@ public sealed class PerfSummary
         long? p99Target = null,
         long? throughtputTarget = null)
     {
+        ArgumentNullException.ThrowIfNull(histogram);
+        ArgumentNullException.ThrowIfNull(meter);
+
         var summary = new PerfSummary
         {
             TestName = testName,

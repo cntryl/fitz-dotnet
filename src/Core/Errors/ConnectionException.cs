@@ -11,4 +11,8 @@ public sealed class ConnectionException : FitzException
         : base(message, innerException)
     {
     }
+
+    public ConnectionException()
+    {
+    }
 }

@@ -11,7 +11,7 @@ namespace Cntryl.Fitz.Benchmarks;
 [MemoryDiagnoser]
 [ThreadingDiagnoser]
 [PlainExporter]
-public class MultiplexerHotPathBenchmarks
+internal sealed class MultiplexerHotPathBenchmarks : IDisposable
 {
     private Multiplexer _mux = null!;
 
@@ -20,6 +20,12 @@ public class MultiplexerHotPathBenchmarks
     {
         _mux = new Multiplexer();
         _mux.SetConnected();
+    }
+
+    [GlobalCleanup]
+    public void Dispose()
+    {
+        _mux.Dispose();
     }
 
     [Benchmark]
@@ -44,12 +50,12 @@ public class MultiplexerHotPathBenchmarks
         var first = _mux.RequestAsync(
             451,
             [0x1],
-            static async (_, _) =>
+            static async (_, token) =>
             {
-                await Task.Delay(10).ConfigureAwait(false);
+                await Task.Delay(10, token).ConfigureAwait(false);
             },
             TimeSpan.FromSeconds(5),
-            cts.Token
+            cancellationToken: cts.Token
         );
 
         var second = _mux.RequestAsync(
@@ -59,7 +65,7 @@ public class MultiplexerHotPathBenchmarks
             TimeSpan.FromSeconds(5)
         );
 
-        cts.Cancel();
+        await cts.CancelAsync().ConfigureAwait(false);
         try
         {
             await first.ConfigureAwait(false);

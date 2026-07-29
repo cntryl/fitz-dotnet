@@ -46,10 +46,7 @@ public sealed class BinaryBufferReader
 
     public byte[] ReadBytes(int length)
     {
-        if (length < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(length));
-        }
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
 
         var result = GC.AllocateUninitializedArray<byte>(length);
         ReadSpan(length).CopyTo(result);
@@ -58,10 +55,7 @@ public sealed class BinaryBufferReader
 
     public ReadOnlyMemory<byte> ReadMemory(int length)
     {
-        if (length < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(length));
-        }
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
 
         EnsureAvailable(length);
         var result = _data.Slice(_offset, length);
@@ -71,10 +65,7 @@ public sealed class BinaryBufferReader
 
     public ReadOnlySpan<byte> ReadSpan(int length)
     {
-        if (length < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(length));
-        }
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
 
         EnsureAvailable(length);
         var result = _data.Span.Slice(_offset, length);

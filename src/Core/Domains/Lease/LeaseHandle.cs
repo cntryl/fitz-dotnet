@@ -84,6 +84,12 @@ public sealed class LeaseHandle : ILease
         }
     }
 
+    public void Dispose()
+    {
+        MarkClosed();
+        _operationGate.Dispose();
+    }
+
     private async Task SendTokenTtlAsync(ushort messageType, ulong ttlSecs, string operation, CancellationToken ct)
     {
         ThrowIfClosed();

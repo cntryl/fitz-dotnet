@@ -9,7 +9,7 @@ public sealed class MultiplexerTests
     public async Task should_resolve_response_given_dispatched_message_when_requesting()
     {
         // Arrange
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var task = mux.RequestAsync(
@@ -31,7 +31,7 @@ public sealed class MultiplexerTests
     public async Task should_throw_timeout_given_missing_dispatch_when_requesting()
     {
         // Arrange
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         // Act
@@ -50,10 +50,10 @@ public sealed class MultiplexerTests
     public async Task should_throw_operation_canceled_given_canceled_token_when_requesting()
     {
         // Arrange
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
         using var cts = new CancellationTokenSource();
-        cts.Cancel();
+        await cts.CancelAsync();
 
         // Act
         var act = () => mux.RequestAsync(
@@ -61,7 +61,7 @@ public sealed class MultiplexerTests
             [0x1],
             static (_, _) => Task.CompletedTask,
             TimeSpan.FromSeconds(1),
-            cts.Token
+            cancellationToken: cts.Token
         );
 
         // Assert
@@ -72,17 +72,17 @@ public sealed class MultiplexerTests
     public async Task should_serialize_same_message_type_given_two_requests_when_dispatching()
     {
         // Arrange
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var sendOrder = new List<byte>();
         var firstTask = mux.RequestAsync(
             120,
             [0x1],
-            async (_, _) =>
+            async (_, token) =>
             {
                 sendOrder.Add(0x1);
-                await Task.Delay(50).ConfigureAwait(false);
+                await Task.Delay(50, token);
             },
             TimeSpan.FromSeconds(1)
         );
@@ -117,7 +117,7 @@ public sealed class MultiplexerTests
     public void should_dispatch_to_all_registered_handlers_given_notification_message()
     {
         // Arrange
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var seen = new List<string>();
@@ -135,7 +135,7 @@ public sealed class MultiplexerTests
     public async Task should_cancel_inflight_request_given_disconnect_when_cancel_all_is_called()
     {
         // Arrange
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var inflight = mux.RequestAsync(
@@ -156,7 +156,7 @@ public sealed class MultiplexerTests
     public async Task should_dispatch_to_next_request_given_first_request_canceled_when_same_message_type_is_inflight()
     {
         // Arrange
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
         var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -164,12 +164,12 @@ public sealed class MultiplexerTests
         var first = mux.RequestAsync(
             122,
             [0x1],
-            static async (_, _) =>
+            static async (_, token) =>
             {
-                await Task.Delay(100).ConfigureAwait(false);
+                await Task.Delay(100, token);
             },
             TimeSpan.FromSeconds(5),
-            firstCts.Token
+            cancellationToken: firstCts.Token
         );
 
         var second = mux.RequestAsync(
@@ -184,7 +184,7 @@ public sealed class MultiplexerTests
         );
 
         // Act
-        firstCts.Cancel();
+        await firstCts.CancelAsync();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
         await secondStarted.Task;
         mux.Dispatch(122, [0xB]);
@@ -197,7 +197,7 @@ public sealed class MultiplexerTests
     public async Task should_route_uncorrelated_response_to_first_request_given_later_correlated_request_with_same_message_type()
     {
         // Arrange
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var firstSendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -206,10 +206,10 @@ public sealed class MultiplexerTests
         var firstTask = mux.RequestAsync(
             130,
             [0x01],
-            async (_, _) =>
+            async (_, token) =>
             {
                 firstSendStarted.TrySetResult();
-                await Task.Delay(10).ConfigureAwait(false);
+                await Task.Delay(10, token);
             },
             TimeSpan.FromSeconds(1)
         );
@@ -243,7 +243,7 @@ public sealed class MultiplexerTests
     public async Task should_match_responses_to_correlated_requests_given_same_message_type()
     {
         // Arrange
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var firstSendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -252,10 +252,10 @@ public sealed class MultiplexerTests
         var firstTask = mux.RequestAsync(
             131,
             [0x01],
-            async (_, _) =>
+            async (_, token) =>
             {
                 firstSendStarted.TrySetResult();
-                await Task.Delay(10).ConfigureAwait(false);
+                await Task.Delay(10, token);
             },
             TimeSpan.FromSeconds(1),
             responseMatcher: response => response.Length > 0 && response.Span[0] == 1
@@ -290,7 +290,7 @@ public sealed class MultiplexerTests
     public async Task should_deliver_unmatched_responses_to_notification_handlers_given_matching_by_correlation_fails()
     {
         // Arrange
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var notifications = new List<byte[]>();
@@ -326,7 +326,7 @@ public sealed class MultiplexerTests
     public async Task should_ignore_stale_response_when_disconnected_before_following_request()
     {
         // Arrange
-        var mux = new Multiplexer();
+        using var mux = new Multiplexer();
         mux.SetConnected();
 
         var staleRequest = mux.RequestAsync(

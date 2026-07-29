@@ -11,7 +11,7 @@ public sealed class TcpTransportTests
     public async Task should_send_and_receive_length_prefixed_frames_given_tcp_transport()
     {
         // Arrange
-        var listener = new TcpListener(IPAddress.Loopback, 0);
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
 
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
@@ -26,7 +26,7 @@ public sealed class TcpTransportTests
             await WriteFrameAsync(stream, "pong"u8.ToArray());
         });
 
-        await using var transport = new TcpTransport($"127.0.0.1:{port}", TimeSpan.FromSeconds(2), 64 * 1024);
+        await using var transport = new TcpTransport(new Uri($"tcp://127.0.0.1:{port}"), TimeSpan.FromSeconds(2), 64 * 1024);
 
         // Act
         await transport.ConnectAsync();

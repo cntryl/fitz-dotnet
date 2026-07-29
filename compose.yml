@@ -1,11 +1,19 @@
-# Fitz broker baseline for fitz-dotnet conformance and local integration testing.
+# Fitz Message Broker - local development only
 #
-# Local-only stack:
-# - fitz-auth on localhost:4090/ws and localhost:4091 with JWT auth required
-# - fitz-anon on localhost:4190/ws and localhost:4191 with anonymous access enabled
+# This file is a loopback-only example for local development.
+# It is not a production deployment manifest.
 #
-# The stack mirrors the fitz-ts local broker semantics: loopback-only ports,
-# local disk-backed volumes, and separate auth/anonymous brokers.
+# This runs two Fitz brokers:
+# - fitz-auth on configurable HTTP/TCP ports with local HMAC auth required
+# - fitz-anon on configurable HTTP/TCP ports with anonymous access enabled
+#
+# Access:
+# - Auth HTTP:    http://127.0.0.1:${FITZ_AUTH_HOST_HTTP_PORT:-4090}/
+# - Auth WS:      ws://127.0.0.1:${FITZ_AUTH_HOST_HTTP_PORT:-4090}/ws
+# - Auth TCP:     tcp://127.0.0.1:${FITZ_AUTH_HOST_TCP_PORT:-4091}
+# - Anon HTTP:    http://127.0.0.1:${FITZ_ANON_HOST_HTTP_PORT:-4190}/
+# - Anon WS:      ws://127.0.0.1:${FITZ_ANON_HOST_HTTP_PORT:-4190}/ws
+# - Anon TCP:     tcp://127.0.0.1:${FITZ_ANON_HOST_TCP_PORT:-4191}
 
 x-broker-common: &broker-common
   image: ghcr.io/cntryl/fitz:latest
@@ -29,16 +37,16 @@ services:
     environment:
       <<: *broker-common-env
       FITZ_AUTH_REQUIRED: "true"
+      FITZ_ASSUME_LOCAL_LOOPBACK_EDGE: "true"
       FITZ_ADMIN_AUTH_MODE: "open"
       FITZ_HTTP_PORT: "${FITZ_AUTH_HTTP_PORT:-4090}"
       FITZ_TCP_PORT: "${FITZ_AUTH_TCP_PORT:-4091}"
-      FITZ_JWT_HMAC_SECRET: "${FITZ_JWT_HMAC_SECRET:-test-secret-key}"
-      FITZ_JWT_AUDIENCE: "${FITZ_JWT_AUDIENCE:-fitz}"
+      FITZ_JWT_HMAC_SECRET: "${FITZ_JWT_HMAC_SECRET:-dev-test-secret}"
+      FITZ_JWT_AUDIENCE: "fitz"
       FITZ_ROUTE_FAMILY_MAP: "dev=1"
       FITZ_WS_ALLOWED_ORIGINS: "http://localhost:${FITZ_AUTH_HOST_HTTP_PORT:-4090},http://127.0.0.1:${FITZ_AUTH_HOST_HTTP_PORT:-4090}"
     volumes:
       - fitz_auth_data:/data
-
   fitz-anon:
     <<: *broker-common
     container_name: fitz-anon

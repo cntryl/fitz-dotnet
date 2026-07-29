@@ -16,15 +16,21 @@ public sealed class TcpTransport : ITransport
     private TcpClient? _client;
     private NetworkStream? _stream;
 
-    public TcpTransport(string url, TimeSpan timeout, int maxFrameSize, HeartbeatOptions? heartbeat = null)
+    public TcpTransport(Uri url, TimeSpan timeout, int maxFrameSize, HeartbeatOptions? heartbeat = null)
     {
-        _uri = CreateUri(url);
+        ArgumentNullException.ThrowIfNull(url);
+        if (!url.IsAbsoluteUri || !url.Scheme.Equals("tcp", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("TCP transport requires an absolute tcp:// URL.", nameof(url));
+        }
+
+        _uri = url;
         _timeout = timeout;
         _maxFrameSize = maxFrameSize;
         _heartbeat = heartbeat ?? new HeartbeatOptions();
     }
 
-    public string Url => _uri.ToString();
+    public Uri Url => _uri;
 
     public async Task ConnectAsync(CancellationToken cancellationToken = default)
     {
@@ -116,7 +122,7 @@ public sealed class TcpTransport : ITransport
         return PooledFrame.FromRentedBuffer(payload, frameLength);
     }
 
-    public Task CloseAsync(CancellationToken cancellationToken = default)
+    public async Task CloseAsync(CancellationToken cancellationToken = default)
     {
         var stream = _stream;
         _stream = null;
@@ -124,14 +130,18 @@ public sealed class TcpTransport : ITransport
         var client = _client;
         _client = null;
 
-        stream?.Dispose();
+        if (stream is not null)
+        {
+            await stream.DisposeAsync().ConfigureAwait(false);
+        }
+
         client?.Dispose();
-        return Task.CompletedTask;
     }
 
     public async ValueTask DisposeAsync()
     {
         await CloseAsync().ConfigureAwait(false);
+        _sendLock.Dispose();
     }
 
     private static async Task<int> ReadExactOrClosedAsync(NetworkStream stream, Memory<byte> buffer, CancellationToken cancellationToken)
@@ -149,16 +159,6 @@ public sealed class TcpTransport : ITransport
         }
 
         return totalRead;
-    }
-
-    private static Uri CreateUri(string url)
-    {
-        if (url.StartsWith("tcp://", StringComparison.OrdinalIgnoreCase))
-        {
-            return new Uri(url);
-        }
-
-        return new Uri($"tcp://{url}");
     }
 
     private NetworkStream EnsureStream()

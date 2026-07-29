@@ -23,7 +23,7 @@ using Cntryl.Fitz;
 
 await using var client = new Client(
     new ClientConfig(
-        "ws://127.0.0.1:4190/ws",
+        new Uri("ws://127.0.0.1:4190/ws"),
         TokenProvider: _ => ValueTask.FromResult("your-jwt-token")
     )
 );
@@ -57,20 +57,20 @@ dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter "FullyQu
 Broker-backed integration and conformance run:
 
 ```bash
-docker compose -f compose.yml up -d
+docker compose up -d
 dotnet test tests/Core/Core.Tests.csproj -c Release --no-build
-docker compose -f compose.yml down --volumes
+docker compose down --volumes
 ```
 
 Run a single conformance matrix leg and write the normalized artifact:
 
 ```bash
-docker compose -f compose.yml up -d
+docker compose up -d
 CONFORMANCE_TRANSPORT=websocket \
 CONFORMANCE_AUTH_MODE=anonymous \
 CONFORMANCE_OUTPUT=artifacts/conformance-results.json \
 dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~Conformance
-docker compose -f compose.yml down --volumes
+docker compose down --volumes
 ```
 
 The conformance artifact uses the shared schema:
@@ -78,14 +78,16 @@ The conformance artifact uses the shared schema:
 - top-level `suite`, `version`, `generated_at`, `client`, `transport`, `auth_mode`, `p0_pass_rate`, `p1_pass_rate`, `overall_status`, and `scenarios`
 - 17 scenarios from [conformance/cross-language-conformance-suite.yaml](conformance/cross-language-conformance-suite.yaml)
 - one CI artifact per `websocket|tcp` x `anonymous|valid_jwt` leg
+- broker-backed lifecycle coverage for KV, Queue, RPC, Lease, Notice, Stream, and Schedule
 
 ## Broker Baseline
 
 [compose.yml](compose.yml) is the repo-owned local broker stack used by CI and local verification.
 
+- both brokers use `ghcr.io/cntryl/fitz:latest`, local storage volumes, and loopback-only ports
 - `fitz-anon`: `ws://127.0.0.1:4190/ws` and `127.0.0.1:4191`
 - `fitz-auth`: `ws://127.0.0.1:4090/ws` and `127.0.0.1:4091`
-- default JWT secret: `test-secret-key`
+- default JWT secret: `dev-test-secret`
 - default JWT audience: `fitz`
 
 ## Documentation

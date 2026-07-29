@@ -10,7 +10,7 @@ public sealed class ScheduleClientTests
     [Fact]
     public async Task should_preserve_domain_code_given_schedule_error_response()
     {
-        var schedule = new ScheduleClient((_, _, _) =>
+        using var schedule = new ScheduleClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
@@ -32,7 +32,7 @@ public sealed class ScheduleClientTests
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        var schedule = new ScheduleClient((messageType, payload, _) =>
+        using var schedule = new ScheduleClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -64,7 +64,7 @@ public sealed class ScheduleClientTests
     public async Task should_encode_route_given_schedule_route_when_canceling_schedule()
     {
         // Arrange
-        var schedule = new ScheduleClient((messageType, payload, _) =>
+        using var schedule = new ScheduleClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.ScheduleCancel, messageType);
 
@@ -93,7 +93,7 @@ public sealed class ScheduleClientTests
         CancellationToken seenCancellationToken = default;
         var receivedTcs = new TaskCompletionSource<ScheduleNotification>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var schedule = new ScheduleClient(
+        using var schedule = new ScheduleClient(
             (messageType, payload, _) =>
             {
                 seenMessageType = messageType;
@@ -152,7 +152,7 @@ public sealed class ScheduleClientTests
     {
         // Arrange
         byte[]? seenPayload = null;
-        var schedule = new ScheduleClient((messageType, payload, _) =>
+        using var schedule = new ScheduleClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.ScheduleList, messageType);
             seenPayload = payload;

@@ -11,4 +11,8 @@ public sealed class AuthenticationException : FitzException
         : base(message, innerException)
     {
     }
+
+    public AuthenticationException()
+    {
+    }
 }

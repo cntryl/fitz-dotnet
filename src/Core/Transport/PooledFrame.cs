@@ -2,9 +2,9 @@ using System.Buffers;
 
 namespace Cntryl.Fitz.Transport;
 
-public readonly struct PooledFrame : IDisposable
+public sealed class PooledFrame : IDisposable
 {
-    private readonly byte[]? _buffer;
+    private byte[]? _buffer;
     private readonly bool _isClosed;
 
     private PooledFrame(byte[]? buffer, int length, bool isClosed)
@@ -38,11 +38,12 @@ public readonly struct PooledFrame : IDisposable
 
     public void Dispose()
     {
-        if (_buffer is null || ReferenceEquals(_buffer, Array.Empty<byte>()))
+        var buffer = Interlocked.Exchange(ref _buffer, null);
+        if (buffer is null || ReferenceEquals(buffer, Array.Empty<byte>()))
         {
             return;
         }
 
-        ArrayPool<byte>.Shared.Return(_buffer);
+        ArrayPool<byte>.Shared.Return(buffer);
     }
 }
