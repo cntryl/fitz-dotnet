@@ -11,7 +11,7 @@ namespace Cntryl.Fitz.Core.Tests.Integration;
 public sealed partial class ConformanceSmokeTests
 {
     [Fact]
-    public async Task should_fail_invalid_jwt_auth_when_connecting()
+    public async Task should_reject_authentication_given_invalid_jwt_when_connect_called()
     {
         var transport = IntegrationFixture.GetConformanceTransport();
         var result = await RunCs002AuthFailure(transport);
