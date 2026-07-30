@@ -76,6 +76,38 @@ public sealed class KvClientTests
     }
 
     [Fact]
+    public async Task should_return_not_found_given_canonical_empty_value_when_getting_missing_key()
+    {
+        // Arrange
+        var callCount = 0;
+        var kv = new KvClient((_, _, _) =>
+        {
+            callCount++;
+            using var response = new BinaryBufferWriter();
+            response.WriteU8(0);
+            if (callCount == 1)
+            {
+                response.WriteU64(901);
+            }
+            else
+            {
+                response.WriteU8(0);
+                response.WriteU32(0);
+            }
+
+            return Task.FromResult(response.Build());
+        });
+
+        // Act
+        var tx = await kv.BeginAsync("kv://prod/app/users");
+        var result = await tx.GetAsync("missing"u8.ToArray());
+
+        // Assert
+        Assert.False(result.Found);
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
     public async Task should_insert_key_successfully_when_calling_insert_async()
     {
         // Arrange

@@ -26,6 +26,29 @@ public sealed class ScheduleClientTests
     }
 
     [Fact]
+    public async Task should_reject_unauthorized_create_given_read_only_permissions_when_create_called()
+    {
+        using var schedule = new ScheduleClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(1);
+            writer.WriteU32(7003);
+            writer.WriteString("unauthorized");
+            return Task.FromResult(writer.Build());
+        });
+
+        var error = await Assert.ThrowsAsync<ScheduleException>(async () =>
+            await schedule.CreateAsync(
+                "schedule://prod/app/jobs/run",
+                "*/5 * * * *",
+                ScheduleDeliveryMode.Broadcast,
+                ReadOnlyMemory<byte>.Empty));
+
+        Assert.Equal("CREATE failed: unauthorized", error.Message);
+        Assert.Equal((uint)7003, error.DomainCode);
+    }
+
+    [Fact]
     public async Task should_return_schedule_id_given_success_response_when_creating_schedule()
     {
         // Arrange

@@ -58,9 +58,14 @@ public sealed class KvTransaction : IKvTransaction
         var found = reader.ReadU8();
         if (found != 1)
         {
-            if (!reader.IsEof)
+            if (reader.IsEof)
             {
-                throw new KvException("GET response has trailing bytes", "GET_INVALID_RESPONSE");
+                return new KvGetResult(false, null);
+            }
+
+            if (reader.RemainingBytes != 4 || reader.ReadU32() != 0 || !reader.IsEof)
+            {
+                throw new KvException("GET not-found response has invalid value length", "GET_INVALID_RESPONSE");
             }
 
             return new KvGetResult(false, null);

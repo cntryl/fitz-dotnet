@@ -279,7 +279,7 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task should_mark_lease_as_closed_after_reconnect()
+    public async Task should_reject_extend_given_stale_handle_when_reconnect_completes()
     {
         await using var firstTransport = new TestQueuedTransport();
         await using var secondTransport = new TestQueuedTransport();
