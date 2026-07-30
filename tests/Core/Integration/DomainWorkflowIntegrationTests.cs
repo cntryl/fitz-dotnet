@@ -2,11 +2,91 @@ using System.Text;
 using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
+using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz.Core.Tests.Integration;
 
 public sealed class DomainWorkflowIntegrationTests
 {
+    [Fact]
+    public async Task should_return_not_found_given_missing_key_when_get_called()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var tx = await client.Kv().BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), KvMode.ReadOnly);
+
+        var result = await tx.GetAsync("missing"u8.ToArray());
+
+        Assert.False(result.Found);
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
+    public async Task should_delay_visibility_given_nonzero_delay_when_queue_reserved()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var route = IntegrationFixture.CreateUniqueRoute("queue");
+        await client.Queue().EnqueueAsync(route, "delayed"u8.ToArray(), delayMs: 2_000);
+
+        var early = await client.Queue().ReserveAsync(route, leaseSeconds: 30, batchSize: 1);
+
+        Assert.Empty(early);
+        await Task.Delay(TimeSpan.FromMilliseconds(2_100));
+        var visible = await client.Queue().ReserveAsync(route, leaseSeconds: 30, batchSize: 1);
+        var item = Assert.Single(visible);
+        Assert.Equal("delayed", Encoding.UTF8.GetString(item.Body.Span));
+        await item.CompleteAsync();
+    }
+
+    [Fact]
+    public async Task should_isolate_realms_given_staging_subscription_when_prod_published()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var staging = IntegrationFixture.CreateUniqueRoute("notice");
+        var prod = IntegrationFixture.CreateUniqueRoute("notice");
+        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var subscription = await client.Notice().SubscribeAsync(staging, (_, _) =>
+        {
+            received.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
+
+        await client.Notice().PublishAsync(prod, "prod"u8.ToArray());
+
+        await Assert.ThrowsAsync<TimeoutException>(() => received.Task.WaitAsync(TimeSpan.FromMilliseconds(300)));
+    }
+
+    [Fact]
+    public async Task should_reject_invalid_cron_given_malformed_syntax_when_schedule_created()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+
+        await Assert.ThrowsAsync<ScheduleException>(async () =>
+            await client.Schedule().CreateAsync(
+                IntegrationFixture.CreateUniqueRoute("schedule"),
+                "not a cron",
+                ScheduleDeliveryMode.Broadcast,
+                ReadOnlyMemory<byte>.Empty));
+    }
+
+    [Fact]
+    public async Task should_return_empty_given_offset_beyond_watermark_when_stream_read()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var records = new List<StreamRecord>();
+
+        await foreach (var record in client.Stream().ReadAsync(IntegrationFixture.CreateUniqueRoute("stream"), 999_999, 10))
+        {
+            records.Add(record);
+        }
+
+        Assert.Empty(records);
+    }
+
     [Fact]
     public async Task should_round_trip_rpc_response_given_registered_worker()
     {

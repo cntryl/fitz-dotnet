@@ -42,6 +42,30 @@ public sealed class QueueClientTests
     }
 
     [Fact]
+    public async Task should_encode_visibility_delay_given_nonzero_delay_when_enqueueing()
+    {
+        byte[]? seenPayload = null;
+        using var queue = new QueueClient((_, payload, _) =>
+        {
+            seenPayload = payload;
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU64(555);
+            return Task.FromResult(writer.Build());
+        });
+
+        await queue.EnqueueAsync("queue://prod/app/tasks", "job-1"u8.ToArray(), delayMs: 2_000);
+
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal("queue://prod/app/tasks", reader.ReadString());
+        Assert.Equal((uint)5, reader.ReadU32());
+        Assert.Equal("job-1", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(5)));
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal((ulong)2, reader.ReadU64());
+        Assert.True(reader.IsEof);
+    }
+
+    [Fact]
     public async Task should_return_reserved_items_given_success_response_when_reserving()
     {
         // Arrange
