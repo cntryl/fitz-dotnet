@@ -25,8 +25,14 @@ public static class Retryability
             KvException kv when ShouldRetry(kv.Status) => true,
             QueueException queue when ShouldRetryQueueError(queue.Code, queue.Status) => true,
             LeaseException lease when ShouldRetry(lease.Status) => true,
+            RpcException rpc when IsRetryableRpcCode(rpc.Code) => true,
             _ => false,
         };
+    }
+
+    private static bool IsRetryableRpcCode(string code)
+    {
+        return code is "TIMEOUT" or "WORKER_NOT_FOUND" or "BACKPRESSURE" or "ROUTE_NOT_REGISTERED";
     }
 
     private static bool ShouldRetryQueueError(string code, byte? status)

@@ -4,7 +4,7 @@ using Cntryl.Fitz.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
 
 var services = new ServiceCollection();
-services.AddFitzClient(new ClientConfig(new Uri("ws://localhost:4190/ws")));
+services.AddFitzClient(new ClientConfig("ws://localhost:4190/ws"));
 
 Console.WriteLine(typeof(Client).FullName);
 Console.WriteLine(typeof(IKvClient).FullName);
