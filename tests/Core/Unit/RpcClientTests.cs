@@ -175,7 +175,7 @@ public sealed class RpcClientTests
     }
 
     [Fact]
-    public async Task should_throw_request_timeout_given_no_response_frames_when_calling_rpc()
+    public async Task should_time_out_given_no_worker_response_when_call_awaited()
     {
         // Arrange
         var rpc = new RpcClient(

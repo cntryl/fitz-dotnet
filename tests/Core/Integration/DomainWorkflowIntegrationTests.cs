@@ -88,6 +88,197 @@ public sealed class DomainWorkflowIntegrationTests
     }
 
     [Fact]
+    public async Task should_reject_duplicate_insert_given_existing_key_when_insert_called()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var tx = await client.Kv().BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"));
+        await tx.InsertAsync("key"u8.ToArray(), "first"u8.ToArray());
+
+        await Assert.ThrowsAsync<KvException>(() => tx.InsertAsync("key"u8.ToArray(), "second"u8.ToArray()));
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task should_reject_write_given_read_only_mode_when_put_called()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var tx = await client.Kv().BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), KvMode.ReadOnly);
+
+        await Assert.ThrowsAsync<KvException>(() => tx.PutAsync("key"u8.ToArray(), "value"u8.ToArray()));
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task should_reject_inverted_bounds_given_invalid_range_when_scan_called()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var tx = await client.Kv().BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"));
+
+        await Assert.ThrowsAsync<KvException>(async () =>
+        {
+            await foreach (var _ in tx.ScanAsync(new KvScanQuery { StartKey = "z"u8.ToArray(), EndKey = "a"u8.ToArray() }))
+            {
+            }
+        });
+        await tx.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task should_reject_second_commit_given_completed_transaction_when_commit_called()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var tx = await client.Kv().BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"));
+        await tx.CommitAsync();
+
+        await Assert.ThrowsAsync<KvException>(() => tx.CommitAsync());
+    }
+
+    [Fact]
+    public async Task should_redeliver_given_expired_reservation_when_reserve_called()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var route = IntegrationFixture.CreateUniqueRoute("queue");
+        await client.Queue().EnqueueAsync(route, "retry"u8.ToArray());
+        var first = Assert.Single(await client.Queue().ReserveAsync(route, leaseSeconds: 1, batchSize: 1));
+
+        await Task.Delay(TimeSpan.FromMilliseconds(1_100));
+        var second = Assert.Single(await client.Queue().ReserveAsync(route, leaseSeconds: 30, batchSize: 1));
+
+        Assert.Equal(first.Body, second.Body);
+        await second.CompleteAsync();
+    }
+
+    [Fact]
+    public async Task should_reject_completion_given_wrong_token_when_complete_called()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var route = IntegrationFixture.CreateUniqueRoute("queue");
+        await client.Queue().EnqueueAsync(route, "token"u8.ToArray());
+        var item = Assert.Single(await client.Queue().ReserveAsync(route, leaseSeconds: 30, batchSize: 1));
+
+        await Assert.ThrowsAsync<QueueException>(() => item.CompleteWithTokenAsync(ulong.MaxValue));
+        await item.CompleteAsync();
+    }
+
+    [Fact]
+    public async Task should_reject_completion_given_expired_reservation_when_complete_called()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var route = IntegrationFixture.CreateUniqueRoute("queue");
+        await client.Queue().EnqueueAsync(route, "expired"u8.ToArray());
+        var item = Assert.Single(await client.Queue().ReserveAsync(route, leaseSeconds: 1, batchSize: 1));
+
+        await Task.Delay(TimeSpan.FromMilliseconds(1_100));
+
+        await Assert.ThrowsAsync<QueueException>(() => item.CompleteAsync());
+        var redelivered = Assert.Single(await client.Queue().ReserveAsync(route, leaseSeconds: 30, batchSize: 1));
+        await redelivered.CompleteAsync();
+    }
+
+    [Fact]
+    public Task should_match_single_segment_wildcard_given_single_star_subscription_when_notice_published()
+    {
+        return AssertWildcardDeliveryAsync(multiSegment: false);
+    }
+
+    [Fact]
+    public Task should_match_multi_segment_wildcard_given_double_star_subscription_when_notice_published()
+    {
+        return AssertWildcardDeliveryAsync(multiSegment: true);
+    }
+
+    private static async Task AssertWildcardDeliveryAsync(bool multiSegment)
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var route = IntegrationFixture.CreateUniqueRoute("notice");
+        var parts = route.Split('/');
+        var pattern = multiSegment
+            ? $"{parts[0]}//{parts[2]}/*/*"
+            : $"{parts[0]}//{parts[2]}/{parts[3]}/*";
+        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var subscription = await client.Notice().SubscribeAsync(pattern, (_, _) =>
+        {
+            received.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
+
+        await client.Notice().PublishAsync(route, "matched"u8.ToArray());
+
+        await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task should_stop_delivery_given_active_subscription_when_dispose_precedes_publish()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var route = IntegrationFixture.CreateUniqueRoute("notice");
+        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var subscription = await client.Notice().SubscribeAsync(route, (_, _) =>
+        {
+            received.TrySetResult();
+            return ValueTask.CompletedTask;
+        });
+        await subscription.DisposeAsync();
+
+        await client.Notice().PublishAsync(route, "ignored"u8.ToArray());
+
+        await Assert.ThrowsAsync<TimeoutException>(() => received.Task.WaitAsync(TimeSpan.FromMilliseconds(300)));
+    }
+
+    [Fact]
+    public async Task should_reject_acquire_given_held_lease_when_acquire_called()
+    {
+        await using var owner = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await using var contender = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await owner.ConnectAsync();
+        await contender.ConnectAsync();
+        var route = IntegrationFixture.CreateUniqueRoute("lease");
+        using var lease = await owner.Lease().AcquireAsync(route, 30);
+
+        await Assert.ThrowsAsync<LeaseException>(async () => await contender.Lease().AcquireAsync(route, 30));
+        await lease.ReleaseAsync();
+    }
+
+    [Fact]
+    public async Task should_reject_append_given_mismatched_expected_offset_when_append_called()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var session = await client.Stream().BeginAsync(IntegrationFixture.CreateUniqueRoute("stream"));
+
+        await Assert.ThrowsAsync<StreamException>(() => session.AppendAsync(42, "mismatch"u8.ToArray()));
+        await session.RollbackAsync();
+    }
+
+    [Fact]
+    public async Task should_discard_writes_given_open_session_when_rollback_called()
+    {
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var route = IntegrationFixture.CreateUniqueRoute("stream");
+        var session = await client.Stream().BeginAsync(route);
+        await session.AppendAsync(0, "discarded"u8.ToArray());
+        await session.RollbackAsync();
+        var records = new List<StreamRecord>();
+
+        await foreach (var record in client.Stream().ReadAsync(route, 0, 10))
+        {
+            records.Add(record);
+        }
+
+        Assert.Empty(records);
+    }
+
+    [Fact]
     public async Task should_round_trip_rpc_response_given_registered_worker()
     {
         var route = IntegrationFixture.CreateUniqueRoute("rpc");
