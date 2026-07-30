@@ -44,7 +44,7 @@ public sealed class DomainWorkflowIntegrationTests
     {
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
-        var staging = IntegrationFixture.CreateUniqueRoute("notice");
+        var staging = IntegrationFixture.CreateUniqueRoute("notice").Replace("conformance-realm", "staging-realm", StringComparison.Ordinal);
         var prod = IntegrationFixture.CreateUniqueRoute("notice");
         var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var subscription = await client.Notice().SubscribeAsync(staging, (_, _) =>
