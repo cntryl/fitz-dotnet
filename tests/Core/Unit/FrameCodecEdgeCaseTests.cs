@@ -120,7 +120,7 @@ public sealed class FrameCodecEdgeCaseTests
     }
 
     [Fact]
-    public void should_throw_given_trailing_bytes_when_decoding_strictly()
+    public void should_reject_trailing_bytes_given_extra_frame_data_when_decoding_strictly()
     {
         var encoded = FrameCodec.Encode(100, [0x1, 0x2]);
         var withTrailingBytes = new byte[encoded.Length + 1];
@@ -133,10 +133,21 @@ public sealed class FrameCodecEdgeCaseTests
     }
 
     [Fact]
-    public void should_throw_given_incomplete_extended_header_when_decoding()
+    public void should_reject_truncated_frame_given_incomplete_extended_header_when_decoding()
     {
         var ex = Assert.Throws<InvalidOperationException>(() => FrameCodec.Decode(new byte[] { 0xFF, 0x01, 0x02, 0x03 }));
 
         Assert.Equal("Extended frame header is incomplete.", ex.Message);
+    }
+
+    [Fact]
+    public void should_reject_oversized_frame_given_payload_above_limit_when_encoding()
+    {
+        var payload = new byte[ushort.MaxValue + 1];
+
+        var ex = Assert.Throws<ArgumentOutOfRangeException>(() => FrameCodec.Encode(100, payload));
+
+        Assert.Equal("payload", ex.ParamName);
+        Assert.Contains("Payload exceeds frame limit.", ex.Message, StringComparison.Ordinal);
     }
 }
