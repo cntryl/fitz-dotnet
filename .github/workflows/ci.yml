@@ -108,7 +108,7 @@ jobs:
         env:
           CONFORMANCE_TRANSPORT: ${{ matrix.transport }}
           CONFORMANCE_AUTH_MODE: anonymous
-        run: dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~should_fail_invalid_jwt_auth_when_connecting
+        run: dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~should_reject_authentication_given_invalid_jwt_when_connect_called
 
       - name: Upload conformance results
         if: always()

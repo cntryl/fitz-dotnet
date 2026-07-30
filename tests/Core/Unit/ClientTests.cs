@@ -43,7 +43,7 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public void should_default_transport_to_auto_and_infer_websocket_and_tcp_urls()
+    public void should_resolve_transport_given_websocket_and_tcp_endpoints_when_configured()
     {
         var websocket = new ClientConfig(new Uri("ws://localhost:4190/ws"));
         var tcp = new ClientConfig(new Uri("tcp://localhost:4191"));
@@ -59,7 +59,7 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task should_set_connected_state_given_valid_transport_when_connecting()
+    public async Task should_authenticate_given_valid_jwt_when_connect_frame_is_sent_first()
     {
         // Arrange
         await using var transport = new QueuedTransport();
@@ -164,7 +164,7 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task should_not_retry_authentication_failures_given_connect_when_ready()
+    public async Task should_not_retry_authentication_given_rejected_connect_when_reconnect_enabled()
     {
         var attempts = 0;
         await using var client = new Client(
@@ -234,7 +234,7 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task should_not_reconnect_given_close_during_reconnect_backoff()
+    public async Task should_stop_reconnecting_given_close_during_backoff_when_close_called()
     {
         var releaseFirstReceive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var firstTransport = new QueuedTransport();
