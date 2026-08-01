@@ -9,6 +9,5 @@ public interface IStreamClient
     Task<StreamMetadata> MetadataAsync(string route, CancellationToken ct = default);
     Task<StreamSubscription> SubscribeAsync(
         string pattern,
-        Func<StreamCommitEvent, CancellationToken, ValueTask> handler,
         CancellationToken ct = default);
 }

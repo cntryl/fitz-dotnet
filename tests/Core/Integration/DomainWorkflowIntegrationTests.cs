@@ -17,18 +17,14 @@ public sealed class DomainWorkflowIntegrationTests
         var uniqueParts = IntegrationFixture.CreateUniqueRoute("kv").Split('/');
         var route = $"{uniqueParts[0]}//{uniqueParts[2]}/{uniqueParts[^1]}/resource";
         var pattern = $"{uniqueParts[0]}//{uniqueParts[2]}/{uniqueParts[^1]}/**";
-        var received = new TaskCompletionSource<KvNotification>(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var subscription = await client.Kv().SubscribeAsync(pattern, (notification, _) =>
-        {
-            received.TrySetResult(notification);
-            return ValueTask.CompletedTask;
-        });
+        await using var subscription = await client.Kv().SubscribeAsync(pattern);
+        var received = ReadFirstAsync(subscription);
 
         // Act
         var tx = await client.Kv().BeginAsync(route);
         await tx.PutAsync("key"u8.ToArray(), "value"u8.ToArray());
         await tx.CommitAsync();
-        var notification = await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var notification = await received.WaitAsync(TimeSpan.FromSeconds(2));
 
         // Assert
         Assert.Equal(route, notification.Route);
@@ -73,16 +69,12 @@ public sealed class DomainWorkflowIntegrationTests
         await client.ConnectAsync();
         var staging = IntegrationFixture.CreateUniqueRoute("notice").Replace("conformance-realm", "staging-realm", StringComparison.Ordinal);
         var prod = IntegrationFixture.CreateUniqueRoute("notice");
-        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var subscription = await client.Notice().SubscribeAsync(staging, (_, _) =>
-        {
-            received.TrySetResult();
-            return ValueTask.CompletedTask;
-        });
+        await using var subscription = await client.Notice().SubscribeAsync(staging);
+        var received = ReadFirstAsync(subscription);
 
         await client.Notice().PublishAsync(prod, "prod"u8.ToArray());
 
-        await Assert.ThrowsAsync<TimeoutException>(() => received.Task.WaitAsync(TimeSpan.FromMilliseconds(300)));
+        await Assert.ThrowsAsync<TimeoutException>(() => received.WaitAsync(TimeSpan.FromMilliseconds(300)));
     }
 
     [Fact]
@@ -230,16 +222,12 @@ public sealed class DomainWorkflowIntegrationTests
         var pattern = multiSegment
             ? $"{parts[0]}//{parts[2]}/*/*"
             : $"{parts[0]}//{parts[2]}/{parts[3]}/*";
-        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var subscription = await client.Notice().SubscribeAsync(pattern, (_, _) =>
-        {
-            received.TrySetResult();
-            return ValueTask.CompletedTask;
-        });
+        await using var subscription = await client.Notice().SubscribeAsync(pattern);
+        var received = ReadFirstAsync(subscription);
 
         await client.Notice().PublishAsync(route, "matched"u8.ToArray());
 
-        await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        _ = await received.WaitAsync(TimeSpan.FromSeconds(2));
     }
 
     [Fact]
@@ -248,17 +236,13 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
         var route = IntegrationFixture.CreateUniqueRoute("notice");
-        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var subscription = await client.Notice().SubscribeAsync(route, (_, _) =>
-        {
-            received.TrySetResult();
-            return ValueTask.CompletedTask;
-        });
+        var subscription = await client.Notice().SubscribeAsync(route);
         await subscription.DisposeAsync();
 
         await client.Notice().PublishAsync(route, "ignored"u8.ToArray());
 
-        await Assert.ThrowsAsync<TimeoutException>(() => received.Task.WaitAsync(TimeSpan.FromMilliseconds(300)));
+        await using var enumerator = subscription.GetAsyncEnumerator();
+        Assert.False(await enumerator.MoveNextAsync());
     }
 
     [Fact]
@@ -336,19 +320,25 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
 
-        var received = new TaskCompletionSource<(string Route, string Body)>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var subscription = await client.Notice().SubscribeAsync(route, (message, _) =>
-        {
-            received.TrySetResult((message.Route, Encoding.UTF8.GetString(message.Body.Span)));
-            return ValueTask.CompletedTask;
-        });
+        await using var subscription = await client.Notice().SubscribeAsync(route);
+        var received = ReadFirstAsync(subscription);
 
         await client.Notice().PublishAsync(route, "notice-body"u8.ToArray());
-        var delivered = await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var message = await received.WaitAsync(TimeSpan.FromSeconds(2));
+        var delivered = (message.Route, Body: Encoding.UTF8.GetString(message.Body.Span));
 
         Assert.Equal(route, delivered.Route);
         Assert.Equal("notice-body", delivered.Body);
+    }
+
+    private static async Task<T> ReadFirstAsync<T>(IAsyncEnumerable<T> notifications)
+    {
+        await foreach (var notification in notifications)
+        {
+            return notification;
+        }
+
+        throw new InvalidOperationException("Subscription completed before a notification arrived");
     }
 
     [Fact]

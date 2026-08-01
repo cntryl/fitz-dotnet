@@ -1,5 +1,7 @@
 namespace Cntryl.Fitz.Runtime;
 
+using System.Runtime.CompilerServices;
+
 public abstract class SubscriptionHandle : IAsyncDisposable
 {
     private readonly Func<CancellationToken, ValueTask> _unsubscribe;
@@ -34,5 +36,47 @@ public abstract class SubscriptionHandle : IAsyncDisposable
         }
 
         await _unsubscribe(cancellationToken).ConfigureAwait(false);
+    }
+}
+
+public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerable<T>
+{
+    private readonly IAsyncEnumerable<T> _notifications;
+
+    protected SubscriptionHandle(
+        string pattern,
+        IAsyncEnumerable<T> notifications,
+        Func<CancellationToken, ValueTask> unsubscribe)
+        : base(pattern, unsubscribe)
+    {
+        _notifications = notifications;
+    }
+
+    public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+    {
+        return _notifications.GetAsyncEnumerator(cancellationToken);
+    }
+
+    protected static async IAsyncEnumerable<T> EmptyNotifications()
+    {
+        await Task.CompletedTask.ConfigureAwait(false);
+        yield break;
+    }
+}
+
+public sealed class SubscriptionBackpressureException : Exception
+{
+    public SubscriptionBackpressureException()
+    {
+    }
+
+    public SubscriptionBackpressureException(string message)
+        : base(message)
+    {
+    }
+
+    public SubscriptionBackpressureException(string message, Exception innerException)
+        : base(message, innerException)
+    {
     }
 }

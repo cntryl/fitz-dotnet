@@ -212,6 +212,23 @@ public sealed class StreamClient : IStreamClient, IDisposable
 
     public async Task<StreamSubscription> SubscribeAsync(
         string pattern,
+        CancellationToken ct = default)
+    {
+        var buffer = new AsyncSubscriptionBuffer<StreamCommitEvent>(pattern);
+        var registration = await SubscribeAsync(pattern, (notification, _) =>
+        {
+            buffer.Write(notification);
+            return ValueTask.CompletedTask;
+        }, ct).ConfigureAwait(false);
+        return new StreamSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
+        {
+            buffer.Complete();
+            await registration.UnsubscribeAsync(token).ConfigureAwait(false);
+        });
+    }
+
+    internal async Task<StreamSubscription> SubscribeAsync(
+        string pattern,
         Func<StreamCommitEvent, CancellationToken, ValueTask> handler,
         CancellationToken ct = default)
     {

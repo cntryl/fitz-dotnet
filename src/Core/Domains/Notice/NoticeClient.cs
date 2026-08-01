@@ -60,7 +60,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         _dispatchAsyncHandler = dispatchAsyncHandler;
     }
 
-    public ValueTask PublishAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default)
+    public Task PublishAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default)
     {
         if (!RouteValidation.IsFixedRoute(route, "notice", 3))
         {
@@ -71,10 +71,25 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         writer.WriteString(route);
         writer.WriteU32((uint)body.Length);
         writer.WriteBytes(body.Span);
-        return _send(MessageTypes.NoticePublish, writer.WrittenMemory, ct);
+        return _send(MessageTypes.NoticePublish, writer.WrittenMemory, ct).AsTask();
     }
 
-    public async Task<NoticeSubscription> SubscribeAsync(string pattern, Func<NoticeMessage, CancellationToken, ValueTask> handler, CancellationToken ct = default)
+    public async Task<NoticeSubscription> SubscribeAsync(string pattern, CancellationToken ct = default)
+    {
+        var buffer = new AsyncSubscriptionBuffer<NoticeMessage>(pattern);
+        var registration = await SubscribeAsync(pattern, (notification, _) =>
+        {
+            buffer.Write(notification);
+            return ValueTask.CompletedTask;
+        }, ct).ConfigureAwait(false);
+        return new NoticeSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
+        {
+            buffer.Complete();
+            await registration.UnsubscribeAsync(token).ConfigureAwait(false);
+        });
+    }
+
+    internal async Task<NoticeSubscription> SubscribeAsync(string pattern, Func<NoticeMessage, CancellationToken, ValueTask> handler, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
         if (!RouteValidation.IsRegistrationPattern(pattern, "notice"))

@@ -2,7 +2,7 @@ namespace Cntryl.Fitz.Abstractions.Domains.Queue;
 
 public interface IQueueClient
 {
-    ValueTask<ulong> EnqueueAsync(
+    Task<ulong> EnqueueAsync(
         string route,
         ReadOnlyMemory<byte> body,
         int? delayMs = null,
@@ -19,7 +19,6 @@ public interface IQueueClient
 
     Task<QueueSubscription> SubscribeAsync(
         string pattern,
-        Func<QueueAvailabilityEvent, CancellationToken, ValueTask> handler,
         CancellationToken ct = default
     );
 }

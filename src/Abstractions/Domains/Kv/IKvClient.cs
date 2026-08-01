@@ -22,7 +22,6 @@ public interface IKvClient
 
     Task<KvSubscription> SubscribeAsync(
         string pattern,
-        Func<KvNotification, CancellationToken, ValueTask> handler,
         CancellationToken cancellationToken = default
     );
 }

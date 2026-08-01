@@ -98,7 +98,25 @@ public sealed class KvClient : IKvClient, IDisposable
         return new KvTransaction(_request, route, txId, _registerOnDisconnect, _retryRequest);
     }
 
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned enumerable handle owns and disposes the callback registration.")]
     public async Task<KvSubscription> SubscribeAsync(
+        string pattern,
+        CancellationToken cancellationToken = default)
+    {
+        var buffer = new AsyncSubscriptionBuffer<KvNotification>(pattern);
+        var registration = await SubscribeAsync(pattern, (notification, _) =>
+        {
+            buffer.Write(notification);
+            return ValueTask.CompletedTask;
+        }, cancellationToken).ConfigureAwait(false);
+        return new KvSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
+        {
+            buffer.Complete();
+            await registration.UnsubscribeAsync(token).ConfigureAwait(false);
+        });
+    }
+
+    internal async Task<KvSubscription> SubscribeAsync(
         string pattern,
         Func<KvNotification, CancellationToken, ValueTask> handler,
         CancellationToken cancellationToken = default)

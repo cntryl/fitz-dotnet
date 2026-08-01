@@ -59,6 +59,21 @@ include ready, delayed, and inflight message counts. Active registrations are
 restored after reconnect and duplicate local registrations share one wire
 registration.
 
+Subscriptions use `await client.Notice().SubscribeAsync(pattern)` (and the
+equivalent domain method) and return typed handles implementing both
+`IAsyncEnumerable<TNotification>` and `IAsyncDisposable`. Each local handle has
+a bounded buffer; a slow consumer terminates with
+`SubscriptionBackpressureException` without terminating sibling handles.
+
+## Unreleased preview migration
+
+This preview intentionally breaks the earlier callback subscription surface.
+Replace callback arguments with `await foreach` over the returned handle. Public
+one-shot operations now return `Task`/`Task<T>`; `ValueTask` remains only for
+disposal and callback/provider contracts. Schedule listing now returns
+`ScheduleListResult` with `Entries` and `TotalCount` properties instead of a
+tuple.
+
 ## Local Verification
 
 Fast local checks:

@@ -56,7 +56,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         _dispatchAsyncHandler = dispatchAsyncHandler;
     }
 
-    public async ValueTask<ulong> EnqueueAsync(
+    public async Task<ulong> EnqueueAsync(
         string route,
         ReadOnlyMemory<byte> body,
         int? delayMs = null,
@@ -188,6 +188,23 @@ public sealed class QueueClient : IQueueClient, IDisposable
     }
 
     public async Task<QueueSubscription> SubscribeAsync(
+        string pattern,
+        CancellationToken ct = default)
+    {
+        var buffer = new AsyncSubscriptionBuffer<QueueAvailabilityEvent>(pattern);
+        var registration = await SubscribeAsync(pattern, (notification, _) =>
+        {
+            buffer.Write(notification);
+            return ValueTask.CompletedTask;
+        }, ct).ConfigureAwait(false);
+        return new QueueSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
+        {
+            buffer.Complete();
+            await registration.UnsubscribeAsync(token).ConfigureAwait(false);
+        });
+    }
+
+    internal async Task<QueueSubscription> SubscribeAsync(
         string pattern,
         Func<QueueAvailabilityEvent, CancellationToken, ValueTask> handler,
         CancellationToken ct = default)

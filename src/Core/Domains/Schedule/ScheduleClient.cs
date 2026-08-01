@@ -52,7 +52,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         _dispatchAsyncHandler = dispatchAsyncHandler;
     }
 
-    public async ValueTask<string?> CreateAsync(string route, string cron, ScheduleDeliveryMode deliveryMode, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+    public async Task<string?> CreateAsync(string route, string cron, ScheduleDeliveryMode deliveryMode, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
         ValidateScheduleRoute(route);
         if (deliveryMode is not ScheduleDeliveryMode.Broadcast and not ScheduleDeliveryMode.Single)
@@ -87,7 +87,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         return route;
     }
 
-    public async ValueTask CancelAsync(string route, CancellationToken ct = default)
+    public async Task CancelAsync(string route, CancellationToken ct = default)
     {
         ValidateScheduleRoute(route);
 
@@ -100,7 +100,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         }
     }
 
-    public async Task<(ScheduleEntry[] Entries, ulong TotalCount)> ListAsync(ulong offset = 0, ulong limit = 0, CancellationToken ct = default)
+    public async Task<ScheduleListResult> ListAsync(ulong offset = 0, ulong limit = 0, CancellationToken ct = default)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(offset > 0 ? (byte)1 : (byte)0);
@@ -118,7 +118,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         var data = await AssertSuccessAsync(MessageTypes.ScheduleList, writer.WrittenMemory, "LIST", ct).ConfigureAwait(false);
         if (data.Length == 0)
         {
-            return ([], 0);
+            return new ScheduleListResult([], 0);
         }
 
         var reader = new BinaryBufferReader(data);
@@ -151,10 +151,27 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
             throw new ScheduleException("LIST response has trailing bytes", "LIST_INVALID_RESPONSE");
         }
 
-        return (entries.ToArray(), totalCount);
+        return new ScheduleListResult(entries.ToArray(), totalCount);
     }
 
     public async Task<ScheduleSubscription> SubscribeAsync(
+        string pattern,
+        CancellationToken ct = default)
+    {
+        var buffer = new AsyncSubscriptionBuffer<ScheduleNotification>(pattern);
+        var registration = await SubscribeAsync(pattern, (notification, _) =>
+        {
+            buffer.Write(notification);
+            return ValueTask.CompletedTask;
+        }, ct).ConfigureAwait(false);
+        return new ScheduleSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
+        {
+            buffer.Complete();
+            await registration.UnsubscribeAsync(token).ConfigureAwait(false);
+        });
+    }
+
+    internal async Task<ScheduleSubscription> SubscribeAsync(
         string pattern,
         Func<ScheduleNotification, CancellationToken, ValueTask> handler,
         CancellationToken ct = default)

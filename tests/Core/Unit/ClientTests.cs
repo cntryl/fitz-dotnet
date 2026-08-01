@@ -418,12 +418,7 @@ public sealed class ClientTests
 
         await client.ConnectAsync();
 
-        var receivedTcs = new TaskCompletionSource<(string Route, byte[] Body)>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var subscribeTask = client.Notice().SubscribeAsync("notice://prod/app/*", (message, _) =>
-        {
-            receivedTcs.TrySetResult((message.Route, message.Body.ToArray()));
-            return ValueTask.CompletedTask;
-        });
+        var subscribeTask = client.Notice().SubscribeAsync("notice://prod/app/*");
 
         using (var subscribeResponse = new BinaryBufferWriter())
         {
@@ -433,7 +428,8 @@ public sealed class ClientTests
             transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.NoticeSubscribe, subscribeResponse.WrittenSpan));
         }
 
-        _ = await subscribeTask;
+        var subscription = await subscribeTask;
+        var received = ReadFirstAsync(subscription);
         const ulong subscriptionId = 55;
 
         using (var notification = new BinaryBufferWriter())
@@ -445,10 +441,31 @@ public sealed class ClientTests
             transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.NoticeNotify, notification.WrittenSpan));
         }
 
-        var result = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var message = await received.WaitAsync(TimeSpan.FromSeconds(1));
+        var result = (message.Route, Body: message.Body.ToArray());
 
         Assert.Equal("notice://prod/app/events", result.Route);
         Assert.Equal("hello", System.Text.Encoding.UTF8.GetString(result.Body));
+
+        var disposeTask = subscription.DisposeAsync().AsTask();
+        using (var unsubscribeResponse = new BinaryBufferWriter())
+        {
+            unsubscribeResponse.WriteU8(0);
+            transport.QueueIncomingFrame(FrameCodec.Encode(
+                MessageTypes.NoticeUnsubscribe,
+                unsubscribeResponse.WrittenSpan));
+        }
+        await disposeTask;
+    }
+
+    private static async Task<T> ReadFirstAsync<T>(IAsyncEnumerable<T> notifications)
+    {
+        await foreach (var notification in notifications)
+        {
+            return notification;
+        }
+
+        throw new InvalidOperationException("Subscription completed before a notification arrived");
     }
 
     private static async Task WaitForConditionAsync(Func<bool> condition, TimeSpan timeout)

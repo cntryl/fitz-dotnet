@@ -8,6 +8,42 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class NoticeClientTests
 {
     [Fact]
+    public async Task should_yield_notice_given_async_enumerable_subscription_when_notification_arrives()
+    {
+        // Arrange
+        Action<byte[]>? notifyHandler = null;
+        using var notice = new NoticeClient(
+            (_, _, _) => Task.CompletedTask,
+            (_, _, _) =>
+            {
+                using var response = new BinaryBufferWriter();
+                response.WriteU8(0);
+                response.WriteU8(1);
+                response.WriteU64(55);
+                return Task.FromResult(response.Build());
+            },
+            (_, handler) =>
+            {
+                notifyHandler = handler;
+                return new TestRegistration();
+            });
+        await using var subscription = await notice.SubscribeAsync("notice://prod/app/*");
+        await using var enumerator = subscription.GetAsyncEnumerator();
+
+        // Act
+        using var notification = new BinaryBufferWriter();
+        notification.WriteU64(55);
+        notification.WriteString("notice://prod/app/events");
+        notification.WriteU32(5);
+        notification.WriteBytes("hello"u8);
+        notifyHandler!(notification.Build());
+
+        // Assert
+        Assert.True(await enumerator.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal("notice://prod/app/events", enumerator.Current.Route);
+    }
+
+    [Fact]
     public async Task should_encode_route_and_body_given_notice_payload_when_publishing()
     {
         // Arrange

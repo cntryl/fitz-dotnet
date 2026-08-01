@@ -65,7 +65,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         _retryRequest = retryRequest;
     }
 
-    public async ValueTask<ILease> AcquireAsync(string route, ulong ttlSecs, CancellationToken ct = default)
+    public async Task<ILease> AcquireAsync(string route, ulong ttlSecs, CancellationToken ct = default)
     {
         if (!RouteValidation.IsFixedRoute(route, "lease", 3))
         {
@@ -116,7 +116,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Lease execution must aggregate arbitrary user callback, renewal, and cleanup failures.")]
-    public async ValueTask<T> WithLeaseAsync<T>(
+    public async Task<T> WithLeaseAsync<T>(
         string route,
         ulong ttlSecs,
         Func<CancellationToken, ValueTask<T>> callback,
@@ -220,7 +220,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         return value!;
     }
 
-    public async ValueTask WithLeaseAsync(
+    public async Task WithLeaseAsync(
         string route,
         ulong ttlSecs,
         Func<CancellationToken, ValueTask> callback,
@@ -240,7 +240,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             ct).ConfigureAwait(false);
     }
 
-    public async ValueTask<LeaseInfo> QueryAsync(string route, CancellationToken ct = default)
+    public async Task<LeaseInfo> QueryAsync(string route, CancellationToken ct = default)
     {
         if (!RouteValidation.IsFixedRoute(route, "lease", 3))
         {
@@ -305,6 +305,23 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     }
 
     public async Task<LeaseSubscription> SubscribeAsync(
+        string route,
+        CancellationToken ct = default)
+    {
+        var buffer = new AsyncSubscriptionBuffer<LeaseChangeEvent>(route);
+        var registration = await SubscribeAsync(route, (notification, _) =>
+        {
+            buffer.Write(notification);
+            return ValueTask.CompletedTask;
+        }, ct).ConfigureAwait(false);
+        return new LeaseSubscription(route, buffer.ReadAllAsync(CancellationToken.None), async token =>
+        {
+            buffer.Complete();
+            await registration.UnsubscribeAsync(token).ConfigureAwait(false);
+        });
+    }
+
+    internal async Task<LeaseSubscription> SubscribeAsync(
         string route,
         Func<LeaseChangeEvent, CancellationToken, ValueTask> handler,
         CancellationToken ct = default)
