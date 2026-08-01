@@ -20,8 +20,8 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     private readonly Func<Func<CancellationToken, ValueTask>, bool>? _dispatchAsyncHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     private readonly object _gate = new();
-    private readonly Dictionary<string, LeaseSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
-    private readonly Dictionary<ulong, string> _patternsBySubscriptionId = new();
+    private readonly Dictionary<string, LeaseSubscriptionState> _subscriptionsByRoute = new(StringComparer.Ordinal);
+    private readonly Dictionary<ulong, string> _routesBySubscriptionId = new();
     private IDisposable? _notificationRegistration;
     private bool _notificationHandlerInitialized;
     private long _nextHandleId;
@@ -305,14 +305,14 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     }
 
     public async Task<LeaseSubscription> SubscribeAsync(
-        string pattern,
+        string route,
         Func<LeaseChangeEvent, CancellationToken, ValueTask> handler,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
-        if (!RouteValidation.IsFixedRoute(pattern, "lease", 3))
+        if (!RouteValidation.IsFixedRoute(route, "lease", 3))
         {
-            throw new LeaseException($"route '{pattern}' must be lease://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+            throw new LeaseException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
         }
 
         if (_registerNotificationHandler == null)
@@ -337,22 +337,22 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
 
-            if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
+            if (_subscriptionsByRoute.TryGetValue(route, out var existingSubscription))
             {
                 existingSubscription.Registrations[handleId] = registration;
-                var existingHandle = CreateSubscription(pattern, handleId);
+                var existingHandle = CreateSubscription(route, handleId);
                 SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
                 registration = null;
                 return existingHandle;
             }
 
-            var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
+            var subscriptionId = await SubscribeWireAsync(route, ct).ConfigureAwait(false);
             var subscription = new LeaseSubscriptionState(subscriptionId);
             subscription.Registrations[handleId] = registration;
-            _subscriptionsByPattern[pattern] = subscription;
-            _patternsBySubscriptionId[subscriptionId] = pattern;
+            _subscriptionsByRoute[route] = subscription;
+            _routesBySubscriptionId[subscriptionId] = route;
 
-            var handle = CreateSubscription(pattern, handleId);
+            var handle = CreateSubscription(route, handleId);
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
             registration = null;
             return handle;
@@ -368,27 +368,29 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         }
     }
 
-    private LeaseSubscription CreateSubscription(string pattern, long handleId)
+    private LeaseSubscription CreateSubscription(string route, long handleId)
     {
         return new LeaseSubscription(
-            pattern,
-            cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken));
+            route,
+            cancellationToken => UnsubscribeAsync(route, handleId, cancellationToken));
     }
 
-    private async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken ct)
+    private async Task<ulong> SubscribeWireAsync(string route, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
-        writer.WriteString(pattern);
+        writer.WriteString(route);
 
         var response = await _request(MessageTypes.LeaseSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new LeaseException($"SUBSCRIBE failed with status {status}", "SUBSCRIBE_FAILED", status);
+            var domainCode = reader.ReadU32();
+            var message = reader.ReadString();
+            throw new LeaseException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status, domainCode);
         }
 
-        if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
+        if (reader.RemainingBytes != 8)
         {
             throw new LeaseException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
         }
@@ -402,21 +404,23 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         return subscriptionId;
     }
 
-    private async Task UnsubscribeWireAsync(string pattern, CancellationToken ct)
+    private async Task UnsubscribeWireAsync(string route, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
-        writer.WriteString(pattern);
+        writer.WriteString(route);
 
         var response = await _request(MessageTypes.LeaseUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new LeaseException($"UNSUBSCRIBE failed with status {status}", "UNSUBSCRIBE_FAILED", status);
+            var domainCode = reader.ReadU32();
+            var message = reader.ReadString();
+            throw new LeaseException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status, domainCode);
         }
     }
 
-    private async ValueTask UnsubscribeAsync(string pattern, long handleId, CancellationToken ct)
+    private async ValueTask UnsubscribeAsync(string route, long handleId, CancellationToken ct)
     {
         SubscriptionRegistration<LeaseChangeEvent>? registration = null;
         bool shouldUnsubscribe = false;
@@ -424,7 +428,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (!_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
+            if (!_subscriptionsByRoute.TryGetValue(route, out var subscription))
             {
                 return;
             }
@@ -436,8 +440,8 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
 
             if (subscription.Registrations.Count == 0)
             {
-                _subscriptionsByPattern.Remove(pattern);
-                _patternsBySubscriptionId.Remove(subscription.SubscriptionId);
+                _subscriptionsByRoute.Remove(route);
+                _routesBySubscriptionId.Remove(subscription.SubscriptionId);
                 shouldUnsubscribe = true;
             }
         }
@@ -449,7 +453,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
 
         if (shouldUnsubscribe)
         {
-            await UnsubscribeWireAsync(pattern, ct).ConfigureAwait(false);
+            await UnsubscribeWireAsync(route, ct).ConfigureAwait(false);
         }
     }
 
@@ -477,10 +481,14 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             var reader = new BinaryBufferReader(payload);
             var subscriptionId = reader.ReadU64();
             var route = reader.ReadString();
+            if (reader.ReadU32() != 0 || !reader.IsEof)
+            {
+                return;
+            }
             lock (_gate)
             {
-                if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
-                    !_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
+                if (!_routesBySubscriptionId.TryGetValue(subscriptionId, out var registeredRoute) ||
+                    !_subscriptionsByRoute.TryGetValue(registeredRoute, out var subscription))
                 {
                     return;
                 }
@@ -507,44 +515,44 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            List<(string Pattern, LeaseSubscriptionState Subscription)> snapshot;
+            List<(string Route, LeaseSubscriptionState Subscription)> snapshot;
             lock (_gate)
             {
-                if (_subscriptionsByPattern.Count == 0)
+                if (_subscriptionsByRoute.Count == 0)
                 {
                     return;
                 }
 
-                snapshot = new List<(string Pattern, LeaseSubscriptionState Subscription)>(_subscriptionsByPattern.Count);
-                foreach (var entry in _subscriptionsByPattern)
+                snapshot = new List<(string Route, LeaseSubscriptionState Subscription)>(_subscriptionsByRoute.Count);
+                foreach (var entry in _subscriptionsByRoute)
                 {
                     snapshot.Add((entry.Key, entry.Value.Clone()));
                 }
             }
 
             var restoredSubscriptions = new Dictionary<string, LeaseSubscriptionState>(StringComparer.Ordinal);
-            var restoredPatternsById = new Dictionary<ulong, string>();
+            var restoredRoutesById = new Dictionary<ulong, string>();
 
             foreach (var entry in snapshot)
             {
-                var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
-                restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
-                restoredPatternsById[subscriptionId] = entry.Pattern;
+                var subscriptionId = await SubscribeWireAsync(entry.Route, cancellationToken).ConfigureAwait(false);
+                restoredSubscriptions[entry.Route] = entry.Subscription.Clone(subscriptionId);
+                restoredRoutesById[subscriptionId] = entry.Route;
             }
 
             lock (_gate)
             {
-                _subscriptionsByPattern.Clear();
-                _patternsBySubscriptionId.Clear();
+                _subscriptionsByRoute.Clear();
+                _routesBySubscriptionId.Clear();
 
                 foreach (var entry in restoredSubscriptions)
                 {
-                    _subscriptionsByPattern[entry.Key] = entry.Value;
+                    _subscriptionsByRoute[entry.Key] = entry.Value;
                 }
 
-                foreach (var entry in restoredPatternsById)
+                foreach (var entry in restoredRoutesById)
                 {
-                    _patternsBySubscriptionId[entry.Key] = entry.Value;
+                    _routesBySubscriptionId[entry.Key] = entry.Value;
                 }
             }
         }
@@ -560,7 +568,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         _reconnectRegistration?.Dispose();
         lock (_gate)
         {
-            foreach (var subscription in _subscriptionsByPattern.Values)
+            foreach (var subscription in _subscriptionsByRoute.Values)
             {
                 foreach (var registration in subscription.Registrations.Values)
                 {
@@ -568,8 +576,8 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
                 }
             }
 
-            _subscriptionsByPattern.Clear();
-            _patternsBySubscriptionId.Clear();
+            _subscriptionsByRoute.Clear();
+            _routesBySubscriptionId.Clear();
         }
 
         _subscriptionGate.Dispose();

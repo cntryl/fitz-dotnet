@@ -13,6 +13,9 @@ public static class MessageTypes
     public const ushort KvDelete = 106;
     public const ushort KvDeleteRange = 107;
     public const ushort KvScan = 108;
+    public const ushort KvSubscribe = 109;
+    public const ushort KvUnsubscribe = 110;
+    public const ushort KvNotify = 111;
 
     public const ushort QueueEnqueue = 200;
     public const ushort QueueReserve = 202;

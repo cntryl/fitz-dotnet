@@ -66,4 +66,40 @@ public sealed class RouteValidationTests
     {
         Assert.False(RouteValidation.IsFixedRoute("schedule://realm/area/resource", "schedule", 4));
     }
+
+    [Theory]
+    [InlineData("queue://realm/area/resource")]
+    [InlineData("queue://realm/area/*")]
+    [InlineData("queue://realm/**")]
+    [InlineData("queue://*/area/resource")]
+    [InlineData("queue://**/resource")]
+    [InlineData("queue://realm/**/**")]
+    public void should_accept_shared_registration_patterns_capable_of_matching_domain_depth(string pattern)
+    {
+        Assert.True(RouteValidation.IsRegistrationPattern(pattern, "queue", 3));
+    }
+
+    [Theory]
+    [InlineData("stream://realm/area/resource")]
+    [InlineData("queue://realm//resource")]
+    [InlineData("queue://realm/area/res*")]
+    [InlineData("queue://realm/area")]
+    [InlineData("queue://realm/area/resource/extra/**")]
+    public void should_reject_invalid_shared_registration_patterns(string pattern)
+    {
+        Assert.False(RouteValidation.IsRegistrationPattern(pattern, "queue", 3));
+    }
+
+    [Theory]
+    [InlineData("rpc://acme/orders/v1/create", "rpc://*/orders/**", true)]
+    [InlineData("rpc://acme/orders/create", "rpc://acme/**/**", true)]
+    [InlineData("rpc://acme/create", "rpc://acme/**/orders", false)]
+    [InlineData("queue://acme/app/jobs", "stream://**", false)]
+    public void should_match_shared_registration_patterns_without_crossing_schemes(
+        string route,
+        string pattern,
+        bool expected)
+    {
+        Assert.Equal(expected, RouteValidation.MatchesPattern(route, pattern));
+    }
 }

@@ -1,4 +1,5 @@
-﻿using Cntryl.Fitz.Abstractions.Domains.Kv;
+﻿using Cntryl.Fitz.Abstractions;
+using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Domains.Kv;
 using Cntryl.Fitz.Errors;
@@ -10,13 +11,103 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class KvClientTests
 {
     [Fact]
+    public async Task should_deliver_exact_route_given_wildcard_kv_subscription_when_notification_arrives()
+    {
+        // Arrange
+        Action<ReadOnlyMemory<byte>>? notificationHandler = null;
+        var received = new TaskCompletionSource<KvNotification>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var kv = new KvClient(
+            request: (messageType, _, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                if (messageType == MessageTypes.KvSubscribe)
+                {
+                    writer.WriteU64(42);
+                }
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
+            },
+            registerNotificationHandler: (messageType, handler) =>
+            {
+                Assert.Equal(MessageTypes.KvNotify, messageType);
+                notificationHandler = handler;
+                return new TestRegistration();
+            });
+
+        // Act
+        var subscription = await kv.SubscribeAsync("kv://*/area/**", (notification, _) =>
+        {
+            received.TrySetResult(notification);
+            return ValueTask.CompletedTask;
+        });
+        using var payload = new BinaryBufferWriter();
+        payload.WriteU64(42);
+        payload.WriteString("kv://realm/area/resource");
+        payload.WriteU64(3);
+        notificationHandler!(payload.WrittenMemory);
+        var notification = await received.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Assert
+        Assert.Equal("kv://realm/area/resource", notification.Route);
+        Assert.Equal((ulong)3, notification.MutationCount);
+        await subscription.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task should_preserve_domain_code_given_kv_subscription_validation_error()
+    {
+        // Arrange
+        using var kv = new KvClient(
+            request: (_, _, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(1);
+                writer.WriteU32(FitzErrorCodes.KvInvalidSubscriptionPattern);
+                writer.WriteString("invalid pattern");
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
+            },
+            registerNotificationHandler: (_, _) => new TestRegistration());
+
+        // Act
+        var error = await Assert.ThrowsAsync<KvException>(() =>
+            kv.SubscribeAsync("kv://realm/area/resource", (_, _) => ValueTask.CompletedTask));
+
+        // Assert
+        Assert.Equal(FitzErrorCodes.KvInvalidSubscriptionPattern, error.DomainCode);
+    }
+
+    [Fact]
+    public async Task should_throw_kv_exception_given_truncated_subscription_error_response()
+    {
+        // Arrange
+        using var kv = new KvClient(
+            request: (_, _, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(1);
+                writer.WriteU32(FitzErrorCodes.KvInvalidSubscriptionPattern);
+                writer.WriteU32(4);
+                writer.WriteU8(1);
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
+            },
+            registerNotificationHandler: (_, _) => new TestRegistration());
+
+        // Act
+        var error = await Assert.ThrowsAsync<KvException>(() =>
+            kv.SubscribeAsync("kv://realm/area/resource", (_, _) => ValueTask.CompletedTask));
+
+        // Assert
+        Assert.Equal("SUBSCRIBE_INVALID_RESPONSE", error.Code);
+    }
+
+    [Fact]
     public async Task should_return_transaction_given_success_response_when_beginning_transaction()
     {
         // Arrange
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        var kv = new KvClient((messageType, payload, _) =>
+        using var kv = new KvClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -46,7 +137,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var callCount = 0;
-        var kv = new KvClient((messageType, payload, _) =>
+        using var kv = new KvClient((messageType, payload, _) =>
         {
             callCount++;
             if (callCount == 1)
@@ -80,7 +171,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var callCount = 0;
-        var kv = new KvClient((_, _, _) =>
+        using var kv = new KvClient((_, _, _) =>
         {
             callCount++;
             using var response = new BinaryBufferWriter();
@@ -112,7 +203,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var calls = new List<ushort>();
-        var kv = new KvClient((messageType, payload, _) =>
+        using var kv = new KvClient((messageType, payload, _) =>
         {
             calls.Add(messageType);
             using var response = new BinaryBufferWriter();
@@ -139,7 +230,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var calls = new List<ushort>();
-        var kv = new KvClient((messageType, payload, _) =>
+        using var kv = new KvClient((messageType, payload, _) =>
         {
             calls.Add(messageType);
             using var response = new BinaryBufferWriter();
@@ -166,7 +257,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var calls = new List<ushort>();
-        var kv = new KvClient((messageType, payload, _) =>
+        using var kv = new KvClient((messageType, payload, _) =>
         {
             calls.Add(messageType);
             using var response = new BinaryBufferWriter();
@@ -193,7 +284,7 @@ public sealed class KvClientTests
     {
         // Arrange
         ushort seenMessageType = 0;
-        var kv = new KvClient((messageType, payload, _) =>
+        using var kv = new KvClient((messageType, payload, _) =>
         {
             if (seenMessageType == 0)
             {
@@ -244,7 +335,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var requestCount = 0;
-        var kv = new KvClient((_, _, _) =>
+        using var kv = new KvClient((_, _, _) =>
         {
             requestCount++;
             return Task.FromResult(Array.Empty<byte>());
@@ -306,7 +397,7 @@ public sealed class KvClientTests
                 new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        var kv = new KvClient(connection);
+        using var kv = new KvClient(connection);
 
         await connection.ConnectAsync();
         var tx = await kv.BeginAsync("kv://prod/app/users");
@@ -320,5 +411,12 @@ public sealed class KvClientTests
         Assert.Equal("Transaction is no longer valid after disconnect", ex.Message);
 
         await connection.CloseAsync();
+    }
+
+    private sealed class TestRegistration : IDisposable
+    {
+        public void Dispose()
+        {
+        }
     }
 }

@@ -126,6 +126,7 @@ public sealed class Client : IClient
         }
 
         _disposed = true;
+        _kvClient?.Dispose();
         _leaseClient?.Dispose();
         _noticeClient?.Dispose();
         _queueClient?.Dispose();

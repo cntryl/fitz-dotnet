@@ -58,3 +58,6 @@ public sealed record KvScanQuery(
     ReadOnlyMemory<byte>? EndKey = null,
     ulong? Limit = null,
     bool Reverse = false);
+
+/// <summary>A committed KV mutation notification.</summary>
+public sealed record KvNotification(string Route, ulong MutationCount);

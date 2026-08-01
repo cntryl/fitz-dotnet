@@ -228,9 +228,9 @@ public sealed class RpcClient : IRpcClient
         Func<RpcRequest, IRpcResponseWriter, CancellationToken, Task> handler,
         CancellationToken ct = default)
     {
-        if (!RouteValidation.IsConcreteRoute(pattern, "rpc"))
+        if (!RouteValidation.IsRegistrationPattern(pattern, "rpc"))
         {
-            throw new RpcException($"route '{pattern}' must be a concrete rpc route", "INVALID_ROUTE");
+            throw new RpcException($"pattern '{pattern}' must use whole-segment * or ** wildcards", "INVALID_ROUTE");
         }
 
         if (_registerNotificationHandler == null)
@@ -318,7 +318,7 @@ public sealed class RpcClient : IRpcClient
 
         foreach (var entry in _workers)
         {
-            if (RouteMatchesPattern(route, entry.Key))
+            if (RouteValidation.MatchesPattern(route, entry.Key))
             {
                 handler = entry.Value;
                 return true;
@@ -340,7 +340,9 @@ public sealed class RpcClient : IRpcClient
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new RpcException($"REGISTER failed with status {status}", "REGISTER_FAILED", status);
+            var domainCode = reader.ReadU32();
+            var message = reader.ReadString();
+            throw new RpcException($"REGISTER failed: {message}", "REGISTER_FAILED", status, domainCode);
         }
 
         if (reader.RemainingBytes >= 8)
@@ -372,7 +374,9 @@ public sealed class RpcClient : IRpcClient
             var status = reader.ReadU8();
             if (status != 0)
             {
-                throw new RpcException($"UNREGISTER failed with status {status}", "UNREGISTER_FAILED", status);
+                var domainCode = reader.ReadU32();
+                var message = reader.ReadString();
+                throw new RpcException($"UNREGISTER failed: {message}", "UNREGISTER_FAILED", status, domainCode);
             }
         }
         finally
@@ -513,39 +517,6 @@ public sealed class RpcClient : IRpcClient
             6010 => "BACKEND_ERROR",
             _ => "DOMAIN_ERROR",
         };
-    }
-
-    private static bool RouteMatchesPattern(string route, string pattern)
-    {
-        var routeSegments = route.Split('/', StringSplitOptions.None);
-        var patternSegments = pattern.Split('/', StringSplitOptions.None);
-
-        var routeIndex = 0;
-        var patternIndex = 0;
-
-        while (patternIndex < patternSegments.Length && routeIndex < routeSegments.Length)
-        {
-            var segment = patternSegments[patternIndex];
-            if (segment == "**")
-            {
-                return true;
-            }
-
-            if (segment != "*" && !string.Equals(segment, routeSegments[routeIndex], StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            patternIndex++;
-            routeIndex++;
-        }
-
-        if (patternIndex == patternSegments.Length && routeIndex == routeSegments.Length)
-        {
-            return true;
-        }
-
-        return patternIndex == patternSegments.Length - 1 && patternSegments[patternIndex] == "**";
     }
 
     private sealed class RpcResponseWriter : IRpcResponseWriter

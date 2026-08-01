@@ -193,9 +193,9 @@ public sealed class QueueClient : IQueueClient, IDisposable
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
-        if (!RouteValidation.IsSelectorRoute(pattern, "queue", 3, allowRealmWildcard: true))
+        if (!RouteValidation.IsRegistrationPattern(pattern, "queue", 3))
         {
-            throw new QueueException($"route '{pattern}' must be queue://{{realm}}/{{area}}/{{resource}}, queue://{{realm}}/{{area}}/*, or queue://{{realm}}/*/*", "INVALID_ROUTE");
+            throw new QueueException($"pattern '{pattern}' must use whole-segment wildcards and match a three-segment queue route", "INVALID_ROUTE");
         }
 
         if (_registerNotificationHandler == null)
@@ -268,10 +268,12 @@ public sealed class QueueClient : IQueueClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new QueueException($"SUBSCRIBE failed with status {status}", "SUBSCRIBE_FAILED", status);
+            var domainCode = reader.ReadU32();
+            var message = reader.ReadString();
+            throw new QueueException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status, domainCode);
         }
 
-        if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
+        if (reader.RemainingBytes != 8)
         {
             throw new QueueException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
         }
@@ -295,7 +297,9 @@ public sealed class QueueClient : IQueueClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new QueueException($"UNSUBSCRIBE failed with status {status}", "UNSUBSCRIBE_FAILED", status);
+            var domainCode = reader.ReadU32();
+            var message = reader.ReadString();
+            throw new QueueException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status, domainCode);
         }
     }
 
@@ -360,7 +364,13 @@ public sealed class QueueClient : IQueueClient, IDisposable
             var reader = new BinaryBufferReader(payload);
             var subscriptionId = reader.ReadU64();
             var eventRoute = reader.ReadString();
-            var messageCount = reader.ReadU64();
+            var readyMessages = reader.ReadU64();
+            var delayedMessages = reader.ReadU64();
+            var inflightMessages = reader.ReadU64();
+            if (!reader.IsEof)
+            {
+                return;
+            }
             lock (_gate)
             {
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
@@ -369,7 +379,11 @@ public sealed class QueueClient : IQueueClient, IDisposable
                     return;
                 }
 
-                var notification = new QueueAvailabilityEvent(eventRoute, messageCount);
+                var notification = new QueueAvailabilityEvent(
+                    eventRoute,
+                    readyMessages,
+                    delayedMessages,
+                    inflightMessages);
                 foreach (var registration in subscription.Registrations.Values)
                 {
                     registration.Channel.Writer.TryWrite(notification);

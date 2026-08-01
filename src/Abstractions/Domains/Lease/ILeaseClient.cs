@@ -17,7 +17,7 @@ public interface ILeaseClient
         CancellationToken ct = default);
     ValueTask<LeaseInfo> QueryAsync(string route, CancellationToken ct = default);
     Task<LeaseSubscription> SubscribeAsync(
-        string pattern,
+        string route,
         Func<LeaseChangeEvent, CancellationToken, ValueTask> handler,
         CancellationToken ct = default);
 }

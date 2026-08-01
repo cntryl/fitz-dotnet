@@ -28,6 +28,124 @@ internal static class RouteValidation
         return TryValidateSelectorRoute(route, scheme, segmentCount, allowRealmWildcard, out _);
     }
 
+    internal static bool IsRegistrationPattern(string route, string scheme, int requiredSegments = 0)
+    {
+        return TryValidateRegistrationPattern(route, scheme, requiredSegments, out _);
+    }
+
+    internal static bool TryValidateRegistrationPattern(
+        string route,
+        string scheme,
+        int requiredSegments,
+        out RouteValidationFailure failure)
+    {
+        if (requiredSegments < 0 || !TryGetPathStart(route, scheme, out var pathStart, out failure))
+        {
+            failure = RouteValidationFailure.InvalidShape;
+            return false;
+        }
+
+        var segmentCount = 0;
+        var doubleWildcardCount = 0;
+        var segmentStart = pathStart;
+        for (var index = pathStart; index <= route.Length; index++)
+        {
+            if (index != route.Length && route[index] != '/')
+            {
+                continue;
+            }
+
+            var length = index - segmentStart;
+            if (length == 0)
+            {
+                failure = RouteValidationFailure.EmptySegment;
+                return false;
+            }
+
+            var single = IsSingleWildcard(route, segmentStart, length);
+            var doubleWildcard = IsDoubleWildcard(route, segmentStart, length);
+            if (!single && !doubleWildcard)
+            {
+                for (var cursor = segmentStart; cursor < index; cursor++)
+                {
+                    if (route[cursor] == '*')
+                    {
+                        failure = RouteValidationFailure.ContainsWildcard;
+                        return false;
+                    }
+                }
+            }
+            if (doubleWildcard)
+            {
+                doubleWildcardCount++;
+            }
+            segmentCount++;
+            segmentStart = index + 1;
+        }
+
+        var canMatchRequiredDepth = requiredSegments == 0 ||
+            (doubleWildcardCount == 0
+                ? segmentCount == requiredSegments
+                : segmentCount - doubleWildcardCount <= requiredSegments);
+        failure = canMatchRequiredDepth ? default : RouteValidationFailure.InvalidShape;
+        return canMatchRequiredDepth;
+    }
+
+    internal static bool MatchesPattern(string route, string pattern)
+    {
+        var routeMarker = route.IndexOf("://", StringComparison.Ordinal);
+        var patternMarker = pattern.IndexOf("://", StringComparison.Ordinal);
+        if (routeMarker < 1 || patternMarker < 1 ||
+            !route.AsSpan(0, routeMarker).SequenceEqual(pattern.AsSpan(0, patternMarker)))
+        {
+            return false;
+        }
+        var routeSegments = RouteSegments(route);
+        var patternSegments = RouteSegments(pattern);
+        if (routeSegments.Length == 0 || patternSegments.Length == 0)
+        {
+            return false;
+        }
+
+        var routeIndex = 0;
+        var patternIndex = 0;
+        var lastDoubleWildcard = -1;
+        var lastDoubleMatch = 0;
+        while (routeIndex < routeSegments.Length)
+        {
+            var segment = patternIndex < patternSegments.Length ? patternSegments[patternIndex] : null;
+            if (segment == "*" || string.Equals(segment, routeSegments[routeIndex], StringComparison.Ordinal))
+            {
+                routeIndex++;
+                patternIndex++;
+                continue;
+            }
+            if (segment == "**")
+            {
+                lastDoubleWildcard = patternIndex++;
+                lastDoubleMatch = routeIndex;
+                continue;
+            }
+            if (lastDoubleWildcard < 0)
+            {
+                return false;
+            }
+            routeIndex = ++lastDoubleMatch;
+            patternIndex = lastDoubleWildcard + 1;
+        }
+        while (patternIndex < patternSegments.Length && patternSegments[patternIndex] == "**")
+        {
+            patternIndex++;
+        }
+        return patternIndex == patternSegments.Length;
+    }
+
+    private static string[] RouteSegments(string route)
+    {
+        var marker = route.IndexOf("://", StringComparison.Ordinal);
+        return marker < 1 ? Array.Empty<string>() : route[(marker + 3)..].Split('/');
+    }
+
     internal static bool TryValidateConcreteRoute(string route, string scheme, out RouteValidationFailure failure)
     {
         return TryScan(route, scheme, expectedSegments: 0, allowWildcards: false, allowRealmWildcard: false, out _, out failure);

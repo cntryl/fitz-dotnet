@@ -216,7 +216,10 @@ public sealed class StreamClient : IStreamClient, IDisposable
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
-        ValidateStreamSelector(pattern);
+        if (!RouteValidation.IsRegistrationPattern(pattern, "stream", 3))
+        {
+            throw new StreamException($"pattern '{pattern}' must use whole-segment wildcards and match a three-segment stream route", "INVALID_ROUTE");
+        }
 
         if (_registerNotificationHandler == null)
         {

@@ -160,7 +160,10 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
-        ValidateScheduleRoute(pattern);
+        if (!RouteValidation.IsRegistrationPattern(pattern, "schedule", 4))
+        {
+            throw new ScheduleException($"pattern '{pattern}' must use whole-segment wildcards and match a four-segment schedule route", "INVALID_ROUTE");
+        }
         EnsureNotificationHandlerInitialized();
 
         var channel = Channel.CreateUnbounded<ScheduleNotification>(new UnboundedChannelOptions
@@ -266,7 +269,9 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new ScheduleException($"SUBSCRIBE failed with status {status}", "SUBSCRIBE_FAILED", status);
+            var domainCode = reader.ReadU32();
+            var message = reader.ReadString();
+            throw new ScheduleException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status, domainCode);
         }
 
         if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
@@ -315,8 +320,13 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         {
             var reader = new BinaryBufferReader(payload);
             var subscriptionId = reader.ReadU64();
+            var exactRoute = reader.ReadString();
             var bodyLength = reader.ReadU32();
             var body = reader.ReadBytes((int)bodyLength);
+            if (!reader.IsEof)
+            {
+                return;
+            }
 
             lock (_gate)
             {
@@ -326,7 +336,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
                     return;
                 }
 
-                var notification = new ScheduleNotification(body);
+                var notification = new ScheduleNotification(exactRoute, body);
                 foreach (var registration in subscription.Writers.Values)
                 {
                     registration.Channel.Writer.TryWrite(notification);

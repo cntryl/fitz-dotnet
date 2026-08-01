@@ -149,6 +149,7 @@ public sealed class ScheduleClientTests
         Assert.NotNull(notifyHandler);
         using var notification = new BinaryBufferWriter();
         notification.WriteU64(subscriptionId);
+        notification.WriteString("schedule://prod/app/jobs/run");
         notification.WriteU32(4);
         notification.WriteBytes("fire"u8);
         notifyHandler!(notification.Build());
@@ -159,6 +160,7 @@ public sealed class ScheduleClientTests
         Assert.NotNull(evt);
         Assert.Equal(MessageTypes.ScheduleSubscribe, seenMessageType);
         Assert.NotNull(seenPayload);
+        Assert.Equal("schedule://prod/app/jobs/run", evt!.Route);
         Assert.Equal("fire", System.Text.Encoding.UTF8.GetString(evt!.Payload.Span));
         Assert.Same(received, evt);
         Assert.NotEqual(default, seenCancellationToken);

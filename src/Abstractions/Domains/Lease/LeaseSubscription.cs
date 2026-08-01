@@ -5,9 +5,12 @@ namespace Cntryl.Fitz.Abstractions.Domains.Lease;
 public sealed class LeaseSubscription : SubscriptionHandle
 {
     public LeaseSubscription(
-        string pattern,
+        string route,
         Func<CancellationToken, ValueTask> unsubscribe)
-        : base(pattern, unsubscribe)
+        : base(route, unsubscribe)
     {
+        Route = route;
     }
+
+    public string Route { get; }
 }

@@ -194,7 +194,6 @@ public sealed class LeaseClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
-                writer.WriteU8(1);
                 writer.WriteU64(555);
                 return Task.FromResult(writer.Build());
             },
@@ -220,6 +219,7 @@ public sealed class LeaseClientTests
         const ulong subscriptionId = 555;
         notification.WriteU64(subscriptionId);
         notification.WriteString("lease://prod/app/lock");
+        notification.WriteU32(0);
         notifyHandler!(notification.Build());
 
         var evt = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
@@ -360,7 +360,6 @@ public sealed class LeaseClientTests
             {
                 using var subscribeWriter = new BinaryBufferWriter();
                 subscribeWriter.WriteU8(0);
-                subscribeWriter.WriteU8(1);
                 subscribeWriter.WriteU64(555);
                 firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseSubscribe, subscribeWriter.WrittenSpan));
             }
@@ -378,7 +377,6 @@ public sealed class LeaseClientTests
             {
                 using var subscribeWriter = new BinaryBufferWriter();
                 subscribeWriter.WriteU8(0);
-                subscribeWriter.WriteU8(1);
                 subscribeWriter.WriteU64(777);
                 secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseSubscribe, subscribeWriter.WrittenSpan));
 
@@ -388,6 +386,7 @@ public sealed class LeaseClientTests
                     using var notification = new BinaryBufferWriter();
                     notification.WriteU64(777);
                     notification.WriteString("lease://prod/app/lock");
+                    notification.WriteU32(0);
                     secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseNotify, notification.WrittenSpan));
                 });
             }
@@ -422,6 +421,7 @@ public sealed class LeaseClientTests
         {
             notification.WriteU64(555);
             notification.WriteString("lease://prod/app/lock");
+            notification.WriteU32(0);
             firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseNotify, notification.WrittenSpan));
         }
 

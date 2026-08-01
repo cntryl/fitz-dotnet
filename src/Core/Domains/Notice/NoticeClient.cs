@@ -77,9 +77,9 @@ public sealed class NoticeClient : INoticeClient, IDisposable
     public async Task<NoticeSubscription> SubscribeAsync(string pattern, Func<NoticeMessage, CancellationToken, ValueTask> handler, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
-        if (!RouteValidation.IsSelectorRoute(pattern, "notice", 3, allowRealmWildcard: true))
+        if (!RouteValidation.IsRegistrationPattern(pattern, "notice"))
         {
-            throw new NoticeException($"route '{pattern}' must be notice://{{realm}}/{{area}}/{{resource}}, notice://{{realm}}/{{area}}/*, or notice://{{realm}}/*/*", "INVALID_ROUTE");
+            throw new NoticeException($"pattern '{pattern}' must use whole-segment * or ** wildcards", "INVALID_ROUTE");
         }
 
         EnsureNotificationHandlerInitialized();
@@ -191,7 +191,9 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new NoticeException($"SUBSCRIBE failed with status {status}", "SUBSCRIBE_FAILED", status);
+            var domainCode = reader.ReadU32();
+            var message = reader.ReadString();
+            throw new NoticeException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status, domainCode);
         }
 
         if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
@@ -223,7 +225,9 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new NoticeException($"UNSUBSCRIBE failed with status {status}", "UNSUBSCRIBE_FAILED", status);
+            var domainCode = reader.ReadU32();
+            var message = reader.ReadString();
+            throw new NoticeException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status, domainCode);
         }
     }
 

@@ -378,6 +378,16 @@ internal static class StreamWireHelpers
         var status = reader.ReadU8();
         if (status != 0)
         {
+            if (status == 1)
+            {
+                var domainCode = reader.ReadU32();
+                var message = reader.ReadString();
+                if (!reader.IsEof)
+                {
+                    throw new StreamException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE", status, domainCode);
+                }
+                throw new StreamException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+            }
             throw new StreamException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
         }
     }

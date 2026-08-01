@@ -9,6 +9,33 @@ namespace Cntryl.Fitz.Core.Tests.Integration;
 public sealed class DomainWorkflowIntegrationTests
 {
     [Fact]
+    public async Task should_deliver_exact_route_given_wildcard_kv_subscription_when_transaction_commits()
+    {
+        // Arrange
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        var uniqueParts = IntegrationFixture.CreateUniqueRoute("kv").Split('/');
+        var route = $"{uniqueParts[0]}//{uniqueParts[2]}/{uniqueParts[^1]}/resource";
+        var pattern = $"{uniqueParts[0]}//{uniqueParts[2]}/{uniqueParts[^1]}/**";
+        var received = new TaskCompletionSource<KvNotification>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var subscription = await client.Kv().SubscribeAsync(pattern, (notification, _) =>
+        {
+            received.TrySetResult(notification);
+            return ValueTask.CompletedTask;
+        });
+
+        // Act
+        var tx = await client.Kv().BeginAsync(route);
+        await tx.PutAsync("key"u8.ToArray(), "value"u8.ToArray());
+        await tx.CommitAsync();
+        var notification = await received.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // Assert
+        Assert.Equal(route, notification.Route);
+        Assert.Equal((ulong)1, notification.MutationCount);
+    }
+
+    [Fact]
     public async Task should_return_not_found_given_missing_key_when_get_called()
     {
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());

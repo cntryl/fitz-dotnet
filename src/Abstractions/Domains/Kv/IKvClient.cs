@@ -19,4 +19,10 @@ public interface IKvClient
         KvDurability durability = KvDurability.Async,
         CancellationToken cancellationToken = default
     );
+
+    Task<KvSubscription> SubscribeAsync(
+        string pattern,
+        Func<KvNotification, CancellationToken, ValueTask> handler,
+        CancellationToken cancellationToken = default
+    );
 }

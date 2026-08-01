@@ -37,6 +37,7 @@ internal sealed class DomainHotPathBenchmarks : IDisposable
     [GlobalCleanup]
     public void Dispose()
     {
+        _kv.Dispose();
         _queue.Dispose();
         _lease.Dispose();
         _notice.Dispose();

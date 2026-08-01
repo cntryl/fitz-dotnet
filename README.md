@@ -44,6 +44,21 @@ Runtime defaults now match the TS client truth surface:
 - async handler timeout defaults to the client timeout
 - request queue size defaults to `1024`
 
+## Subscription registrations
+
+KV, Queue, Stream, Notice, RPC worker, and Schedule registrations accept exact
+routes and whole-segment `*` or `**` patterns, including wildcard realms. KV,
+Queue, and Stream patterns must be capable of matching three segments;
+Schedule patterns must match four; Notice and RPC have flexible depth. The
+broker permits 128 wildcard registrations per domain and session, while exact
+registrations do not consume the quota. Lease subscriptions remain exact-only:
+`lease://realm/area/resource`.
+
+Notifications expose the exact concrete route. Queue availability events also
+include ready, delayed, and inflight message counts. Active registrations are
+restored after reconnect and duplicate local registrations share one wire
+registration.
+
 ## Local Verification
 
 Fast local checks:
