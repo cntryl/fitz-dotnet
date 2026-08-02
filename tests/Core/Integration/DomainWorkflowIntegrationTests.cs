@@ -17,11 +17,11 @@ public sealed class DomainWorkflowIntegrationTests
         var uniqueParts = IntegrationFixture.CreateUniqueRoute("kv").Split('/');
         var route = $"{uniqueParts[0]}//{uniqueParts[2]}/{uniqueParts[^1]}/resource";
         var pattern = $"{uniqueParts[0]}//{uniqueParts[2]}/{uniqueParts[^1]}/**";
-        await using var subscription = await client.Kv().SubscribeAsync(pattern);
+        await using var subscription = await client.Kv.SubscribeAsync(pattern);
         var received = ReadFirstAsync(subscription);
 
         // Act
-        var tx = await client.Kv().BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+        var tx = await client.Kv.BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
         await tx.PutAsync("key"u8.ToArray(), "value"u8.ToArray());
         await tx.CommitAsync();
         var notification = await received.WaitAsync(TimeSpan.FromSeconds(2));
@@ -36,7 +36,7 @@ public sealed class DomainWorkflowIntegrationTests
     {
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
-        var tx = await client.Kv().BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async, KvMode.ReadOnly);
+        var tx = await client.Kv.BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async, KvMode.ReadOnly);
 
         var result = await tx.GetAsync("missing"u8.ToArray());
 
@@ -50,13 +50,13 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
         var route = IntegrationFixture.CreateUniqueRoute("queue");
-        await client.Queue().EnqueueAsync(route, "delayed"u8.ToArray(), delayMs: 2_000);
+        await client.Queue.EnqueueAsync(route, "delayed"u8.ToArray(), delayMs: 2_000);
 
-        var early = await client.Queue().ReserveAsync(route, leaseSeconds: 30, batchSize: 1);
+        var early = await client.Queue.ReserveAsync(route, leaseSeconds: 30, batchSize: 1);
 
         Assert.Empty(early);
         await Task.Delay(TimeSpan.FromMilliseconds(2_100));
-        var visible = await client.Queue().ReserveAsync(route, leaseSeconds: 30, batchSize: 1);
+        var visible = await client.Queue.ReserveAsync(route, leaseSeconds: 30, batchSize: 1);
         var item = Assert.Single(visible);
         Assert.Equal("delayed", Encoding.UTF8.GetString(item.Body.Span));
         await item.CompleteAsync();
@@ -69,10 +69,10 @@ public sealed class DomainWorkflowIntegrationTests
         await client.ConnectAsync();
         var staging = IntegrationFixture.CreateUniqueRoute("notice").Replace("conformance-realm", "staging-realm", StringComparison.Ordinal);
         var prod = IntegrationFixture.CreateUniqueRoute("notice");
-        await using var subscription = await client.Notice().SubscribeAsync(staging);
+        await using var subscription = await client.Notice.SubscribeAsync(staging);
         var received = ReadFirstAsync(subscription);
 
-        await client.Notice().PublishAsync(prod, "prod"u8.ToArray());
+        await client.Notice.PublishAsync(prod, "prod"u8.ToArray());
 
         await Assert.ThrowsAsync<TimeoutException>(() => received.WaitAsync(TimeSpan.FromMilliseconds(300)));
     }
@@ -84,7 +84,7 @@ public sealed class DomainWorkflowIntegrationTests
         await client.ConnectAsync();
 
         await Assert.ThrowsAsync<ScheduleException>(async () =>
-            await client.Schedule().CreateAsync(
+            await client.Schedule.CreateAsync(
                 IntegrationFixture.CreateUniqueRoute("schedule"),
                 "not a cron",
                 ScheduleDeliveryMode.Broadcast,
@@ -98,7 +98,7 @@ public sealed class DomainWorkflowIntegrationTests
         await client.ConnectAsync();
         var records = new List<StreamRecord>();
 
-        await foreach (var record in client.Stream().ReadAsync(IntegrationFixture.CreateUniqueRoute("stream"), 999_999, 10))
+        await foreach (var record in client.Stream.ReadAsync(IntegrationFixture.CreateUniqueRoute("stream"), 999_999, 10))
         {
             records.Add(record);
         }
@@ -111,7 +111,7 @@ public sealed class DomainWorkflowIntegrationTests
     {
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
-        var tx = await client.Kv().BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+        var tx = await client.Kv.BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
         await tx.InsertAsync("key"u8.ToArray(), "first"u8.ToArray());
 
         await Assert.ThrowsAsync<KvException>(() => tx.InsertAsync("key"u8.ToArray(), "second"u8.ToArray()));
@@ -123,7 +123,7 @@ public sealed class DomainWorkflowIntegrationTests
     {
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
-        var tx = await client.Kv().BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async, KvMode.ReadOnly);
+        var tx = await client.Kv.BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async, KvMode.ReadOnly);
 
         await Assert.ThrowsAsync<KvException>(() => tx.PutAsync("key"u8.ToArray(), "value"u8.ToArray()));
         await tx.RollbackAsync();
@@ -134,7 +134,7 @@ public sealed class DomainWorkflowIntegrationTests
     {
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
-        var tx = await client.Kv().BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+        var tx = await client.Kv.BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
 
         await Assert.ThrowsAsync<KvException>(async () =>
         {
@@ -150,7 +150,7 @@ public sealed class DomainWorkflowIntegrationTests
     {
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
-        var tx = await client.Kv().BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+        var tx = await client.Kv.BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
         await tx.CommitAsync();
 
         await Assert.ThrowsAsync<KvException>(() => tx.CommitAsync());
@@ -162,11 +162,11 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
         var route = IntegrationFixture.CreateUniqueRoute("queue");
-        await client.Queue().EnqueueAsync(route, "retry"u8.ToArray());
-        var first = Assert.Single(await client.Queue().ReserveAsync(route, leaseSeconds: 1, batchSize: 1));
+        await client.Queue.EnqueueAsync(route, "retry"u8.ToArray());
+        var first = Assert.Single(await client.Queue.ReserveAsync(route, leaseSeconds: 1, batchSize: 1));
 
         await Task.Delay(TimeSpan.FromMilliseconds(1_100));
-        var second = Assert.Single(await client.Queue().ReserveAsync(route, leaseSeconds: 30, batchSize: 1));
+        var second = Assert.Single(await client.Queue.ReserveAsync(route, leaseSeconds: 30, batchSize: 1));
 
         Assert.Equal(first.Body, second.Body);
         await second.CompleteAsync();
@@ -178,8 +178,8 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
         var route = IntegrationFixture.CreateUniqueRoute("queue");
-        await client.Queue().EnqueueAsync(route, "token"u8.ToArray());
-        var item = Assert.Single(await client.Queue().ReserveAsync(route, leaseSeconds: 30, batchSize: 1));
+        await client.Queue.EnqueueAsync(route, "token"u8.ToArray());
+        var item = Assert.Single(await client.Queue.ReserveAsync(route, leaseSeconds: 30, batchSize: 1));
 
         await Assert.ThrowsAsync<QueueException>(() => item.CompleteWithTokenAsync(ulong.MaxValue));
         await item.CompleteAsync();
@@ -191,13 +191,13 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
         var route = IntegrationFixture.CreateUniqueRoute("queue");
-        await client.Queue().EnqueueAsync(route, "expired"u8.ToArray());
-        var item = Assert.Single(await client.Queue().ReserveAsync(route, leaseSeconds: 1, batchSize: 1));
+        await client.Queue.EnqueueAsync(route, "expired"u8.ToArray());
+        var item = Assert.Single(await client.Queue.ReserveAsync(route, leaseSeconds: 1, batchSize: 1));
 
         await Task.Delay(TimeSpan.FromMilliseconds(1_100));
 
         await Assert.ThrowsAsync<QueueException>(() => item.CompleteAsync());
-        var redelivered = Assert.Single(await client.Queue().ReserveAsync(route, leaseSeconds: 30, batchSize: 1));
+        var redelivered = Assert.Single(await client.Queue.ReserveAsync(route, leaseSeconds: 30, batchSize: 1));
         await redelivered.CompleteAsync();
     }
 
@@ -222,10 +222,10 @@ public sealed class DomainWorkflowIntegrationTests
         var pattern = multiSegment
             ? $"{parts[0]}//{parts[2]}/*/*"
             : $"{parts[0]}//{parts[2]}/{parts[3]}/*";
-        await using var subscription = await client.Notice().SubscribeAsync(pattern);
+        await using var subscription = await client.Notice.SubscribeAsync(pattern);
         var received = ReadFirstAsync(subscription);
 
-        await client.Notice().PublishAsync(route, "matched"u8.ToArray());
+        await client.Notice.PublishAsync(route, "matched"u8.ToArray());
 
         _ = await received.WaitAsync(TimeSpan.FromSeconds(2));
     }
@@ -236,10 +236,10 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
         var route = IntegrationFixture.CreateUniqueRoute("notice");
-        var subscription = await client.Notice().SubscribeAsync(route);
+        var subscription = await client.Notice.SubscribeAsync(route);
         await subscription.DisposeAsync();
 
-        await client.Notice().PublishAsync(route, "ignored"u8.ToArray());
+        await client.Notice.PublishAsync(route, "ignored"u8.ToArray());
 
         await using var enumerator = subscription.GetAsyncEnumerator();
         Assert.False(await enumerator.MoveNextAsync());
@@ -253,9 +253,9 @@ public sealed class DomainWorkflowIntegrationTests
         await owner.ConnectAsync();
         await contender.ConnectAsync();
         var route = IntegrationFixture.CreateUniqueRoute("lease");
-        await using var lease = await owner.Lease().AcquireAsync(route, 30);
+        await using var lease = await owner.Lease.AcquireAsync(route, 30);
 
-        await Assert.ThrowsAsync<LeaseException>(async () => await contender.Lease().AcquireAsync(route, 30));
+        await Assert.ThrowsAsync<LeaseException>(async () => await contender.Lease.AcquireAsync(route, 30));
         await lease.ReleaseAsync();
     }
 
@@ -264,7 +264,7 @@ public sealed class DomainWorkflowIntegrationTests
     {
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
-        var session = await client.Stream().BeginAsync(IntegrationFixture.CreateUniqueRoute("stream"));
+        var session = await client.Stream.BeginAsync(IntegrationFixture.CreateUniqueRoute("stream"));
 
         await Assert.ThrowsAsync<StreamException>(() => session.AppendAsync(42, "mismatch"u8.ToArray()));
         await session.RollbackAsync();
@@ -276,12 +276,12 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
         var route = IntegrationFixture.CreateUniqueRoute("stream");
-        var session = await client.Stream().BeginAsync(route);
+        var session = await client.Stream.BeginAsync(route);
         await session.AppendAsync(0, "discarded"u8.ToArray());
         await session.RollbackAsync();
         var records = new List<StreamRecord>();
 
-        await foreach (var record in client.Stream().ReadAsync(route, 0, 10))
+        await foreach (var record in client.Stream.ReadAsync(route, 0, 10))
         {
             records.Add(record);
         }
@@ -298,14 +298,14 @@ public sealed class DomainWorkflowIntegrationTests
         await workerClient.ConnectAsync();
         await callerClient.ConnectAsync();
 
-        await using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (request, writer, ct) =>
+        await using var registration = await workerClient.Rpc.RegisterWorkerAsync(route, async (request, writer, ct) =>
         {
             Assert.Equal("ping", Encoding.UTF8.GetString(request.Body.Span));
             await writer.SendAsync("pong"u8.ToArray(), isEnd: true, ct);
         });
 
         var responses = new List<string>();
-        await foreach (var response in callerClient.Rpc().CallAsync(route, "ping"u8.ToArray()))
+        await foreach (var response in callerClient.Rpc.CallAsync(route, "ping"u8.ToArray()))
         {
             responses.Add(Encoding.UTF8.GetString(response.Body.Span));
         }
@@ -320,10 +320,10 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
 
-        await using var subscription = await client.Notice().SubscribeAsync(route);
+        await using var subscription = await client.Notice.SubscribeAsync(route);
         var received = ReadFirstAsync(subscription);
 
-        await client.Notice().PublishAsync(route, "notice-body"u8.ToArray());
+        await client.Notice.PublishAsync(route, "notice-body"u8.ToArray());
         var message = await received.WaitAsync(TimeSpan.FromSeconds(2));
         var delivered = (message.Route, Body: Encoding.UTF8.GetString(message.Body.Span));
 
@@ -348,10 +348,10 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
 
-        var id = await client.Queue().EnqueueAsync(route, "queue-body"u8.ToArray());
+        var id = await client.Queue.EnqueueAsync(route, "queue-body"u8.ToArray());
         Assert.NotEqual((ulong)0, id);
 
-        var items = await client.Queue().ReserveAsync(route, leaseSeconds: 30, batchSize: 1, waitSeconds: 1);
+        var items = await client.Queue.ReserveAsync(route, leaseSeconds: 30, batchSize: 1, waitSeconds: 1);
         Assert.Single(items);
         Assert.Equal("queue-body", Encoding.UTF8.GetString(items[0].Body.Span));
 
@@ -365,13 +365,13 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
 
-        var session = await client.Stream().BeginAsync(route);
+        var session = await client.Stream.BeginAsync(route);
         await session.AppendAsync(0, "one"u8.ToArray());
         await session.AppendAsync(1, "two"u8.ToArray());
         await session.CommitAsync();
 
         var records = new List<string>();
-        await foreach (var record in client.Stream().ReadAsync(route, startOffset: 0, limit: 10))
+        await foreach (var record in client.Stream.ReadAsync(route, startOffset: 0, limit: 10))
         {
             records.Add(Encoding.UTF8.GetString(record.Body));
         }
@@ -388,7 +388,7 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
 
-        var session = await client.Stream().BeginAsync(route);
+        var session = await client.Stream.BeginAsync(route);
         await session.AppendAsync(0, "alpha"u8.ToArray(), discriminator: "proj.alpha");
         await session.AppendAsync(1, "beta"u8.ToArray(), discriminator: "audit.beta");
         await session.CommitAsync();
@@ -406,12 +406,12 @@ public sealed class DomainWorkflowIntegrationTests
         };
 
         var records = new List<string>();
-        await foreach (var record in client.Stream().ReadAsync(route, startOffset: 0, limit: 10, filter: filter))
+        await foreach (var record in client.Stream.ReadAsync(route, startOffset: 0, limit: 10, filter: filter))
         {
             records.Add(Encoding.UTF8.GetString(record.Body));
         }
 
-        var page = await client.Stream().ReadPageAsync(route, startOffset: 0, limit: 10, filter: filter);
+        var page = await client.Stream.ReadPageAsync(route, startOffset: 0, limit: 10, filter: filter);
 
         Assert.Equal("alpha", Assert.Single(records));
         Assert.Equal((ulong)1, page.Cursor.LastResourceOffset);
@@ -439,10 +439,10 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
 
-        var lease = await client.Lease().AcquireAsync(route, ttlSecs: 30);
+        var lease = await client.Lease.AcquireAsync(route, ttlSecs: 30);
         Assert.Equal(route, lease.Route);
 
-        var held = await client.Lease().QueryAsync(route);
+        var held = await client.Lease.QueryAsync(route);
         Assert.True(held.IsHeld);
 
         await lease.ExtendAsync(45);
@@ -459,11 +459,11 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
 
-        var id = await client.Schedule().CreateAsync(route, "*/5 * * * *", ScheduleDeliveryMode.Broadcast, "schedule-body"u8.ToArray());
+        var id = await client.Schedule.CreateAsync(route, "*/5 * * * *", ScheduleDeliveryMode.Broadcast, "schedule-body"u8.ToArray());
         Assert.False(string.IsNullOrWhiteSpace(id));
 
         // Dotnet API currently cancels by route.
-        await client.Schedule().CancelAsync(route);
+        await client.Schedule.CancelAsync(route);
     }
 
     [Fact]
@@ -473,11 +473,11 @@ public sealed class DomainWorkflowIntegrationTests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
 
-        var tx = await client.Kv().BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+        var tx = await client.Kv.BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
         await tx.PutAsync("k"u8.ToArray(), "v"u8.ToArray());
         await tx.CommitAsync();
 
-        var read = await client.Kv().BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async, KvMode.ReadOnly);
+        var read = await client.Kv.BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async, KvMode.ReadOnly);
         var result = await read.GetAsync("k"u8.ToArray());
 
         Assert.True(result.Found);
@@ -492,7 +492,7 @@ public sealed class DomainWorkflowIntegrationTests
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
-            var info = await client.Lease().QueryAsync(route);
+            var info = await client.Lease.QueryAsync(route);
             if (!info.IsHeld)
             {
                 return info;
@@ -501,6 +501,6 @@ public sealed class DomainWorkflowIntegrationTests
             await Task.Delay(100);
         }
 
-        return await client.Lease().QueryAsync(route);
+        return await client.Lease.QueryAsync(route);
     }
 }

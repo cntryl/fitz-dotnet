@@ -31,6 +31,23 @@ public sealed class PublicSurfaceTests
         Assert.DoesNotContain("SendAsync", ReadRepoFile("src/Core/Client.cs"), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void should_expose_domain_clients_as_properties_and_transactional_handles_as_async_disposable()
+    {
+        // Arrange
+        var client = ReadRepoFile("src/Abstractions/IClient.cs");
+
+        // Act
+        var transaction = ReadRepoFile("src/Abstractions/Domains/Kv/IKvTransaction.cs");
+        var streamSession = ReadRepoFile("src/Abstractions/Domains/Stream/IStreamSession.cs");
+
+        // Assert
+        Assert.Contains("IKvClient Kv { get; }", client, StringComparison.Ordinal);
+        Assert.DoesNotContain("IKvClient Kv()", client, StringComparison.Ordinal);
+        Assert.Contains("IKvTransaction : IAsyncDisposable", transaction, StringComparison.Ordinal);
+        Assert.Contains("IStreamSession : IAsyncDisposable", streamSession, StringComparison.Ordinal);
+    }
+
     private static string ReadRepoFile(string relativePath)
     {
         var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));

@@ -322,7 +322,7 @@ public sealed class ClientTests
         await client.ConnectAsync();
 
         var ex = await Assert.ThrowsAsync<RequestTimeoutException>(() =>
-            client.Kv().BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async));
+            client.Kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async));
 
         Assert.Contains("Request timeout", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.True(client.IsConnected);
@@ -435,7 +435,7 @@ public sealed class ClientTests
 
         await client.ConnectAsync();
 
-        var subscribeTask = client.Notice().SubscribeAsync("notice://prod/app/*");
+        var subscribeTask = client.Notice.SubscribeAsync("notice://prod/app/*");
 
         using (var subscribeResponse = new BinaryBufferWriter())
         {

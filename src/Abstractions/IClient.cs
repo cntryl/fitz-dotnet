@@ -16,11 +16,11 @@ public interface IClient : IAsyncDisposable
     Task CloseAsync(CancellationToken cancellationToken = default);
     bool IsConnected { get; }
     ConnectionState State { get; }
-    IKvClient Kv();
-    ILeaseClient Lease();
-    INoticeClient Notice();
-    IQueueClient Queue();
-    IRpcClient Rpc();
-    IScheduleClient Schedule();
-    IStreamClient Stream();
+    IKvClient Kv { get; }
+    ILeaseClient Lease { get; }
+    INoticeClient Notice { get; }
+    IQueueClient Queue { get; }
+    IRpcClient Rpc { get; }
+    IScheduleClient Schedule { get; }
+    IStreamClient Stream { get; }
 }

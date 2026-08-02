@@ -65,7 +65,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         _retryRequest = retryRequest;
     }
 
-    public async Task<ILease> AcquireAsync(string route, ulong ttlSecs, CancellationToken ct = default)
+    public async Task<ILease> AcquireAsync(string route, ulong ttlSecs, uint waitSeconds = 0, CancellationToken ct = default)
     {
         if (!RouteValidation.IsFixedRoute(route, "lease", 3))
         {
@@ -76,6 +76,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         writer.WriteString(route);
         writer.WriteString(string.Empty);
         writer.WriteU64(ttlSecs);
+        writer.WriteU32(waitSeconds);
         var response = await _request(MessageTypes.LeaseAcquire, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
@@ -130,23 +131,8 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             throw new LeaseException("ttlSecs must be positive and schedulable", "INVALID_TTL");
         }
 
-        ILease lease;
-        var delayMilliseconds = 50;
-        while (true)
-        {
-            try
-            {
-                lease = await AcquireAsync(route, ttlSecs, ct).ConfigureAwait(false);
-                break;
-            }
-            catch (LeaseException error) when (
-                options?.WaitForAvailability == true &&
-                (error.Code is "ACQUIRE_NOT_ACQUIRED" or "LEASE_HELD" or "LEASE_QUEUED"))
-            {
-                await Task.Delay(RandomNumberGenerator.GetInt32(delayMilliseconds + 1), ct).ConfigureAwait(false);
-                delayMilliseconds = Math.Min(delayMilliseconds * 2, 1000);
-            }
-        }
+        var waitSeconds = options?.WaitForAvailability == true ? options.WaitSeconds : 0;
+        var lease = await AcquireAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
 
         using var lifecycle = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Task<T> callbackTask;

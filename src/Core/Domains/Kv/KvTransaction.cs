@@ -213,6 +213,16 @@ public sealed class KvTransaction : IKvTransaction
         return FinalizeAsync(MessageTypes.KvRollback, "ROLLBACK", ct);
     }
 
+    public async ValueTask DisposeAsync()
+    {
+        if (Volatile.Read(ref _closed) == 0)
+        {
+            await RollbackAsync().ConfigureAwait(false);
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
     private async Task WriteAsync(ushort messageType, ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value, string operation, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();

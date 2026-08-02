@@ -141,40 +141,19 @@ public sealed class Client : IClient
         await CloseAsync().ConfigureAwait(false);
     }
 
-    public IKvClient Kv()
-    {
-        return _kvClient ??= new KvClient(_connection);
-    }
+    public IKvClient Kv => _kvClient ??= new KvClient(_connection);
 
-    public ILeaseClient Lease()
-    {
-        return _leaseClient ??= new LeaseClient(_connection);
-    }
+    public ILeaseClient Lease => _leaseClient ??= new LeaseClient(_connection);
 
-    public INoticeClient Notice()
-    {
-        return _noticeClient ??= new NoticeClient(_connection);
-    }
+    public INoticeClient Notice => _noticeClient ??= new NoticeClient(_connection);
 
-    public IQueueClient Queue()
-    {
-        return _queueClient ??= new QueueClient(_connection);
-    }
+    public IQueueClient Queue => _queueClient ??= new QueueClient(_connection);
 
-    public IRpcClient Rpc()
-    {
-        return _rpcClient ??= new RpcClient(_connection);
-    }
+    public IRpcClient Rpc => _rpcClient ??= new RpcClient(_connection);
 
-    public IScheduleClient Schedule()
-    {
-        return _scheduleClient ??= new ScheduleClient(_connection);
-    }
+    public IScheduleClient Schedule => _scheduleClient ??= new ScheduleClient(_connection);
 
-    public IStreamClient Stream()
-    {
-        return _streamClient ??= new StreamClient(_connection);
-    }
+    public IStreamClient Stream => _streamClient ??= new StreamClient(_connection);
 
     public bool IsConnected => _connection.State == ConnectionState.Authenticated;
 

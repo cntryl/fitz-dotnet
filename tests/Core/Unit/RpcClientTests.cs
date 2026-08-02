@@ -147,7 +147,8 @@ public sealed class RpcClientTests
             {
                 requestTcs.TrySetResult(req);
                 return ValueTask.CompletedTask;
-            });
+            },
+            new RpcWorkerOptions { MaxConcurrency = 7 });
 
         Assert.Equal("rpc://prod/app/echo", registration.Pattern);
 
@@ -170,7 +171,7 @@ public sealed class RpcClientTests
 
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("rpc://prod/app/echo", reader.ReadString());
-        Assert.Equal((uint)1, reader.ReadU32());
+        Assert.Equal((uint)7, reader.ReadU32());
         Assert.True(reader.IsEof);
     }
 

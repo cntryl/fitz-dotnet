@@ -29,7 +29,7 @@ public sealed class LeaseClientTests
         });
 
         // Act
-        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30, waitSeconds: 5);
 
         // Assert
         Assert.Equal(MessageTypes.LeaseAcquire, seenMessageType);
@@ -40,6 +40,8 @@ public sealed class LeaseClientTests
         Assert.Equal("lease://prod/app/lock", reader.ReadString());
         Assert.Equal(string.Empty, reader.ReadString());
         Assert.Equal((ulong)30, reader.ReadU64());
+        Assert.Equal((uint)5, reader.ReadU32());
+        Assert.True(reader.IsEof);
     }
 
     [Fact]

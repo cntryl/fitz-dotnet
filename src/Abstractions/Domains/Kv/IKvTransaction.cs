@@ -3,7 +3,7 @@ namespace Cntryl.Fitz.Abstractions.Domains.Kv;
 /// <summary>
 /// Represents an active KV transaction.
 /// </summary>
-public interface IKvTransaction
+public interface IKvTransaction : IAsyncDisposable
 {
     /// <summary>
     /// Reads a key from the transaction snapshot.

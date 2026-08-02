@@ -40,6 +40,33 @@ public sealed class TcpTransportTests
         listener.Stop();
     }
 
+    [Fact]
+    public async Task should_reject_connection_close_given_partial_frame_payload()
+    {
+        // Arrange
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var serverTask = Task.Run(async () =>
+        {
+            using var server = await listener.AcceptTcpClientAsync();
+            await using var stream = server.GetStream();
+            var header = new byte[4];
+            BinaryPrimitives.WriteUInt32BigEndian(header, 4);
+            await stream.WriteAsync(header);
+            await stream.WriteAsync("ab"u8.ToArray());
+        });
+        await using var transport = new TcpTransport(new Uri($"tcp://127.0.0.1:{port}"), TimeSpan.FromSeconds(2), 64 * 1024);
+        await transport.ConnectAsync();
+
+        // Act
+        var receive = transport.ReceiveAsync().AsTask();
+
+        // Assert
+        await Assert.ThrowsAsync<EndOfStreamException>(() => receive);
+        await serverTask;
+    }
+
     private static async Task<byte[]> ReadFrameAsync(NetworkStream stream)
     {
         var header = new byte[4];

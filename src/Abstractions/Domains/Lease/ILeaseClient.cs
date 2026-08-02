@@ -2,7 +2,7 @@ namespace Cntryl.Fitz.Abstractions.Domains.Lease;
 
 public interface ILeaseClient
 {
-    Task<ILease> AcquireAsync(string route, ulong ttlSecs, CancellationToken ct = default);
+    Task<ILease> AcquireAsync(string route, ulong ttlSecs, uint waitSeconds = 0, CancellationToken ct = default);
     Task<T> WithLeaseAsync<T>(
         string route,
         ulong ttlSecs,

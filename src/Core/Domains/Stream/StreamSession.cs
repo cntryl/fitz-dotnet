@@ -75,11 +75,24 @@ public sealed class StreamSession : IStreamSession
 
     public Task RollbackAsync(CancellationToken ct = default)
     {
-        ThrowIfClosed();
+        if (Volatile.Read(ref _closed) != 0)
+        {
+            return Task.CompletedTask;
+        }
 
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_sessionId);
         return ExpectStatusAsync(MessageTypes.StreamRollback, writer.WrittenMemory, "ROLLBACK", ct);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Volatile.Read(ref _closed) == 0)
+        {
+            await RollbackAsync().ConfigureAwait(false);
+        }
+
+        GC.SuppressFinalize(this);
     }
 
     private async Task ExpectStatusAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct)
@@ -87,6 +100,7 @@ public sealed class StreamSession : IStreamSession
         ThrowIfClosed();
         var response = await _request(messageType, payload, ct).ConfigureAwait(false);
         StreamWireHelpers.EnsureSuccessStatusOnly(response, operation);
+        MarkClosed();
     }
 
     private void ThrowIfClosed()

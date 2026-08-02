@@ -46,7 +46,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add($"client is_connected = {client.IsConnected}");
 
             var route = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await client.Kv().BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            var tx = await client.Kv.BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
             await tx.PutAsync("cs001-key"u8.ToArray(), "cs001-value"u8.ToArray());
             await tx.CommitAsync();
             evidence.Add("first domain request (kv) succeeded");
@@ -94,12 +94,12 @@ public sealed partial class ConformanceSmokeTests
             await client.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await client.Kv().BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            var tx = await client.Kv.BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
             await tx.PutAsync("user:1"u8.ToArray(), "Alice"u8.ToArray());
             await tx.CommitAsync();
             evidence.Add("kv begin/put/commit succeeded");
 
-            var readTx = await client.Kv().BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async, Abstractions.Domains.Kv.KvMode.ReadOnly);
+            var readTx = await client.Kv.BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async, Abstractions.Domains.Kv.KvMode.ReadOnly);
             var result = await readTx.GetAsync("user:1"u8.ToArray());
             if (!result.Found)
             {
@@ -131,7 +131,7 @@ public sealed partial class ConformanceSmokeTests
             Exception? caught = null;
             try
             {
-                await foreach (var _ in client.Rpc().CallAsync(noWorkerRoute, "ping"u8.ToArray()))
+                await foreach (var _ in client.Rpc.CallAsync(noWorkerRoute, "ping"u8.ToArray()))
                 {
                 }
             }
@@ -148,7 +148,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add($"rpc to unregistered route raised {caught.GetType().Name}");
 
             var route = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await client.Kv().BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            var tx = await client.Kv.BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
             await tx.PutAsync("k"u8.ToArray(), "v"u8.ToArray());
             await tx.CommitAsync();
             evidence.Add("client remains usable after unknown-route error");
@@ -172,12 +172,12 @@ public sealed partial class ConformanceSmokeTests
             await client.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await client.Kv().BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            var tx = await client.Kv.BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
             await tx.InsertAsync("dup-key"u8.ToArray(), "first"u8.ToArray());
             await tx.CommitAsync();
             evidence.Add("first insert succeeded");
 
-            var tx2 = await client.Kv().BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            var tx2 = await client.Kv.BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
             Exception? caught = null;
             try
             {
@@ -220,7 +220,7 @@ public sealed partial class ConformanceSmokeTests
             Exception? rpcError = null;
             try
             {
-                await foreach (var _ in client.Rpc().CallAsync(IntegrationFixture.CreateUniqueRoute("rpc"), "ping"u8.ToArray()))
+                await foreach (var _ in client.Rpc.CallAsync(IntegrationFixture.CreateUniqueRoute("rpc"), "ping"u8.ToArray()))
                 {
                 }
             }
@@ -239,11 +239,11 @@ public sealed partial class ConformanceSmokeTests
             }
 
             var kvRoute = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await client.Kv().BeginAsync(kvRoute, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            var tx = await client.Kv.BeginAsync(kvRoute, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
             await tx.InsertAsync("x"u8.ToArray(), "1"u8.ToArray());
             await tx.CommitAsync();
 
-            var tx2 = await client.Kv().BeginAsync(kvRoute, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            var tx2 = await client.Kv.BeginAsync(kvRoute, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
             Exception? kvError = null;
             try
             {
@@ -287,7 +287,7 @@ public sealed partial class ConformanceSmokeTests
             await workerClient.ConnectAsync();
             await callerClient.ConnectAsync();
 
-            await using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (_, writer, ct) =>
+            await using var registration = await workerClient.Rpc.RegisterWorkerAsync(route, async (_, writer, ct) =>
             {
                 await Task.Delay(2000, ct);
                 await writer.SendAsync("late"u8.ToArray(), isEnd: true, ct);
@@ -297,7 +297,7 @@ public sealed partial class ConformanceSmokeTests
             var started = DateTimeOffset.UtcNow;
             try
             {
-                await foreach (var _ in callerClient.Rpc().CallAsync(route, "block"u8.ToArray()))
+                await foreach (var _ in callerClient.Rpc.CallAsync(route, "block"u8.ToArray()))
                 {
                 }
             }
@@ -318,7 +318,7 @@ public sealed partial class ConformanceSmokeTests
             var verdict = caught is RequestTimeoutException ? "pass" : "partial";
 
             var kvRoute = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await callerClient.Kv().BeginAsync(kvRoute, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            var tx = await callerClient.Kv.BeginAsync(kvRoute, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
             await tx.PutAsync("post-timeout"u8.ToArray(), "ok"u8.ToArray());
             await tx.CommitAsync();
             evidence.Add("connection healthy after timeout");
@@ -345,7 +345,7 @@ public sealed partial class ConformanceSmokeTests
             await workerClient.ConnectAsync();
             await callerClient.ConnectAsync();
 
-            await using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (_, writer, ct) =>
+            await using var registration = await workerClient.Rpc.RegisterWorkerAsync(route, async (_, writer, ct) =>
             {
                 await Task.Delay(2000, ct);
                 await writer.SendAsync("late"u8.ToArray(), isEnd: true, ct);
@@ -354,7 +354,7 @@ public sealed partial class ConformanceSmokeTests
             using var cts = new CancellationTokenSource();
             var callTask = Task.Run(async () =>
             {
-                await foreach (var _ in callerClient.Rpc().CallAsync(route, "block"u8.ToArray(), cts.Token))
+                await foreach (var _ in callerClient.Rpc.CallAsync(route, "block"u8.ToArray(), cts.Token))
                 {
                 }
             });
@@ -380,7 +380,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add($"cancellation threw: {caught.GetType().Name}");
 
             var kvRoute = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await callerClient.Kv().BeginAsync(kvRoute, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            var tx = await callerClient.Kv.BeginAsync(kvRoute, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
             await tx.PutAsync("after-cancel"u8.ToArray(), "ok"u8.ToArray());
             await tx.CommitAsync();
             evidence.Add("subsequent request succeeded after cancellation");
@@ -409,7 +409,7 @@ public sealed partial class ConformanceSmokeTests
             await workerClient.ConnectAsync();
             await callerClient.ConnectAsync();
 
-            await using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (_, writer, ct) =>
+            await using var registration = await workerClient.Rpc.RegisterWorkerAsync(route, async (_, writer, ct) =>
             {
                 await Task.Delay(3000, ct);
                 await writer.SendAsync("late"u8.ToArray(), isEnd: true, ct);
@@ -417,7 +417,7 @@ public sealed partial class ConformanceSmokeTests
 
             var callTask = Task.Run(async () =>
             {
-                await foreach (var _ in callerClient.Rpc().CallAsync(route, "block"u8.ToArray()))
+                await foreach (var _ in callerClient.Rpc.CallAsync(route, "block"u8.ToArray()))
                 {
                 }
             });
@@ -508,21 +508,21 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("responder client connected");
 
             var kvRoute = IntegrationFixture.CreateUniqueRoute("kv");
-            var kvTransaction = await client.Kv().BeginAsync(kvRoute, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            var kvTransaction = await client.Kv.BeginAsync(kvRoute, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
 
             var queueRoute = IntegrationFixture.CreateUniqueRoute("queue");
-            await client.Queue().EnqueueAsync(queueRoute, "queued-before-reconnect"u8.ToArray());
-            var reservedItems = await client.Queue().ReserveAsync(queueRoute, leaseSeconds: 30, batchSize: 1);
+            await client.Queue.EnqueueAsync(queueRoute, "queued-before-reconnect"u8.ToArray());
+            var reservedItems = await client.Queue.ReserveAsync(queueRoute, leaseSeconds: 30, batchSize: 1);
             var reservedItem = Assert.Single(reservedItems);
 
             var leaseRoute = IntegrationFixture.CreateUniqueRoute("lease");
-            var lease = await client.Lease().AcquireAsync(leaseRoute, ttlSecs: 30);
+            var lease = await client.Lease.AcquireAsync(leaseRoute, ttlSecs: 30);
 
             var streamRoute = IntegrationFixture.CreateUniqueRoute("stream");
-            var streamSession = await client.Stream().BeginAsync(streamRoute);
+            var streamSession = await client.Stream.BeginAsync(streamRoute);
 
             var restoredWorkerRoute = IntegrationFixture.CreateUniqueRoute("rpc");
-            restoredWorker = await client.Rpc().RegisterWorkerAsync(restoredWorkerRoute, async (_, writer, ct) =>
+            restoredWorker = await client.Rpc.RegisterWorkerAsync(restoredWorkerRoute, async (_, writer, ct) =>
             {
                 await writer.SendAsync("same-client-worker"u8.ToArray(), isEnd: true, ct);
             });
@@ -530,7 +530,7 @@ public sealed partial class ConformanceSmokeTests
 
             var pendingCallRoute = IntegrationFixture.CreateUniqueRoute("rpc");
             var pendingCallStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            responderWorker = await responderClient.Rpc().RegisterWorkerAsync(pendingCallRoute, async (_, writer, ct) =>
+            responderWorker = await responderClient.Rpc.RegisterWorkerAsync(pendingCallRoute, async (_, writer, ct) =>
             {
                 pendingCallStarted.TrySetResult(true);
                 await releasePendingCall.Task.WaitAsync(ct);
@@ -539,7 +539,7 @@ public sealed partial class ConformanceSmokeTests
 
             var pendingCallTask = Task.Run(async () =>
             {
-                await foreach (var _ in client.Rpc().CallAsync(pendingCallRoute, "block"u8.ToArray()))
+                await foreach (var _ in client.Rpc.CallAsync(pendingCallRoute, "block"u8.ToArray()))
                 {
                 }
             });
@@ -595,7 +595,7 @@ public sealed partial class ConformanceSmokeTests
                 Backoff: TimeSpan.FromMilliseconds(100),
                 MaxBackoff: TimeSpan.FromMilliseconds(500)));
             var postReconnectRoute = IntegrationFixture.CreateUniqueRoute("kv");
-            var postReconnectTx = await client.Kv().BeginAsync(postReconnectRoute, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            var postReconnectTx = await client.Kv.BeginAsync(postReconnectRoute, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
             await postReconnectTx.PutAsync("post-reconnect"u8.ToArray(), "ok"u8.ToArray());
             await postReconnectTx.CommitAsync();
             evidence.Add("same client completed a new kv transaction after reconnect");
@@ -608,7 +608,7 @@ public sealed partial class ConformanceSmokeTests
             await verifierClient.ConnectAsync();
 
             var rpcResponses = new List<string>();
-            await foreach (var frame in verifierClient.Rpc().CallAsync(restoredWorkerRoute, "verify"u8.ToArray()))
+            await foreach (var frame in verifierClient.Rpc.CallAsync(restoredWorkerRoute, "verify"u8.ToArray()))
             {
                 rpcResponses.Add(Encoding.UTF8.GetString(frame.Body.Span));
             }
@@ -653,7 +653,7 @@ public sealed partial class ConformanceSmokeTests
             await client.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("stream");
-            var session = await client.Stream().BeginAsync(route);
+            var session = await client.Stream.BeginAsync(route);
             await session.AppendAsync(0, new byte[] { 10 });
             await session.AppendAsync(1, new byte[] { 20 });
             await session.AppendAsync(2, new byte[] { 30 });
@@ -661,7 +661,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("stream session appended 3 records");
 
             var records = new List<Abstractions.Domains.Stream.StreamRecord>();
-            await foreach (var record in client.Stream().ReadAsync(route, 0, 10))
+            await foreach (var record in client.Stream.ReadAsync(route, 0, 10))
             {
                 records.Add(record);
             }
@@ -702,14 +702,14 @@ public sealed partial class ConformanceSmokeTests
             await client.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("stream");
-            var session = await client.Stream().BeginAsync(route);
+            var session = await client.Stream.BeginAsync(route);
             await session.AppendAsync(0, "first"u8.ToArray());
             await session.AppendAsync(1, "last"u8.ToArray());
             await session.CommitAsync();
             evidence.Add("stream session committed");
 
             var count = 0;
-            await foreach (var _ in client.Stream().ReadAsync(route, 0, 100))
+            await foreach (var _ in client.Stream.ReadAsync(route, 0, 100))
             {
                 count++;
             }
@@ -741,7 +741,7 @@ public sealed partial class ConformanceSmokeTests
             await client.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("stream");
-            var session = await client.Stream().BeginAsync(route);
+            var session = await client.Stream.BeginAsync(route);
             await session.AppendAsync(0, "record-1"u8.ToArray());
             await session.CommitAsync();
             evidence.Add("written first record at offset 0");
@@ -749,7 +749,7 @@ public sealed partial class ConformanceSmokeTests
             Exception? caught = null;
             try
             {
-                var wrongSession = await client.Stream().BeginAsync(route);
+                var wrongSession = await client.Stream.BeginAsync(route);
                 await wrongSession.AppendAsync(0, "record-2"u8.ToArray());
             }
             catch (Exception ex)
@@ -791,11 +791,11 @@ public sealed partial class ConformanceSmokeTests
 
             var tasks = routes.Select((route, index) => Task.Run(async () =>
             {
-                var tx = await client.Kv().BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+                var tx = await client.Kv.BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
                 await tx.PutAsync(Encoding.UTF8.GetBytes($"key-{index}"), Encoding.UTF8.GetBytes($"value-{index}"));
                 await tx.CommitAsync();
 
-                var readTx = await client.Kv().BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async, Abstractions.Domains.Kv.KvMode.ReadOnly);
+                var readTx = await client.Kv.BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async, Abstractions.Domains.Kv.KvMode.ReadOnly);
                 var result = await readTx.GetAsync(Encoding.UTF8.GetBytes($"key-{index}"));
                 return result.Value.HasValue ? Encoding.UTF8.GetString(result.Value.Value.Span) : string.Empty;
             })).ToArray();
@@ -829,7 +829,7 @@ public sealed partial class ConformanceSmokeTests
         {
             await client.ConnectAsync();
             var route = IntegrationFixture.CreateUniqueRoute("kv");
-            var beginTask = client.Kv().BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            var beginTask = client.Kv.BeginAsync(route, Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
 
             await Task.Delay(50);
             await client.DisposeAsync();
@@ -882,14 +882,14 @@ public sealed partial class ConformanceSmokeTests
             await workerClient.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("rpc");
-            await using var registration = await workerClient.Rpc().RegisterWorkerAsync(route, async (req, writer, ct) =>
+            await using var registration = await workerClient.Rpc.RegisterWorkerAsync(route, async (req, writer, ct) =>
             {
                 await Task.Delay(500, ct);
                 await writer.SendAsync(req.Body, isEnd: true, ct);
             });
 
-            await using var firstEnumerator = client.Rpc().CallAsync(route, "first"u8.ToArray()).GetAsyncEnumerator();
-            await using var secondEnumerator = client.Rpc().CallAsync(route, "second"u8.ToArray()).GetAsyncEnumerator();
+            await using var firstEnumerator = client.Rpc.CallAsync(route, "first"u8.ToArray()).GetAsyncEnumerator();
+            await using var secondEnumerator = client.Rpc.CallAsync(route, "second"u8.ToArray()).GetAsyncEnumerator();
 
             var firstNext = firstEnumerator.MoveNextAsync().AsTask();
             var secondNext = secondEnumerator.MoveNextAsync().AsTask();
@@ -942,7 +942,7 @@ public sealed partial class ConformanceSmokeTests
             await client.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("stream");
-            var session = await client.Stream().BeginAsync(route);
+            var session = await client.Stream.BeginAsync(route);
 
             var firstOffset = await session.AppendAsync(0, "alpha"u8.ToArray(), discriminator: "proj.alpha");
             var secondOffset = await session.AppendAsync(1, "beta"u8.ToArray(), discriminator: "audit.beta");
@@ -969,7 +969,7 @@ public sealed partial class ConformanceSmokeTests
             };
 
             var records = new List<StreamRecord>();
-            await foreach (var record in client.Stream().ReadAsync(route, 0, 10, filter))
+            await foreach (var record in client.Stream.ReadAsync(route, 0, 10, filter))
             {
                 records.Add(record);
             }
@@ -992,7 +992,7 @@ public sealed partial class ConformanceSmokeTests
                 return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "filtered read returned the wrong body");
             }
 
-            var page = await client.Stream().ReadPageAsync(route, 0, 10, filter);
+            var page = await client.Stream.ReadPageAsync(route, 0, 10, filter);
             if (page.Items.Count != 2)
             {
                 evidence.Add($"page returned {page.Items.Count} items");

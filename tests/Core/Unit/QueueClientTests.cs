@@ -66,6 +66,28 @@ public sealed class QueueClientTests
     }
 
     [Fact]
+    public async Task should_round_subsecond_visibility_delay_up_to_one_second_when_enqueueing()
+    {
+        // Arrange
+        byte[]? seenPayload = null;
+        using var queue = new QueueClient((_, payload, _) =>
+        {
+            seenPayload = payload;
+            return Task.FromResult(new byte[] { 0 });
+        });
+
+        // Act
+        await queue.EnqueueAsync("queue://prod/app/tasks", "job-1"u8.ToArray(), delayMs: 1);
+
+        // Assert
+        var reader = new BinaryBufferReader(seenPayload!);
+        _ = reader.ReadString();
+        _ = reader.ReadBytes((int)reader.ReadU32());
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal((ulong)1, reader.ReadU64());
+    }
+
+    [Fact]
     public async Task should_return_reserved_items_given_success_response_when_reserving()
     {
         // Arrange
@@ -100,11 +122,13 @@ public sealed class QueueClientTests
         Assert.Equal((ulong)30, reader.ReadU64());
         Assert.Equal((byte)1, reader.ReadU8());
         Assert.Equal((uint)2, reader.ReadU32());
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal((ulong)10, reader.ReadU64());
         Assert.True(reader.IsEof);
     }
 
     [Fact]
-    public async Task should_retry_reserve_given_wait_seconds_when_item_arrives_after_initial_empty_response()
+    public async Task should_send_one_blocking_reserve_given_wait_seconds()
     {
         // Arrange
         var reserveCallCount = 0;
@@ -115,18 +139,7 @@ public sealed class QueueClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            if (reserveCallCount == 1)
-            {
-                writer.WriteU32(0);
-            }
-            else
-            {
-                writer.WriteU32(1);
-                writer.WriteU64(555);
-                writer.WriteU64(777);
-                writer.WriteU32(5);
-                writer.WriteBytes("job-1"u8);
-            }
+            writer.WriteU32(0);
 
             return Task.FromResult(writer.Build());
         });
@@ -135,10 +148,8 @@ public sealed class QueueClientTests
         var items = await queue.ReserveAsync("queue://prod/app/tasks", 30, waitSeconds: 1);
 
         // Assert
-        Assert.Equal(2, reserveCallCount);
-        Assert.Single(items);
-        Assert.Equal("queue://prod/app/tasks", items[0].Route);
-        Assert.Equal((uint)1, items[0].Attempt);
+        Assert.Equal(1, reserveCallCount);
+        Assert.Empty(items);
     }
 
     [Fact]

@@ -152,6 +152,11 @@ public sealed class TcpTransport : ITransport
             var bytesRead = await stream.ReadAsync(buffer[totalRead..], cancellationToken).ConfigureAwait(false);
             if (bytesRead == 0)
             {
+                if (totalRead > 0)
+                {
+                    throw new EndOfStreamException("Connection closed in the middle of a frame.");
+                }
+
                 return 0;
             }
 

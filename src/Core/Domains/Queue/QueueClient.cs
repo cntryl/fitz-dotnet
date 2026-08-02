@@ -72,7 +72,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         writer.WriteU32((uint)body.Length);
         writer.WriteBytes(body.Span);
 
-        var delaySeconds = (delayMs ?? 0) / 1000;
+        var delaySeconds = delayMs > 0 ? checked((delayMs.Value + 999) / 1000) : 0;
         writer.WriteU8((byte)(delaySeconds > 0 ? 1 : 0));
         if (delaySeconds > 0)
         {
@@ -110,30 +110,38 @@ public sealed class QueueClient : IQueueClient, IDisposable
 
         var normalizedBatchSize = batchSize > 0 ? batchSize : 1;
 
-        if (!waitSeconds.HasValue || waitSeconds.Value <= 0)
+        if (waitSeconds is not > 0)
         {
-            return await ReserveOnceAsync(route, leaseSeconds, normalizedBatchSize, ct).ConfigureAwait(false);
+            return await ReserveOnceAsync(route, leaseSeconds, normalizedBatchSize, null, ct).ConfigureAwait(false);
         }
 
-        var deadline = DateTime.UtcNow.AddSeconds(waitSeconds.Value);
+        try
+        {
+            return await ReserveOnceAsync(route, leaseSeconds, normalizedBatchSize, waitSeconds, ct).ConfigureAwait(false);
+        }
+        catch (QueueException error) when (error.Code == "RESERVE_WAIT_UNSUPPORTED")
+        {
+            return await ReserveLegacyAsync(route, leaseSeconds, normalizedBatchSize, waitSeconds.Value, ct).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<IQueueReservedItem[]> ReserveLegacyAsync(
+        string route,
+        ulong leaseSeconds,
+        int batchSize,
+        int waitSeconds,
+        CancellationToken ct)
+    {
+        var deadline = DateTime.UtcNow.AddSeconds(waitSeconds);
         while (true)
         {
-            var items = await ReserveOnceAsync(route, leaseSeconds, normalizedBatchSize, ct).ConfigureAwait(false);
-            if (items.Length > 0)
+            var items = await ReserveOnceAsync(route, leaseSeconds, batchSize, null, ct).ConfigureAwait(false);
+            if (items.Length > 0 || DateTime.UtcNow >= deadline)
             {
                 return items;
             }
 
-            var remaining = deadline - DateTime.UtcNow;
-            if (remaining <= TimeSpan.Zero)
-            {
-                return items;
-            }
-
-            var delay = remaining <= TimeSpan.FromMilliseconds(100)
-                ? remaining
-                : TimeSpan.FromMilliseconds(100);
-            await Task.Delay(delay, ct).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromMilliseconds(100), ct).ConfigureAwait(false);
         }
     }
 
@@ -141,6 +149,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         string route,
         ulong leaseSeconds,
         int batchSize,
+        int? waitSeconds,
         CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
@@ -152,12 +161,23 @@ public sealed class QueueClient : IQueueClient, IDisposable
             writer.WriteU32((uint)batchSize);
         }
 
+        if (waitSeconds > 0)
+        {
+            writer.WriteU8(1);
+            writer.WriteU64((ulong)waitSeconds.Value);
+        }
+
         var response = await _request(MessageTypes.QueueReserve, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new QueueException($"RESERVE failed with status {status}", "RESERVE_FAILED", status);
+            uint? domainCode = reader.RemainingBytes >= 4 ? reader.ReadU32() : null;
+            var message = reader.IsEof ? string.Empty : reader.ReadString();
+            var code = waitSeconds > 0 && message.Contains("Trailing data", StringComparison.OrdinalIgnoreCase)
+                ? "RESERVE_WAIT_UNSUPPORTED"
+                : "RESERVE_FAILED";
+            throw new QueueException($"RESERVE failed with status {status}: {message}", code, status, domainCode);
         }
 
         var count = reader.IsEof ? 0U : reader.ReadU32();

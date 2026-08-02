@@ -30,7 +30,7 @@ await using var client = new Client(
 
 await client.ConnectWhenReadyAsync();
 
-var tx = await client.Kv().BeginAsync("kv://realm/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+var tx = await client.Kv.BeginAsync("kv://realm/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
 await tx.PutAsync("user-1"u8.ToArray(), """{"name":"Alice"}"""u8.ToArray());
 await tx.CommitAsync();
 ```
@@ -59,7 +59,7 @@ include ready, delayed, and inflight message counts. Active registrations are
 restored after reconnect and duplicate local registrations share one wire
 registration.
 
-Subscriptions use `await client.Notice().SubscribeAsync(pattern)` (and the
+Subscriptions use `await client.Notice.SubscribeAsync(pattern)` (and the
 equivalent domain method) and return typed handles implementing both
 `IAsyncEnumerable<TNotification>` and `IAsyncDisposable`. Each local handle has
 a bounded buffer; a slow consumer terminates with

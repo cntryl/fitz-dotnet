@@ -17,7 +17,6 @@ public sealed class RpcClient : IRpcClient
     private const byte RpcResponseFlagStreamEnd = 0x01;
     private const uint RpcErrorCodeMin = 6001;
     private const uint RpcErrorCodeMax = 6010;
-    private const int DefaultWorkerMaxConcurrency = 1;
     private const uint RpcBackpressureErrorCode = 6003;
 
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
@@ -28,6 +27,7 @@ public sealed class RpcClient : IRpcClient
     private readonly Func<Func<CancellationToken, ValueTask>, bool>? _dispatchAsyncHandler;
     private readonly TimeSpan _responseTimeout;
     private readonly Dictionary<string, Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask>> _workers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, uint> _workerConcurrency = new(StringComparer.Ordinal);
 
     private IDisposable? _workerReconnectRegistration;
     private bool _rpcRequestHandlerInitialized;
@@ -226,6 +226,7 @@ public sealed class RpcClient : IRpcClient
     public async Task<RpcWorkerRegistration> RegisterWorkerAsync(
         string pattern,
         Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask> handler,
+        RpcWorkerOptions? options = null,
         CancellationToken ct = default)
     {
         if (!RouteValidation.IsRegistrationPattern(pattern, "rpc"))
@@ -238,8 +239,15 @@ public sealed class RpcClient : IRpcClient
             throw new InvalidOperationException("Notification handlers not configured for worker registration");
         }
 
-        await SubscribeWorkerAsync(pattern, ct).ConfigureAwait(false);
+        var maxConcurrency = options?.MaxConcurrency ?? 1;
+        if (maxConcurrency == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "MaxConcurrency must be positive.");
+        }
+
+        await SubscribeWorkerAsync(pattern, maxConcurrency, ct).ConfigureAwait(false);
         _workers[pattern] = handler;
+        _workerConcurrency[pattern] = maxConcurrency;
         EnsureRpcRequestHandlerInitialized();
         _workerReconnectRegistration ??= _onReconnect?.Invoke(ResubscribeWorkersAsync);
 
@@ -329,11 +337,11 @@ public sealed class RpcClient : IRpcClient
         return false;
     }
 
-    private async Task SubscribeWorkerAsync(string pattern, CancellationToken ct)
+    private async Task SubscribeWorkerAsync(string pattern, uint maxConcurrency, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
-        writer.WriteU32(DefaultWorkerMaxConcurrency);
+        writer.WriteU32(maxConcurrency);
 
         var response = await _request(MessageTypes.RpcSubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
@@ -359,6 +367,7 @@ public sealed class RpcClient : IRpcClient
     private async Task UnsubscribeWorkerAsync(string pattern, CancellationToken ct)
     {
         _workers.Remove(pattern);
+        _workerConcurrency.Remove(pattern);
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
@@ -393,7 +402,7 @@ public sealed class RpcClient : IRpcClient
     {
         foreach (var pattern in _workers.Keys.ToArray())
         {
-            await SubscribeWorkerAsync(pattern, cancellationToken).ConfigureAwait(false);
+            await SubscribeWorkerAsync(pattern, _workerConcurrency[pattern], cancellationToken).ConfigureAwait(false);
         }
     }
 
