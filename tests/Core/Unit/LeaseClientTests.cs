@@ -176,6 +176,67 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
+    public async Task should_release_once_given_repeated_async_disposal_of_live_lease()
+    {
+        // Arrange
+        var releaseCalls = 0;
+        using var leaseClient = new LeaseClient((messageType, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            if (messageType == MessageTypes.LeaseAcquire)
+            {
+                writer.WriteU8(1);
+                writer.WriteU64(77);
+            }
+            else if (messageType == MessageTypes.LeaseRelease)
+            {
+                releaseCalls++;
+            }
+
+            return Task.FromResult(writer.Build());
+        });
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+
+        // Act
+        await lease.DisposeAsync();
+        await lease.DisposeAsync();
+
+        // Assert
+        Assert.Equal(1, releaseCalls);
+    }
+
+    [Fact]
+    public async Task should_surface_release_failure_given_async_disposal_of_live_lease()
+    {
+        // Arrange
+        using var leaseClient = new LeaseClient((messageType, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(messageType == MessageTypes.LeaseRelease ? (byte)1 : (byte)0);
+            if (messageType == MessageTypes.LeaseAcquire)
+            {
+                writer.WriteU8(1);
+                writer.WriteU64(77);
+            }
+            else
+            {
+                writer.WriteU32(9001);
+                writer.WriteString("release failed");
+            }
+
+            return Task.FromResult(writer.Build());
+        });
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+
+        // Act
+        var act = () => lease.DisposeAsync().AsTask();
+
+        // Assert
+        await Assert.ThrowsAnyAsync<Exception>(act);
+    }
+
+    [Fact]
     public async Task should_invoke_lease_handler_given_notification_when_subscribing()
     {
         // Arrange

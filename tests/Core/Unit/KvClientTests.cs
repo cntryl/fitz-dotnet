@@ -119,7 +119,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users", KvMode.ReadWrite, KvDurability.Async);
+        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async, KvMode.ReadWrite);
 
         // Assert
         Assert.NotNull(tx);
@@ -129,7 +129,7 @@ public sealed class KvClientTests
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("kv://prod/app/users", reader.ReadString());
         Assert.Equal((byte)KvMode.ReadWrite, reader.ReadU8());
-        Assert.Equal((byte)KvDurability.Async, reader.ReadU8());
+        Assert.Equal((byte)Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async, reader.ReadU8());
     }
 
     [Fact]
@@ -158,7 +158,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users");
+        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
         var result = await tx.GetAsync(new ReadOnlyMemory<byte>("user:1"u8.ToArray()));
 
         // Assert
@@ -190,7 +190,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users");
+        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
         var result = await tx.GetAsync("missing"u8.ToArray());
 
         // Assert
@@ -216,7 +216,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users");
+        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
         await tx.InsertAsync(new ReadOnlyMemory<byte>("user:2"u8.ToArray()), new ReadOnlyMemory<byte>("bob"u8.ToArray()));
 
         // Assert
@@ -243,7 +243,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users");
+        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
         await tx.DeleteAsync(new ReadOnlyMemory<byte>("user:1"u8.ToArray()));
 
         // Assert
@@ -270,7 +270,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users");
+        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
         await tx.DeleteRangeAsync(new ReadOnlyMemory<byte>("user:1"u8.ToArray()), new ReadOnlyMemory<byte>("user:9"u8.ToArray()));
 
         // Assert
@@ -316,7 +316,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users");
+        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
         var enumerable = tx.ScanAsync(new KvScanQuery());
         var pairs = new List<KvPair>();
         await foreach (var pair in enumerable)
@@ -344,7 +344,7 @@ public sealed class KvClientTests
         // Act
         var ex = await Assert.ThrowsAsync<KvException>(async () =>
         {
-            await kv.BeginAsync("");
+            await kv.BeginAsync("", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
         });
 
         // Assert
@@ -400,7 +400,7 @@ public sealed class KvClientTests
         using var kv = new KvClient(connection);
 
         await connection.ConnectAsync();
-        var tx = await kv.BeginAsync("kv://prod/app/users");
+        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
 
         firstTransport.QueueClosed();
         await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(1));

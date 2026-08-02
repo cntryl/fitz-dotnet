@@ -118,8 +118,9 @@ public sealed class Client : IClient
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public async Task CloseAsync(CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (_disposed)
         {
             return;
@@ -133,6 +134,11 @@ public sealed class Client : IClient
         _scheduleClient?.Dispose();
         _streamClient?.Dispose();
         await _connection.DisposeAsync().ConfigureAwait(false);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await CloseAsync().ConfigureAwait(false);
     }
 
     public IKvClient Kv()

@@ -62,8 +62,8 @@ public sealed class KvClient : IKvClient, IDisposable
 
     public async Task<IKvTransaction> BeginAsync(
         string route,
+        KvDurability durability,
         KvMode mode = KvMode.ReadWrite,
-        KvDurability durability = KvDurability.Async,
         CancellationToken cancellationToken = default)
     {
         if (!RouteValidation.IsFixedRoute(route, "kv", 3))

@@ -30,7 +30,7 @@ await using var client = new Client(
 
 await client.ConnectWhenReadyAsync();
 
-var tx = await client.Kv().BeginAsync("kv://realm/app/users");
+var tx = await client.Kv().BeginAsync("kv://realm/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
 await tx.PutAsync("user-1"u8.ToArray(), """{"name":"Alice"}"""u8.ToArray());
 await tx.CommitAsync();
 ```

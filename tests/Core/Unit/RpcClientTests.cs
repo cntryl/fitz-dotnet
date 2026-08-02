@@ -146,7 +146,7 @@ public sealed class RpcClientTests
             (req, _, _) =>
             {
                 requestTcs.TrySetResult(req);
-                return Task.CompletedTask;
+                return ValueTask.CompletedTask;
             });
 
         Assert.Equal("rpc://prod/app/echo", registration.Pattern);

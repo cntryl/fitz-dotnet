@@ -47,7 +47,7 @@ internal sealed class DomainHotPathBenchmarks : IDisposable
     [Benchmark]
     public async Task KvBeginGet()
     {
-        var tx = await _kv.BeginAsync("kv://bench/hotpath").ConfigureAwait(false);
+        var tx = await _kv.BeginAsync("kv://bench/hotpath", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async).ConfigureAwait(false);
         _ = await tx.GetAsync(Payload).ConfigureAwait(false);
     }
 

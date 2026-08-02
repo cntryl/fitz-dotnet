@@ -1,13 +1,13 @@
 # fitz-dotnet Spec/Parity Gap Matrix
 
-Date: 2026-07-09
+Date: 2026-08-02
 
 Status legend:
 
 - `implemented`: represented in the public surface and backed by current tests or conformance artifacts
 - `historical`: older audit trail retained elsewhere; not current truth
 
-Current status: `fitz-dotnet` is aligned to the current shared 17-scenario Fitz client suite. The repo-owned broker baseline, CI matrix, conformance artifact shape, and runtime defaults now match the corrected TS client truth surface.
+Current status: `fitz-dotnet` is aligned to the shared 17-scenario Fitz client suite and has separately passed the four-client operational parity review. Shared-suite success alone does not establish explicit durability, managed leases, safe retry, reconnect defaults, heartbeat, observability, error ergonomics, or documentation truth; those capabilities require the independent evidence below.
 
 | Capability | .NET surface / evidence | Shared contract coverage | Status | Notes |
 | --- | --- | --- | --- | --- |

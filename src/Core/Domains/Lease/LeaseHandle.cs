@@ -10,6 +10,7 @@ public sealed class LeaseHandle : ILease
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     private readonly IDisposable? _disconnectRegistration;
     private int _closed;
+    private int _disposed;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
 
     internal LeaseHandle(
@@ -84,10 +85,24 @@ public sealed class LeaseHandle : ILease
         }
     }
 
-    public void Dispose()
+    public async ValueTask DisposeAsync()
     {
-        MarkClosed();
-        _operationGate.Dispose();
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            if (Volatile.Read(ref _closed) == 0)
+            {
+                await ReleaseAsync().ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            _operationGate.Dispose();
+        }
     }
 
     private async Task SendTokenTtlAsync(ushort messageType, ulong ttlSecs, string operation, CancellationToken ct)

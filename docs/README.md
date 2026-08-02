@@ -9,5 +9,6 @@ Use the local repo docs as the current source of truth for the .NET client:
 - [../compose.yml](../compose.yml)
 - [spec-parity-gap-matrix.md](spec-parity-gap-matrix.md)
 - [spec-parity-audit.md](spec-parity-audit.md)
+- [migration.md](migration.md)
 
 The parity matrix tracks current status. The audit document is historical only.

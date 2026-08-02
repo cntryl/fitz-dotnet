@@ -11,6 +11,23 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class ClientTests
 {
     [Fact]
+    public async Task should_close_once_given_repeated_close_calls()
+    {
+        // Arrange
+        await using var transport = new FakeTransport();
+        await using var client = new Client(new ClientConfig(
+            new Uri("ws://localhost:4190/ws"),
+            TransportFactory: _ => transport));
+
+        // Act
+        await client.CloseAsync();
+        await client.CloseAsync();
+
+        // Assert
+        Assert.Equal(ConnectionState.Closed, client.State);
+    }
+
+    [Fact]
     public void should_expose_typed_transport_given_typed_client_config()
     {
         var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), ClientTransport.WebSocket);
@@ -305,7 +322,7 @@ public sealed class ClientTests
         await client.ConnectAsync();
 
         var ex = await Assert.ThrowsAsync<RequestTimeoutException>(() =>
-            client.Kv().BeginAsync("kv://prod/app/users"));
+            client.Kv().BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async));
 
         Assert.Contains("Request timeout", ex.Message, StringComparison.OrdinalIgnoreCase);
         Assert.True(client.IsConnected);

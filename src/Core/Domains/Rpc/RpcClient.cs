@@ -27,7 +27,7 @@ public sealed class RpcClient : IRpcClient
     private readonly Func<CancellationToken>? _getConnectionClosedToken;
     private readonly Func<Func<CancellationToken, ValueTask>, bool>? _dispatchAsyncHandler;
     private readonly TimeSpan _responseTimeout;
-    private readonly Dictionary<string, Func<RpcRequest, IRpcResponseWriter, CancellationToken, Task>> _workers = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask>> _workers = new(StringComparer.Ordinal);
 
     private IDisposable? _workerReconnectRegistration;
     private bool _rpcRequestHandlerInitialized;
@@ -225,7 +225,7 @@ public sealed class RpcClient : IRpcClient
 
     public async Task<RpcWorkerRegistration> RegisterWorkerAsync(
         string pattern,
-        Func<RpcRequest, IRpcResponseWriter, CancellationToken, Task> handler,
+        Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask> handler,
         CancellationToken ct = default)
     {
         if (!RouteValidation.IsRegistrationPattern(pattern, "rpc"))
@@ -309,7 +309,7 @@ public sealed class RpcClient : IRpcClient
         }
     }
 
-    private bool TryGetWorker(string route, out Func<RpcRequest, IRpcResponseWriter, CancellationToken, Task> handler)
+    private bool TryGetWorker(string route, out Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask> handler)
     {
         if (_workers.TryGetValue(route, out handler!))
         {

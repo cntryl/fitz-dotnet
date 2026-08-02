@@ -13,6 +13,7 @@ public interface IClient : IAsyncDisposable
 {
     Task ConnectAsync(CancellationToken cancellationToken = default);
     Task ConnectWhenReadyAsync(ConnectWhenReadyOptions? options = null, CancellationToken cancellationToken = default);
+    Task CloseAsync(CancellationToken cancellationToken = default);
     bool IsConnected { get; }
     ConnectionState State { get; }
     IKvClient Kv();

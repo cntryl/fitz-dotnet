@@ -1,6 +1,6 @@
 namespace Cntryl.Fitz.Abstractions.Domains.Lease;
 
-public interface ILease : IDisposable
+public interface ILease : IAsyncDisposable
 {
     string Route { get; }
     Task ExtendAsync(ulong ttlSecs, CancellationToken ct = default);
