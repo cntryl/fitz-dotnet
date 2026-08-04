@@ -100,6 +100,7 @@ public sealed class QueueClientTests
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             writer.WriteU32(1);
+            writer.WriteString("queue://prod/app/tasks");
             writer.WriteU64(555);
             writer.WriteU64(777);
             writer.WriteU32(5);
@@ -128,6 +129,57 @@ public sealed class QueueClientTests
     }
 
     [Fact]
+    public async Task should_return_concrete_routes_given_wildcard_queue_reserve()
+    {
+        // Arrange
+        using var queue = new QueueClient((messageType, _, _) =>
+        {
+            Assert.Equal(MessageTypes.QueueReserve, messageType);
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU32(1);
+            writer.WriteString("queue://acme/cats/cat");
+            writer.WriteU64(555);
+            writer.WriteU64(777);
+            writer.WriteU32(5);
+            writer.WriteBytes("job-1"u8);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var items = await queue.ReserveAsync("queue://*/cats/*", 30);
+
+        // Assert
+        var item = Assert.Single(items);
+        Assert.Equal("queue://acme/cats/cat", item.Route);
+        Assert.Equal("job-1", System.Text.Encoding.UTF8.GetString(item.Body.Span));
+    }
+
+    [Fact]
+    public async Task should_reject_wildcard_route_given_queue_reserve_response()
+    {
+        // Arrange
+        using var queue = new QueueClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU32(1);
+            writer.WriteString("queue://*/cats/*");
+            writer.WriteU64(555);
+            writer.WriteU64(777);
+            writer.WriteU32(0);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var result = () => queue.ReserveAsync("queue://*/cats/*", 30);
+
+        // Assert
+        await Assert.ThrowsAsync<QueueException>(result);
+    }
+
+    [Fact]
     public async Task should_send_one_blocking_reserve_given_wait_seconds()
     {
         // Arrange
@@ -150,6 +202,31 @@ public sealed class QueueClientTests
         // Assert
         Assert.Equal(1, reserveCallCount);
         Assert.Empty(items);
+    }
+
+    [Fact]
+    public async Task should_surface_broker_rejection_without_polling_downgrade_given_wait_seconds()
+    {
+        // Arrange
+        var reserveCallCount = 0;
+        using var queue = new QueueClient((_, _, _) =>
+        {
+            reserveCallCount++;
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(1);
+            writer.WriteU32(4008);
+            writer.WriteString("Trailing data after RESERVE request");
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var result = () => queue.ReserveAsync("queue://prod/app/tasks", 30, waitSeconds: 1);
+
+        // Assert
+        var error = await Assert.ThrowsAsync<QueueException>(result);
+        Assert.Equal("RESERVE_FAILED", error.Code);
+        Assert.Equal((uint)4008, error.DomainCode);
+        Assert.Equal(1, reserveCallCount);
     }
 
     [Fact]
@@ -235,6 +312,7 @@ public sealed class QueueClientTests
             if (messageType == MessageTypes.QueueReserve)
             {
                 writer.WriteU32(1);
+                writer.WriteString("queue://prod/app/tasks");
                 writer.WriteU64(555);
                 writer.WriteU64(777);
                 writer.WriteU32(5);
@@ -288,6 +366,7 @@ public sealed class QueueClientTests
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
                 writer.WriteU32(1);
+                writer.WriteString("queue://prod/app/tasks");
                 writer.WriteU64(555);
                 writer.WriteU64(777);
                 writer.WriteU32(5);
@@ -335,6 +414,7 @@ public sealed class QueueClientTests
                 using var reserveWriter = new BinaryBufferWriter();
                 reserveWriter.WriteU8(0);
                 reserveWriter.WriteU32(1);
+                reserveWriter.WriteString("queue://prod/app/tasks");
                 reserveWriter.WriteU64(555);
                 reserveWriter.WriteU64(777);
                 reserveWriter.WriteU32(5);

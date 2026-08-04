@@ -7,7 +7,7 @@ namespace Cntryl.Fitz.Benchmarks;
 
 /// <summary>
 /// Benchmarks focused on allocation patterns and GC pressure.
-/// Target: <40% allocations vs legacy List<T> buffering
+/// Target: <40% allocations vs eager List<T> buffering
 /// </summary>
 [SimpleJob]
 [MemoryDiagnoser]
@@ -44,7 +44,7 @@ internal sealed class AllocationBenchmarks
     }
 
     /// <summary>
-    /// Benchmark: new byte[] allocation (legacy, undesired)
+	/// Benchmark: eager new byte[] allocation baseline
     /// Target: show regression vs ArrayPool
     /// </summary>
     [Benchmark(Baseline = true)]

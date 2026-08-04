@@ -68,7 +68,7 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task should_accept_wildcard_selector_given_stream_read_when_reading_stream()
+    public async Task should_accept_whole_segment_pattern_given_stream_read_when_reading_stream()
     {
         // Arrange
         var requestCount = 0;
@@ -78,7 +78,7 @@ public sealed class StreamClientTests
             Assert.Equal(MessageTypes.StreamRead, messageType);
 
             var request = new BinaryBufferReader(payload);
-            Assert.Equal("stream://prod/app/*", request.ReadString());
+            Assert.Equal("stream://*/app/*", request.ReadString());
             Assert.Equal((ulong)4, request.ReadU64());
             Assert.Equal((ulong)2, request.ReadU64());
             Assert.Equal((byte)0, request.ReadU8());
@@ -89,7 +89,7 @@ public sealed class StreamClientTests
 
         // Act
         var records = new List<StreamRecord>();
-        await foreach (var record in stream.ReadAsync("stream://prod/app/*", 4, 2))
+        await foreach (var record in stream.ReadAsync("stream://*/app/*", 4, 2))
         {
             records.Add(record);
         }
@@ -173,6 +173,7 @@ public sealed class StreamClientTests
 
             using var data = new BinaryBufferWriter();
             data.WriteU32(2);
+            data.WriteString("stream://prod/app/events");
             data.WriteU8((byte)StreamReadItemKind.Event);
             data.WriteU64(4);
             data.WriteU8(0);
@@ -181,6 +182,7 @@ public sealed class StreamClientTests
             data.WriteBytes("one"u8);
             data.WriteU8(0);
             data.WriteU64(111);
+            data.WriteString("stream://prod/app/events");
             data.WriteU8((byte)StreamReadItemKind.Event);
             data.WriteU64(5);
             data.WriteU8(0);
@@ -214,11 +216,13 @@ public sealed class StreamClientTests
             records,
             record =>
             {
+                Assert.Equal("stream://prod/app/events", record.Route);
                 Assert.Equal((ulong)4, record.Offset);
                 Assert.Equal("one", System.Text.Encoding.UTF8.GetString(record.Body));
             },
             record =>
             {
+                Assert.Equal("stream://prod/app/events", record.Route);
                 Assert.Equal((ulong)5, record.Offset);
                 Assert.Equal("two", System.Text.Encoding.UTF8.GetString(record.Body));
             });
@@ -288,6 +292,7 @@ public sealed class StreamClientTests
 
             using var data = new BinaryBufferWriter();
             data.WriteU32(1);
+            data.WriteString("stream://prod/app/events");
             data.WriteU8((byte)StreamReadItemKind.Event);
             data.WriteU64(4);
             data.WriteU8(0);
@@ -342,6 +347,7 @@ public sealed class StreamClientTests
 
             using var data = new BinaryBufferWriter();
             data.WriteU32(3);
+            data.WriteString("stream://prod/app/events");
             data.WriteU8((byte)StreamReadItemKind.Event);
             data.WriteU64(41);
             data.WriteU8(1);
@@ -351,9 +357,11 @@ public sealed class StreamClientTests
             data.WriteBytes("alpha"u8);
             data.WriteU8(0);
             data.WriteU64(111);
+            data.WriteString("stream://prod/app/events");
             data.WriteU8((byte)StreamReadItemKind.Filtered);
             data.WriteU64(42);
             data.WriteU8((byte)StreamFilteredReason.ServerFilter);
+            data.WriteString("stream://prod/app/events");
             data.WriteU8((byte)StreamReadItemKind.FilteredRange);
             data.WriteU64(43);
             data.WriteU64(45);
@@ -394,8 +402,10 @@ public sealed class StreamClientTests
             page.Items,
             item =>
             {
+                Assert.Equal("stream://prod/app/events", item.Route);
                 Assert.Equal(StreamReadItemKind.Event, item.Kind);
                 Assert.NotNull(item.Record);
+                Assert.Equal("stream://prod/app/events", item.Record!.Route);
                 Assert.Equal((ulong)41, item.Record!.Offset);
                 Assert.Equal((ulong)51, item.Record.AreaOffset);
                 Assert.Equal("alpha", System.Text.Encoding.UTF8.GetString(item.Record.Body));
@@ -413,6 +423,74 @@ public sealed class StreamClientTests
                 Assert.Equal((ulong)45, item.ToOffset);
                 Assert.Equal(StreamFilteredReason.Permission, item.Reason);
             });
+    }
+
+    [Fact]
+    public async Task should_return_concrete_routes_given_wildcard_stream_read()
+    {
+        // Arrange
+        using var stream = new StreamClient((messageType, _, _) =>
+        {
+            Assert.Equal(MessageTypes.StreamRead, messageType);
+
+            using var data = new BinaryBufferWriter();
+            data.WriteU32(1);
+            data.WriteString("stream://prod/app/event-1");
+            data.WriteU8((byte)StreamReadItemKind.Filtered);
+            data.WriteU64(42);
+            data.WriteU8((byte)StreamFilteredReason.ServerFilter);
+            data.WriteU64(42);
+            data.WriteU8(0);
+            data.WriteU8(0);
+            data.WriteU8(0);
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(0);
+            writer.WriteU32((uint)data.Build().Length);
+            writer.WriteBytes(data.Build());
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var page = await stream.ReadPageAsync("stream://prod/app/*", 0);
+
+        // Assert
+        var item = Assert.Single(page.Items);
+        Assert.Equal("stream://prod/app/event-1", item.Route);
+        Assert.Equal(StreamReadItemKind.Filtered, item.Kind);
+    }
+
+    [Fact]
+    public async Task should_reject_wildcard_route_given_stream_read_response()
+    {
+        // Arrange
+        using var stream = new StreamClient((_, _, _) =>
+        {
+            using var data = new BinaryBufferWriter();
+            data.WriteU32(1);
+            data.WriteString("stream://*/app/*");
+            data.WriteU8((byte)StreamReadItemKind.Filtered);
+            data.WriteU64(42);
+            data.WriteU8((byte)StreamFilteredReason.ServerFilter);
+            data.WriteU64(42);
+            data.WriteU8(0);
+            data.WriteU8(0);
+            data.WriteU8(0);
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(0);
+            writer.WriteU32((uint)data.Build().Length);
+            writer.WriteBytes(data.Build());
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var result = () => stream.ReadPageAsync("stream://*/app/*", 0);
+
+        // Assert
+        await Assert.ThrowsAsync<StreamException>(result);
     }
 
     [Fact]
@@ -462,9 +540,10 @@ public sealed class StreamClientTests
             Assert.Equal(MessageTypes.StreamLast, messageType);
 
             var request = new BinaryBufferReader(payload);
-            Assert.Equal("stream://prod/app/events", request.ReadString());
+            Assert.Equal("stream://*/app/*", request.ReadString());
 
             using var data = new BinaryBufferWriter();
+            data.WriteString("stream://prod/app/events");
             data.WriteU64(42);
             data.WriteU8(0);
             data.WriteU8(0);
@@ -482,12 +561,35 @@ public sealed class StreamClientTests
         });
 
         // Act
-        var record = await stream.PeekAsync("stream://prod/app/events");
+        var record = await stream.PeekAsync("stream://*/app/*");
 
         // Assert
         Assert.NotNull(record);
+        Assert.Equal("stream://prod/app/events", record!.Route);
         Assert.Equal((ulong)42, record!.Offset);
         Assert.Equal("tail", System.Text.Encoding.UTF8.GetString(record.Body));
+    }
+
+    [Fact]
+    public async Task should_reject_wildcard_route_given_last_response_when_peeking_stream()
+    {
+        using var stream = new StreamClient((_, _, _) =>
+        {
+            using var data = new BinaryBufferWriter();
+            data.WriteString("stream://*/app/events");
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(0);
+            writer.WriteU32((uint)data.Build().Length);
+            writer.WriteBytes(data.Build());
+            return Task.FromResult(writer.Build());
+        });
+
+        var error = await Assert.ThrowsAsync<StreamException>(
+            () => stream.PeekAsync("stream://*/app/*"));
+
+        Assert.Equal("LAST_INVALID_RESPONSE", error.Code);
     }
 
     [Fact]

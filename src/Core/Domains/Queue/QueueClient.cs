@@ -103,46 +103,14 @@ public sealed class QueueClient : IQueueClient, IDisposable
         int? waitSeconds = null,
         CancellationToken ct = default)
     {
-        if (!RouteValidation.IsSelectorRoute(route, "queue", 3, allowRealmWildcard: false))
+        if (!RouteValidation.IsRegistrationPattern(route, "queue", 3))
         {
-            throw new QueueException($"route '{route}' must be queue://{{realm}}/{{area}}/{{resource}} or queue://{{realm}}/{{area}}/*", "INVALID_ROUTE");
+            throw new QueueException($"route '{route}' must be a concrete queue route or a whole-segment wildcard pattern", "INVALID_ROUTE");
         }
 
         var normalizedBatchSize = batchSize > 0 ? batchSize : 1;
 
-        if (waitSeconds is not > 0)
-        {
-            return await ReserveOnceAsync(route, leaseSeconds, normalizedBatchSize, null, ct).ConfigureAwait(false);
-        }
-
-        try
-        {
-            return await ReserveOnceAsync(route, leaseSeconds, normalizedBatchSize, waitSeconds, ct).ConfigureAwait(false);
-        }
-        catch (QueueException error) when (error.Code == "RESERVE_WAIT_UNSUPPORTED")
-        {
-            return await ReserveLegacyAsync(route, leaseSeconds, normalizedBatchSize, waitSeconds.Value, ct).ConfigureAwait(false);
-        }
-    }
-
-    private async Task<IQueueReservedItem[]> ReserveLegacyAsync(
-        string route,
-        ulong leaseSeconds,
-        int batchSize,
-        int waitSeconds,
-        CancellationToken ct)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(waitSeconds);
-        while (true)
-        {
-            var items = await ReserveOnceAsync(route, leaseSeconds, batchSize, null, ct).ConfigureAwait(false);
-            if (items.Length > 0 || DateTime.UtcNow >= deadline)
-            {
-                return items;
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(100), ct).ConfigureAwait(false);
-        }
+        return await ReserveOnceAsync(route, leaseSeconds, normalizedBatchSize, waitSeconds, ct).ConfigureAwait(false);
     }
 
     private async Task<IQueueReservedItem[]> ReserveOnceAsync(
@@ -174,23 +142,25 @@ public sealed class QueueClient : IQueueClient, IDisposable
         {
             uint? domainCode = reader.RemainingBytes >= 4 ? reader.ReadU32() : null;
             var message = reader.IsEof ? string.Empty : reader.ReadString();
-            var code = waitSeconds > 0 && message.Contains("Trailing data", StringComparison.OrdinalIgnoreCase)
-                ? "RESERVE_WAIT_UNSUPPORTED"
-                : "RESERVE_FAILED";
-            throw new QueueException($"RESERVE failed with status {status}: {message}", code, status, domainCode);
+            throw new QueueException($"RESERVE failed with status {status}: {message}", "RESERVE_FAILED", status, domainCode);
         }
 
         var count = reader.IsEof ? 0U : reader.ReadU32();
         var items = new IQueueReservedItem[count];
         for (var i = 0; i < count; i++)
         {
+            var itemRoute = reader.ReadString();
+            if (!RouteValidation.IsFixedRoute(itemRoute, "queue", 3))
+            {
+                throw new QueueException($"RESERVE response contains invalid concrete queue route '{itemRoute}'", "RESERVE_INVALID_RESPONSE");
+            }
             var itemId = reader.ReadU64();
             var itemToken = reader.ReadU64();
             var bodyLength = reader.ReadU32();
             var body = reader.ReadBytes((int)bodyLength);
 
             items[i] = new QueueReservedItem(
-                route,
+                itemRoute,
                 body,
                 1,
                 itemId,

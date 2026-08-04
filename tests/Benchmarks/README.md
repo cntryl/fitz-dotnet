@@ -83,7 +83,7 @@ dotnet run -c Release -- --filter Cntryl.Fitz.Benchmarks.MultiplexerHotPathBench
 Compares allocation strategies (ArrayPool vs new byte[] vs stackalloc).
 
 - **ArrayPoolAllocation**: Preferred pattern
-- **NewByteArrayAllocation**: Legacy baseline
+- **NewByteArrayAllocation**: Eager-allocation baseline
 - **StackAllocSpan**: Zero-copy variant
 
 Run all allocation benchmarks:

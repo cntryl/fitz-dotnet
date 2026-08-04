@@ -54,10 +54,26 @@ broker permits 128 wildcard registrations per domain and session, while exact
 registrations do not consume the quota. Lease subscriptions remain exact-only:
 `lease://realm/area/resource`.
 
+Queue reserve, Stream read, and Stream last responses must include the concrete
+matched route for every item. Stream reads and peeks accept the same
+whole-segment patterns as Stream subscriptions; the client never substitutes a
+request pattern for a response route.
+
 Notifications expose the exact concrete route. Queue availability events also
 include ready, delayed, and inflight message counts. Active registrations are
 restored after reconnect and duplicate local registrations share one wire
 registration.
+
+Queue reserves and Stream reads accept the same whole-segment patterns as
+subscriptions. Every returned `IQueueReservedItem` and `StreamReadItem`
+exposes the concrete matched route, including `StreamRecord.Route` for event
+records. Route-less reserve/read responses are not supported. If any item
+contains an invalid concrete route, the entire response fails closed; the
+client never returns a partial reservation or read batch.
+
+Queue `waitSeconds` uses the broker-native RESERVE wait field. A broker that
+rejects that field fails the request directly; the client does not downgrade
+to polling.
 
 Subscriptions use `await client.Notice.SubscribeAsync(pattern)` (and the
 equivalent domain method) and return typed handles implementing both

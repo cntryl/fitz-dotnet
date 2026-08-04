@@ -1,6 +1,7 @@
 namespace Cntryl.Fitz.Abstractions.Domains.Stream;
 
 public sealed record StreamReadItem(
+    string Route,
     StreamReadItemKind Kind,
     StreamRecord? Record = null,
     ulong Offset = 0,

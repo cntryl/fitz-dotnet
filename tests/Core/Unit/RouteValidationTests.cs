@@ -62,7 +62,7 @@ public sealed class RouteValidationTests
     }
 
     [Fact]
-    public void should_reject_schedule_route_with_legacy_arity_given_three_segments_when_validating()
+    public void should_reject_schedule_route_with_obsolete_arity_given_three_segments_when_validating()
     {
         Assert.False(RouteValidation.IsFixedRoute("schedule://realm/area/resource", "schedule", 4));
     }

@@ -976,19 +976,19 @@ public sealed partial class ConformanceSmokeTests
 
             if (records.Count != 1)
             {
-                evidence.Add($"compatibility read returned {records.Count} records");
+                evidence.Add($"event-only read returned {records.Count} records");
                 return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, $"expected 1 filtered record, got {records.Count}");
             }
 
             if (records[0].Offset != firstOffset.Value)
             {
-                evidence.Add($"compatibility read returned offset {records[0].Offset} instead of {firstOffset.Value}");
+                evidence.Add($"event-only read returned offset {records[0].Offset} instead of {firstOffset.Value}");
                 return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "filtered read did not preserve the matching offset");
             }
 
             if (!string.Equals(Encoding.UTF8.GetString(records[0].Body), "alpha", StringComparison.Ordinal))
             {
-                evidence.Add($"compatibility read returned {Encoding.UTF8.GetString(records[0].Body)}");
+                evidence.Add($"event-only read returned {Encoding.UTF8.GetString(records[0].Body)}");
                 return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "filtered read returned the wrong body");
             }
 

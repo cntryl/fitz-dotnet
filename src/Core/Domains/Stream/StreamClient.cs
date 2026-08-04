@@ -144,7 +144,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
 
     public async Task<StreamRecord?> PeekAsync(string route, CancellationToken ct = default)
     {
-        ValidateExactStreamRoute(route);
+        ValidateStreamSelector(route);
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
@@ -160,7 +160,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
             return null;
         }
 
-        return StreamWireHelpers.ReadRecord(data, "LAST");
+        return StreamWireHelpers.ReadRoutedRecord(data, "LAST");
     }
 
     public async Task<StreamMetadata> MetadataAsync(string route, CancellationToken ct = default)
@@ -431,12 +431,12 @@ public sealed class StreamClient : IStreamClient, IDisposable
 
     private static void ValidateStreamSelector(string route)
     {
-        if (RouteValidation.TryValidateSelectorRoute(route, "stream", 3, allowRealmWildcard: true, out var failure))
+        if (RouteValidation.IsRegistrationPattern(route, "stream", 3))
         {
             return;
         }
 
-        ThrowInvalidSelectorRoute(route, failure);
+        throw new StreamException($"stream selector '{route}' must be a whole-segment pattern capable of matching three segments", "INVALID_ROUTE");
     }
 
     private static void ThrowInvalidExactRoute(string route, RouteValidationFailure failure)
@@ -446,18 +446,6 @@ public sealed class StreamClient : IStreamClient, IDisposable
             RouteValidationFailure.InvalidScheme => $"stream route '{route}' must start with stream://",
             RouteValidationFailure.EmptySegment => $"stream route '{route}' segments must be non-empty",
             _ => $"stream route '{route}' must be stream://{{realm}}/{{area}}/{{resource}}",
-        };
-
-        throw new StreamException(message, "INVALID_ROUTE");
-    }
-
-    private static void ThrowInvalidSelectorRoute(string route, RouteValidationFailure failure)
-    {
-        var message = failure switch
-        {
-            RouteValidationFailure.InvalidScheme => $"stream route '{route}' must start with stream://",
-            RouteValidationFailure.EmptySegment => $"stream route '{route}' segments must be non-empty",
-            _ => $"stream route '{route}' must be one of stream://{{realm}}/{{area}}/{{resource}}, stream://{{realm}}/{{area}}/*, or stream://{{realm}}/*/*",
         };
 
         throw new StreamException(message, "INVALID_ROUTE");

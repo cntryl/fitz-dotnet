@@ -6,7 +6,7 @@ This document establishes mandatory patterns and targets for high-performance as
 
 - **Hotpath latency:** <10 microseconds for request-response roundtrip
 - **Throughput:** 25–50% improvement vs .NET 9 baseline
-- **Allocations:** <40% of legacy allocations for streaming workloads
+- **Allocations:** <40% of the eager-allocation baseline for streaming workloads
 - **Concurrency:** Safe at 5,000+ concurrent RPC streams with <2 μs correlation lookup
 
 ## Mandatory Patterns
@@ -372,7 +372,7 @@ Every phase includes explicit perf validation:
 
 4. **Allocation profiling**
    - Run with dotTrace or PerfView
-   - Target: <40% of legacy allocation rate for streaming workloads
+	- Target: <40% of the eager-allocation baseline for streaming workloads
 
 ## CI Integration
 

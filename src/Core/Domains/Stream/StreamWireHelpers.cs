@@ -4,6 +4,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Collections.Generic;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
+using Cntryl.Fitz.Core;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
@@ -138,10 +139,10 @@ internal static class StreamWireHelpers
         return payload;
     }
 
-    internal static StreamRecord ReadRecord(ReadOnlyMemory<byte> payload, string operation)
+    internal static StreamRecord ReadRecord(ReadOnlyMemory<byte> payload, string operation, string route)
     {
         var reader = new BinaryBufferReader(payload);
-        var record = ReadRecord(reader, operation);
+        var record = ReadRecord(reader, operation, route);
         if (!reader.IsEof)
         {
             throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
@@ -150,7 +151,23 @@ internal static class StreamWireHelpers
         return record;
     }
 
-    internal static StreamRecord ReadRecord(BinaryBufferReader reader, string operation)
+    internal static StreamRecord ReadRoutedRecord(ReadOnlyMemory<byte> payload, string operation)
+    {
+        var reader = new BinaryBufferReader(payload);
+        var route = reader.ReadString();
+        if (!RouteValidation.TryValidateFixedRoute(route, "stream", 3, out _))
+        {
+            throw new StreamException($"{operation} response contains invalid concrete stream route: {route}", $"{operation}_INVALID_RESPONSE");
+        }
+        var record = ReadRecord(reader, operation, route);
+        if (!reader.IsEof)
+        {
+            throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+        }
+        return record;
+    }
+
+    internal static StreamRecord ReadRecord(BinaryBufferReader reader, string operation, string route)
     {
         if (reader.RemainingBytes < 8)
         {
@@ -169,7 +186,7 @@ internal static class StreamWireHelpers
         }
 
         var timestamp = reader.ReadU64();
-        return new StreamRecord(offset, areaOffset, realmOffset, body, metadata, timestamp);
+        return new StreamRecord(route, offset, areaOffset, realmOffset, body, metadata, timestamp);
     }
 
     internal static StreamReadPage ReadReadPage(ReadOnlyMemory<byte> payload, string operation)
@@ -194,7 +211,12 @@ internal static class StreamWireHelpers
         var items = new List<StreamReadItem>((int)itemCount);
         for (var index = 0; index < itemCount; index++)
         {
-            items.Add(ReadReadItem(reader, operation));
+            var route = reader.ReadString();
+            if (!RouteValidation.IsFixedRoute(route, "stream", 3))
+            {
+                throw new StreamException($"{operation} response contains invalid concrete stream route '{route}'", $"{operation}_INVALID_RESPONSE");
+            }
+            items.Add(ReadReadItem(reader, operation, route));
         }
 
         if (reader.RemainingBytes < 8)
@@ -216,7 +238,7 @@ internal static class StreamWireHelpers
         return new StreamReadPage(items, cursor);
     }
 
-    internal static StreamReadItem ReadReadItem(BinaryBufferReader reader, string operation)
+    internal static StreamReadItem ReadReadItem(BinaryBufferReader reader, string operation, string route)
     {
         if (reader.IsEof)
         {
@@ -226,12 +248,14 @@ internal static class StreamWireHelpers
         var tag = reader.ReadU8();
         return tag switch
         {
-            0 => new StreamReadItem(StreamReadItemKind.Event, Record: ReadRecord(reader, operation)),
+            0 => new StreamReadItem(route, StreamReadItemKind.Event, Record: ReadRecord(reader, operation, route)),
             1 => new StreamReadItem(
+                route,
                 StreamReadItemKind.Filtered,
                 Offset: reader.ReadU64(),
                 Reason: ReadFilteredReason(reader, operation)),
             2 => new StreamReadItem(
+                route,
                 StreamReadItemKind.FilteredRange,
                 FromOffset: reader.ReadU64(),
                 ToOffset: reader.ReadU64(),
