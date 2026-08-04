@@ -240,13 +240,16 @@ public sealed class KvTransaction : IKvTransaction
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_txId);
         writer.WriteString(_route);
-        await ExpectStatusAsync(messageType, writer.WrittenMemory, operation, ct).ConfigureAwait(false);
         MarkClosed();
+        await ExpectStatusAsync(messageType, writer.WrittenMemory, operation, ct, ensureOpen: false).ConfigureAwait(false);
     }
 
-    private async Task ExpectStatusAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct)
+    private async Task ExpectStatusAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct, bool ensureOpen = true)
     {
-        ThrowIfClosed();
+        if (ensureOpen)
+        {
+            ThrowIfClosed();
+        }
         var response = await _request(messageType, payload, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();

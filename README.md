@@ -44,6 +44,10 @@ Runtime defaults now match the TS client truth surface:
 - async handler timeout defaults to the client timeout
 - request queue size defaults to `1024`
 
+KV commit attempts are terminal even when the broker rejects the commit or the
+response is interrupted. Disposing such a transaction does not send a rollback
+for the completed server-side transaction identifier.
+
 ## Subscription registrations
 
 KV, Queue, Stream, Notice, RPC worker, and Schedule registrations accept exact

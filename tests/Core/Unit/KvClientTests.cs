@@ -11,6 +11,37 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class KvClientTests
 {
     [Fact]
+    public async Task should_close_transaction_without_rollback_given_rejected_commit()
+    {
+        var rollbackRequests = 0;
+        using var kv = new KvClient((messageType, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(messageType == MessageTypes.KvCommit ? (byte)1 : (byte)0);
+            if (messageType == MessageTypes.KvBegin)
+            {
+                writer.WriteU64(7);
+            }
+            if (messageType == MessageTypes.KvRollback)
+            {
+                rollbackRequests++;
+            }
+            return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
+        });
+        var transaction = await kv.BeginAsync(
+            "kv://realm/area/resource",
+            Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Sync);
+
+        await Assert.ThrowsAsync<KvException>(() => transaction.CommitAsync());
+        await transaction.DisposeAsync();
+        var error = await Assert.ThrowsAsync<KvException>(
+            () => transaction.GetAsync("key"u8.ToArray()));
+
+        Assert.Equal("TX_CLOSED", error.Code);
+        Assert.Equal(0, rollbackRequests);
+    }
+
+    [Fact]
     public async Task should_deliver_exact_route_given_wildcard_kv_subscription_when_notification_arrives()
     {
         // Arrange
