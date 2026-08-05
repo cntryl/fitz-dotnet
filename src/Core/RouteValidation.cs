@@ -33,6 +33,22 @@ internal static class RouteValidation
         return TryValidateRegistrationPattern(route, scheme, requiredSegments, out _);
     }
 
+    internal static bool IsStreamSelector(string route)
+    {
+        if (string.Equals(route, "stream://**", StringComparison.Ordinal))
+        {
+            return true;
+        }
+        var segments = RouteSegments(route);
+        if (segments.Length != 3 || !route.StartsWith("stream://", StringComparison.Ordinal))
+        {
+            return false;
+        }
+        return !segments[0].Contains('*', StringComparison.Ordinal) &&
+            ((segments[1] != "*" && !segments[1].Contains('*', StringComparison.Ordinal) && (segments[2] == "*" || !segments[2].Contains('*', StringComparison.Ordinal))) ||
+             (segments[1] == "*" && segments[2] == "*"));
+    }
+
     internal static bool TryValidateRegistrationPattern(
         string route,
         string scheme,

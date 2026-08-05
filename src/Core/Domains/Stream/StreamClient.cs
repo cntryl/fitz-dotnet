@@ -91,9 +91,10 @@ public sealed class StreamClient : IStreamClient, IDisposable
         ulong limit = 100,
         StreamFilterSet? filter = null,
         ulong? maxBytes = null,
+        ulong? cursorFingerprint = null, ulong? capturedWatermark = null, string? resumeRealm = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var page = await ReadPageAsync(route, startOffset, limit, filter, maxBytes, ct).ConfigureAwait(false);
+        var page = await ReadPageAsync(route, startOffset, limit, filter, maxBytes, cursorFingerprint, capturedWatermark, resumeRealm, ct).ConfigureAwait(false);
         foreach (var item in page.Items)
         {
             if (item.Kind == StreamReadItemKind.Event && item.Record is not null)
@@ -109,6 +110,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         ulong limit = 100,
         StreamFilterSet? filter = null,
         ulong? maxBytes = null,
+        ulong? cursorFingerprint = null, ulong? capturedWatermark = null, string? resumeRealm = null,
         CancellationToken ct = default)
     {
         ValidateStreamSelector(route);
@@ -131,20 +133,28 @@ public sealed class StreamClient : IStreamClient, IDisposable
             writer.WriteBytes(filterBytes);
         }
 
+        if (resumeRealm is not null)
+        {
+            writer.WriteU8(1); writer.WriteString(resumeRealm);
+        }
+        else
+        {
+            writer.WriteU8((byte)(cursorFingerprint.HasValue ? 1 : 0)); if (cursorFingerprint.HasValue) writer.WriteU64(cursorFingerprint.Value);
+            writer.WriteU8((byte)(capturedWatermark.HasValue ? 1 : 0)); if (capturedWatermark.HasValue) writer.WriteU64(capturedWatermark.Value);
+        }
+
         var response = await RequestWithRetryAsync(
             new RetryOperation("stream", "read", RetryClass.ReplayableRead),
             MessageTypes.StreamRead,
             writer.WrittenMemory,
             ct).ConfigureAwait(false);
         var data = StreamWireHelpers.ReadOptionalPayload(response, "READ");
-        return data.IsEmpty
-            ? new StreamReadPage(Array.Empty<StreamReadItem>(), new StreamReadCursor(0, null, null, false))
-            : StreamWireHelpers.ReadReadPage(data, "READ");
+        return data.IsEmpty ? new StreamReadPage(Array.Empty<StreamReadItem>(), new StreamReadCursor(0, null, null, null, null, null, null, false)) : StreamWireHelpers.ReadReadPage(data, "READ", route);
     }
 
     public async Task<StreamRecord?> PeekAsync(string route, CancellationToken ct = default)
     {
-        ValidateStreamSelector(route);
+        ValidateExactStreamRoute(route);
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
@@ -233,7 +243,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
-        if (!RouteValidation.IsRegistrationPattern(pattern, "stream", 3))
+        if (!RouteValidation.IsStreamSelector(pattern))
         {
             throw new StreamException($"pattern '{pattern}' must use whole-segment wildcards and match a three-segment stream route", "INVALID_ROUTE");
         }
@@ -431,12 +441,12 @@ public sealed class StreamClient : IStreamClient, IDisposable
 
     private static void ValidateStreamSelector(string route)
     {
-        if (RouteValidation.IsRegistrationPattern(route, "stream", 3))
+        if (RouteValidation.IsStreamSelector(route))
         {
             return;
         }
 
-        throw new StreamException($"stream selector '{route}' must be a whole-segment pattern capable of matching three segments", "INVALID_ROUTE");
+        throw new StreamException($"stream selector '{route}' must be realm/area/resource, realm/area/*, realm/*/*, or stream://**", "INVALID_ROUTE");
     }
 
     private static void ThrowInvalidExactRoute(string route, RouteValidationFailure failure)

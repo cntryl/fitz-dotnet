@@ -78,9 +78,10 @@ public sealed class StreamClientTests
             Assert.Equal(MessageTypes.StreamRead, messageType);
 
             var request = new BinaryBufferReader(payload);
-            Assert.Equal("stream://*/app/*", request.ReadString());
+            Assert.Equal("stream://prod/app/*", request.ReadString());
             Assert.Equal((ulong)4, request.ReadU64());
             Assert.Equal((ulong)2, request.ReadU64());
+            Assert.Equal((byte)0, request.ReadU8());
             Assert.Equal((byte)0, request.ReadU8());
             Assert.Equal((byte)0, request.ReadU8());
 
@@ -89,7 +90,7 @@ public sealed class StreamClientTests
 
         // Act
         var records = new List<StreamRecord>();
-        await foreach (var record in stream.ReadAsync("stream://*/app/*", 4, 2))
+        await foreach (var record in stream.ReadAsync("stream://prod/app/*", 4, 2))
         {
             records.Add(record);
         }
@@ -97,6 +98,28 @@ public sealed class StreamClientTests
         // Assert
         Assert.Empty(records);
         Assert.Equal(1, requestCount);
+    }
+
+    [Fact]
+    public async Task should_match_server_stream_selector_grammar_and_encode_global_resume_realm()
+    {
+        using var stream = new StreamClient((_, payload, _) =>
+        {
+            var request = new BinaryBufferReader(payload);
+            Assert.Equal("stream://**", request.ReadString());
+            request.ReadU64();
+            request.ReadU64();
+            Assert.Equal((byte)0, request.ReadU8());
+            Assert.Equal((byte)0, request.ReadU8());
+            Assert.Equal((byte)1, request.ReadU8());
+            Assert.Equal("acme", request.ReadString());
+            return Task.FromResult(new byte[] { 0 });
+        });
+
+        await stream.ReadPageAsync("stream://**", 42, resumeRealm: "acme");
+        var error = await Assert.ThrowsAsync<StreamException>(() => stream.ReadPageAsync("stream://*/app/*", 0));
+
+        Assert.Equal("INVALID_ROUTE", error.Code);
     }
 
     [Fact]
@@ -192,6 +215,7 @@ public sealed class StreamClientTests
             data.WriteU8(0);
             data.WriteU64(222);
             data.WriteU64(5);
+            data.WriteU8(0);
             data.WriteU8(0);
             data.WriteU8(0);
             data.WriteU8(0);
@@ -370,6 +394,7 @@ public sealed class StreamClientTests
             data.WriteU8(1);
             data.WriteU64(52);
             data.WriteU8(0);
+            data.WriteU8(0);
             data.WriteU8(1);
 
             using var writer = new BinaryBufferWriter();
@@ -440,6 +465,7 @@ public sealed class StreamClientTests
             data.WriteU64(42);
             data.WriteU8((byte)StreamFilteredReason.ServerFilter);
             data.WriteU64(42);
+            data.WriteU8(0);
             data.WriteU8(0);
             data.WriteU8(0);
             data.WriteU8(0);
@@ -540,7 +566,7 @@ public sealed class StreamClientTests
             Assert.Equal(MessageTypes.StreamLast, messageType);
 
             var request = new BinaryBufferReader(payload);
-            Assert.Equal("stream://*/app/*", request.ReadString());
+            Assert.Equal("stream://prod/app/events", request.ReadString());
 
             using var data = new BinaryBufferWriter();
             data.WriteString("stream://prod/app/events");
@@ -561,7 +587,7 @@ public sealed class StreamClientTests
         });
 
         // Act
-        var record = await stream.PeekAsync("stream://*/app/*");
+        var record = await stream.PeekAsync("stream://prod/app/events");
 
         // Assert
         Assert.NotNull(record);
@@ -587,7 +613,7 @@ public sealed class StreamClientTests
         });
 
         var error = await Assert.ThrowsAsync<StreamException>(
-            () => stream.PeekAsync("stream://*/app/*"));
+            () => stream.PeekAsync("stream://prod/app/events"));
 
         Assert.Equal("LAST_INVALID_RESPONSE", error.Code);
     }

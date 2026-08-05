@@ -59,17 +59,17 @@ registrations do not consume the quota. Lease subscriptions remain exact-only:
 `lease://realm/area/resource`.
 
 Queue reserve, Stream read, and Stream last responses must include the concrete
-matched route for every item. Stream reads and peeks accept the same
-whole-segment patterns as Stream subscriptions; the client never substitutes a
-request pattern for a response route.
+matched route for every item. Stream READ and SUBSCRIBE accept concrete resources,
+`realm/area/*`, `realm/*/*`, or `stream://**`; Stream LAST is concrete-route only.
+The client never substitutes a request pattern for a response route.
 
 Notifications expose the exact concrete route. Queue availability events also
 include ready, delayed, and inflight message counts. Active registrations are
 restored after reconnect and duplicate local registrations share one wire
 registration.
 
-Queue reserves and Stream reads accept the same whole-segment patterns as
-subscriptions. Every returned `IQueueReservedItem` and `StreamReadItem`
+Queue reserves accept general whole-segment patterns capable of matching three
+segments. Every returned `IQueueReservedItem` and `StreamReadItem`
 exposes the concrete matched route, including `StreamRecord.Route` for event
 records. Route-less reserve/read responses are not supported. If any item
 contains an invalid concrete route, the entire response fails closed; the

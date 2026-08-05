@@ -21,6 +21,8 @@ public sealed class BinaryBufferReader
     public bool IsEof => _offset >= _data.Length;
 
     public int RemainingBytes => _data.Length - _offset;
+    internal int Offset => _offset;
+    internal void SetOffset(int offset) => _offset = offset;
 
     public byte ReadU8()
     {
