@@ -87,7 +87,7 @@ Stream responses via `IAsyncEnumerable<T>` with `[EnumeratorCancellation]` suppo
 - Stream `.ReadAsync()` — record iteration
 - RPC `.CallStreamingAsync()` — response frame iteration
 - Queue `.ReserveAsync()` — item iteration (when paged)
-- Schedule `.ListAsync()` — pagination
+- Schedule `.ListPageAsync()` — pagination
 - Notice notifications (implicit via subscription callback)
 
 **Rationale:** .NET 10 bounds-check elimination and array devirtualization make iteration zero-copy; Channel backpressure prevents memory exhaustion; enables true streaming without intermediate buffering.

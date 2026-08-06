@@ -63,25 +63,25 @@ internal sealed class FrameCodecBenchmarks
     [Benchmark]
     public Frame DecodeSmallMessage()
     {
-        return FrameCodec.Decode(_encoded64!);
+        return FrameCodec.DecodeStrict(_encoded64!);
     }
 
     [Benchmark]
     public Frame DecodeMediumMessage()
     {
-        return FrameCodec.Decode(_encoded256!);
+        return FrameCodec.DecodeStrict(_encoded256!);
     }
 
     [Benchmark]
     public Frame DecodeLargeMessage()
     {
-        return FrameCodec.Decode(_encoded1024!);
+        return FrameCodec.DecodeStrict(_encoded1024!);
     }
 
     [Benchmark]
     public Frame DecodeXLargeMessage()
     {
-        return FrameCodec.Decode(_encodedLarge!);
+        return FrameCodec.DecodeStrict(_encodedLarge!);
     }
 
     [Benchmark]

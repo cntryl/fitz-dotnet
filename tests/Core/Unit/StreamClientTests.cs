@@ -101,7 +101,7 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task should_match_server_stream_selector_grammar_and_encode_global_resume_realm()
+    public async Task should_match_server_stream_selector_grammar_and_encode_canonical_cursor_options()
     {
         using var stream = new StreamClient((_, payload, _) =>
         {
@@ -111,12 +111,12 @@ public sealed class StreamClientTests
             request.ReadU64();
             Assert.Equal((byte)0, request.ReadU8());
             Assert.Equal((byte)0, request.ReadU8());
-            Assert.Equal((byte)1, request.ReadU8());
-            Assert.Equal("acme", request.ReadString());
+            Assert.Equal((byte)0, request.ReadU8());
+            Assert.Equal((byte)0, request.ReadU8());
             return Task.FromResult(new byte[] { 0 });
         });
 
-        await stream.ReadPageAsync("stream://**", 42, resumeRealm: "acme");
+        await stream.ReadPageAsync("stream://**", 42);
         var error = await Assert.ThrowsAsync<StreamException>(() => stream.ReadPageAsync("stream://*/app/*", 0));
 
         Assert.Equal("INVALID_ROUTE", error.Code);
@@ -215,7 +215,6 @@ public sealed class StreamClientTests
             data.WriteU8(0);
             data.WriteU64(222);
             data.WriteU64(5);
-            data.WriteU8(0);
             data.WriteU8(0);
             data.WriteU8(0);
             data.WriteU8(0);
@@ -394,7 +393,6 @@ public sealed class StreamClientTests
             data.WriteU8(1);
             data.WriteU64(52);
             data.WriteU8(0);
-            data.WriteU8(0);
             data.WriteU8(1);
 
             using var writer = new BinaryBufferWriter();
@@ -468,7 +466,6 @@ public sealed class StreamClientTests
             data.WriteU8(0);
             data.WriteU8(0);
             data.WriteU8(0);
-            data.WriteU8(0);
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -500,7 +497,6 @@ public sealed class StreamClientTests
             data.WriteU64(42);
             data.WriteU8((byte)StreamFilteredReason.ServerFilter);
             data.WriteU64(42);
-            data.WriteU8(0);
             data.WriteU8(0);
             data.WriteU8(0);
 

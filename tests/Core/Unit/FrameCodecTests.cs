@@ -12,7 +12,7 @@ public sealed class FrameCodecTests
 
         // Act
         var encoded = FrameCodec.Encode(100, payload);
-        var decoded = FrameCodec.Decode(encoded);
+        var decoded = FrameCodec.DecodeStrict(encoded);
 
         // Assert
         Assert.Equal((ushort)100, decoded.MessageType);
@@ -27,7 +27,7 @@ public sealed class FrameCodecTests
 
         // Act
         var encoded = FrameCodec.Encode(700, payload);
-        var decoded = FrameCodec.Decode(encoded);
+        var decoded = FrameCodec.DecodeStrict(encoded);
 
         // Assert
         Assert.Equal((ushort)700, decoded.MessageType);

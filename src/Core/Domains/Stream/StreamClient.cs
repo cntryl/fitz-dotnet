@@ -91,10 +91,10 @@ public sealed class StreamClient : IStreamClient, IDisposable
         ulong limit = 100,
         StreamFilterSet? filter = null,
         ulong? maxBytes = null,
-        ulong? cursorFingerprint = null, ulong? capturedWatermark = null, string? resumeRealm = null,
+        ulong? cursorFingerprint = null, ulong? capturedWatermark = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var page = await ReadPageAsync(route, startOffset, limit, filter, maxBytes, cursorFingerprint, capturedWatermark, resumeRealm, ct).ConfigureAwait(false);
+        var page = await ReadPageAsync(route, startOffset, limit, filter, maxBytes, cursorFingerprint, capturedWatermark, ct).ConfigureAwait(false);
         foreach (var item in page.Items)
         {
             if (item.Kind == StreamReadItemKind.Event && item.Record is not null)
@@ -110,7 +110,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         ulong limit = 100,
         StreamFilterSet? filter = null,
         ulong? maxBytes = null,
-        ulong? cursorFingerprint = null, ulong? capturedWatermark = null, string? resumeRealm = null,
+        ulong? cursorFingerprint = null, ulong? capturedWatermark = null,
         CancellationToken ct = default)
     {
         ValidateStreamSelector(route);
@@ -133,15 +133,8 @@ public sealed class StreamClient : IStreamClient, IDisposable
             writer.WriteBytes(filterBytes);
         }
 
-        if (resumeRealm is not null)
-        {
-            writer.WriteU8(1); writer.WriteString(resumeRealm);
-        }
-        else
-        {
-            writer.WriteU8((byte)(cursorFingerprint.HasValue ? 1 : 0)); if (cursorFingerprint.HasValue) writer.WriteU64(cursorFingerprint.Value);
-            writer.WriteU8((byte)(capturedWatermark.HasValue ? 1 : 0)); if (capturedWatermark.HasValue) writer.WriteU64(capturedWatermark.Value);
-        }
+        writer.WriteU8((byte)(cursorFingerprint.HasValue ? 1 : 0)); if (cursorFingerprint.HasValue) writer.WriteU64(cursorFingerprint.Value);
+        writer.WriteU8((byte)(capturedWatermark.HasValue ? 1 : 0)); if (capturedWatermark.HasValue) writer.WriteU64(capturedWatermark.Value);
 
         var response = await RequestWithRetryAsync(
             new RetryOperation("stream", "read", RetryClass.ReplayableRead),
@@ -149,7 +142,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
             writer.WrittenMemory,
             ct).ConfigureAwait(false);
         var data = StreamWireHelpers.ReadOptionalPayload(response, "READ");
-        return data.IsEmpty ? new StreamReadPage(Array.Empty<StreamReadItem>(), new StreamReadCursor(0, null, null, null, null, null, null, false)) : StreamWireHelpers.ReadReadPage(data, "READ", route);
+        return data.IsEmpty ? new StreamReadPage(Array.Empty<StreamReadItem>(), new StreamReadCursor(0, null, null, null, null, null, false)) : StreamWireHelpers.ReadReadPage(data, "READ", route);
     }
 
     public async Task<StreamRecord?> PeekAsync(string route, CancellationToken ct = default)

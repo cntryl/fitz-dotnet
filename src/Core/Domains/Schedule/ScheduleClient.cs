@@ -100,37 +100,65 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         }
     }
 
-    public async Task<ScheduleListResult> ListAsync(ulong offset = 0, ulong limit = 0, CancellationToken ct = default)
+    public async Task<ScheduleListPage> ListPageAsync(string? cursor = null, ulong? limit = null, CancellationToken ct = default)
     {
+        if (limit is < 1 or > 1000)
+        {
+            throw new ArgumentOutOfRangeException(nameof(limit), limit, "Schedule LIST_PAGE limit must be between 1 and 1000.");
+        }
+
         using var writer = new BinaryBufferWriter();
-        writer.WriteU8(offset > 0 ? (byte)1 : (byte)0);
-        if (offset > 0)
+        if (cursor is null)
         {
-            writer.WriteU64(offset);
+            writer.WriteU8(0);
+        }
+        else
+        {
+            writer.WriteU8(1);
+            writer.WriteString(cursor);
+        }
+        writer.WriteU8((byte)(limit.HasValue ? 1 : 0));
+        if (limit.HasValue)
+        {
+            writer.WriteU64(limit.Value);
         }
 
-        writer.WriteU8(limit > 0 ? (byte)1 : (byte)0);
-        if (limit > 0)
-        {
-            writer.WriteU64(limit);
-        }
-
-        var data = await AssertSuccessAsync(MessageTypes.ScheduleList, writer.WrittenMemory, "LIST", ct).ConfigureAwait(false);
+        var data = await AssertSuccessAsync(MessageTypes.ScheduleListPage, writer.WrittenMemory, "LIST_PAGE", ct).ConfigureAwait(false);
         if (data.Length == 0)
         {
-            return new ScheduleListResult([], 0);
+            return new ScheduleListPage(Array.Empty<ScheduleEntry>(), false, null);
         }
 
         var reader = new BinaryBufferReader(data);
-        var totalCount = reader.ReadU64();
+        if (reader.ReadU8() != 1)
+        {
+            throw new ScheduleException("LIST_PAGE response has unsupported version", "LIST_PAGE_INVALID_RESPONSE");
+        }
+        var hasMore = reader.ReadU8() switch
+        {
+            0 => false,
+            1 => true,
+            var flag => throw new ScheduleException($"LIST_PAGE response has invalid has_more flag {flag}", "LIST_PAGE_INVALID_RESPONSE"),
+        };
+        var continuationFlag = reader.ReadU8();
+        string? continuation = continuationFlag switch
+        {
+            0 => null,
+            1 => reader.ReadString(),
+            var flag => throw new ScheduleException($"LIST_PAGE response has invalid continuation flag {flag}", "LIST_PAGE_INVALID_RESPONSE"),
+        };
         var entries = new List<ScheduleEntry>();
 
-        while (!reader.IsEof)
+        while (true)
         {
             var hasEntry = reader.ReadU8();
             if (hasEntry == 0)
             {
                 break;
+            }
+            if (hasEntry != 1)
+            {
+                throw new ScheduleException($"LIST_PAGE response has invalid entry sentinel {hasEntry}", "LIST_PAGE_INVALID_RESPONSE");
             }
 
             var route = reader.ReadString();
@@ -148,10 +176,32 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
 
         if (!reader.IsEof)
         {
-            throw new ScheduleException("LIST response has trailing bytes", "LIST_INVALID_RESPONSE");
+            throw new ScheduleException("LIST_PAGE response has trailing bytes", "LIST_PAGE_INVALID_RESPONSE");
         }
 
-        return new ScheduleListResult(entries.ToArray(), totalCount);
+        return new ScheduleListPage(entries.ToArray(), hasMore, continuation);
+    }
+
+    public async Task<IReadOnlyList<ScheduleEntry>> ListBySelectorAsync(string selector, CancellationToken ct = default)
+    {
+        if (!RouteValidation.IsRegistrationPattern(selector, "schedule", 4))
+        {
+            throw new ScheduleException($"pattern '{selector}' must use whole-segment wildcards and match a four-segment schedule route", "INVALID_ROUTE");
+        }
+
+        var entries = new List<ScheduleEntry>();
+        string? cursor = null;
+        while (true)
+        {
+            var page = await ListPageAsync(cursor, null, ct).ConfigureAwait(false);
+            entries.AddRange(page.Entries.Where(entry => RouteValidation.MatchesPattern(entry.Route, selector)));
+            if (!page.HasMore)
+            {
+                return entries;
+            }
+
+            cursor = page.Continuation ?? throw new ScheduleException("LIST_PAGE response missing continuation", "LIST_PAGE_INVALID_RESPONSE");
+        }
     }
 
     public async Task<ScheduleSubscription> SubscribeAsync(

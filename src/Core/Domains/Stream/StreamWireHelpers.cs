@@ -189,12 +189,19 @@ internal static class StreamWireHelpers
         return new StreamRecord(route, offset, areaOffset, realmOffset, body, metadata, timestamp);
     }
 
-    internal static StreamReadPage ReadReadPage(ReadOnlyMemory<byte> payload, string operation, string? selector = null)
+    internal static StreamReadPage ReadReadPage(ReadOnlyMemory<byte> payload, string operation, string selector)
     {
+        if (!RouteValidation.IsStreamSelector(selector))
+        {
+            throw new StreamException(
+                $"{operation} response requires a canonical stream selector",
+                $"{operation}_INVALID_RESPONSE");
+        }
+
         var reader = new BinaryBufferReader(payload);
         if (reader.IsEof)
         {
-            return new StreamReadPage(Array.Empty<StreamReadItem>(), new StreamReadCursor(0, null, null, null, null, null, null, false));
+            return new StreamReadPage(Array.Empty<StreamReadItem>(), new StreamReadCursor(0, null, null, null, null, null, false));
         }
 
         if (reader.RemainingBytes < 4)
@@ -224,38 +231,22 @@ internal static class StreamWireHelpers
             throw new StreamException($"{operation} response missing read cursor", $"{operation}_INVALID_RESPONSE");
         }
 
-        var cursorStart = reader.Offset;
-        var global = selector is not null && (selector == "stream://**" || selector.StartsWith("stream://*/", StringComparison.Ordinal));
-        StreamReadCursor ParseCursor(bool withCurrentRealm)
-        {
-            reader.SetOffset(cursorStart);
-            var parsed = new StreamReadCursor(
-                reader.ReadU64(),
-                ReadOptionalU64(reader, operation, "last area offset"),
-                ReadOptionalU64(reader, operation, "last realm offset"),
-                null,
-                null,
-                null,
-                null,
-                false);
-            var currentRealm = withCurrentRealm ? ReadOptionalString(reader, operation, "current realm") : null;
-            var lastGlobalOffset = global ? ReadOptionalU64(reader, operation, "last global offset") : null;
-            parsed = parsed with { CurrentRealm = currentRealm, LastGlobalOffset = lastGlobalOffset, HasMore = ReadBoolFlag(reader, operation, "has more flag") };
-            return global
-                ? parsed with { CursorFingerprint = ReadOptionalU64(reader, operation, "cursor fingerprint"), CapturedWatermark = ReadOptionalU64(reader, operation, "captured watermark") }
-                : parsed;
-        }
-
-        StreamReadCursor cursor;
-        try
-        {
-            cursor = ParseCursor(true);
-            if (!reader.IsEof) throw new StreamException($"{operation} response had trailing data", $"{operation}_INVALID_RESPONSE");
-        }
-        catch (StreamException)
-        {
-            cursor = ParseCursor(false);
-        }
+        var global = selector == "stream://**";
+        var lastResourceOffset = reader.ReadU64();
+        var lastAreaOffset = ReadOptionalU64(reader, operation, "last area offset");
+        var lastRealmOffset = ReadOptionalU64(reader, operation, "last realm offset");
+        var lastGlobalOffset = global ? ReadOptionalU64(reader, operation, "last global offset") : null;
+        var hasMore = ReadBoolFlag(reader, operation, "has more flag");
+        var cursorFingerprint = global ? ReadOptionalU64(reader, operation, "cursor fingerprint") : null;
+        var capturedWatermark = global ? ReadOptionalU64(reader, operation, "captured watermark") : null;
+        var cursor = new StreamReadCursor(
+            lastResourceOffset,
+            lastAreaOffset,
+            lastRealmOffset,
+            lastGlobalOffset,
+            cursorFingerprint,
+            capturedWatermark,
+            hasMore);
 
         if (!reader.IsEof)
         {
@@ -263,20 +254,6 @@ internal static class StreamWireHelpers
         }
 
         return new StreamReadPage(items, cursor);
-    }
-
-    private static string? ReadOptionalString(BinaryBufferReader reader, string operation, string field)
-    {
-        if (reader.IsEof)
-        {
-            throw new StreamException($"{operation} response missing {field}", $"{operation}_INVALID_RESPONSE");
-        }
-        return reader.ReadU8() switch
-        {
-            0 => null,
-            1 => reader.ReadString(),
-            var flag => throw new StreamException($"{operation} response had invalid {field} flag {flag}", $"{operation}_INVALID_RESPONSE"),
-        };
     }
 
     internal static StreamReadItem ReadReadItem(BinaryBufferReader reader, string operation, string route)

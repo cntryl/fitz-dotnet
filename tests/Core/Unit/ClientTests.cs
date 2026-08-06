@@ -106,7 +106,7 @@ public sealed class ClientTests
         Assert.Equal(ConnectionState.Authenticated, client.State);
         Assert.True(client.IsConnected);
         Assert.Single(transport.SentFrames);
-        var frame = FrameCodec.Decode(transport.SentFrames[0]);
+        var frame = FrameCodec.DecodeStrict(transport.SentFrames[0]);
         Assert.Equal(MessageTypes.Connect, frame.MessageType);
         Assert.Equal("token-123", System.Text.Encoding.UTF8.GetString(frame.Payload.Span));
     }

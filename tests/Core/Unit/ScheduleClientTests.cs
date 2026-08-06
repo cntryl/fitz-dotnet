@@ -173,18 +173,20 @@ public sealed class ScheduleClientTests
     }
 
     [Fact]
-    public async Task should_return_entries_and_total_count_given_list_response_when_listing_schedules()
+    public async Task should_return_entries_and_continuation_given_list_page_response()
     {
         // Arrange
         byte[]? seenPayload = null;
         using var schedule = new ScheduleClient((messageType, payload, _) =>
         {
-            Assert.Equal(MessageTypes.ScheduleList, messageType);
+            Assert.Equal(MessageTypes.ScheduleListPage, messageType);
             seenPayload = payload;
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            writer.WriteU64(2);
+            writer.WriteU8(1);
+            writer.WriteU8(0);
+            writer.WriteU8(0);
             writer.WriteU8(1);
             writer.WriteString("schedule://prod/app/jobs/run");
             writer.WriteString("*/5 * * * *");
@@ -196,19 +198,19 @@ public sealed class ScheduleClientTests
         });
 
         // Act
-        var (entries, totalCount) = await schedule.ListAsync(offset: 10, limit: 25);
+        var page = await schedule.ListPageAsync(limit: 25);
 
         // Assert
-        Assert.Equal((ulong)2, totalCount);
-        Assert.Single(entries);
-        Assert.Equal("schedule://prod/app/jobs/run", entries[0].Route);
-        Assert.Equal("*/5 * * * *", entries[0].Cron);
-        Assert.Equal(ScheduleDeliveryMode.Single, entries[0].DeliveryMode);
-        Assert.Equal("job", System.Text.Encoding.UTF8.GetString(entries[0].Payload));
+        Assert.False(page.HasMore);
+        Assert.Null(page.Continuation);
+        Assert.Single(page.Entries);
+        Assert.Equal("schedule://prod/app/jobs/run", page.Entries[0].Route);
+        Assert.Equal("*/5 * * * *", page.Entries[0].Cron);
+        Assert.Equal(ScheduleDeliveryMode.Single, page.Entries[0].DeliveryMode);
+        Assert.Equal("job", System.Text.Encoding.UTF8.GetString(page.Entries[0].Payload));
 
         var reader = new BinaryBufferReader(seenPayload!);
-        Assert.Equal((byte)1, reader.ReadU8());
-        Assert.Equal((ulong)10, reader.ReadU64());
+        Assert.Equal((byte)0, reader.ReadU8());
         Assert.Equal((byte)1, reader.ReadU8());
         Assert.Equal((ulong)25, reader.ReadU64());
     }

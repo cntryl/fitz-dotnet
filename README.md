@@ -90,9 +90,8 @@ a bounded buffer; a slow consumer terminates with
 This preview intentionally breaks the earlier callback subscription surface.
 Replace callback arguments with `await foreach` over the returned handle. Public
 one-shot operations now return `Task`/`Task<T>`; `ValueTask` remains only for
-disposal and callback/provider contracts. Schedule listing now returns
-`ScheduleListResult` with `Entries` and `TotalCount` properties instead of a
-tuple.
+disposal and callback/provider contracts. Schedule listing now uses
+`ListPageAsync` with a continuation token.
 
 ## Local Verification
 

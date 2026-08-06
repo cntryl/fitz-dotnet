@@ -61,11 +61,6 @@ public static class FrameCodec
 
     public static Frame DecodeStrict(ReadOnlyMemory<byte> frameBytes)
     {
-        return Decode(frameBytes, strict: true);
-    }
-
-    public static Frame Decode(ReadOnlyMemory<byte> frameBytes, bool strict = false)
-    {
         var span = frameBytes.Span;
         ReadHeader(span, out var messageType, out var payloadLength, out var headerLength);
 
@@ -75,7 +70,7 @@ public static class FrameCodec
             throw new InvalidOperationException("Frame payload is incomplete.");
         }
 
-        if (strict && span.Length != expectedLength)
+        if (span.Length != expectedLength)
         {
             throw new InvalidOperationException("Frame has trailing bytes.");
         }
