@@ -46,6 +46,9 @@ public sealed record KvGetResult(bool Found, ReadOnlyMemory<byte>? Value = null)
 /// <param name="Value">Value bytes.</param>
 public sealed record KvPair(ReadOnlyMemory<byte> Key, ReadOnlyMemory<byte> Value);
 
+/// <summary>A page returned by KV SCAN.</summary>
+public sealed record KvScanResult(IReadOnlyList<KvPair> Pairs, bool HasMore);
+
 /// <summary>
 /// Query parameters for KV scan operations.
 /// </summary>

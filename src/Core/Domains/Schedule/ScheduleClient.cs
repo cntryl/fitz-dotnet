@@ -100,53 +100,24 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         }
     }
 
-    public async Task<ScheduleListPage> ListPageAsync(string? cursor = null, ulong? limit = null, CancellationToken ct = default)
+    public async Task<ScheduleListPage> ListAsync(ulong? offset = null, ulong? limit = null, CancellationToken ct = default)
     {
-        if (limit is < 1 or > 1000)
-        {
-            throw new ArgumentOutOfRangeException(nameof(limit), limit, "Schedule LIST_PAGE limit must be between 1 and 1000.");
-        }
-
         using var writer = new BinaryBufferWriter();
-        if (cursor is null)
-        {
-            writer.WriteU8(0);
-        }
-        else
-        {
-            writer.WriteU8(1);
-            writer.WriteString(cursor);
-        }
+        writer.WriteU8((byte)(offset.HasValue ? 1 : 0));
+        if (offset.HasValue) writer.WriteU64(offset.Value);
         writer.WriteU8((byte)(limit.HasValue ? 1 : 0));
-        if (limit.HasValue)
-        {
-            writer.WriteU64(limit.Value);
-        }
+        if (limit.HasValue) writer.WriteU64(limit.Value);
 
-        var data = await AssertSuccessAsync(MessageTypes.ScheduleListPage, writer.WrittenMemory, "LIST_PAGE", ct).ConfigureAwait(false);
-        if (data.Length == 0)
+        var response = await _request(MessageTypes.ScheduleListPage, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var reader = new BinaryBufferReader(response);
+        var status = reader.ReadU8();
+        if (status != 0)
         {
-            return new ScheduleListPage(Array.Empty<ScheduleEntry>(), false, null);
+            var domainCode = reader.ReadU32();
+            var message = reader.ReadString();
+            throw new ScheduleException($"LIST failed: {message}", "LIST_FAILED", status, domainCode);
         }
-
-        var reader = new BinaryBufferReader(data);
-        if (reader.ReadU8() != 1)
-        {
-            throw new ScheduleException("LIST_PAGE response has unsupported version", "LIST_PAGE_INVALID_RESPONSE");
-        }
-        var hasMore = reader.ReadU8() switch
-        {
-            0 => false,
-            1 => true,
-            var flag => throw new ScheduleException($"LIST_PAGE response has invalid has_more flag {flag}", "LIST_PAGE_INVALID_RESPONSE"),
-        };
-        var continuationFlag = reader.ReadU8();
-        string? continuation = continuationFlag switch
-        {
-            0 => null,
-            1 => reader.ReadString(),
-            var flag => throw new ScheduleException($"LIST_PAGE response has invalid continuation flag {flag}", "LIST_PAGE_INVALID_RESPONSE"),
-        };
+        var totalCount = reader.ReadU64();
         var entries = new List<ScheduleEntry>();
 
         while (true)
@@ -158,7 +129,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
             }
             if (hasEntry != 1)
             {
-                throw new ScheduleException($"LIST_PAGE response has invalid entry sentinel {hasEntry}", "LIST_PAGE_INVALID_RESPONSE");
+                throw new ScheduleException($"LIST response has invalid entry sentinel {hasEntry}", "LIST_INVALID_RESPONSE");
             }
 
             var route = reader.ReadString();
@@ -176,10 +147,10 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
 
         if (!reader.IsEof)
         {
-            throw new ScheduleException("LIST_PAGE response has trailing bytes", "LIST_PAGE_INVALID_RESPONSE");
+            throw new ScheduleException("LIST response has trailing bytes", "LIST_INVALID_RESPONSE");
         }
 
-        return new ScheduleListPage(entries.ToArray(), hasMore, continuation);
+        return new ScheduleListPage(entries.ToArray(), totalCount);
     }
 
     public async Task<IReadOnlyList<ScheduleEntry>> ListBySelectorAsync(string selector, CancellationToken ct = default)
@@ -190,17 +161,18 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         }
 
         var entries = new List<ScheduleEntry>();
-        string? cursor = null;
+        ulong offset = 0;
+        const ulong limit = 1000;
         while (true)
         {
-            var page = await ListPageAsync(cursor, null, ct).ConfigureAwait(false);
+            var page = await ListAsync(offset, limit, ct).ConfigureAwait(false);
             entries.AddRange(page.Entries.Where(entry => RouteValidation.MatchesPattern(entry.Route, selector)));
-            if (!page.HasMore)
+            offset += (ulong)page.Entries.Count;
+            if (offset >= page.TotalCount)
             {
                 return entries;
             }
-
-            cursor = page.Continuation ?? throw new ScheduleException("LIST_PAGE response missing continuation", "LIST_PAGE_INVALID_RESPONSE");
+            if (page.Entries.Count == 0) throw new ScheduleException("LIST returned an empty page before total_count", "LIST_INVALID_RESPONSE");
         }
     }
 
@@ -336,9 +308,8 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var domainCode = reader.ReadU32();
             var message = reader.ReadString();
-            throw new ScheduleException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status, domainCode);
+            throw new ScheduleException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status);
         }
 
         if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
@@ -361,7 +332,10 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         writer.WriteString(route);
 
         var data = await AssertSuccessAsync(MessageTypes.ScheduleUnsubscribe, writer.WrittenMemory, "UNSUBSCRIBE", ct).ConfigureAwait(false);
-        _ = data;
+        if (!data.IsEmpty)
+        {
+            throw new ScheduleException("UNSUBSCRIBE response has trailing bytes", "UNSUBSCRIBE_INVALID_RESPONSE");
+        }
     }
 
     private void EnsureNotificationHandlerInitialized()
@@ -550,13 +524,12 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         {
             if (status == 1)
             {
-                var domainCode = reader.ReadU32();
                 var message = reader.ReadString();
                 if (!reader.IsEof)
                 {
-                    throw new ScheduleException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE", status, domainCode);
+                    throw new ScheduleException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE", status);
                 }
-                throw new ScheduleException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+                throw new ScheduleException($"{operation} failed: {message}", $"{operation}_FAILED", status);
             }
             throw new ScheduleException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
         }

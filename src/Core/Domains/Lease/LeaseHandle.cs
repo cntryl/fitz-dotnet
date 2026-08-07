@@ -35,15 +35,7 @@ public sealed class LeaseHandle : ILease
         try
         {
             ThrowIfClosed();
-            try
-            {
-                await SendTokenTtlAsync(MessageTypes.LeaseRenew, ttlSecs, "EXTEND", ct).ConfigureAwait(false);
-            }
-            catch
-            {
-                MarkClosed();
-                throw;
-            }
+            await SendTokenTtlAsync(MessageTypes.LeaseRenew, ttlSecs, "EXTEND", ct).ConfigureAwait(false);
         }
         finally
         {

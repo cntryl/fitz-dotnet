@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Threading.Channels;
+using System.Collections.Concurrent;
 using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Core;
@@ -19,10 +20,14 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     private readonly Func<Action, IDisposable>? _registerOnDisconnect;
     private readonly Func<Func<CancellationToken, ValueTask>, bool>? _dispatchAsyncHandler;
     private readonly SemaphoreSlim _subscriptionGate = new(1, 1);
+    private readonly SemaphoreSlim _acquisitionGate = new(1, 1);
     private readonly object _gate = new();
     private readonly Dictionary<string, LeaseSubscriptionState> _subscriptionsByRoute = new(StringComparer.Ordinal);
     private readonly Dictionary<ulong, string> _routesBySubscriptionId = new();
     private IDisposable? _notificationRegistration;
+    private IDisposable? _acquireNotificationRegistration;
+    private readonly ConcurrentQueue<TaskCompletionSource<ReadOnlyMemory<byte>>> _queuedAcquisitions = new();
+    private bool _acquireNotificationHandlerInitialized;
     private bool _notificationHandlerInitialized;
     private long _nextHandleId;
     private readonly IDisposable? _reconnectRegistration;
@@ -67,56 +72,135 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
 
     public async Task<ILease> AcquireAsync(string route, ulong ttlSecs, uint waitSeconds = 0, CancellationToken ct = default)
     {
+        await _acquisitionGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await AcquireCoreAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            _acquisitionGate.Release();
+        }
+    }
+
+    private async Task<ILease> AcquireCoreAsync(string route, ulong ttlSecs, uint waitSeconds, CancellationToken ct)
+    {
         if (!RouteValidation.IsFixedRoute(route, "lease", 3))
         {
             throw new LeaseException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
         }
 
+        TaskCompletionSource<ReadOnlyMemory<byte>>? deferred = null;
+        if (waitSeconds > 0 && _registerNotificationHandler is not null)
+        {
+            EnsureAcquireNotificationHandlerInitialized();
+            deferred = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _queuedAcquisitions.Enqueue(deferred);
+        }
+        using var cancellationRegistration = ct.Register(() => deferred?.TrySetCanceled(ct));
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteString(string.Empty);
         writer.WriteU64(ttlSecs);
         writer.WriteU32(waitSeconds);
-        var response = await _request(MessageTypes.LeaseAcquire, writer.WrittenMemory, ct).ConfigureAwait(false);
+        ReadOnlyMemory<byte> response;
+        try
+        {
+            response = await _request(MessageTypes.LeaseAcquire, writer.WrittenMemory, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            deferred?.TrySetCanceled(CancellationToken.None);
+            RemoveQueuedAcquisition(deferred);
+            throw;
+        }
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
         {
+            RemoveQueuedAcquisition(deferred);
             throw new LeaseException($"ACQUIRE failed with status {status}", "ACQUIRE_FAILED", status);
-        }
-
-        if (reader.RemainingBytes == 8)
-        {
-            var token = reader.ReadU64();
-            if (!reader.IsEof)
-            {
-                throw new LeaseException("ACQUIRE response has trailing bytes", "ACQUIRE_INVALID_RESPONSE");
-            }
-
-            return new LeaseHandle(_request, route, token, _registerOnDisconnect);
         }
 
         if (reader.RemainingBytes < 9)
         {
+            RemoveQueuedAcquisition(deferred);
             throw new LeaseException("ACQUIRE response missing fencing token", "MISSING_TOKEN");
         }
 
         var responseType = reader.ReadU8();
-        if (responseType >= 2)
-        {
-            throw new LeaseException($"ACQUIRE returned non-acquired response type {responseType}", "ACQUIRE_NOT_ACQUIRED");
-        }
-
         var fencedToken = reader.ReadU64();
         if (!reader.IsEof)
         {
+            RemoveQueuedAcquisition(deferred);
             throw new LeaseException("ACQUIRE response has trailing bytes", "ACQUIRE_INVALID_RESPONSE");
+        }
+
+        if (responseType is 2 or 3)
+        {
+            if (deferred is null)
+                throw new LeaseException("ACQUIRE queued without a wait request", "ACQUIRE_INVALID_RESPONSE");
+            try
+            {
+                response = await deferred.Task.ConfigureAwait(false);
+            }
+            catch
+            {
+                RemoveQueuedAcquisition(deferred);
+                throw;
+            }
+            reader = new BinaryBufferReader(response);
+            status = reader.ReadU8();
+            if (status != 0)
+            {
+                var message = reader.ReadString();
+                throw new LeaseException($"ACQUIRE failed: {message}", "ACQUIRE_FAILED", status);
+            }
+            responseType = reader.ReadU8();
+            fencedToken = reader.ReadU64();
+            if (responseType is not 0 and not 1 || !reader.IsEof)
+                throw new LeaseException("ACQUIRE deferred response is invalid", "ACQUIRE_INVALID_RESPONSE");
+        }
+        else
+        {
+            deferred?.TrySetCanceled(CancellationToken.None);
+            RemoveQueuedAcquisition(deferred);
         }
 
         return new LeaseHandle(_request, route, fencedToken, _registerOnDisconnect);
     }
 
+    private void RemoveQueuedAcquisition(TaskCompletionSource<ReadOnlyMemory<byte>>? target)
+    {
+        if (target is null) return;
+        var retained = new List<TaskCompletionSource<ReadOnlyMemory<byte>>>();
+        while (_queuedAcquisitions.TryDequeue(out var candidate))
+        {
+            if (!ReferenceEquals(candidate, target)) retained.Add(candidate);
+        }
+        foreach (var candidate in retained) _queuedAcquisitions.Enqueue(candidate);
+    }
+
+    private void EnsureAcquireNotificationHandlerInitialized()
+    {
+        if (_registerNotificationHandler is null)
+            throw new InvalidOperationException("Notification handlers not configured for queued lease acquisition");
+        lock (_gate)
+        {
+            if (_acquireNotificationHandlerInitialized) return;
+            _acquireNotificationHandlerInitialized = true;
+            _acquireNotificationRegistration = _registerNotificationHandler(MessageTypes.LeaseAcquire, payload =>
+            {
+                while (_queuedAcquisitions.TryDequeue(out var waiter))
+                {
+                    if (waiter.TrySetResult(payload)) break;
+                }
+            });
+        }
+    }
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Lease execution must aggregate arbitrary user callback, renewal, and cleanup failures.")]
+    [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "The await-using declaration must retain the strongly typed lease handle for renewal operations.")]
     public async Task<T> WithLeaseAsync<T>(
         string route,
         ulong ttlSecs,
@@ -132,7 +216,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         }
 
         var waitSeconds = options?.WaitForAvailability == true ? options.WaitSeconds : 0;
-        var lease = await AcquireAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
+        await using var lease = await AcquireAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
 
         using var lifecycle = CancellationTokenSource.CreateLinkedTokenSource(ct);
         Task<T> callbackTask;
@@ -252,42 +336,30 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         var hasHolder = reader.ReadU8();
         if (hasHolder == 0)
         {
-            if (!reader.IsEof)
-            {
-                if (reader.RemainingBytes < 4)
-                {
-                    throw new LeaseException("QUERY response has trailing bytes", "QUERY_INVALID_RESPONSE");
-                }
-
-                _ = reader.ReadU32();
-            }
+            if (reader.RemainingBytes != 4)
+                throw new LeaseException("QUERY response missing pending_waiters", "QUERY_INVALID_RESPONSE");
+            var pendingWaiters = reader.ReadU32();
 
             if (!reader.IsEof)
             {
                 throw new LeaseException("QUERY response has trailing bytes", "QUERY_INVALID_RESPONSE");
             }
 
-            return new LeaseInfo(false);
+            return new LeaseInfo(false, PendingWaiters: pendingWaiters);
         }
 
         var owner = reader.ReadString();
         var ttlRemaining = reader.ReadU64();
-        if (!reader.IsEof)
-        {
-            if (reader.RemainingBytes < 4)
-            {
-                throw new LeaseException("QUERY response has trailing bytes", "QUERY_INVALID_RESPONSE");
-            }
-
-            _ = reader.ReadU32();
-        }
+        if (reader.RemainingBytes != 4)
+            throw new LeaseException("QUERY response missing pending_waiters", "QUERY_INVALID_RESPONSE");
+        var heldPendingWaiters = reader.ReadU32();
 
         if (!reader.IsEof)
         {
             throw new LeaseException("QUERY response has trailing bytes", "QUERY_INVALID_RESPONSE");
         }
 
-        return new LeaseInfo(true, owner, ttlRemaining);
+        return new LeaseInfo(true, owner, ttlRemaining, heldPendingWaiters);
     }
 
     public async Task<LeaseSubscription> SubscribeAsync(
@@ -388,9 +460,8 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var domainCode = reader.ReadU32();
             var message = reader.ReadString();
-            throw new LeaseException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status, domainCode);
+            throw new LeaseException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status);
         }
 
         if (reader.RemainingBytes != 8)
@@ -417,9 +488,8 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var domainCode = reader.ReadU32();
             var message = reader.ReadString();
-            throw new LeaseException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status, domainCode);
+            throw new LeaseException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status);
         }
     }
 
@@ -568,6 +638,8 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     public void Dispose()
     {
         _notificationRegistration?.Dispose();
+        _acquireNotificationRegistration?.Dispose();
+        while (_queuedAcquisitions.TryDequeue(out var waiter)) waiter.TrySetCanceled();
         _reconnectRegistration?.Dispose();
         lock (_gate)
         {
@@ -584,6 +656,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         }
 
         _subscriptionGate.Dispose();
+        _acquisitionGate.Dispose();
     }
 
     private sealed class LeaseSubscriptionState

@@ -1,11 +1,8 @@
 namespace Cntryl.Fitz.Abstractions.Domains.Queue;
 
 /// <summary>
-/// Queue availability notification (sent when messages become available).
-/// Received via Subscribe on queue patterns.
+/// Queue notification received for a subscribed route pattern. Payload contents are broker-defined.
 /// </summary>
 public sealed record QueueAvailabilityEvent(
     string Route,
-    ulong ReadyMessages,
-    ulong DelayedMessages,
-    ulong InflightMessages);
+    ReadOnlyMemory<byte> Payload);

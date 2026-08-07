@@ -15,7 +15,7 @@ public sealed record ClientConfig(
     WebSocketOptions? WebSocket = null,
     FitzObservabilityOptions? Observability = null,
     AsyncHandlerOptions? AsyncHandlers = null,
-    int MaxFrameSize = 64 * 1024,
+    int MaxFrameSize = 65_540,
     int MaxInFlightRequests = 256,
     int MaxRequestQueueSize = 1024,
     Func<ClientConfig, ITransport>? TransportFactory = null

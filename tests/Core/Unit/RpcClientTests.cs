@@ -9,6 +9,40 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class RpcClientTests
 {
     [Fact]
+    public async Task should_register_request_handler_once_given_concurrent_worker_registration()
+    {
+        var bothRequestsStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseResponses = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestCount = 0;
+        var handlerRegistrations = 0;
+        var rpc = new RpcClient(
+            async (_, _, _) =>
+            {
+                if (Interlocked.Increment(ref requestCount) == 2)
+                {
+                    bothRequestsStarted.TrySetResult();
+                }
+                await releaseResponses.Task;
+                return new byte[] { 0 };
+            },
+            registerNotificationHandler: (messageType, _) =>
+            {
+                Assert.Equal(MessageTypes.RpcRequest, messageType);
+                Interlocked.Increment(ref handlerRegistrations);
+                return new TestRegistration();
+            });
+
+        var first = rpc.RegisterWorkerAsync("rpc://prod/app/one", (_, _, _) => ValueTask.CompletedTask);
+        var second = rpc.RegisterWorkerAsync("rpc://prod/app/two", (_, _, _) => ValueTask.CompletedTask);
+        await bothRequestsStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        releaseResponses.TrySetResult();
+
+        await using var firstRegistration = await first;
+        await using var secondRegistration = await second;
+        Assert.Equal(1, handlerRegistrations);
+    }
+
+    [Fact]
     public async Task should_send_rpc_request_and_yield_response_frames_given_valid_stream_when_invoking_rpc()
     {
         // Arrange

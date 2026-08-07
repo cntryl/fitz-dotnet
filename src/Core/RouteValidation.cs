@@ -44,9 +44,8 @@ internal static class RouteValidation
         {
             return false;
         }
-        return !segments[0].Contains('*', StringComparison.Ordinal) &&
-            ((segments[1] != "*" && !segments[1].Contains('*', StringComparison.Ordinal) && (segments[2] == "*" || !segments[2].Contains('*', StringComparison.Ordinal))) ||
-             (segments[1] == "*" && segments[2] == "*"));
+        return segments.All(static segment =>
+            segment == "*" || !segment.Contains('*', StringComparison.Ordinal));
     }
 
     internal static bool TryValidateRegistrationPattern(

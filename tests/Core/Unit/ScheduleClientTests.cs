@@ -8,13 +8,12 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class ScheduleClientTests
 {
     [Fact]
-    public async Task should_preserve_domain_code_given_schedule_error_response()
+    public async Task should_preserve_message_given_schedule_error_response()
     {
         using var schedule = new ScheduleClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
-            writer.WriteU32(7008);
             writer.WriteString("invalid delivery mode");
             return Task.FromResult(writer.Build());
         });
@@ -22,7 +21,8 @@ public sealed class ScheduleClientTests
         var error = await Assert.ThrowsAsync<ScheduleException>(async () =>
             await schedule.CreateAsync("schedule://prod/app/jobs/run", "*/5 * * * *", ScheduleDeliveryMode.Single, ReadOnlyMemory<byte>.Empty));
 
-        Assert.Equal((uint)7008, error.DomainCode);
+        Assert.Null(error.DomainCode);
+        Assert.Contains("invalid delivery mode", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -32,7 +32,6 @@ public sealed class ScheduleClientTests
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
-            writer.WriteU32(7003);
             writer.WriteString("unauthorized");
             return Task.FromResult(writer.Build());
         });
@@ -45,7 +44,7 @@ public sealed class ScheduleClientTests
                 ReadOnlyMemory<byte>.Empty));
 
         Assert.Equal("CREATE failed: unauthorized", error.Message);
-        Assert.Equal((uint)7003, error.DomainCode);
+        Assert.Null(error.DomainCode);
     }
 
     [Fact]
@@ -124,6 +123,10 @@ public sealed class ScheduleClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+                if (messageType == MessageTypes.ScheduleUnsubscribe)
+                {
+                    return Task.FromResult(writer.Build());
+                }
                 writer.WriteU8(1);
                 writer.WriteU64(55);
                 return Task.FromResult(writer.Build());
@@ -173,7 +176,7 @@ public sealed class ScheduleClientTests
     }
 
     [Fact]
-    public async Task should_return_entries_and_continuation_given_list_page_response()
+    public async Task should_return_entries_and_total_count_given_canonical_list_response()
     {
         // Arrange
         byte[]? seenPayload = null;
@@ -184,9 +187,7 @@ public sealed class ScheduleClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            writer.WriteU8(1);
-            writer.WriteU8(0);
-            writer.WriteU8(0);
+            writer.WriteU64(12);
             writer.WriteU8(1);
             writer.WriteString("schedule://prod/app/jobs/run");
             writer.WriteString("*/5 * * * *");
@@ -198,11 +199,10 @@ public sealed class ScheduleClientTests
         });
 
         // Act
-        var page = await schedule.ListPageAsync(limit: 25);
+        var page = await schedule.ListAsync(offset: 0, limit: 25);
 
         // Assert
-        Assert.False(page.HasMore);
-        Assert.Null(page.Continuation);
+        Assert.Equal((ulong)12, page.TotalCount);
         Assert.Single(page.Entries);
         Assert.Equal("schedule://prod/app/jobs/run", page.Entries[0].Route);
         Assert.Equal("*/5 * * * *", page.Entries[0].Cron);
@@ -210,7 +210,8 @@ public sealed class ScheduleClientTests
         Assert.Equal("job", System.Text.Encoding.UTF8.GetString(page.Entries[0].Payload));
 
         var reader = new BinaryBufferReader(seenPayload!);
-        Assert.Equal((byte)0, reader.ReadU8());
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal((ulong)0, reader.ReadU64());
         Assert.Equal((byte)1, reader.ReadU8());
         Assert.Equal((ulong)25, reader.ReadU64());
     }

@@ -84,7 +84,14 @@ public sealed class QueueClient : IQueueClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new QueueException($"ENQUEUE failed with status {status}", "ENQUEUE_FAILED", status);
+            var errorCode = reader.ReadU32();
+            var errorMessage = reader.ReadString();
+            if (!reader.IsEof)
+            {
+                throw new QueueException("ENQUEUE error response has trailing bytes", "ENQUEUE_INVALID_RESPONSE");
+            }
+
+            throw new QueueException(errorMessage, "ENQUEUE_FAILED", status, errorCode);
         }
 
         var result = reader.IsEof ? 0UL : reader.ReadU64();
@@ -103,6 +110,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         int? waitSeconds = null,
         CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(route);
         if (!RouteValidation.IsRegistrationPattern(route, "queue", 3))
         {
             throw new QueueException($"route '{route}' must be a concrete queue route or a whole-segment wildcard pattern", "INVALID_ROUTE");
@@ -134,6 +142,10 @@ public sealed class QueueClient : IQueueClient, IDisposable
             writer.WriteU8(1);
             writer.WriteU64((ulong)waitSeconds.Value);
         }
+        else
+        {
+            writer.WriteU8(0);
+        }
 
         var response = await _request(MessageTypes.QueueReserve, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(response);
@@ -147,9 +159,10 @@ public sealed class QueueClient : IQueueClient, IDisposable
 
         var count = reader.IsEof ? 0U : reader.ReadU32();
         var items = new IQueueReservedItem[count];
+        var wildcard = route.Split('/').Any(static segment => segment.Contains('*', StringComparison.Ordinal));
         for (var i = 0; i < count; i++)
         {
-            var itemRoute = reader.ReadString();
+            var itemRoute = wildcard ? reader.ReadString() : route;
             if (!RouteValidation.IsFixedRoute(itemRoute, "queue", 3))
             {
                 throw new QueueException($"RESERVE response contains invalid concrete queue route '{itemRoute}'", "RESERVE_INVALID_RESPONSE");
@@ -275,12 +288,11 @@ public sealed class QueueClient : IQueueClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var domainCode = reader.ReadU32();
             var message = reader.ReadString();
-            throw new QueueException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status, domainCode);
+            throw new QueueException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status);
         }
 
-        if (reader.RemainingBytes != 8)
+        if (reader.RemainingBytes != 9 || reader.ReadU8() != 1)
         {
             throw new QueueException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
         }
@@ -304,9 +316,8 @@ public sealed class QueueClient : IQueueClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var domainCode = reader.ReadU32();
             var message = reader.ReadString();
-            throw new QueueException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status, domainCode);
+            throw new QueueException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status);
         }
     }
 
@@ -371,9 +382,8 @@ public sealed class QueueClient : IQueueClient, IDisposable
             var reader = new BinaryBufferReader(payload);
             var subscriptionId = reader.ReadU64();
             var eventRoute = reader.ReadString();
-            var readyMessages = reader.ReadU64();
-            var delayedMessages = reader.ReadU64();
-            var inflightMessages = reader.ReadU64();
+            var payloadLength = reader.ReadU32();
+            var notificationPayload = reader.ReadBytes(checked((int)payloadLength));
             if (!reader.IsEof)
             {
                 return;
@@ -388,9 +398,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
 
                 var notification = new QueueAvailabilityEvent(
                     eventRoute,
-                    readyMessages,
-                    delayedMessages,
-                    inflightMessages);
+                    notificationPayload);
                 foreach (var registration in subscription.Registrations.Values)
                 {
                     registration.Channel.Writer.TryWrite(notification);

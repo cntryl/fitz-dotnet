@@ -206,9 +206,8 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var domainCode = reader.ReadU32();
             var message = reader.ReadString();
-            throw new NoticeException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status, domainCode);
+            throw new NoticeException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status);
         }
 
         if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
@@ -240,9 +239,8 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var domainCode = reader.ReadU32();
             var message = reader.ReadString();
-            throw new NoticeException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status, domainCode);
+            throw new NoticeException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status);
         }
     }
 

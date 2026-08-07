@@ -57,7 +57,7 @@ public static class MessageTypes
 
     public const ushort ScheduleCreate = 700;
     public const ushort ScheduleCancel = 701;
-    public const ushort ScheduleListPage = 707;
+    public const ushort ScheduleListPage = 702;
     public const ushort ScheduleSubscribe = 703;
     public const ushort ScheduleUnsubscribe = 704;
     public const ushort ScheduleNotify = 705; // Server -> Client

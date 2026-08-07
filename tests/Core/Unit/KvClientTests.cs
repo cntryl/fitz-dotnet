@@ -85,7 +85,7 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task should_preserve_domain_code_given_kv_subscription_validation_error()
+    public async Task should_preserve_message_given_kv_subscription_validation_error()
     {
         // Arrange
         using var kv = new KvClient(
@@ -93,7 +93,6 @@ public sealed class KvClientTests
             {
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(1);
-                writer.WriteU32(FitzErrorCodes.KvInvalidSubscriptionPattern);
                 writer.WriteString("invalid pattern");
                 return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
             },
@@ -104,7 +103,8 @@ public sealed class KvClientTests
             kv.SubscribeAsync("kv://realm/area/resource", (_, _) => ValueTask.CompletedTask));
 
         // Assert
-        Assert.Equal(FitzErrorCodes.KvInvalidSubscriptionPattern, error.DomainCode);
+        Assert.Null(error.DomainCode);
+        Assert.Contains("invalid pattern", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -116,7 +116,6 @@ public sealed class KvClientTests
             {
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(1);
-                writer.WriteU32(FitzErrorCodes.KvInvalidSubscriptionPattern);
                 writer.WriteU32(4);
                 writer.WriteU8(1);
                 return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
@@ -342,23 +341,21 @@ public sealed class KvClientTests
             scan.WriteBytes("key2"u8.ToArray());
             scan.WriteU32(6);
             scan.WriteBytes("value2"u8.ToArray());
+            scan.WriteU8(1); // has_more
 
             return Task.FromResult(scan.Build());
         });
 
         // Act
         var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
-        var enumerable = tx.ScanAsync(new KvScanQuery());
-        var pairs = new List<KvPair>();
-        await foreach (var pair in enumerable)
-        {
-            pairs.Add(pair);
-        }
+        var result = await tx.ScanAsync(new KvScanQuery());
+        var pairs = result.Pairs;
 
         // Assert
         Assert.Equal(2, pairs.Count);
         Assert.Equal("key1", System.Text.Encoding.UTF8.GetString(pairs[0].Key.Span));
         Assert.Equal("value1", System.Text.Encoding.UTF8.GetString(pairs[0].Value.Span));
+        Assert.True(result.HasMore);
     }
 
     [Fact]

@@ -82,7 +82,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         }
 
         var response = await _request(MessageTypes.StreamBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
-        return new StreamSession(_request, StreamWireHelpers.ReadExpectedSessionId(response, "BEGIN", "MISSING_SESSION_ID"), _registerOnDisconnect);
+        return new StreamSession(_request, StreamWireHelpers.ReadBeginSessionId(response), _registerOnDisconnect);
     }
 
     public async IAsyncEnumerable<StreamRecord> ReadAsync(
@@ -318,7 +318,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         writer.WriteString(pattern);
 
         var response = await _request(MessageTypes.StreamSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
-        return StreamWireHelpers.ReadExpectedSessionId(response, "SUBSCRIBE", "MISSING_SUB_ID");
+        return StreamWireHelpers.ReadSubscriptionId(response);
     }
 
     private async Task UnsubscribeWireAsync(string pattern, CancellationToken ct)
@@ -454,6 +454,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         throw new StreamException(message, "INVALID_ROUTE");
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
     private async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
     {
         await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -477,11 +478,30 @@ public sealed class StreamClient : IStreamClient, IDisposable
             var restoredSubscriptions = new Dictionary<string, StreamSubscriptionState>(StringComparer.Ordinal);
             var restoredPatternsById = new Dictionary<ulong, string>();
 
-            foreach (var entry in snapshot)
+            try
             {
-                var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
-                restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
-                restoredPatternsById[subscriptionId] = entry.Pattern;
+                foreach (var entry in snapshot)
+                {
+                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
+                    restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
+                    restoredPatternsById[subscriptionId] = entry.Pattern;
+                }
+            }
+            catch
+            {
+                foreach (var pattern in restoredSubscriptions.Keys)
+                {
+                    try
+                    {
+                        await UnsubscribeWireAsync(pattern, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Best effort rollback. Local state remains unchanged so a later reconnect can retry.
+                    }
+                }
+
+                throw;
             }
 
             lock (_gate)

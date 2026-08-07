@@ -130,18 +130,16 @@ public sealed class DomainWorkflowIntegrationTests
     }
 
     [Fact]
-    public async Task should_reject_inverted_bounds_given_invalid_range_when_scan_called()
+    public async Task should_return_empty_page_given_inverted_bounds_when_scan_called()
     {
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
         var tx = await client.Kv.BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"), Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
 
-        await Assert.ThrowsAsync<KvException>(async () =>
-        {
-            await foreach (var _ in tx.ScanAsync(new KvScanQuery { StartKey = "z"u8.ToArray(), EndKey = "a"u8.ToArray() }))
-            {
-            }
-        });
+        var result = await tx.ScanAsync(new KvScanQuery { StartKey = "z"u8.ToArray(), EndKey = "a"u8.ToArray() });
+
+        Assert.Empty(result.Pairs);
+        Assert.False(result.HasMore);
         await tx.RollbackAsync();
     }
 

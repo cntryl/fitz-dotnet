@@ -1,5 +1,4 @@
-﻿using System.Runtime.CompilerServices;
-using Cntryl.Fitz.Abstractions.Domains.Kv;
+﻿using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
@@ -127,7 +126,7 @@ public sealed class KvTransaction : IKvTransaction
         return ExpectStatusAsync(MessageTypes.KvDeleteRange, writer, "DELETE_RANGE", ct);
     }
 
-    public async IAsyncEnumerable<KvPair> ScanAsync(KvScanQuery query, [EnumeratorCancellation] CancellationToken ct = default)
+    public async Task<KvScanResult> ScanAsync(KvScanQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
         ThrowIfClosed();
@@ -178,23 +177,38 @@ public sealed class KvTransaction : IKvTransaction
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new KvException($"SCAN failed with status {status}", "SCAN_FAILED", status);
+            var message = reader.ReadString();
+            if (!reader.IsEof)
+            {
+                throw new KvException("SCAN error response has trailing bytes", "SCAN_INVALID_RESPONSE");
+            }
+            throw new KvException($"SCAN failed: {message}", "SCAN_FAILED", status);
         }
 
-        // Read pairs count and parse all pairs
         var pairCount = reader.ReadU32();
+        var pairs = new List<KvPair>(checked((int)pairCount));
         for (var i = 0; i < pairCount; i++)
         {
             ct.ThrowIfCancellationRequested();
             var keyPath = reader.ReadBytes((int)reader.ReadU32());
             var value = reader.ReadBytes((int)reader.ReadU32());
-            yield return new KvPair(keyPath, value);
+            pairs.Add(new KvPair(keyPath, value));
         }
 
+        if (reader.RemainingBytes != 1)
+        {
+            throw new KvException("SCAN response missing has_more", "SCAN_INVALID_RESPONSE");
+        }
+        var hasMoreByte = reader.ReadU8();
+        if (hasMoreByte > 1)
+        {
+            throw new KvException("SCAN response has invalid has_more", "SCAN_INVALID_RESPONSE");
+        }
         if (!reader.IsEof)
         {
             throw new KvException("SCAN response has trailing bytes", "SCAN_INVALID_RESPONSE");
         }
+        return new KvScanResult(pairs, hasMoreByte == 1);
     }
 
     public Task CommitAsync(CancellationToken ct = default)

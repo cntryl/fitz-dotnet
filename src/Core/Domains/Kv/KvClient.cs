@@ -224,12 +224,11 @@ public sealed class KvClient : IKvClient, IDisposable
         var status = reader.ReadU8();
         if (status == 1)
         {
-            if (reader.RemainingBytes < 8)
+            if (reader.RemainingBytes < 4)
             {
                 throw InvalidSubscriptionResponse(operation, "error envelope is truncated");
             }
 
-            var domainCode = reader.ReadU32();
             var messageLength = reader.ReadU32();
             if (messageLength > int.MaxValue || messageLength != reader.RemainingBytes)
             {
@@ -237,7 +236,7 @@ public sealed class KvClient : IKvClient, IDisposable
             }
 
             var message = Encoding.UTF8.GetString(reader.ReadSpan((int)messageLength));
-            throw new KvException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+            throw new KvException($"{operation} failed: {message}", $"{operation}_FAILED", status);
         }
 
         if (status != 0)

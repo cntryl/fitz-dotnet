@@ -116,6 +116,7 @@ public sealed class WebSocketTransport : ITransport
 
                     return PooledFrame.Closed;
                 }
+                EnsureBinaryMessage(result.MessageType);
 
                 length += result.Count;
                 if (length > _maxFrameSize)
@@ -148,6 +149,14 @@ public sealed class WebSocketTransport : ITransport
             }
 
             throw;
+        }
+    }
+
+    internal static void EnsureBinaryMessage(WebSocketMessageType messageType)
+    {
+        if (messageType == WebSocketMessageType.Text)
+        {
+            throw new InvalidOperationException("WebSocket text frames are not valid Fitz protocol frames.");
         }
     }
 

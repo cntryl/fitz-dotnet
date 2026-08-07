@@ -10,6 +10,108 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class LeaseClientTests
 {
     [Fact]
+    public async Task should_release_on_dispose_given_cancelled_extend()
+    {
+        var releaseCalls = 0;
+        using var leaseClient = new LeaseClient((messageType, _, ct) =>
+        {
+            if (messageType == MessageTypes.LeaseAcquire)
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                writer.WriteU8(1);
+                writer.WriteU64(77);
+                return Task.FromResult(writer.Build());
+            }
+
+            if (messageType == MessageTypes.LeaseRenew)
+            {
+                return Task.FromCanceled<byte[]>(ct);
+            }
+
+            Interlocked.Increment(ref releaseCalls);
+            return Task.FromResult(new byte[] { 0 });
+        });
+
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => lease.ExtendAsync(60, cancellation.Token));
+        await lease.DisposeAsync();
+
+        Assert.Equal(1, releaseCalls);
+    }
+
+    [Fact]
+    public async Task should_await_deferred_acquired_frame_given_queued_response()
+    {
+        Action<byte[]>? acquireHandler = null;
+        using var leaseClient = new LeaseClient(
+            (_, _, _) =>
+            {
+                using var queued = new BinaryBufferWriter();
+                queued.WriteU8(0);
+                queued.WriteU8(2);
+                queued.WriteU64(0);
+                return Task.FromResult(queued.Build());
+            },
+            (messageType, handler) =>
+            {
+                Assert.Equal(MessageTypes.LeaseAcquire, messageType);
+                acquireHandler = handler;
+                return new TestRegistration();
+            });
+
+        var pending = leaseClient.AcquireAsync("lease://prod/app/lock", 30, waitSeconds: 5);
+        await Task.Yield();
+        using var acquired = new BinaryBufferWriter();
+        acquired.WriteU8(0);
+        acquired.WriteU8(0);
+        acquired.WriteU64(91);
+        acquireHandler!(acquired.Build());
+
+        var lease = await pending;
+        Assert.Equal("lease://prod/app/lock", lease.Route);
+    }
+
+    [Fact]
+    public async Task should_serialize_acquisition_lifecycle_until_deferred_frame_arrives()
+    {
+        Action<byte[]>? acquireHandler = null;
+        var acquireCalls = 0;
+        using var leaseClient = new LeaseClient(
+            (messageType, _, _) =>
+            {
+                Assert.Equal(MessageTypes.LeaseAcquire, messageType);
+                using var response = new BinaryBufferWriter();
+                response.WriteU8(0);
+                response.WriteU8(Interlocked.Increment(ref acquireCalls) == 1 ? (byte)2 : (byte)0);
+                response.WriteU64(0);
+                return Task.FromResult(response.Build());
+            },
+            (_, handler) =>
+            {
+                acquireHandler = handler;
+                return new TestRegistration();
+            });
+
+        var first = leaseClient.AcquireAsync("lease://prod/app/first", 30, waitSeconds: 5);
+        var second = leaseClient.AcquireAsync("lease://prod/app/second", 30);
+        await Task.Yield();
+        Assert.Equal(1, Volatile.Read(ref acquireCalls));
+
+        using var acquired = new BinaryBufferWriter();
+        acquired.WriteU8(0);
+        acquired.WriteU8(0);
+        acquired.WriteU64(91);
+        acquireHandler!(acquired.Build());
+
+        await first;
+        await second;
+        Assert.Equal(2, Volatile.Read(ref acquireCalls));
+    }
+
+    [Fact]
     public async Task should_return_lease_handle_given_success_response_when_acquiring_lease()
     {
         // Arrange
@@ -60,6 +162,7 @@ public sealed class LeaseClientTests
             writer.WriteU8(1);
             writer.WriteString("worker-1");
             writer.WriteU64(18);
+            writer.WriteU32(0);
             return Task.FromResult(writer.Build());
         });
 
@@ -73,7 +176,7 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task should_ignore_pending_waiters_given_success_response_when_querying_lease()
+    public async Task should_expose_pending_waiters_given_success_response_when_querying_lease()
     {
         // Arrange
         using var leaseClient = new LeaseClient((messageType, payload, _) =>
@@ -96,6 +199,7 @@ public sealed class LeaseClientTests
         Assert.True(info.IsHeld);
         Assert.Equal("worker-1", info.Owner);
         Assert.Equal((ulong)18, info.TtlRemainingSecs);
+        Assert.Equal((uint)3, info.PendingWaiters);
     }
 
     [Fact]

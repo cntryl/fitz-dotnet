@@ -32,6 +32,8 @@ public sealed class FitzConnection : IAsyncDisposable
     private TaskCompletionSource<bool>? _authFailure;
     private Task? _connectTask;
     private Task? _reconnectTask;
+    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The reconnect token is disposed when its loop exits and defensively by DisposeAsync.")]
+    private CancellationTokenSource? _reconnectCts;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The timer is atomically detached and disposed by StopHeartbeat and DisposeAsync.")]
     private Timer? _heartbeatTimer;
     private bool _authAttemptIsReconnect;
@@ -328,6 +330,17 @@ public sealed class FitzConnection : IAsyncDisposable
     public async Task CloseAsync(CancellationToken cancellationToken = default)
     {
         _closeRequested = true;
+        Task? reconnectTask;
+        CancellationTokenSource? reconnectCts;
+        lock (_gate)
+        {
+            reconnectTask = _reconnectTask;
+            reconnectCts = _reconnectCts;
+        }
+        if (reconnectCts is not null)
+        {
+            await reconnectCts.CancelAsync().ConfigureAwait(false);
+        }
         StopHeartbeat();
         _asyncHandlerDispatcher.Close();
         SetState(ConnectionState.Closed);
@@ -366,6 +379,17 @@ public sealed class FitzConnection : IAsyncDisposable
             _receiveLoop = null;
         }
 
+        if (reconnectTask is not null && reconnectTask.Id != Task.CurrentId)
+        {
+            try
+            {
+                await reconnectTask.ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+        }
+
         if (transport is not null)
         {
             await transport.DisposeAsync().ConfigureAwait(false);
@@ -380,6 +404,7 @@ public sealed class FitzConnection : IAsyncDisposable
         await CloseAsync().ConfigureAwait(false);
         Interlocked.Exchange(ref _heartbeatTimer, null)?.Dispose();
         _receiveLoopCts?.Dispose();
+        _reconnectCts?.Dispose();
         _connectionClosedCts.Dispose();
         _multiplexer.Dispose();
     }
@@ -687,7 +712,12 @@ public sealed class FitzConnection : IAsyncDisposable
         Task reconnectTask;
         lock (_gate)
         {
-            _reconnectTask ??= ReconnectLoopAsync();
+            if (_reconnectTask is null)
+            {
+                _reconnectCts?.Dispose();
+                _reconnectCts = new CancellationTokenSource();
+                _reconnectTask = ReconnectLoopAsync(_reconnectCts.Token);
+            }
             reconnectTask = _reconnectTask;
         }
 
@@ -695,7 +725,7 @@ public sealed class FitzConnection : IAsyncDisposable
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect retries apply to every connection attempt failure except explicit shutdown or auth rejection.")]
-    private async Task ReconnectLoopAsync()
+    private async Task ReconnectLoopAsync(CancellationToken cancellationToken)
     {
         var reconnect = _config.ResolvedReconnect;
         var delay = reconnect.Backoff ?? TimeSpan.FromMilliseconds(250);
@@ -711,13 +741,17 @@ public sealed class FitzConnection : IAsyncDisposable
 
                 try
                 {
-                    await Task.Delay(delay).ConfigureAwait(false);
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                     if (_closeRequested)
                     {
                         return;
                     }
 
-                    await OpenAndAuthenticateAsync(isReconnect: true, CancellationToken.None).ConfigureAwait(false);
+                    await OpenAndAuthenticateAsync(isReconnect: true, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
                     return;
                 }
                 catch when (!_closeRequested && !_authRejected)
@@ -737,6 +771,8 @@ public sealed class FitzConnection : IAsyncDisposable
             lock (_gate)
             {
                 _reconnectTask = null;
+                _reconnectCts?.Dispose();
+                _reconnectCts = null;
             }
         }
     }

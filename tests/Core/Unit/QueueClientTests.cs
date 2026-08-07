@@ -10,6 +10,25 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class QueueClientTests
 {
     [Fact]
+    public async Task should_preserve_error_code_and_message_given_enqueue_failure()
+    {
+        using var queue = new QueueClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(1);
+            writer.WriteU32(4008);
+            writer.WriteString("queue backend unavailable");
+            return Task.FromResult(writer.Build());
+        });
+
+        var error = await Assert.ThrowsAsync<QueueException>(() =>
+            queue.EnqueueAsync("queue://prod/app/tasks", "job"u8.ToArray()));
+
+        Assert.Equal((uint)4008, error.DomainCode);
+        Assert.Equal("queue backend unavailable", error.Message);
+    }
+
+    [Fact]
     public async Task should_return_message_id_given_success_response_when_enqueueing()
     {
         // Arrange
@@ -100,7 +119,6 @@ public sealed class QueueClientTests
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
             writer.WriteU32(1);
-            writer.WriteString("queue://prod/app/tasks");
             writer.WriteU64(555);
             writer.WriteU64(777);
             writer.WriteU32(5);
@@ -248,6 +266,7 @@ public sealed class QueueClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+                writer.WriteU8(1);
                 writer.WriteU64(555);
                 return Task.FromResult(writer.Build());
             },
@@ -273,9 +292,8 @@ public sealed class QueueClientTests
         using var notification = new BinaryBufferWriter();
         notification.WriteU64(subscriptionId);
         notification.WriteString("queue://prod/app/tasks");
-        notification.WriteU64(9);
-        notification.WriteU64(2);
-        notification.WriteU64(1);
+        notification.WriteU32(3);
+        notification.WriteBytes("new"u8);
         notifyHandler!(notification.Build());
 
         var evt = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
@@ -285,9 +303,7 @@ public sealed class QueueClientTests
         Assert.Equal(MessageTypes.QueueSubscribe, seenMessageType);
         Assert.NotNull(seenPayload);
         Assert.Equal("queue://prod/app/tasks", evt!.Route);
-        Assert.Equal((ulong)9, evt.ReadyMessages);
-        Assert.Equal((ulong)2, evt.DelayedMessages);
-        Assert.Equal((ulong)1, evt.InflightMessages);
+        Assert.Equal("new", System.Text.Encoding.UTF8.GetString(evt.Payload.Span));
         Assert.Same(received, evt);
         Assert.NotEqual(default, seenCancellationToken);
         Assert.False(seenCancellationToken.IsCancellationRequested);
@@ -312,7 +328,6 @@ public sealed class QueueClientTests
             if (messageType == MessageTypes.QueueReserve)
             {
                 writer.WriteU32(1);
-                writer.WriteString("queue://prod/app/tasks");
                 writer.WriteU64(555);
                 writer.WriteU64(777);
                 writer.WriteU32(5);
@@ -366,7 +381,6 @@ public sealed class QueueClientTests
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
                 writer.WriteU32(1);
-                writer.WriteString("queue://prod/app/tasks");
                 writer.WriteU64(555);
                 writer.WriteU64(777);
                 writer.WriteU32(5);
@@ -414,7 +428,6 @@ public sealed class QueueClientTests
                 using var reserveWriter = new BinaryBufferWriter();
                 reserveWriter.WriteU8(0);
                 reserveWriter.WriteU32(1);
-                reserveWriter.WriteString("queue://prod/app/tasks");
                 reserveWriter.WriteU64(555);
                 reserveWriter.WriteU64(777);
                 reserveWriter.WriteU32(5);
@@ -481,6 +494,7 @@ public sealed class QueueClientTests
             {
                 using var subscribeWriter = new BinaryBufferWriter();
                 subscribeWriter.WriteU8(0);
+                subscribeWriter.WriteU8(1);
                 subscribeWriter.WriteU64(555);
                 firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueSubscribe, subscribeWriter.WrittenSpan));
             }
@@ -498,6 +512,7 @@ public sealed class QueueClientTests
             {
                 using var subscribeWriter = new BinaryBufferWriter();
                 subscribeWriter.WriteU8(0);
+                subscribeWriter.WriteU8(1);
                 subscribeWriter.WriteU64(777);
                 secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueSubscribe, subscribeWriter.WrittenSpan));
 
@@ -507,9 +522,8 @@ public sealed class QueueClientTests
                     using var notification = new BinaryBufferWriter();
                     notification.WriteU64(777);
                     notification.WriteString("queue://prod/app/tasks");
-                    notification.WriteU64(9);
-                    notification.WriteU64(2);
-                    notification.WriteU64(1);
+                    notification.WriteU32(8);
+                    notification.WriteBytes("restored"u8);
                     secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueNotify, notification.WrittenSpan));
                 });
             }
@@ -544,20 +558,19 @@ public sealed class QueueClientTests
         {
             notification.WriteU64(555);
             notification.WriteString("queue://prod/app/tasks");
-            notification.WriteU64(3);
-            notification.WriteU64(2);
-            notification.WriteU64(1);
+            notification.WriteU32(7);
+            notification.WriteBytes("initial"u8);
             firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueNotify, notification.WrittenSpan));
         }
 
         var initialEvent = await firstNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        Assert.Equal((ulong)3, initialEvent.ReadyMessages);
+        Assert.Equal("initial", System.Text.Encoding.UTF8.GetString(initialEvent.Payload.Span));
 
         firstTransport.QueueClosed();
 
         var restoredEvent = await secondNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
         Assert.Equal("queue://prod/app/tasks", restoredEvent.Route);
-        Assert.Equal((ulong)9, restoredEvent.ReadyMessages);
+        Assert.Equal("restored", System.Text.Encoding.UTF8.GetString(restoredEvent.Payload.Span));
 
         await connection.CloseAsync();
     }

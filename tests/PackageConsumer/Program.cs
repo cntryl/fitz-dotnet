@@ -29,8 +29,8 @@ static async Task CompilePreviewApiAsync(
         break;
     }
 
-    ScheduleListPage result = await schedule.ListPageAsync(ct: cancellationToken).ConfigureAwait(false);
-    Console.WriteLine($"{result.Entries.Count}/{result.HasMore}");
+    ScheduleListPage result = await schedule.ListAsync(ct: cancellationToken).ConfigureAwait(false);
+    Console.WriteLine($"{result.Entries.Count}/{result.TotalCount}");
 }
 
 Func<INoticeClient, IScheduleClient, CancellationToken, Task> previewApi = CompilePreviewApiAsync;

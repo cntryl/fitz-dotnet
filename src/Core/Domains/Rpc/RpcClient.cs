@@ -16,7 +16,7 @@ public sealed class RpcClient : IRpcClient
     private const int CorrelationIdLength = 16;
     private const byte RpcResponseFlagStreamEnd = 0x01;
     private const uint RpcErrorCodeMin = 6001;
-    private const uint RpcErrorCodeMax = 6010;
+    private const uint RpcErrorCodeMax = 6013;
     private const uint RpcBackpressureErrorCode = 6003;
 
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
@@ -28,6 +28,7 @@ public sealed class RpcClient : IRpcClient
     private readonly TimeSpan _responseTimeout;
     private readonly Dictionary<string, Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask>> _workers = new(StringComparer.Ordinal);
     private readonly Dictionary<string, uint> _workerConcurrency = new(StringComparer.Ordinal);
+    private readonly object _workerSync = new();
 
     private IDisposable? _workerReconnectRegistration;
     private bool _rpcRequestHandlerInitialized;
@@ -246,15 +247,18 @@ public sealed class RpcClient : IRpcClient
         }
 
         await SubscribeWorkerAsync(pattern, maxConcurrency, ct).ConfigureAwait(false);
-        _workers[pattern] = handler;
-        _workerConcurrency[pattern] = maxConcurrency;
-        EnsureRpcRequestHandlerInitialized();
-        _workerReconnectRegistration ??= _onReconnect?.Invoke(ResubscribeWorkersAsync);
+        lock (_workerSync)
+        {
+            _workers[pattern] = handler;
+            _workerConcurrency[pattern] = maxConcurrency;
+            EnsureRpcRequestHandlerInitializedLocked();
+            _workerReconnectRegistration ??= _onReconnect?.Invoke(ResubscribeWorkersAsync);
+        }
 
         return new RpcWorkerRegistration(pattern, unregisterToken => new ValueTask(UnsubscribeWorkerAsync(pattern, unregisterToken)));
     }
 
-    private void EnsureRpcRequestHandlerInitialized()
+    private void EnsureRpcRequestHandlerInitializedLocked()
     {
         if (_rpcRequestHandlerInitialized || _registerNotificationHandler == null)
         {
@@ -319,17 +323,16 @@ public sealed class RpcClient : IRpcClient
 
     private bool TryGetWorker(string route, out Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask> handler)
     {
-        if (_workers.TryGetValue(route, out handler!))
+        lock (_workerSync)
         {
-            return true;
-        }
-
-        foreach (var entry in _workers)
-        {
-            if (RouteValidation.MatchesPattern(route, entry.Key))
+            if (_workers.TryGetValue(route, out handler!)) return true;
+            foreach (var entry in _workers)
             {
-                handler = entry.Value;
-                return true;
+                if (RouteValidation.MatchesPattern(route, entry.Key))
+                {
+                    handler = entry.Value;
+                    return true;
+                }
             }
         }
 
@@ -348,9 +351,8 @@ public sealed class RpcClient : IRpcClient
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var domainCode = reader.ReadU32();
             var message = reader.ReadString();
-            throw new RpcException($"REGISTER failed: {message}", "REGISTER_FAILED", status, domainCode);
+            throw new RpcException($"REGISTER failed: {message}", "REGISTER_FAILED", status);
         }
 
         if (reader.RemainingBytes >= 8)
@@ -366,30 +368,23 @@ public sealed class RpcClient : IRpcClient
 
     private async Task UnsubscribeWorkerAsync(string pattern, CancellationToken ct)
     {
-        _workers.Remove(pattern);
-        _workerConcurrency.Remove(pattern);
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
-
-        try
+        var response = await _request(MessageTypes.RpcUnsubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
+        if (!response.IsEmpty)
         {
-            var response = await _request(MessageTypes.RpcUnsubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
-            if (response.IsEmpty)
-            {
-                return;
-            }
-
             var reader = new BinaryBufferReader(response);
             var status = reader.ReadU8();
             if (status != 0)
             {
-                var domainCode = reader.ReadU32();
                 var message = reader.ReadString();
-                throw new RpcException($"UNREGISTER failed: {message}", "UNREGISTER_FAILED", status, domainCode);
+                throw new RpcException($"UNREGISTER failed: {message}", "UNREGISTER_FAILED", status);
             }
         }
-        finally
+        lock (_workerSync)
         {
+            _workers.Remove(pattern);
+            _workerConcurrency.Remove(pattern);
             if (_workers.Count == 0)
             {
                 _workerReconnectRegistration?.Dispose();
@@ -400,9 +395,11 @@ public sealed class RpcClient : IRpcClient
 
     private async ValueTask ResubscribeWorkersAsync(CancellationToken cancellationToken)
     {
-        foreach (var pattern in _workers.Keys.ToArray())
+        KeyValuePair<string, uint>[] snapshot;
+        lock (_workerSync) snapshot = _workerConcurrency.ToArray();
+        foreach (var entry in snapshot)
         {
-            await SubscribeWorkerAsync(pattern, _workerConcurrency[pattern], cancellationToken).ConfigureAwait(false);
+            await SubscribeWorkerAsync(entry.Key, entry.Value, cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -524,6 +521,9 @@ public sealed class RpcClient : IRpcClient
             6008 => "WRONG_WORKER",
             6009 => "UNAUTHORIZED",
             6010 => "BACKEND_ERROR",
+            6011 => "INVALID_ROUTE",
+            6012 => "INVALID_SUBSCRIPTION_PATTERN",
+            6013 => "SUBSCRIPTION_LIMIT",
             _ => "DOMAIN_ERROR",
         };
     }

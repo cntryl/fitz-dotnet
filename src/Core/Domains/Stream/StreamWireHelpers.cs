@@ -51,92 +51,55 @@ internal static class StreamWireHelpers
     {
         var reader = new BinaryBufferReader(response);
         ReadSuccessStatus(reader, operation);
+        if (operation == "COMMIT") _ = ReadLengthPrefixedData(reader, operation);
+        if (!reader.IsEof)
+            throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
     }
 
-    internal static ulong ReadExpectedSessionId(ReadOnlyMemory<byte> response, string operation, string missingSessionCode)
+    internal static ulong ReadBeginSessionId(ReadOnlyMemory<byte> response)
     {
         var reader = new BinaryBufferReader(response);
-        ReadSuccessStatus(reader, operation);
-
-        if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
+        ReadSuccessStatus(reader, "BEGIN");
+        if (reader.RemainingBytes < 12)
         {
-            throw new StreamException($"{operation} response missing session id", missingSessionCode);
+            throw new StreamException("BEGIN response missing session id or payload length", "MISSING_SESSION_ID");
         }
-
         var sessionId = reader.ReadU64();
-        if (!reader.IsEof)
-        {
-            if (reader.RemainingBytes < 4)
-            {
-                throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
-            }
-
-            var payloadLength = reader.ReadU32();
-            if (payloadLength > int.MaxValue)
-            {
-                throw new StreamException($"{operation} response payload length too large", $"{operation}_INVALID_RESPONSE");
-            }
-
-            _ = reader.ReadMemory((int)payloadLength);
-        }
-
-        if (!reader.IsEof)
-        {
-            throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
-        }
-
+        _ = ReadLengthPrefixedData(reader, "BEGIN");
         return sessionId;
+    }
+
+    internal static ulong ReadSubscriptionId(ReadOnlyMemory<byte> response)
+    {
+        var reader = new BinaryBufferReader(response);
+        ReadSuccessStatus(reader, "SUBSCRIBE");
+        if (reader.RemainingBytes != 9 || reader.ReadU8() != 1)
+            throw new StreamException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
+        return reader.ReadU64();
     }
 
     internal static ReadOnlyMemory<byte> ReadOptionalPayload(ReadOnlyMemory<byte> response, string operation)
     {
         var reader = new BinaryBufferReader(response);
         ReadSuccessStatus(reader, operation);
-
-        if (reader.IsEof)
+        if (operation == "READ")
         {
-            return ReadOnlyMemory<byte>.Empty;
+            if (reader.IsEof || reader.ReadU8() != 0)
+                throw new StreamException("READ response has invalid session flag", "READ_INVALID_RESPONSE");
+            return ReadLengthPrefixedData(reader, operation);
         }
+        if (operation == "APPEND") return ReadLengthPrefixedData(reader, operation);
+        return reader.ReadMemory(reader.RemainingBytes);
+    }
 
-        var hasSession = reader.ReadU8();
-        if (hasSession != 0 && hasSession != 1)
-        {
-            throw new StreamException($"{operation} response has invalid session flag {hasSession}", $"{operation}_INVALID_RESPONSE");
-        }
-
-        if (hasSession == 1)
-        {
-            if (reader.RemainingBytes < 8)
-            {
-                throw new StreamException($"{operation} response missing session id", $"{operation}_INVALID_RESPONSE");
-            }
-
-            _ = reader.ReadU64();
-        }
-
-        if (reader.IsEof)
-        {
-            return ReadOnlyMemory<byte>.Empty;
-        }
-
+    private static ReadOnlyMemory<byte> ReadLengthPrefixedData(BinaryBufferReader reader, string operation)
+    {
         if (reader.RemainingBytes < 4)
-        {
             throw new StreamException($"{operation} response missing payload length", $"{operation}_INVALID_RESPONSE");
-        }
-
-        var payloadLength = reader.ReadU32();
-        if (payloadLength > int.MaxValue)
-        {
-            throw new StreamException($"{operation} response payload length too large", $"{operation}_INVALID_RESPONSE");
-        }
-
-        var payload = reader.ReadMemory((int)payloadLength);
-        if (!reader.IsEof)
-        {
-            throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
-        }
-
-        return payload;
+        var length = reader.ReadU32();
+        if (length > int.MaxValue || length != reader.RemainingBytes)
+            throw new StreamException($"{operation} response has invalid payload length", $"{operation}_INVALID_RESPONSE");
+        return reader.ReadMemory((int)length);
     }
 
     internal static StreamRecord ReadRecord(ReadOnlyMemory<byte> payload, string operation, string route)
@@ -167,7 +130,7 @@ internal static class StreamWireHelpers
         return record;
     }
 
-    internal static StreamRecord ReadRecord(BinaryBufferReader reader, string operation, string route)
+    internal static StreamRecord ReadRecord(BinaryBufferReader reader, string operation, string route, bool global = false)
     {
         if (reader.RemainingBytes < 8)
         {
@@ -177,6 +140,7 @@ internal static class StreamWireHelpers
         var offset = reader.ReadU64();
         var areaOffset = ReadOptionalU64(reader, operation, "area offset");
         var realmOffset = ReadOptionalU64(reader, operation, "realm offset");
+        var globalOffset = global ? ReadOptionalU64(reader, operation, "global offset") : null;
         var body = ReadLengthPrefixedBytes(reader, operation, "record body");
         var metadata = ReadOptionalBytes(reader, operation, "record metadata")?.ToArray();
 
@@ -186,7 +150,7 @@ internal static class StreamWireHelpers
         }
 
         var timestamp = reader.ReadU64();
-        return new StreamRecord(route, offset, areaOffset, realmOffset, body, metadata, timestamp);
+        return new StreamRecord(route, offset, areaOffset, realmOffset, globalOffset, body, metadata, timestamp);
     }
 
     internal static StreamReadPage ReadReadPage(ReadOnlyMemory<byte> payload, string operation, string selector)
@@ -215,6 +179,7 @@ internal static class StreamWireHelpers
             throw new StreamException($"{operation} response item count too large", $"{operation}_INVALID_RESPONSE");
         }
 
+        var global = selector is "stream://**" or "stream://*/*/*";
         var items = new List<StreamReadItem>((int)itemCount);
         for (var index = 0; index < itemCount; index++)
         {
@@ -223,7 +188,7 @@ internal static class StreamWireHelpers
             {
                 throw new StreamException($"{operation} response contains invalid concrete stream route '{route}'", $"{operation}_INVALID_RESPONSE");
             }
-            items.Add(ReadReadItem(reader, operation, route));
+            items.Add(ReadReadItem(reader, operation, route, global));
         }
 
         if (reader.RemainingBytes < 8)
@@ -231,7 +196,6 @@ internal static class StreamWireHelpers
             throw new StreamException($"{operation} response missing read cursor", $"{operation}_INVALID_RESPONSE");
         }
 
-        var global = selector == "stream://**";
         var lastResourceOffset = reader.ReadU64();
         var lastAreaOffset = ReadOptionalU64(reader, operation, "last area offset");
         var lastRealmOffset = ReadOptionalU64(reader, operation, "last realm offset");
@@ -256,7 +220,7 @@ internal static class StreamWireHelpers
         return new StreamReadPage(items, cursor);
     }
 
-    internal static StreamReadItem ReadReadItem(BinaryBufferReader reader, string operation, string route)
+    internal static StreamReadItem ReadReadItem(BinaryBufferReader reader, string operation, string route, bool global)
     {
         if (reader.IsEof)
         {
@@ -266,7 +230,7 @@ internal static class StreamWireHelpers
         var tag = reader.ReadU8();
         return tag switch
         {
-            0 => new StreamReadItem(route, StreamReadItemKind.Event, Record: ReadRecord(reader, operation, route)),
+            0 => new StreamReadItem(route, StreamReadItemKind.Event, Record: ReadRecord(reader, operation, route, global)),
             1 => new StreamReadItem(
                 route,
                 StreamReadItemKind.Filtered,
@@ -422,7 +386,7 @@ internal static class StreamWireHelpers
         {
             if (status == 1)
             {
-                var domainCode = reader.ReadU32();
+                uint? domainCode = operation == "READ" ? reader.ReadU32() : null;
                 var message = reader.ReadString();
                 if (!reader.IsEof)
                 {

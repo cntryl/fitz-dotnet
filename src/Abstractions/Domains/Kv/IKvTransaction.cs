@@ -45,12 +45,12 @@ public interface IKvTransaction : IAsyncDisposable
     Task DeleteRangeAsync(ReadOnlyMemory<byte> startKey, ReadOnlyMemory<byte> endKey, CancellationToken ct = default);
 
     /// <summary>
-    /// Streams key/value pairs for a scan query.
+    /// Returns one key/value scan page and whether more pairs are available.
     /// </summary>
     /// <param name="query">Scan query options.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns>Async sequence of KV pairs.</returns>
-    IAsyncEnumerable<KvPair> ScanAsync(KvScanQuery query, CancellationToken ct = default);
+    /// <returns>The decoded scan page.</returns>
+    Task<KvScanResult> ScanAsync(KvScanQuery query, CancellationToken ct = default);
 
     /// <summary>
     /// Commits the transaction.

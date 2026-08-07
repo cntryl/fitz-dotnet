@@ -6,12 +6,13 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);CA2007</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Cntryl.Fitz" Version="0.1.0" />
-    <PackageReference Include="Cntryl.Fitz.Abstractions" Version="0.1.0" />
-    <PackageReference Include="Cntryl.Fitz.DependencyInjection" Version="0.1.0" />
+    <PackageReference Include="Cntryl.Fitz" Version="0.2.0" />
+    <PackageReference Include="Cntryl.Fitz.Abstractions" Version="0.2.0" />
+    <PackageReference Include="Cntryl.Fitz.DependencyInjection" Version="0.2.0" />
   </ItemGroup>
 
 </Project>

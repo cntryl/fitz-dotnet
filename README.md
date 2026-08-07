@@ -91,7 +91,7 @@ This preview intentionally breaks the earlier callback subscription surface.
 Replace callback arguments with `await foreach` over the returned handle. Public
 one-shot operations now return `Task`/`Task<T>`; `ValueTask` remains only for
 disposal and callback/provider contracts. Schedule listing now uses
-`ListPageAsync` with a continuation token.
+`ListAsync(offset, limit)` and returns entries plus `TotalCount`.
 
 ## Local Verification
 

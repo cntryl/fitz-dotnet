@@ -3,16 +3,17 @@ namespace Cntryl.Fitz.Abstractions.Domains.Stream;
 public sealed record StreamRecord
 {
     public StreamRecord(string route, ulong offset, byte[] body)
-        : this(route, offset, null, null, body, null, 0)
+        : this(route, offset, null, null, null, body, null, 0)
     {
     }
 
-    public StreamRecord(string route, ulong offset, ulong? areaOffset, ulong? realmOffset, byte[] body, byte[]? metadata, ulong timestamp)
+    public StreamRecord(string route, ulong offset, ulong? areaOffset, ulong? realmOffset, ulong? globalOffset, byte[] body, byte[]? metadata, ulong timestamp)
     {
         Route = route;
         Offset = offset;
         AreaOffset = areaOffset;
         RealmOffset = realmOffset;
+        GlobalOffset = globalOffset;
         Body = body;
         Metadata = metadata;
         Timestamp = timestamp;
@@ -25,6 +26,8 @@ public sealed record StreamRecord
     public ulong? AreaOffset { get; init; }
 
     public ulong? RealmOffset { get; init; }
+
+    public ulong? GlobalOffset { get; init; }
 
     public byte[] Body { get; init; }
 

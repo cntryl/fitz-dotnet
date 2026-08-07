@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <PackageProjectUrl>https://github.com/cntryl/fitz-dotnet</PackageProjectUrl>
     <RepositoryType>git</RepositoryType>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>

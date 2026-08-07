@@ -9,6 +9,83 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class StreamClientTests
 {
+    [Fact]
+    public async Task should_rollback_already_restored_patterns_given_partial_reconnect_failure()
+    {
+        var calls = new List<ushort>();
+        var subscribeCalls = 0;
+        using var stream = new StreamClient(
+            (messageType, _, _) =>
+            {
+                calls.Add(messageType);
+                using var writer = new BinaryBufferWriter();
+                if (messageType == MessageTypes.StreamSubscribe)
+                {
+                    subscribeCalls++;
+                    if (subscribeCalls == 4)
+                    {
+                        writer.WriteU8(1);
+                        writer.WriteString("restore rejected");
+                    }
+                    else
+                    {
+                        writer.WriteU8(0);
+                        writer.WriteU8(1);
+                        writer.WriteU64((ulong)subscribeCalls);
+                    }
+                }
+                else
+                {
+                    writer.WriteU8(0);
+                }
+                return Task.FromResult(writer.Build());
+            },
+            (_, _) => new TestRegistration());
+        _ = await stream.SubscribeAsync("stream://prod/app/*", (_, _) => ValueTask.CompletedTask);
+        _ = await stream.SubscribeAsync("stream://prod/other/*", (_, _) => ValueTask.CompletedTask);
+        var restore = typeof(StreamClient).GetMethod(
+            "RestoreSubscriptionsAsync",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+
+        var pending = Assert.IsType<ValueTask>(restore!.Invoke(stream, [CancellationToken.None]));
+        await Assert.ThrowsAsync<StreamException>(pending.AsTask);
+
+        Assert.Equal(MessageTypes.StreamUnsubscribe, calls[^1]);
+    }
+
+    [Theory]
+    [InlineData("stream://**")]
+    [InlineData("stream://*/*/*")]
+    public void should_decode_per_record_global_offset_given_global_selector(string selector)
+    {
+        using var data = new BinaryBufferWriter();
+        data.WriteU32(1);
+        data.WriteString("stream://prod/app/events");
+        data.WriteU8((byte)StreamReadItemKind.Event);
+        data.WriteU64(4);
+        data.WriteU8(0);
+        data.WriteU8(0);
+        data.WriteU8(1);
+        data.WriteU64(99);
+        data.WriteU32(3);
+        data.WriteBytes("one"u8);
+        data.WriteU8(0);
+        data.WriteU64(111);
+        data.WriteU64(4);
+        data.WriteU8(0);
+        data.WriteU8(0);
+        data.WriteU8(1);
+        data.WriteU64(99);
+        data.WriteU8(0);
+        data.WriteU8(0);
+        data.WriteU8(0);
+
+        var page = StreamWireHelpers.ReadReadPage(data.WrittenMemory, "READ", selector);
+
+        Assert.Equal((ulong)99, Assert.Single(page.Items).Record!.GlobalOffset);
+        Assert.Equal((ulong)99, page.Cursor.LastGlobalOffset);
+    }
+
 
     [Fact]
     public async Task should_return_stream_session_given_success_response_when_beginning_stream()
@@ -24,8 +101,8 @@ public sealed class StreamClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            writer.WriteU8(1);
             writer.WriteU64(99);
+            writer.WriteU32(0);
             return Task.FromResult(writer.Build());
         });
 
@@ -54,7 +131,6 @@ public sealed class StreamClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            writer.WriteU8(1);
             writer.WriteU64(99);
             writer.WriteU32(0);
             return Task.FromResult(writer.Build());
@@ -85,7 +161,7 @@ public sealed class StreamClientTests
             Assert.Equal((byte)0, request.ReadU8());
             Assert.Equal((byte)0, request.ReadU8());
 
-            return Task.FromResult(new byte[] { 0 });
+            return Task.FromResult(new byte[] { 0, 0, 0, 0, 0, 0 });
         });
 
         // Act
@@ -106,20 +182,19 @@ public sealed class StreamClientTests
         using var stream = new StreamClient((_, payload, _) =>
         {
             var request = new BinaryBufferReader(payload);
-            Assert.Equal("stream://**", request.ReadString());
+            var selector = request.ReadString();
+            Assert.True(selector is "stream://**" or "stream://*/app/*");
             request.ReadU64();
             request.ReadU64();
             Assert.Equal((byte)0, request.ReadU8());
             Assert.Equal((byte)0, request.ReadU8());
             Assert.Equal((byte)0, request.ReadU8());
             Assert.Equal((byte)0, request.ReadU8());
-            return Task.FromResult(new byte[] { 0 });
+            return Task.FromResult(new byte[] { 0, 0, 0, 0, 0, 0 });
         });
 
         await stream.ReadPageAsync("stream://**", 42);
-        var error = await Assert.ThrowsAsync<StreamException>(() => stream.ReadPageAsync("stream://*/app/*", 0));
-
-        Assert.Equal("INVALID_ROUTE", error.Code);
+        await stream.ReadPageAsync("stream://*/app/*", 0);
     }
 
     [Fact]
@@ -152,7 +227,7 @@ public sealed class StreamClientTests
             Assert.Equal((uint)expectedFilter.Length, filterLength);
             Assert.Equal(expectedFilter, request.ReadBytes((int)filterLength));
 
-            return Task.FromResult(new byte[] { 0 });
+            return Task.FromResult(new byte[] { 0, 0, 0, 0, 0, 0 });
         });
 
         var filter = new StreamFilterSet
@@ -516,7 +591,7 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task should_return_metadata_given_wrapped_payload_when_reading_stream_metadata()
+    public async Task should_return_metadata_given_canonical_payload_when_reading_stream_metadata()
     {
         // Arrange
         using var stream = new StreamClient((messageType, payload, _) =>
@@ -540,8 +615,6 @@ public sealed class StreamClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            writer.WriteU8(0);
-            writer.WriteU32((uint)data.Build().Length);
             writer.WriteBytes(data.Build());
             return Task.FromResult(writer.Build());
         });
@@ -554,7 +627,7 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task should_return_last_record_given_wrapped_payload_when_peeking_stream()
+    public async Task should_return_last_record_given_canonical_payload_when_peeking_stream()
     {
         // Arrange
         using var stream = new StreamClient((messageType, payload, _) =>
@@ -576,8 +649,6 @@ public sealed class StreamClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            writer.WriteU8(0);
-            writer.WriteU32((uint)data.Build().Length);
             writer.WriteBytes(data.Build());
             return Task.FromResult(writer.Build());
         });
@@ -698,12 +769,11 @@ public sealed class StreamClientTests
             if (messageType == MessageTypes.StreamBegin)
             {
                 writer.WriteU8(0);
-                writer.WriteU8(1);
                 writer.WriteU64(99);
+                writer.WriteU32(0);
             }
             else
             {
-                writer.WriteU8(0);
                 writer.WriteU8(0);
                 writer.WriteU32(8);
                 writer.WriteU64(1234);
@@ -746,12 +816,11 @@ public sealed class StreamClientTests
             if (messageType == MessageTypes.StreamBegin)
             {
                 writer.WriteU8(0);
-                writer.WriteU8(1);
                 writer.WriteU64(99);
+                writer.WriteU32(0);
             }
             else
             {
-                writer.WriteU8(0);
                 writer.WriteU8(0);
                 writer.WriteU32(8);
                 writer.WriteU64(1234);
@@ -796,8 +865,12 @@ public sealed class StreamClientTests
             writer.WriteU8(0);
             if (messageType == MessageTypes.StreamBegin)
             {
-                writer.WriteU8(1);
                 writer.WriteU64(44);
+                writer.WriteU32(0);
+            }
+            else if (messageType == MessageTypes.StreamCommit)
+            {
+                writer.WriteU32(0);
             }
 
             return Task.FromResult(writer.Build());
@@ -828,8 +901,8 @@ public sealed class StreamClientTests
             writer.WriteU8(0);
             if (messageType == MessageTypes.StreamBegin)
             {
-                writer.WriteU8(1);
                 writer.WriteU64(44);
+                writer.WriteU32(0);
             }
             else if (messageType == MessageTypes.StreamCommit)
             {
@@ -859,8 +932,8 @@ public sealed class StreamClientTests
             writer.WriteU8(0);
             if (messageType == MessageTypes.StreamBegin)
             {
-                writer.WriteU8(1);
                 writer.WriteU64(44);
+                writer.WriteU32(0);
             }
 
             return Task.FromResult(writer.Build());
@@ -896,8 +969,8 @@ public sealed class StreamClientTests
             {
                 using var beginWriter = new BinaryBufferWriter();
                 beginWriter.WriteU8(0);
-                beginWriter.WriteU8(1);
                 beginWriter.WriteU64(44);
+                beginWriter.WriteU32(0);
                 transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamBegin, beginWriter.WrittenSpan));
             }
         };
@@ -936,8 +1009,8 @@ public sealed class StreamClientTests
             {
                 using var beginWriter = new BinaryBufferWriter();
                 beginWriter.WriteU8(0);
-                beginWriter.WriteU8(1);
                 beginWriter.WriteU64(44);
+                beginWriter.WriteU32(0);
                 firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamBegin, beginWriter.WrittenSpan));
             }
         };

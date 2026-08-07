@@ -36,6 +36,14 @@ public sealed class ClientTests
     }
 
     [Fact]
+    public void should_default_to_spec_safe_total_frame_limit()
+    {
+        var config = new ClientConfig(new Uri("ws://localhost:4190/ws"));
+
+        Assert.Equal(65_540, config.MaxFrameSize);
+    }
+
+    [Fact]
     public void should_preserve_explicit_transport_given_client_config()
     {
         var config = new ClientConfig(new Uri("tcp://localhost:4191"), Transport: ClientTransport.Tcp);
@@ -292,6 +300,37 @@ public sealed class ClientTests
 
         Assert.Equal(1, factoryCalls);
         Assert.Empty(secondTransport.SentFrames);
+        Assert.False(client.IsConnected);
+    }
+
+    [Fact]
+    public async Task should_cancel_and_await_inflight_reconnect_given_close_during_transport_connect()
+    {
+        await using var firstTransport = new QueuedTransport();
+        firstTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 1)
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+            }
+        };
+        var neverConnects = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var reconnectTransport = new BlockingConnectTransport(neverConnects.Task);
+        var factoryCalls = 0;
+        await using var client = new Client(new ClientConfig(
+            new Uri("ws://localhost:4190/ws"),
+            AuthSettleDelay: TimeSpan.Zero,
+            Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
+            TransportFactory: _ => factoryCalls++ == 0 ? firstTransport : reconnectTransport));
+        await client.ConnectAsync();
+        firstTransport.QueueClosed();
+        await WaitForConditionAsync(() => factoryCalls == 2, TimeSpan.FromSeconds(1));
+
+        await client.CloseAsync().WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.True(reconnectTransport.CancellationObserved);
         Assert.False(client.IsConnected);
     }
 
@@ -630,10 +669,20 @@ public sealed class ClientTests
 
         public Uri Url { get; } = new("ws://blocking");
 
+        public bool CancellationObserved { get; private set; }
+
         public async Task ConnectAsync(CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await _connectSignal.WaitAsync(cancellationToken);
+            try
+            {
+                await _connectSignal.WaitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                CancellationObserved = true;
+                throw;
+            }
         }
 
         public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
