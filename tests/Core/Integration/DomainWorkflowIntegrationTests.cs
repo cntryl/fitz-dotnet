@@ -1,4 +1,5 @@
 using System.Text;
+using Cntryl.Fitz.Abstractions;
 using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Abstractions.Domains.Stream;
@@ -253,7 +254,8 @@ public sealed class DomainWorkflowIntegrationTests
         var route = IntegrationFixture.CreateUniqueRoute("lease");
         await using var lease = await owner.Lease.AcquireAsync(route, 30);
 
-        await Assert.ThrowsAsync<LeaseException>(async () => await contender.Lease.AcquireAsync(route, 30));
+        var error = await Assert.ThrowsAsync<LeaseException>(async () => await contender.Lease.AcquireAsync(route, 30));
+        Assert.Equal(FitzErrorCodes.LeaseHeld, error.DomainCode);
         await lease.ReleaseAsync();
     }
 

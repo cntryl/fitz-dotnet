@@ -10,6 +10,40 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class QueueClientTests
 {
     [Fact]
+    public async Task should_preserve_broker_message_given_invalid_token_when_completing_item()
+    {
+        // Arrange
+        using var queue = new QueueClient((messageType, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            if (messageType == MessageTypes.QueueReserve)
+            {
+                writer.WriteU8(0);
+                writer.WriteU32(1);
+                writer.WriteU64(7);
+                writer.WriteU64(11);
+                writer.WriteU32(4);
+                writer.WriteBytes("body"u8);
+            }
+            else
+            {
+                writer.WriteU8(1);
+                writer.WriteString("InvalidToken");
+            }
+            return Task.FromResult(writer.Build());
+        });
+        var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", 30));
+
+        // Act
+        var act = () => item.CompleteAsync();
+
+        // Assert
+        var error = await Assert.ThrowsAsync<QueueException>(act);
+        Assert.Contains("InvalidToken", error.Message, StringComparison.Ordinal);
+        Assert.Null(error.DomainCode);
+    }
+
+    [Fact]
     public async Task should_preserve_error_code_and_message_given_enqueue_failure()
     {
         using var queue = new QueueClient((_, _, _) =>

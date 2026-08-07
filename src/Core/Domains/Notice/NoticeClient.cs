@@ -202,13 +202,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         writer.WriteString(pattern);
 
         var response = await _request(MessageTypes.NoticeSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            var message = reader.ReadString();
-            throw new NoticeException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status);
-        }
+        var reader = NoticeWireHelpers.ReadSuccess(response, "SUBSCRIBE");
 
         if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
         {
@@ -235,12 +229,10 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         writer.WriteU64(subscriptionId);
 
         var response = await _request(MessageTypes.NoticeUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
+        var reader = NoticeWireHelpers.ReadSuccess(response, "UNSUBSCRIBE");
+        if (!reader.IsEof)
         {
-            var message = reader.ReadString();
-            throw new NoticeException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status);
+            throw new NoticeException("UNSUBSCRIBE response has trailing bytes", "UNSUBSCRIBE_INVALID_RESPONSE");
         }
     }
 

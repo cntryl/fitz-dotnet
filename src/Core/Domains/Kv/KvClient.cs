@@ -1,5 +1,4 @@
 ﻿using System.Diagnostics.CodeAnalysis;
-using System.Text;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Connection;
@@ -77,12 +76,7 @@ public sealed class KvClient : IKvClient, IDisposable
         writer.WriteU8((byte)durability);
 
         var response = await _request(MessageTypes.KvBegin, writer.WrittenMemory, cancellationToken).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw new KvException($"BEGIN failed with status {status}", "BEGIN_FAILED", status);
-        }
+        var reader = KvWireHelpers.ReadSuccess(response, "BEGIN");
 
         if (reader.IsEof || reader.RemainingBytes < 8)
         {
@@ -215,46 +209,16 @@ public sealed class KvClient : IKvClient, IDisposable
         string operation,
         bool expectSubscriptionId)
     {
-        if (response.IsEmpty)
-        {
-            throw InvalidSubscriptionResponse(operation, "response is empty");
-        }
-
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status == 1)
-        {
-            if (reader.RemainingBytes < 4)
-            {
-                throw InvalidSubscriptionResponse(operation, "error envelope is truncated");
-            }
-
-            var messageLength = reader.ReadU32();
-            if (messageLength > int.MaxValue || messageLength != reader.RemainingBytes)
-            {
-                throw InvalidSubscriptionResponse(operation, "error message length is invalid");
-            }
-
-            var message = Encoding.UTF8.GetString(reader.ReadSpan((int)messageLength));
-            throw new KvException($"{operation} failed: {message}", $"{operation}_FAILED", status);
-        }
-
-        if (status != 0)
-        {
-            throw InvalidSubscriptionResponse(operation, $"unknown status {status}");
-        }
+        var reader = KvWireHelpers.ReadSuccess(response, operation);
 
         var expectedBytes = expectSubscriptionId ? 8 : 0;
         if (reader.RemainingBytes != expectedBytes)
         {
-            throw InvalidSubscriptionResponse(operation, $"expected {expectedBytes} payload bytes, got {reader.RemainingBytes}");
+            throw KvWireHelpers.InvalidResponse(operation, $"expected {expectedBytes} payload bytes, got {reader.RemainingBytes}");
         }
 
         return expectSubscriptionId ? reader.ReadU64() : null;
     }
-
-    private static KvException InvalidSubscriptionResponse(string operation, string reason) =>
-        new($"{operation} {reason}", $"{operation}_INVALID_RESPONSE");
 
     private void EnsureNotificationHandlerInitialized()
     {

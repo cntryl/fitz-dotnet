@@ -44,7 +44,12 @@ internal sealed class QueueReservedItem : QueueItem
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new QueueException($"EXTEND failed with status {status}", "EXTEND_FAILED", status);
+            var message = reader.ReadString();
+            if (!reader.IsEof)
+            {
+                throw new QueueException("EXTEND error response has trailing bytes", "EXTEND_INVALID_RESPONSE");
+            }
+            throw new QueueException($"EXTEND failed: {message}", "EXTEND_FAILED", status);
         }
 
         if (!reader.IsEof)
@@ -67,7 +72,12 @@ internal sealed class QueueReservedItem : QueueItem
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new QueueException($"COMPLETE failed with status {status}", "COMPLETE_FAILED", status);
+            var message = reader.ReadString();
+            if (!reader.IsEof)
+            {
+                throw new QueueException("COMPLETE error response has trailing bytes", "COMPLETE_INVALID_RESPONSE");
+            }
+            throw new QueueException($"COMPLETE failed: {message}", "COMPLETE_FAILED", status);
         }
 
         if (!reader.IsEof)
@@ -90,7 +100,12 @@ internal sealed class QueueReservedItem : QueueItem
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw new QueueException($"COMPLETE failed with status {status}", "COMPLETE_FAILED", status);
+            var message = reader.ReadString();
+            if (!reader.IsEof)
+            {
+                throw new QueueException("COMPLETE error response has trailing bytes", "COMPLETE_INVALID_RESPONSE");
+            }
+            throw new QueueException($"COMPLETE failed: {message}", "COMPLETE_FAILED", status);
         }
 
         if (!reader.IsEof)

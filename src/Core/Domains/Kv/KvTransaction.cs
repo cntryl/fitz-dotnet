@@ -42,12 +42,7 @@ public sealed class KvTransaction : IKvTransaction
             MessageTypes.KvGet,
             writer.WrittenMemory,
             ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw new KvException($"GET failed with status {status}", "GET_FAILED", status);
-        }
+        var reader = KvWireHelpers.ReadSuccess(response, "GET");
 
         if (reader.IsEof)
         {
@@ -173,17 +168,7 @@ public sealed class KvTransaction : IKvTransaction
             MessageTypes.KvScan,
             writer.WrittenMemory,
             ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            var message = reader.ReadString();
-            if (!reader.IsEof)
-            {
-                throw new KvException("SCAN error response has trailing bytes", "SCAN_INVALID_RESPONSE");
-            }
-            throw new KvException($"SCAN failed: {message}", "SCAN_FAILED", status);
-        }
+        var reader = KvWireHelpers.ReadSuccess(response, "SCAN");
 
         var pairCount = reader.ReadU32();
         var pairs = new List<KvPair>(checked((int)pairCount));
@@ -265,12 +250,7 @@ public sealed class KvTransaction : IKvTransaction
             ThrowIfClosed();
         }
         var response = await _request(messageType, payload, ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw new KvException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
-        }
+        var reader = KvWireHelpers.ReadSuccess(response, operation);
 
         if (!reader.IsEof)
         {

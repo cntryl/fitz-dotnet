@@ -1,4 +1,5 @@
-﻿using Cntryl.Fitz.Abstractions.Domains.Notice;
+﻿using Cntryl.Fitz.Abstractions;
+using Cntryl.Fitz.Abstractions.Domains.Notice;
 using Cntryl.Fitz.Domains.Notice;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
@@ -8,18 +9,45 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class NoticeClientTests
 {
     [Fact]
+    public async Task should_preserve_domain_error_given_invalid_pattern_when_subscribing()
+    {
+        // Arrange
+        using var notice = new NoticeClient(
+            (_, _, _) => Task.CompletedTask,
+            (_, _, _) =>
+            {
+                using var response = new BinaryBufferWriter();
+                response.WriteU8(1);
+                response.WriteU32(FitzErrorCodes.NoticeInvalidPattern);
+                response.WriteString("invalid pattern");
+                return Task.FromResult(response.Build());
+            },
+            (_, _) => new TestRegistration());
+
+        // Act
+        var act = () => notice.SubscribeAsync("notice://prod/app/*");
+
+        // Assert
+        var error = await Assert.ThrowsAsync<NoticeException>(act);
+        Assert.Equal(FitzErrorCodes.NoticeInvalidPattern, error.DomainCode);
+    }
+
+    [Fact]
     public async Task should_yield_notice_given_async_enumerable_subscription_when_notification_arrives()
     {
         // Arrange
         Action<byte[]>? notifyHandler = null;
         using var notice = new NoticeClient(
             (_, _, _) => Task.CompletedTask,
-            (_, _, _) =>
+            (messageType, _, _) =>
             {
                 using var response = new BinaryBufferWriter();
                 response.WriteU8(0);
-                response.WriteU8(1);
-                response.WriteU64(55);
+                if (messageType == MessageTypes.NoticeSubscribe)
+                {
+                    response.WriteU8(1);
+                    response.WriteU64(55);
+                }
                 return Task.FromResult(response.Build());
             },
             (_, handler) =>
@@ -90,8 +118,11 @@ public sealed class NoticeClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
-                writer.WriteU8(1);
-                writer.WriteU64(55);
+                if (messageType == MessageTypes.NoticeSubscribe)
+                {
+                    writer.WriteU8(1);
+                    writer.WriteU64(55);
+                }
                 return Task.FromResult(writer.Build());
             },
             (messageType, handler) =>

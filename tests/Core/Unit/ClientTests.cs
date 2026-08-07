@@ -3,6 +3,7 @@ using System.Threading.Channels;
 using Cntryl.Fitz;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
+using Cntryl.Fitz.Observability;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Transport;
 
@@ -332,6 +333,41 @@ public sealed class ClientTests
 
         Assert.True(reconnectTransport.CancellationObserved);
         Assert.False(client.IsConnected);
+    }
+
+    [Fact]
+    public async Task should_restore_session_given_exhausted_automatic_reconnect_when_connect_called()
+    {
+        // Arrange
+        await using var firstTransport = CreateConfirmingTransport();
+        await using var failedTransport = new FailingConnectTransport(new IOException("dial failed"));
+        await using var restoredTransport = CreateConfirmingTransport();
+        var lifecycleEvents = new List<string>();
+        var factoryCalls = 0;
+        await using var client = new Client(new ClientConfig(
+            new Uri("ws://localhost:4190/ws"),
+            AuthSettleDelay: TimeSpan.Zero,
+            Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
+            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt => lifecycleEvents.Add(evt.Event)),
+            TransportFactory: _ => factoryCalls++ switch
+            {
+                0 => firstTransport,
+                1 => failedTransport,
+                _ => restoredTransport,
+            }));
+        await client.ConnectAsync();
+        firstTransport.QueueClosed();
+        await WaitForConditionAsync(
+            () => lifecycleEvents.Contains("reconnect_failed", StringComparer.Ordinal),
+            TimeSpan.FromSeconds(1));
+
+        // Act
+        await client.ConnectAsync();
+
+        // Assert
+        Assert.True(client.IsConnected);
+        Assert.Equal(3, factoryCalls);
+        Assert.Contains("reconnect_succeeded", lifecycleEvents, StringComparer.Ordinal);
     }
 
     [Fact]
@@ -772,5 +808,22 @@ public sealed class ClientTests
             _incoming.Writer.TryComplete();
             return ValueTask.CompletedTask;
         }
+    }
+
+    private static QueuedTransport CreateConfirmingTransport()
+    {
+        var transport = new QueuedTransport();
+        transport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount != 1)
+            {
+                return;
+            }
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+        };
+        return transport;
     }
 }

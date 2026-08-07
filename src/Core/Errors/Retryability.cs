@@ -1,4 +1,5 @@
 using System.IO;
+using Cntryl.Fitz.Abstractions;
 
 namespace Cntryl.Fitz.Errors;
 
@@ -22,9 +23,9 @@ public static class Retryability
     {
         return error switch
         {
-            KvException kv when ShouldRetry(kv.Status) => true,
-            QueueException queue when ShouldRetryQueueError(queue.Code, queue.Status) => true,
-            LeaseException lease when ShouldRetry(lease.Status) => true,
+            KvException kv when kv.DomainCode is FitzErrorCodes.KvIsolationConflict or FitzErrorCodes.KvBackendError => true,
+            QueueException queue when queue.DomainCode == FitzErrorCodes.QueueFull => true,
+            LeaseException lease when lease.DomainCode == FitzErrorCodes.LeaseHeld => true,
             RpcException rpc when IsRetryableRpcCode(rpc.Code) => true,
             _ => false,
         };
@@ -33,16 +34,6 @@ public static class Retryability
     private static bool IsRetryableRpcCode(string code)
     {
         return code is "TIMEOUT" or "WORKER_NOT_FOUND" or "BACKPRESSURE" or "ROUTE_NOT_REGISTERED";
-    }
-
-    private static bool ShouldRetryQueueError(string code, byte? status)
-    {
-        if (string.Equals(code, "INVALID_TOKEN", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        return ShouldRetry(status);
     }
 
     private static bool IsTransientQueueCommitFailure(Exception error)
@@ -69,19 +60,4 @@ public static class Retryability
             || queue.Message.Contains("refusing writes", comparison);
     }
 
-    private static bool ShouldRetry(byte? status)
-    {
-        if (!status.HasValue)
-        {
-            return false;
-        }
-
-        return status.Value switch
-        {
-            3 => true,
-            4 => true,
-            1 => true,
-            _ => false,
-        };
-    }
 }

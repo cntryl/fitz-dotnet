@@ -1,4 +1,5 @@
-﻿using Cntryl.Fitz.Abstractions.Domains.Lease;
+﻿using Cntryl.Fitz.Abstractions;
+using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Domains.Lease;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Connection;
@@ -9,6 +10,27 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class LeaseClientTests
 {
+    [Fact]
+    public async Task should_preserve_domain_code_given_typed_error_when_acquiring_lease()
+    {
+        // Arrange
+        using var leaseClient = new LeaseClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(1);
+            writer.WriteU32(FitzErrorCodes.LeaseHeld);
+            writer.WriteString("HeldByOther: worker-1");
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var act = () => leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+
+        // Assert
+        var error = await Assert.ThrowsAsync<LeaseException>(act);
+        Assert.Equal(FitzErrorCodes.LeaseHeld, error.DomainCode);
+    }
+
     [Fact]
     public async Task should_release_on_dispose_given_cancelled_extend()
     {
@@ -361,7 +383,10 @@ public sealed class LeaseClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
-                writer.WriteU64(555);
+                if (messageType == MessageTypes.LeaseSubscribe)
+                {
+                    writer.WriteU64(555);
+                }
                 return Task.FromResult(writer.Build());
             },
             (messageType, handler) =>

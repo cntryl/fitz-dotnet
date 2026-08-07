@@ -151,7 +151,8 @@ public sealed class FitzConnection : IAsyncDisposable
                 _closeRequested = false;
                 _authRejected = false;
                 _reconnectExhausted = false;
-                connectTask = TrackConnectTask(() => OpenAndAuthenticateAsync(isReconnect: false, cancellationToken));
+                var isReconnect = _hasEstablishedSession;
+                connectTask = TrackConnectTask(() => OpenAndAuthenticateAsync(isReconnect, cancellationToken));
             }
         }
 

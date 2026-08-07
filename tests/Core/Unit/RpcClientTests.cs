@@ -144,7 +144,8 @@ public sealed class RpcClientTests
 
         // Assert
         Assert.Equal("WORKER_NOT_FOUND", ex.Code);
-        Assert.Null(ex.Status);
+        Assert.Equal((byte)1, ex.Status);
+        Assert.Equal((uint)6002, ex.DomainCode);
         Assert.Contains("worker missing", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 

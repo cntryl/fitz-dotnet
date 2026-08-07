@@ -85,7 +85,7 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task should_preserve_message_given_kv_subscription_validation_error()
+    public async Task should_preserve_domain_error_given_invalid_subscription_when_subscribing()
     {
         // Arrange
         using var kv = new KvClient(
@@ -93,6 +93,7 @@ public sealed class KvClientTests
             {
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(1);
+                writer.WriteU32(FitzErrorCodes.KvInvalidSubscriptionPattern);
                 writer.WriteString("invalid pattern");
                 return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
             },
@@ -103,12 +104,12 @@ public sealed class KvClientTests
             kv.SubscribeAsync("kv://realm/area/resource", (_, _) => ValueTask.CompletedTask));
 
         // Assert
-        Assert.Null(error.DomainCode);
+        Assert.Equal(FitzErrorCodes.KvInvalidSubscriptionPattern, error.DomainCode);
         Assert.Contains("invalid pattern", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task should_throw_kv_exception_given_truncated_subscription_error_response()
+    public async Task should_throw_kv_exception_given_truncated_error_when_subscribing()
     {
         // Arrange
         using var kv = new KvClient(

@@ -114,12 +114,15 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             RemoveQueuedAcquisition(deferred);
             throw;
         }
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
+        BinaryBufferReader reader;
+        try
+        {
+            reader = LeaseWireHelpers.ReadSuccess(response, "ACQUIRE");
+        }
+        catch
         {
             RemoveQueuedAcquisition(deferred);
-            throw new LeaseException($"ACQUIRE failed with status {status}", "ACQUIRE_FAILED", status);
+            throw;
         }
 
         if (reader.RemainingBytes < 9)
@@ -149,13 +152,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
                 RemoveQueuedAcquisition(deferred);
                 throw;
             }
-            reader = new BinaryBufferReader(response);
-            status = reader.ReadU8();
-            if (status != 0)
-            {
-                var message = reader.ReadString();
-                throw new LeaseException($"ACQUIRE failed: {message}", "ACQUIRE_FAILED", status);
-            }
+            reader = LeaseWireHelpers.ReadSuccess(response, "ACQUIRE");
             responseType = reader.ReadU8();
             fencedToken = reader.ReadU64();
             if (responseType is not 0 and not 1 || !reader.IsEof)
@@ -326,12 +323,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
                 MessageTypes.LeaseQuery,
                 writer.WrittenMemory,
                 ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw new LeaseException($"QUERY failed with status {status}", "QUERY_FAILED", status);
-        }
+        var reader = LeaseWireHelpers.ReadSuccess(response, "QUERY");
 
         var hasHolder = reader.ReadU8();
         if (hasHolder == 0)
@@ -456,13 +448,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         writer.WriteString(route);
 
         var response = await _request(MessageTypes.LeaseSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            var message = reader.ReadString();
-            throw new LeaseException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status);
-        }
+        var reader = LeaseWireHelpers.ReadSuccess(response, "SUBSCRIBE");
 
         if (reader.RemainingBytes != 8)
         {
@@ -484,12 +470,10 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         writer.WriteString(route);
 
         var response = await _request(MessageTypes.LeaseUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
+        var reader = LeaseWireHelpers.ReadSuccess(response, "UNSUBSCRIBE");
+        if (!reader.IsEof)
         {
-            var message = reader.ReadString();
-            throw new LeaseException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status);
+            throw new LeaseException("UNSUBSCRIBE response has trailing bytes", "UNSUBSCRIBE_INVALID_RESPONSE");
         }
     }
 

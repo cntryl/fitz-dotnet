@@ -347,13 +347,7 @@ public sealed class RpcClient : IRpcClient
         writer.WriteU32(maxConcurrency);
 
         var response = await _request(MessageTypes.RpcSubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            var message = reader.ReadString();
-            throw new RpcException($"REGISTER failed: {message}", "REGISTER_FAILED", status);
-        }
+        var reader = ReadRpcSuccess(response, "REGISTER");
 
         if (reader.RemainingBytes >= 8)
         {
@@ -371,16 +365,7 @@ public sealed class RpcClient : IRpcClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
         var response = await _request(MessageTypes.RpcUnsubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
-        if (!response.IsEmpty)
-        {
-            var reader = new BinaryBufferReader(response);
-            var status = reader.ReadU8();
-            if (status != 0)
-            {
-                var message = reader.ReadString();
-                throw new RpcException($"UNREGISTER failed: {message}", "UNREGISTER_FAILED", status);
-            }
-        }
+        _ = ReadRpcSuccess(response, "UNREGISTER");
         lock (_workerSync)
         {
             _workers.Remove(pattern);
@@ -489,7 +474,9 @@ public sealed class RpcClient : IRpcClient
 
             rpcError = new RpcException(
                 string.IsNullOrWhiteSpace(message) ? "RPC error" : message,
-                MapRpcErrorCode(code));
+                MapRpcErrorCode(code),
+                1,
+                code);
             return true;
         }
         catch
@@ -526,6 +513,30 @@ public sealed class RpcClient : IRpcClient
             6013 => "SUBSCRIPTION_LIMIT",
             _ => "DOMAIN_ERROR",
         };
+    }
+
+    private static BinaryBufferReader ReadRpcSuccess(ReadOnlyMemory<byte> response, string operation)
+    {
+        var reader = new BinaryBufferReader(response);
+        var status = reader.ReadU8();
+        if (status == 0)
+        {
+            return reader;
+        }
+
+        if (status != 1)
+        {
+            throw new RpcException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
+        }
+
+        var domainCode = reader.ReadU32();
+        var message = reader.ReadString();
+        if (!reader.IsEof)
+        {
+            throw new RpcException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+        }
+
+        throw new RpcException($"{operation} failed: {message}", MapRpcErrorCode(domainCode), status, domainCode);
     }
 
     private sealed class RpcResponseWriter : IRpcResponseWriter
