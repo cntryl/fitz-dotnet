@@ -210,6 +210,66 @@ public sealed class RpcClientTests
         Assert.True(reader.IsEof);
     }
 
+    [Theory]
+    [InlineData(0u)]
+    [InlineData(1025u)]
+    public async Task should_reject_worker_concurrency_outside_wire_range(uint maxConcurrency)
+    {
+        // Arrange
+        var requestCalled = false;
+        var rpc = new RpcClient(
+            (_, _, _) =>
+            {
+                requestCalled = true;
+                return Task.FromResult(Array.Empty<byte>());
+            },
+            (_, _, _) => Task.CompletedTask,
+            (_, _) => new TestRegistration());
+
+        // Act
+        var error = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            rpc.RegisterWorkerAsync(
+                "rpc://prod/app/echo",
+                (_, _, _) => ValueTask.CompletedTask,
+                new RpcWorkerOptions { MaxConcurrency = maxConcurrency }));
+
+        // Assert
+        Assert.Equal("options", error.ParamName);
+        Assert.False(requestCalled);
+    }
+
+    [Theory]
+    [InlineData(1u)]
+    [InlineData(1024u)]
+    public async Task should_encode_worker_concurrency_at_wire_boundaries(uint maxConcurrency)
+    {
+        // Arrange
+        byte[]? seenPayload = null;
+        var rpc = new RpcClient(
+            (_, payload, _) =>
+            {
+                seenPayload = payload.ToArray();
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                return Task.FromResult(writer.Build());
+            },
+            (_, _, _) => Task.CompletedTask,
+            (_, _) => new TestRegistration());
+
+        // Act
+        await using var registration = await rpc.RegisterWorkerAsync(
+            "rpc://prod/app/echo",
+            (_, _, _) => ValueTask.CompletedTask,
+            new RpcWorkerOptions { MaxConcurrency = maxConcurrency });
+
+        // Assert
+        Assert.NotNull(seenPayload);
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal("rpc://prod/app/echo", reader.ReadString());
+        Assert.Equal(maxConcurrency, reader.ReadU32());
+        Assert.True(reader.IsEof);
+    }
+
     [Fact]
     public async Task should_time_out_given_no_worker_response_when_call_awaited()
     {

@@ -241,9 +241,9 @@ public sealed class RpcClient : IRpcClient
         }
 
         var maxConcurrency = options?.MaxConcurrency ?? 1;
-        if (maxConcurrency == 0)
+        if (maxConcurrency is < 1 or > 1024)
         {
-            throw new ArgumentOutOfRangeException(nameof(options), "MaxConcurrency must be positive.");
+            throw new ArgumentOutOfRangeException(nameof(options), "MaxConcurrency must be between 1 and 1024.");
         }
 
         await SubscribeWorkerAsync(pattern, maxConcurrency, ct).ConfigureAwait(false);
