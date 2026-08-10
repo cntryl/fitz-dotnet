@@ -33,6 +33,31 @@ public sealed partial class ConformanceSmokeTests
         Assert.True(File.Exists(config.OutputPath));
     }
 
+    [Fact]
+    public async Task should_increase_managed_lease_authority_given_successive_ownership()
+    {
+        var transport = IntegrationFixture.GetConformanceTransport();
+        var authMode = IntegrationFixture.GetConformanceAuthMode();
+        var route = IntegrationFixture.CreateUniqueRoute("lease");
+        await using var first = IntegrationFixture.CreateClientForMode(transport, authMode);
+        await using var successor = IntegrationFixture.CreateClientForMode(transport, authMode);
+        await first.ConnectAsync();
+        await successor.ConnectAsync();
+
+        var firstAuthority = await first.Lease.WithLeaseAsync(
+            route,
+            30,
+            static (authority, _) => ValueTask.FromResult(authority.FencingToken));
+        var successorAuthority = await successor.Lease.WithLeaseAsync(
+            route,
+            30,
+            static (authority, _) => ValueTask.FromResult(authority.FencingToken));
+
+        Assert.True(
+            successorAuthority > firstAuthority,
+            $"Expected successor fencing token {successorAuthority} to exceed prior token {firstAuthority}.");
+    }
+
     private static async Task<ScenarioResult> RunCs001ConnectSuccess(string transport, string authMode)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();

@@ -153,6 +153,28 @@ The conformance artifact uses the shared schema:
 for `ValueTask` callbacks. Set `LeaseExecutionOptions.WaitForAvailability` to retry typed
 contention. Callback code must honor its cancellation token promptly. Low-level handles
 remain available, serialize fencing-token rotation, and close on uncertain renewal.
+The callback token is canceled immediately when the client observes a disconnect or other
+lease-ownership loss; `WithLeaseAsync` still awaits callback settlement before composing lifecycle
+and cancellation-hook failures, and it never sends a stale release after ownership is uncertain.
+
+Authority-aware callbacks also receive the immutable admission fence from the successful
+`ACQUIRE` response:
+
+```csharp
+await client.Lease.WithLeaseAsync(
+    "lease://example/jobs/leader",
+    30,
+    async (authority, cancellationToken) =>
+    {
+        await RunLeaderAsync(authority.FencingToken, cancellationToken);
+    });
+```
+
+`LeaseAuthority.FencingToken` is the admission epoch for that callback, not a live renewal
+credential. It remains stable while the managed lease renews. Tokens are ordered only across
+successive owners of the same lease route; an external store should atomically retain the greatest
+accepted value and reject lower values rather than compare the snapshot for equality with a later
+broker token. Existing one-argument callbacks remain supported.
 
 ## Repository Layout
 
