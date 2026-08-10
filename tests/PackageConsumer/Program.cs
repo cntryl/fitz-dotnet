@@ -1,5 +1,6 @@
 using Cntryl.Fitz;
 using Cntryl.Fitz.Abstractions.Domains.Kv;
+using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Abstractions.Domains.Notice;
 using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.DependencyInjection;
@@ -35,3 +36,29 @@ static async Task CompilePreviewApiAsync(
 
 Func<INoticeClient, IScheduleClient, CancellationToken, Task> previewApi = CompilePreviewApiAsync;
 GC.KeepAlive(previewApi);
+
+static async Task<ulong> CompileManagedLeaseAuthorityAsync(
+    ILeaseClient lease,
+    CancellationToken cancellationToken)
+{
+    var fencingToken = await lease.WithLeaseAsync(
+        "lease://example/app/leader",
+        30,
+        static (authority, callbackCancellationToken) =>
+        {
+            callbackCancellationToken.ThrowIfCancellationRequested();
+            ulong exactFencingToken = authority.FencingToken;
+            return ValueTask.FromResult(exactFencingToken);
+        },
+        ct: cancellationToken).ConfigureAwait(false);
+
+    await lease.WithLeaseAsync(
+        "lease://example/app/legacy",
+        30,
+        static _ => ValueTask.CompletedTask,
+        ct: cancellationToken).ConfigureAwait(false);
+    return fencingToken;
+}
+
+Func<ILeaseClient, CancellationToken, Task<ulong>> managedLeaseApi = CompileManagedLeaseAuthorityAsync;
+GC.KeepAlive(managedLeaseApi);

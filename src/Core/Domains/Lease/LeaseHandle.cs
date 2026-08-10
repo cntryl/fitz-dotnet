@@ -8,10 +8,11 @@ namespace Cntryl.Fitz.Domains.Lease;
 public sealed class LeaseHandle : ILease
 {
     private readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
-    private readonly IDisposable? _disconnectRegistration;
+    private IDisposable? _disconnectRegistration;
     private int _closed;
     private int _disposed;
     private readonly SemaphoreSlim _operationGate = new(1, 1);
+    private readonly TaskCompletionSource _connectionLost = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal LeaseHandle(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
@@ -22,12 +23,24 @@ public sealed class LeaseHandle : ILease
         _request = request;
         Route = route;
         Token = token;
-        _disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
+        var disconnectRegistration = registerOnDisconnect?.Invoke(MarkConnectionLost);
+        if (disconnectRegistration is not null)
+        {
+            Interlocked.Exchange(ref _disconnectRegistration, disconnectRegistration)?.Dispose();
+            if (Volatile.Read(ref _closed) != 0)
+            {
+                Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
+            }
+        }
     }
 
     public string Route { get; }
 
     internal ulong Token { get; private set; }
+
+    internal Task ConnectionLost => _connectionLost.Task;
+
+    internal void Invalidate() => MarkClosed();
 
     public async Task ExtendAsync(ulong ttlSecs, CancellationToken ct = default)
     {
@@ -125,11 +138,30 @@ public sealed class LeaseHandle : ILease
 
     private void MarkClosed()
     {
-        if (Interlocked.Exchange(ref _closed, 1) != 0)
+        if (!TryMarkClosed())
+        {
+            return;
+        }
+    }
+
+    private void MarkConnectionLost()
+    {
+        if (!TryMarkClosed())
         {
             return;
         }
 
-        _disconnectRegistration?.Dispose();
+        _connectionLost.TrySetResult();
+    }
+
+    private bool TryMarkClosed()
+    {
+        if (Interlocked.Exchange(ref _closed, 1) != 0)
+        {
+            return false;
+        }
+
+        Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
+        return true;
     }
 }

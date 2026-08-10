@@ -10,6 +10,7 @@
 - Queue notifications expose the broker-defined length-prefixed `Payload`; the invented ready/delayed/inflight counters were removed.
 - Stream records expose `GlobalOffset` for global selectors, and BEGIN/APPEND accept only their canonical response layouts.
 - Lease queries expose `PendingWaiters`; queued acquisition follows the broker deferred-acquisition flow.
+- Managed lease callbacks can accept `(LeaseAuthority authority, CancellationToken cancellationToken)` to receive the immutable admission fencing token; existing cancellation-only callbacks remain source compatible.
 - Stream global continuation reuses the returned fingerprint and captured-watermark pair.
 - Frame parsing is strict; callers should use `FrameCodec.DecodeStrict` and handle trailing or truncated data as protocol errors.
 

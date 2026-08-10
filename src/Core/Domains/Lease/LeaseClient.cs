@@ -72,6 +72,11 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
 
     public async Task<ILease> AcquireAsync(string route, ulong ttlSecs, uint waitSeconds = 0, CancellationToken ct = default)
     {
+        return await AcquireLeaseAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
+    }
+
+    private async Task<LeaseHandle> AcquireLeaseAsync(string route, ulong ttlSecs, uint waitSeconds, CancellationToken ct)
+    {
         await _acquisitionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -83,7 +88,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         }
     }
 
-    private async Task<ILease> AcquireCoreAsync(string route, ulong ttlSecs, uint waitSeconds, CancellationToken ct)
+    private async Task<LeaseHandle> AcquireCoreAsync(string route, ulong ttlSecs, uint waitSeconds, CancellationToken ct)
     {
         if (!RouteValidation.IsFixedRoute(route, "lease", 3))
         {
@@ -206,6 +211,25 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(callback);
+        return await WithLeaseAsync(
+            route,
+            ttlSecs,
+            (_, cancellationToken) => callback(cancellationToken),
+            options,
+            ct).ConfigureAwait(false);
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Lease execution must aggregate arbitrary user callback, renewal, and cleanup failures.")]
+    [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "The await-using declaration must retain the strongly typed lease handle for renewal operations.")]
+    [SuppressMessage("Reliability", "CA2025:Do not pass IDisposable instances into unawaited tasks", Justification = "The connection-loss observer is stopped and awaited before either cancellation source is disposed.")]
+    public async Task<T> WithLeaseAsync<T>(
+        string route,
+        ulong ttlSecs,
+        Func<LeaseAuthority, CancellationToken, ValueTask<T>> callback,
+        LeaseExecutionOptions? options = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
         ct.ThrowIfCancellationRequested();
         if (ttlSecs == 0 || ttlSecs > uint.MaxValue / 1000)
         {
@@ -213,13 +237,19 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         }
 
         var waitSeconds = options?.WaitForAvailability == true ? options.WaitSeconds : 0;
-        await using var lease = await AcquireAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
+        await using var lease = await AcquireLeaseAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
+        var authority = new LeaseAuthority(lease.Token);
 
         using var lifecycle = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var connectionLossObserverStop = new CancellationTokenSource();
+        var connectionLossObserver = ObserveConnectionLossAsync(
+            lease.ConnectionLost,
+            lifecycle,
+            connectionLossObserverStop.Token);
         Task<T> callbackTask;
         try
         {
-            callbackTask = callback(lifecycle.Token).AsTask();
+            callbackTask = callback(authority, lifecycle.Token).AsTask();
         }
         catch (Exception error)
         {
@@ -227,10 +257,18 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         }
 
         Exception? leaseLoss = null;
+        Exception? lifecycleCancellationError = null;
         while (!callbackTask.IsCompleted)
         {
             var delay = Task.Delay(TimeSpan.FromSeconds(ttlSecs / 3d), CancellationToken.None);
-            var completed = await Task.WhenAny(callbackTask, delay).ConfigureAwait(false);
+            var completed = await Task.WhenAny(callbackTask, connectionLossObserver, delay).ConfigureAwait(false);
+            if (lease.ConnectionLost.IsCompleted)
+            {
+                leaseLoss = new LeaseException("Lease ownership was lost", "LEASE_LOST");
+                lifecycleCancellationError = await connectionLossObserver.ConfigureAwait(false);
+                break;
+            }
+
             if (completed == callbackTask)
             {
                 break;
@@ -242,11 +280,20 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             }
             catch (Exception error)
             {
+                lease.Invalidate();
                 leaseLoss = new LeaseException("Lease ownership was lost", "LEASE_LOST", error);
-                await lifecycle.CancelAsync().ConfigureAwait(false);
+                lifecycleCancellationError = await CaptureCancellationFailureAsync(lifecycle).ConfigureAwait(false);
                 break;
             }
         }
+
+        await connectionLossObserverStop.CancelAsync().ConfigureAwait(false);
+        var observedConnectionLossCancellationError = await connectionLossObserver.ConfigureAwait(false);
+        if (leaseLoss is null && lease.ConnectionLost.IsCompleted)
+        {
+            leaseLoss = new LeaseException("Lease ownership was lost", "LEASE_LOST");
+        }
+        lifecycleCancellationError ??= observedConnectionLossCancellationError;
 
         T? value = default;
         Exception? callbackError = null;
@@ -277,14 +324,51 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             }
         }
 
-        var failures = new List<Exception>(3);
+        var failures = new List<Exception>(4);
         if (leaseLoss is not null) failures.Add(leaseLoss);
+        if (lifecycleCancellationError is AggregateException aggregateCancellationError)
+        {
+            failures.AddRange(aggregateCancellationError.Flatten().InnerExceptions);
+        }
+        else if (lifecycleCancellationError is not null)
+        {
+            failures.Add(lifecycleCancellationError);
+        }
         if (callbackError is not null) failures.Add(callbackError);
         if (releaseError is not null) failures.Add(releaseError);
         if (ct.IsCancellationRequested) failures.Insert(0, new OperationCanceledException(ct));
         if (failures.Count > 1) throw new AggregateException(failures);
         if (failures.Count == 1) throw failures[0];
         return value!;
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Managed lease cancellation must preserve arbitrary callback registration failures for lifecycle aggregation.")]
+    private static async Task<Exception?> CaptureCancellationFailureAsync(CancellationTokenSource cancellation)
+    {
+        try
+        {
+            await cancellation.CancelAsync().ConfigureAwait(false);
+            return null;
+        }
+        catch (Exception error)
+        {
+            return error;
+        }
+    }
+
+    private static async Task<Exception?> ObserveConnectionLossAsync(
+        Task connectionLost,
+        CancellationTokenSource lifecycle,
+        CancellationToken stop)
+    {
+        var stopped = Task.Delay(Timeout.InfiniteTimeSpan, stop);
+        var completed = await Task.WhenAny(connectionLost, stopped).ConfigureAwait(false);
+        if (completed != connectionLost)
+        {
+            return null;
+        }
+
+        return await CaptureCancellationFailureAsync(lifecycle).ConfigureAwait(false);
     }
 
     public async Task WithLeaseAsync(
@@ -298,9 +382,25 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         await WithLeaseAsync(
             route,
             ttlSecs,
-            async token =>
+            (_, cancellationToken) => callback(cancellationToken),
+            options,
+            ct).ConfigureAwait(false);
+    }
+
+    public async Task WithLeaseAsync(
+        string route,
+        ulong ttlSecs,
+        Func<LeaseAuthority, CancellationToken, ValueTask> callback,
+        LeaseExecutionOptions? options = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        await WithLeaseAsync(
+            route,
+            ttlSecs,
+            async (authority, cancellationToken) =>
             {
-                await callback(token).ConfigureAwait(false);
+                await callback(authority, cancellationToken).ConfigureAwait(false);
                 return true;
             },
             options,
