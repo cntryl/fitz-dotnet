@@ -155,7 +155,7 @@ internal static class StreamWireHelpers
 
     internal static StreamReadPage ReadReadPage(ReadOnlyMemory<byte> payload, string operation, string selector)
     {
-        if (!RouteValidation.IsStreamSelector(selector))
+        if (!RouteValidation.TryGetStreamSelectorScope(selector, out var scope))
         {
             throw new StreamException(
                 $"{operation} response requires a canonical stream selector",
@@ -179,7 +179,7 @@ internal static class StreamWireHelpers
             throw new StreamException($"{operation} response item count too large", $"{operation}_INVALID_RESPONSE");
         }
 
-        var global = selector is "stream://**" or "stream://*/*/*";
+        var global = scope == StreamSelectorScope.Global;
         var items = new List<StreamReadItem>((int)itemCount);
         for (var index = 0; index < itemCount; index++)
         {

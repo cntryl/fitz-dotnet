@@ -11,6 +11,14 @@ internal enum RouteValidationFailure
     ContainsWildcard,
 }
 
+internal enum StreamSelectorScope
+{
+    Resource,
+    Area,
+    Realm,
+    Global,
+}
+
 internal static class RouteValidation
 {
     internal static bool IsConcreteRoute(string route, string scheme)
@@ -35,17 +43,43 @@ internal static class RouteValidation
 
     internal static bool IsStreamSelector(string route)
     {
+        return TryGetStreamSelectorScope(route, out _);
+    }
+
+    internal static bool TryGetStreamSelectorScope(string route, out StreamSelectorScope scope)
+    {
         if (string.Equals(route, "stream://**", StringComparison.Ordinal))
         {
+            scope = StreamSelectorScope.Global;
             return true;
         }
         var segments = RouteSegments(route);
+        if (segments.Length == 2 && route.StartsWith("stream://", StringComparison.Ordinal) &&
+            segments[1] == "**" && segments[0].Length > 0 &&
+            !segments[0].Contains('*', StringComparison.Ordinal))
+        {
+            scope = StreamSelectorScope.Realm;
+            return true;
+        }
         if (segments.Length != 3 || !route.StartsWith("stream://", StringComparison.Ordinal))
         {
+            scope = default;
             return false;
         }
-        return segments.All(static segment =>
-            segment == "*" || !segment.Contains('*', StringComparison.Ordinal));
+        if (!segments.All(static segment =>
+            segment == "*" || !segment.Contains('*', StringComparison.Ordinal)))
+        {
+            scope = default;
+            return false;
+        }
+        scope = segments[0] == "*"
+            ? StreamSelectorScope.Global
+            : segments[1] == "*"
+                ? StreamSelectorScope.Realm
+                : segments[2] == "*"
+                    ? StreamSelectorScope.Area
+                    : StreamSelectorScope.Resource;
+        return true;
     }
 
     internal static bool TryValidateRegistrationPattern(

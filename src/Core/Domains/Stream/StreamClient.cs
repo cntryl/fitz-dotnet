@@ -439,7 +439,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
             return;
         }
 
-        throw new StreamException($"stream selector '{route}' must be realm/area/resource, realm/area/*, realm/*/*, or stream://**", "INVALID_ROUTE");
+        throw new StreamException($"stream selector '{route}' must use the canonical resource, area, realm, or global selector shape", "INVALID_ROUTE");
     }
 
     private static void ThrowInvalidExactRoute(string route, RouteValidationFailure failure)

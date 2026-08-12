@@ -9,6 +9,27 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class StreamClientTests
 {
+    public static TheoryData<string> CanonicalStreamSelectors => new()
+    {
+        "stream://realm/area/resource",
+        "stream://realm/area/*",
+        "stream://realm/*/resource",
+        "stream://realm/*/*",
+        "stream://realm/**",
+        "stream://*/area/resource",
+        "stream://*/area/*",
+        "stream://*/*/resource",
+        "stream://*/*/*",
+        "stream://**",
+    };
+
+    [Theory]
+    [MemberData(nameof(CanonicalStreamSelectors))]
+    public void should_accept_selector_given_canonical_stream_fixture_shape(string selector)
+    {
+        Assert.True(RouteValidation.IsStreamSelector(selector));
+    }
+
     [Fact]
     public async Task should_rollback_already_restored_patterns_given_partial_reconnect_failure()
     {
@@ -54,6 +75,9 @@ public sealed class StreamClientTests
     }
 
     [Theory]
+    [InlineData("stream://*/area/resource")]
+    [InlineData("stream://*/area/*")]
+    [InlineData("stream://*/*/resource")]
     [InlineData("stream://**")]
     [InlineData("stream://*/*/*")]
     public void should_decode_per_record_global_offset_given_global_selector(string selector)
@@ -183,7 +207,7 @@ public sealed class StreamClientTests
         {
             var request = new BinaryBufferReader(payload);
             var selector = request.ReadString();
-            Assert.True(selector is "stream://**" or "stream://*/app/*");
+            Assert.True(selector is "stream://**" or "stream://*/app/*" or "stream://tenant/**");
             request.ReadU64();
             request.ReadU64();
             Assert.Equal((byte)0, request.ReadU8());
@@ -195,6 +219,7 @@ public sealed class StreamClientTests
 
         await stream.ReadPageAsync("stream://**", 42);
         await stream.ReadPageAsync("stream://*/app/*", 0);
+        await stream.ReadPageAsync("stream://tenant/**", 0);
     }
 
     [Fact]

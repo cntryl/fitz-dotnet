@@ -1,0 +1,6 @@
+{
+  "upstreamRepository": "https://github.com/cntryl/fitz",
+  "upstreamCommit": "7d7e991b14dc8f5ecd807fdbc8ffd50da6509f2b",
+  "fixturePath": "docs/clients/spec/stream-read-conformance.json",
+  "sha256": "b487ef936dfab9ff61c0fea9d519f58bc80470dd340c7d340391e2954793902d"
+}
