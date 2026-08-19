@@ -14,4 +14,4 @@
 - Stream global continuation reuses the returned fingerprint and captured-watermark pair.
 - Frame parsing is strict; callers should use `FrameCodec.DecodeStrict` and handle trailing or truncated data as protocol errors.
 
-These source and wire contract breaks are reflected in package version 0.2.0.
+These source and wire contract breaks are included in the initial 0.1.0 preview.
