@@ -4,15 +4,16 @@ namespace Cntryl.Fitz.Abstractions.Domains.Queue;
 
 public sealed class QueueSubscription : SubscriptionHandle<QueueAvailabilityEvent>
 {
-    public QueueSubscription(string pattern, Func<CancellationToken, ValueTask> unsubscribe)
-        : this(pattern, EmptyNotifications(), unsubscribe)
+    public QueueSubscription(string pattern, Func<CancellationToken, ValueTask> unsubscribe, Task? completion = null)
+        : this(pattern, EmptyNotifications(), unsubscribe, completion)
     {
     }
 
     public QueueSubscription(
         string pattern, IAsyncEnumerable<QueueAvailabilityEvent> notifications,
-        Func<CancellationToken, ValueTask> unsubscribe)
-        : base(pattern, notifications, unsubscribe)
+        Func<CancellationToken, ValueTask> unsubscribe,
+        Task? completion = null)
+        : base(pattern, notifications, unsubscribe, completion)
     {
     }
 }

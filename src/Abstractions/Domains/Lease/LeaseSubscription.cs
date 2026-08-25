@@ -4,15 +4,16 @@ namespace Cntryl.Fitz.Abstractions.Domains.Lease;
 
 public sealed class LeaseSubscription : SubscriptionHandle<LeaseChangeEvent>
 {
-    public LeaseSubscription(string route, Func<CancellationToken, ValueTask> unsubscribe)
-        : this(route, EmptyNotifications(), unsubscribe)
+    public LeaseSubscription(string route, Func<CancellationToken, ValueTask> unsubscribe, Task? completion = null)
+        : this(route, EmptyNotifications(), unsubscribe, completion)
     {
     }
 
     public LeaseSubscription(
         string route, IAsyncEnumerable<LeaseChangeEvent> notifications,
-        Func<CancellationToken, ValueTask> unsubscribe)
-        : base(route, notifications, unsubscribe)
+        Func<CancellationToken, ValueTask> unsubscribe,
+        Task? completion = null)
+        : base(route, notifications, unsubscribe, completion)
     {
         Route = route;
     }

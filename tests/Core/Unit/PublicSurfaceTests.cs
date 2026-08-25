@@ -1,9 +1,25 @@
 using System.IO;
+using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class PublicSurfaceTests
 {
+    [Fact]
+    public async Task should_fault_owned_subscription_completion_given_unsubscribe_failure()
+    {
+        var expected = new InvalidOperationException("unsubscribe failed");
+        await using var handle = new TestSubscriptionHandle(_ => ValueTask.FromException(expected));
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => handle.UnsubscribeAsync().AsTask());
+        var completionFailure = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => handle.Completion);
+
+        Assert.Same(expected, thrown);
+        Assert.Same(expected, completionFailure);
+    }
+
     [Fact]
     public void should_not_use_friend_assemblies_in_abstractions()
     {
@@ -16,6 +32,7 @@ public sealed class PublicSurfaceTests
     {
         var subscriptionHandle = ReadRepoFile("src/Abstractions/Runtime/SubscriptionHandle.cs");
         Assert.Contains("public string Pattern", subscriptionHandle, StringComparison.Ordinal);
+        Assert.Contains("public Task Completion", subscriptionHandle, StringComparison.Ordinal);
         Assert.DoesNotContain("internal ulong SubscriptionId", subscriptionHandle, StringComparison.Ordinal);
 
         var queueItem = ReadRepoFile("src/Abstractions/Domains/Queue/QueueItem.cs");
@@ -52,5 +69,10 @@ public sealed class PublicSurfaceTests
     {
         var root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
         return File.ReadAllText(Path.Combine(root, relativePath));
+    }
+
+    private sealed class TestSubscriptionHandle(Func<CancellationToken, ValueTask> unsubscribe)
+        : SubscriptionHandle("notice://realm/area/resource", unsubscribe)
+    {
     }
 }

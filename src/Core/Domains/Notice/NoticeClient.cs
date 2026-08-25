@@ -82,11 +82,12 @@ public sealed class NoticeClient : INoticeClient, IDisposable
             buffer.Write(notification);
             return ValueTask.CompletedTask;
         }, ct).ConfigureAwait(false);
+        buffer.ObserveCompletion(registration.Completion);
         return new NoticeSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
         {
             buffer.Complete();
             await registration.UnsubscribeAsync(token).ConfigureAwait(false);
-        });
+        }, registration.Completion);
     }
 
     internal async Task<NoticeSubscription> SubscribeAsync(string pattern, Func<NoticeMessage, CancellationToken, ValueTask> handler, CancellationToken ct = default)
@@ -110,14 +111,18 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         var gateAcquired = false;
         try
         {
-            registration = new SubscriptionRegistration<NoticeMessage>(channel);
+            registration = new SubscriptionRegistration<NoticeMessage>(
+                channel,
+                "notice",
+                pattern,
+                token => UnsubscribeAsync(pattern, handleId, token));
             await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
 
             if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
             {
                 existingSubscription.Writers[handleId] = registration;
-                var existingHandle = CreateSubscription(pattern, handleId);
+                var existingHandle = CreateSubscription(pattern, handleId, registration.Completion);
                 SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
                 registration = null;
                 return existingHandle;
@@ -129,7 +134,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
             _subscriptionsByPattern[pattern] = subscription;
             _patternsBySubscriptionId[subscriptionId] = pattern;
 
-            var handle = CreateSubscription(pattern, handleId);
+            var handle = CreateSubscription(pattern, handleId, registration.Completion);
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
             registration = null;
             return handle;
@@ -147,11 +152,13 @@ public sealed class NoticeClient : INoticeClient, IDisposable
 
     private NoticeSubscription CreateSubscription(
         string pattern,
-        long handleId)
+        long handleId,
+        Task completion)
     {
         return new NoticeSubscription(
             pattern,
-            cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken));
+            cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken),
+            completion);
     }
 
     private async ValueTask UnsubscribeAsync(string pattern, long handleId, CancellationToken ct)

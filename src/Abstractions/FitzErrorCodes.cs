@@ -21,4 +21,5 @@ public static class FitzErrorCodes
     public const uint RpcSubscriptionLimit = 6013;
     public const uint ScheduleInvalidSubscriptionPattern = 7006;
     public const uint ScheduleSubscriptionLimit = 7007;
+    public const uint ScheduleBackendError = 7010;
 }

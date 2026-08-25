@@ -186,11 +186,12 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
             buffer.Write(notification);
             return ValueTask.CompletedTask;
         }, ct).ConfigureAwait(false);
+        buffer.ObserveCompletion(registration.Completion);
         return new ScheduleSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
         {
             buffer.Complete();
             await registration.UnsubscribeAsync(token).ConfigureAwait(false);
-        });
+        }, registration.Completion);
     }
 
     internal async Task<ScheduleSubscription> SubscribeAsync(
@@ -217,14 +218,18 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
 
         try
         {
-            registration = new SubscriptionRegistration<ScheduleNotification>(channel);
+            registration = new SubscriptionRegistration<ScheduleNotification>(
+                channel,
+                "schedule",
+                pattern,
+                token => UnsubscribeAsync(pattern, handleId, token));
             await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
 
             if (_subscriptionsByRoute.TryGetValue(pattern, out var existingSubscription))
             {
                 existingSubscription.Writers[handleId] = registration;
-                var existingHandle = CreateSubscription(pattern, handleId);
+                var existingHandle = CreateSubscription(pattern, handleId, registration.Completion);
                 SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
                 registration = null;
                 return existingHandle;
@@ -236,7 +241,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
             _subscriptionsByRoute[pattern] = subscription;
             _routesBySubscriptionId[subscriptionId] = pattern;
 
-            var handle = CreateSubscription(pattern, handleId);
+            var handle = CreateSubscription(pattern, handleId, registration.Completion);
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
             registration = null;
             return handle;
@@ -254,11 +259,13 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
 
     private ScheduleSubscription CreateSubscription(
         string route,
-        long handleId)
+        long handleId,
+        Task completion)
     {
         return new ScheduleSubscription(
             route,
-            cancellationToken => UnsubscribeAsync(route, handleId, cancellationToken));
+            cancellationToken => UnsubscribeAsync(route, handleId, cancellationToken),
+            completion);
     }
 
     private async ValueTask UnsubscribeAsync(string route, long handleId, CancellationToken ct)

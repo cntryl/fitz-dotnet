@@ -7,15 +7,33 @@ internal sealed class SubscriptionRegistration<TNotification> : IDisposable
 {
     private int _disposed;
     private CancellationTokenSource? _cancellationSource;
+    private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly string _domain;
+    private readonly string _pattern;
+    private readonly Func<CancellationToken, ValueTask>? _overflowCleanup;
 
-    internal SubscriptionRegistration(Channel<TNotification> channel)
+    internal SubscriptionRegistration(
+        Channel<TNotification> channel,
+        string domain = "subscription",
+        string pattern = "unknown",
+        Func<CancellationToken, ValueTask>? overflowCleanup = null)
     {
         Channel = channel;
+        _domain = domain;
+        _pattern = pattern;
+        _overflowCleanup = overflowCleanup;
+        _ = _completion.Task.ContinueWith(
+            static task => _ = task.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     internal Channel<TNotification> Channel { get; }
 
     internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+    internal Task Completion => _completion.Task;
 
     internal CancellationToken CancellationToken => GetOrCreateCancellationSource().Token;
 
@@ -30,6 +48,37 @@ internal sealed class SubscriptionRegistration<TNotification> : IDisposable
         cancellationSource?.Cancel();
         Channel.Writer.TryComplete();
         cancellationSource?.Dispose();
+        _completion.TrySetResult();
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Terminal subscription cleanup is best effort and its overflow signal must remain authoritative.")]
+    internal async ValueTask FailOverflowAsync()
+    {
+        var error = new AsyncHandlerOverflowException(_domain, _pattern);
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        var cancellationSource = Interlocked.Exchange(ref _cancellationSource, null);
+        if (cancellationSource is not null)
+        {
+            await cancellationSource.CancelAsync().ConfigureAwait(false);
+        }
+        Channel.Writer.TryComplete(error);
+        cancellationSource?.Dispose();
+        _completion.TrySetException(error);
+
+        if (_overflowCleanup is not null)
+        {
+            try
+            {
+                await _overflowCleanup(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch
+            {
+            }
+        }
     }
 
     private CancellationTokenSource GetOrCreateCancellationSource()
@@ -95,13 +144,17 @@ internal static class SubscriptionPump
                         }
                         else
                         {
-                            _ = dispatch(async dispatcherToken =>
+                            if (!dispatch(async dispatcherToken =>
                             {
                                 using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(
                                     registration.CancellationToken,
                                     dispatcherToken);
                                 await handler(message, linkedCts.Token).ConfigureAwait(false);
-                            });
+                            }))
+                            {
+                                await registration.FailOverflowAsync().ConfigureAwait(false);
+                                return;
+                            }
                         }
                     }
                     catch (OperationCanceledException) when (registration.IsDisposed)

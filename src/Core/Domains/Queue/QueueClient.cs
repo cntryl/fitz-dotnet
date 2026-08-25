@@ -200,11 +200,12 @@ public sealed class QueueClient : IQueueClient, IDisposable
             buffer.Write(notification);
             return ValueTask.CompletedTask;
         }, ct).ConfigureAwait(false);
+        buffer.ObserveCompletion(registration.Completion);
         return new QueueSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
         {
             buffer.Complete();
             await registration.UnsubscribeAsync(token).ConfigureAwait(false);
-        });
+        }, registration.Completion);
     }
 
     internal async Task<QueueSubscription> SubscribeAsync(
@@ -236,14 +237,18 @@ public sealed class QueueClient : IQueueClient, IDisposable
 
         try
         {
-            registration = new SubscriptionRegistration<QueueAvailabilityEvent>(channel);
+            registration = new SubscriptionRegistration<QueueAvailabilityEvent>(
+                channel,
+                "queue",
+                pattern,
+                token => UnsubscribeAsync(pattern, handleId, token));
             await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
 
             if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
             {
                 existingSubscription.Registrations[handleId] = registration;
-                var existingHandle = CreateSubscription(pattern, handleId);
+                var existingHandle = CreateSubscription(pattern, handleId, registration.Completion);
                 SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
                 registration = null;
                 return existingHandle;
@@ -255,7 +260,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
             _subscriptionsByPattern[pattern] = subscription;
             _patternsBySubscriptionId[subscriptionId] = pattern;
 
-            var handle = CreateSubscription(pattern, handleId);
+            var handle = CreateSubscription(pattern, handleId, registration.Completion);
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
             registration = null;
             return handle;
@@ -271,11 +276,12 @@ public sealed class QueueClient : IQueueClient, IDisposable
         }
     }
 
-    private QueueSubscription CreateSubscription(string pattern, long handleId)
+    private QueueSubscription CreateSubscription(string pattern, long handleId, Task completion)
     {
         return new QueueSubscription(
             pattern,
-            cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken));
+            cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken),
+            completion);
     }
 
     private async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken ct)

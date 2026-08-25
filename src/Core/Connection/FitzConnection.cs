@@ -58,7 +58,7 @@ public sealed class FitzConnection : IAsyncDisposable
         _asyncHandlerDispatcher = new AsyncHandlerDispatcher(
             _config.ResolvedAsyncHandlers.MaxConcurrency,
             ResolveAsyncHandlerTimeout(),
-            Math.Min(Math.Max(_config.ResolvedMaxRequestQueueSize, 0), 1024),
+            Math.Max(_config.ResolvedAsyncHandlers.QueueCapacity, 0),
             OnAsyncHandlerError,
             onMetricsChanged: OnAsyncHandlerMetricsChanged,
             onSaturated: OnAsyncHandlerSaturated);
