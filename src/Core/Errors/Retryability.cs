@@ -27,6 +27,7 @@ public static class Retryability
             QueueException queue when queue.DomainCode == FitzErrorCodes.QueueFull => true,
             LeaseException lease when lease.DomainCode == FitzErrorCodes.LeaseHeld => true,
             RpcException rpc when IsRetryableRpcCode(rpc.Code) => true,
+            ScheduleException schedule when schedule.DomainCode == FitzErrorCodes.ScheduleBackendError => true,
             _ => false,
         };
     }

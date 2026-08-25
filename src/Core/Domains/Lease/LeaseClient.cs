@@ -464,11 +464,12 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             buffer.Write(notification);
             return ValueTask.CompletedTask;
         }, ct).ConfigureAwait(false);
+        buffer.ObserveCompletion(registration.Completion);
         return new LeaseSubscription(route, buffer.ReadAllAsync(CancellationToken.None), async token =>
         {
             buffer.Complete();
             await registration.UnsubscribeAsync(token).ConfigureAwait(false);
-        });
+        }, registration.Completion);
     }
 
     internal async Task<LeaseSubscription> SubscribeAsync(
@@ -500,14 +501,18 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
 
         try
         {
-            registration = new SubscriptionRegistration<LeaseChangeEvent>(channel);
+            registration = new SubscriptionRegistration<LeaseChangeEvent>(
+                channel,
+                "lease",
+                route,
+                token => UnsubscribeAsync(route, handleId, token));
             await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
 
             if (_subscriptionsByRoute.TryGetValue(route, out var existingSubscription))
             {
                 existingSubscription.Registrations[handleId] = registration;
-                var existingHandle = CreateSubscription(route, handleId);
+                var existingHandle = CreateSubscription(route, handleId, registration.Completion);
                 SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
                 registration = null;
                 return existingHandle;
@@ -519,7 +524,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             _subscriptionsByRoute[route] = subscription;
             _routesBySubscriptionId[subscriptionId] = route;
 
-            var handle = CreateSubscription(route, handleId);
+            var handle = CreateSubscription(route, handleId, registration.Completion);
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
             registration = null;
             return handle;
@@ -535,11 +540,12 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         }
     }
 
-    private LeaseSubscription CreateSubscription(string route, long handleId)
+    private LeaseSubscription CreateSubscription(string route, long handleId, Task completion)
     {
         return new LeaseSubscription(
             route,
-            cancellationToken => UnsubscribeAsync(route, handleId, cancellationToken));
+            cancellationToken => UnsubscribeAsync(route, handleId, cancellationToken),
+            completion);
     }
 
     private async Task<ulong> SubscribeWireAsync(string route, CancellationToken ct)

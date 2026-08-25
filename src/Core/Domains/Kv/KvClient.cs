@@ -103,11 +103,12 @@ public sealed class KvClient : IKvClient, IDisposable
             buffer.Write(notification);
             return ValueTask.CompletedTask;
         }, cancellationToken).ConfigureAwait(false);
+        buffer.ObserveCompletion(registration.Completion);
         return new KvSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
         {
             buffer.Complete();
             await registration.UnsubscribeAsync(token).ConfigureAwait(false);
-        });
+        }, registration.Completion);
     }
 
     internal async Task<KvSubscription> SubscribeAsync(
@@ -127,8 +128,12 @@ public sealed class KvClient : IKvClient, IDisposable
             SingleReader = true,
             SingleWriter = false
         });
-        SubscriptionRegistration<KvNotification>? registration = new(channel);
         var handleId = Interlocked.Increment(ref _nextHandleId);
+        SubscriptionRegistration<KvNotification>? registration = new(
+            channel,
+            "kv",
+            pattern,
+            token => UnsubscribeAsync(pattern, handleId, token));
         await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -152,8 +157,12 @@ public sealed class KvClient : IKvClient, IDisposable
                 state.Writers[handleId] = registration;
             }
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
+            var completion = registration.Completion;
             registration = null;
-            return new KvSubscription(pattern, token => UnsubscribeAsync(pattern, handleId, token));
+            return new KvSubscription(
+                pattern,
+                token => UnsubscribeAsync(pattern, handleId, token),
+                completion);
         }
         finally
         {

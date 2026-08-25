@@ -79,9 +79,23 @@ public sealed class ClientTests
         Assert.Equal(ClientTransport.Auto, tcp.Transport);
         Assert.Equal(ClientTransport.Tcp, tcp.ResolvedTransportKind);
         Assert.Equal(1024, websocket.MaxRequestQueueSize);
+        Assert.Equal(1024, websocket.ResolvedAsyncHandlers.QueueCapacity);
         Assert.True(websocket.ResolvedReconnect.Enabled);
         Assert.True(websocket.ResolvedRetry.Enabled);
         Assert.True(websocket.ResolvedHeartbeat.Enabled);
+    }
+
+    [Fact]
+    public void should_keep_async_handler_queue_capacity_independent_from_request_queue_and_concurrency()
+    {
+        var config = new ClientConfig(
+            new Uri("ws://localhost:4190/ws"),
+            AsyncHandlers: new AsyncHandlerOptions(MaxConcurrency: 3, QueueCapacity: 19),
+            MaxRequestQueueSize: 7);
+
+        Assert.Equal(19, config.ResolvedAsyncHandlers.QueueCapacity);
+        Assert.Equal(3, config.ResolvedAsyncHandlers.MaxConcurrency);
+        Assert.Equal(7, config.ResolvedMaxRequestQueueSize);
     }
 
     [Fact]

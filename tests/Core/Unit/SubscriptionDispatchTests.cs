@@ -6,6 +6,32 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class SubscriptionDispatchTests
 {
     [Fact]
+    public async Task should_fail_completion_and_cleanup_given_dispatch_queue_overflow()
+    {
+        var channel = Channel.CreateUnbounded<int>();
+        var cleanupCalled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = new SubscriptionRegistration<int>(
+            channel,
+            "schedule",
+            "schedule://realm/area/job/run",
+            _ =>
+            {
+                cleanupCalled.TrySetResult();
+                return ValueTask.CompletedTask;
+            });
+        SubscriptionPump.Start(registration, (_, _) => ValueTask.CompletedTask, _ => false);
+
+        channel.Writer.TryWrite(1);
+
+        var error = await Assert.ThrowsAsync<AsyncHandlerOverflowException>(
+            () => registration.Completion.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.Equal(AsyncHandlerOverflowException.ErrorCode, error.Code);
+        Assert.Equal("schedule", error.Domain);
+        Assert.Equal("schedule://realm/area/job/run", error.Subscription);
+        await cleanupCalled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
     public async Task should_return_from_start_given_message_already_queued_when_pump_begins()
     {
         var channel = Channel.CreateUnbounded<int>(new UnboundedChannelOptions

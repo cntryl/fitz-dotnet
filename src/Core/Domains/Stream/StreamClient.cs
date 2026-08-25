@@ -223,11 +223,12 @@ public sealed class StreamClient : IStreamClient, IDisposable
             buffer.Write(notification);
             return ValueTask.CompletedTask;
         }, ct).ConfigureAwait(false);
+        buffer.ObserveCompletion(registration.Completion);
         return new StreamSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
         {
             buffer.Complete();
             await registration.UnsubscribeAsync(token).ConfigureAwait(false);
-        });
+        }, registration.Completion);
     }
 
     internal async Task<StreamSubscription> SubscribeAsync(
@@ -259,25 +260,30 @@ public sealed class StreamClient : IStreamClient, IDisposable
 
         try
         {
-            registration = new SubscriptionRegistration<StreamCommitEvent>(channel);
+            registration = new SubscriptionRegistration<StreamCommitEvent>(
+                channel,
+                "stream",
+                pattern,
+                token => UnsubscribeAsync(pattern, handleId, token));
             await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
 
-            StreamSubscription? existingHandle = null;
+            var existing = false;
             lock (_gate)
             {
                 if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
                 {
                     existingSubscription.Registrations[handleId] = registration;
-                    existingHandle = CreateSubscription(pattern, handleId);
+                    existing = true;
                 }
             }
 
-            if (existingHandle is not null)
+            if (existing)
             {
                 SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
+                var completion = registration.Completion;
                 registration = null;
-                return existingHandle;
+                return CreateSubscription(pattern, handleId, completion);
             }
 
             var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
@@ -289,7 +295,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
                 _patternsBySubscriptionId[subscriptionId] = pattern;
             }
 
-            var handle = CreateSubscription(pattern, handleId);
+            var handle = CreateSubscription(pattern, handleId, registration.Completion);
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
             registration = null;
             return handle;
@@ -305,11 +311,12 @@ public sealed class StreamClient : IStreamClient, IDisposable
         }
     }
 
-    private StreamSubscription CreateSubscription(string pattern, long handleId)
+    private StreamSubscription CreateSubscription(string pattern, long handleId, Task completion)
     {
         return new StreamSubscription(
             pattern,
-            cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken));
+            cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken),
+            completion);
     }
 
     private async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken ct)

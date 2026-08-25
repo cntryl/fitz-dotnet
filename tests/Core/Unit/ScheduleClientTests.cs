@@ -1,4 +1,5 @@
-﻿using Cntryl.Fitz.Abstractions.Domains.Schedule;
+﻿using Cntryl.Fitz.Abstractions;
+using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Domains.Schedule;
 using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
@@ -7,6 +8,24 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class ScheduleClientTests
 {
+    [Fact]
+    public async Task should_preserve_backend_error_code_given_coded_schedule_list_failure()
+    {
+        using var schedule = new ScheduleClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(1);
+            writer.WriteU32(FitzErrorCodes.ScheduleBackendError);
+            writer.WriteString("backend busy");
+            return Task.FromResult(writer.Build());
+        });
+
+        var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.ListAsync());
+
+        Assert.Equal(7010u, error.DomainCode);
+        Assert.Contains("backend busy", error.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task should_preserve_message_given_schedule_error_response()
     {

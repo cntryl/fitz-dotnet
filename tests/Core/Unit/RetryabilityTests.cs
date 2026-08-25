@@ -14,6 +14,7 @@ public sealed class RetryabilityTests
         Assert.True(Retryability.IsRetryable(new QueueException("queue full", "ENQUEUE_FAILED", 1, FitzErrorCodes.QueueFull)));
         Assert.True(Retryability.IsRetryable(new LeaseException("lease held", "LEASE_HELD", 1, FitzErrorCodes.LeaseHeld)));
         Assert.True(Retryability.IsRetryable(new KvException("conflict", "PUT_FAILED", 1, FitzErrorCodes.KvIsolationConflict)));
+        Assert.True(Retryability.IsRetryable(new ScheduleException("backend busy", "BACKEND_ERROR", 1, FitzErrorCodes.ScheduleBackendError)));
     }
 
     [Fact]

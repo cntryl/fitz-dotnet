@@ -85,6 +85,18 @@ equivalent domain method) and return typed handles implementing both
 a bounded buffer; a slow consumer terminates with
 `SubscriptionBackpressureException` without terminating sibling handles.
 
+Callback delivery uses an independent bounded queue configured with
+`AsyncHandlerOptions.QueueCapacity` (default `1024`). Every subscription handle
+exposes `Completion`: normal unsubscribe completes it, while callback queue
+overflow faults it with `AsyncHandlerOverflowException`, terminates the local
+registration, and is surfaced by async enumeration as the same typed failure.
+RPC worker saturation continues to use broker-visible protocol backpressure.
+
+Schedule backend unavailability and broker saturation use the distinct coded
+error `FitzErrorCodes.ScheduleBackendError` (`7010`). `Retryability` classifies
+it as retryable subject to operation safety; it is not reported as malformed
+cron or parse input.
+
 ## Unreleased preview migration
 
 This preview intentionally breaks the earlier callback subscription surface.

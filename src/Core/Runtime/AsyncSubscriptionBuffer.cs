@@ -22,6 +22,24 @@ internal sealed class AsyncSubscriptionBuffer<T>(string pattern, int capacity = 
 
     internal void Complete() => _channel.Writer.TryComplete();
 
+    internal void ObserveCompletion(Task completion)
+    {
+        _ = ObserveCompletionAsync(completion);
+    }
+
+    private async Task ObserveCompletionAsync(Task completion)
+    {
+        try
+        {
+            await completion.ConfigureAwait(false);
+            _channel.Writer.TryComplete();
+        }
+        catch (AsyncHandlerOverflowException ex)
+        {
+            _channel.Writer.TryComplete(ex);
+        }
+    }
+
     internal IAsyncEnumerable<T> ReadAllAsync(CancellationToken cancellationToken = default) =>
         _channel.Reader.ReadAllAsync(cancellationToken);
 }
