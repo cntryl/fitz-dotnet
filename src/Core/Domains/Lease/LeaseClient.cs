@@ -31,6 +31,8 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     private bool _notificationHandlerInitialized;
     private long _nextHandleId;
     private readonly IDisposable? _reconnectRegistration;
+    private readonly List<Func<CancellationToken, ValueTask>> _reconnectListeners = new();
+    private readonly object _reconnectListenersGate = new();
 
     internal LeaseClient(FitzConnection connection)
         : this(
@@ -454,6 +456,75 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         return new LeaseInfo(true, owner, ttlRemaining, heldPendingWaiters);
     }
 
+    public async Task<LeaseListResult> ListAsync(
+        string pattern,
+        LeaseListCursor? cursor = null,
+        int? limit = null,
+        CancellationToken ct = default)
+    {
+        if (!RouteValidation.IsRegistrationPattern(pattern, "lease", 3))
+        {
+            throw new LeaseException($"pattern '{pattern}' must be lease://{{realm}}/{{area}}/{{resource}} or a whole-segment wildcard pattern", "INVALID_ROUTE");
+        }
+        if (limit.HasValue)
+        {
+            ArgumentOutOfRangeException.ThrowIfNegative(limit.Value, nameof(limit));
+        }
+
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(pattern);
+        writer.WriteU8((byte)(cursor is null ? 0 : 1));
+        if (cursor is not null)
+        {
+            writer.WriteU64(cursor.SnapshotId);
+            writer.WriteU32(cursor.Offset);
+        }
+        writer.WriteU32((uint)(limit ?? 0));
+
+        var response = await _request(MessageTypes.LeaseList, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var reader = LeaseWireHelpers.ReadSuccess(response, "LIST");
+
+        var itemCount = reader.ReadU32();
+        var items = new List<LeaseListItem>(checked((int)itemCount));
+        for (var i = 0; i < itemCount; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var route = reader.ReadString();
+            var ownerId = reader.ReadString();
+            var holderIncarnation = reader.ReadU64();
+            var acquiredAt = reader.ReadString();
+            var expiresInSecs = reader.ReadU64();
+            var renewals = reader.ReadU32();
+            items.Add(new LeaseListItem(route, ownerId, holderIncarnation, acquiredAt, expiresInSecs, renewals));
+        }
+
+        if (reader.RemainingBytes < 1)
+        {
+            throw new LeaseException("LIST response missing has_next", "LIST_INVALID_RESPONSE");
+        }
+
+        var hasNext = reader.ReadU8();
+        if (hasNext > 1)
+        {
+            throw new LeaseException("LIST response has invalid has_next", "LIST_INVALID_RESPONSE");
+        }
+
+        LeaseListCursor? nextCursor = null;
+        if (hasNext == 1)
+        {
+            var snapshotId = reader.ReadU64();
+            var offset = reader.ReadU32();
+            nextCursor = new LeaseListCursor(snapshotId, offset);
+        }
+
+        if (!reader.IsEof)
+        {
+            throw new LeaseException("LIST response has trailing bytes", "LIST_INVALID_RESPONSE");
+        }
+
+        return new LeaseListResult(items, nextCursor);
+    }
+
     public async Task<LeaseSubscription> SubscribeAsync(
         string route,
         CancellationToken ct = default)
@@ -463,7 +534,26 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         {
             buffer.Write(notification);
             return ValueTask.CompletedTask;
-        }, ct).ConfigureAwait(false);
+        }, ct: ct).ConfigureAwait(false);
+        buffer.ObserveCompletion(registration.Completion);
+        return new LeaseSubscription(route, buffer.ReadAllAsync(CancellationToken.None), async token =>
+        {
+            buffer.Complete();
+            await registration.UnsubscribeAsync(token).ConfigureAwait(false);
+        }, registration.Completion);
+    }
+
+    internal async Task<LeaseSubscription> SubscribeObserverAsync(
+        string route,
+        Action<LeaseChangeEvent> invalidate,
+        CancellationToken ct)
+    {
+        var buffer = new AsyncSubscriptionBuffer<LeaseChangeEvent>(route);
+        var registration = await SubscribeAsync(route, (notification, _) =>
+        {
+            buffer.Write(notification);
+            return ValueTask.CompletedTask;
+        }, invalidate, ct).ConfigureAwait(false);
         buffer.ObserveCompletion(registration.Completion);
         return new LeaseSubscription(route, buffer.ReadAllAsync(CancellationToken.None), async token =>
         {
@@ -475,12 +565,13 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     internal async Task<LeaseSubscription> SubscribeAsync(
         string route,
         Func<LeaseChangeEvent, CancellationToken, ValueTask> handler,
+        Action<LeaseChangeEvent>? preDispatch = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
-        if (!RouteValidation.IsFixedRoute(route, "lease", 3))
+        if (!RouteValidation.IsRegistrationPattern(route, "lease", 3))
         {
-            throw new LeaseException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+            throw new LeaseException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}} or a whole-segment wildcard pattern", "INVALID_ROUTE");
         }
 
         if (_registerNotificationHandler == null)
@@ -505,7 +596,8 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
                 channel,
                 "lease",
                 route,
-                token => UnsubscribeAsync(route, handleId, token));
+                token => UnsubscribeAsync(route, handleId, token),
+                preDispatch);
             await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
 
@@ -659,6 +751,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
                 var notification = new LeaseChangeEvent(route);
                 foreach (var registration in subscription.Registrations.Values)
                 {
+                    registration.PreDispatch?.Invoke(notification);
                     registration.Channel.Writer.TryWrite(notification);
                 }
             }
@@ -671,6 +764,91 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     private async ValueTask HandleReconnect(CancellationToken cancellationToken)
     {
         await RestoreSubscriptionsAsync(cancellationToken).ConfigureAwait(false);
+
+        List<Func<CancellationToken, ValueTask>> listeners;
+        lock (_reconnectListenersGate)
+        {
+            listeners = _reconnectListeners.Count == 0
+                ? []
+                : new List<Func<CancellationToken, ValueTask>>(_reconnectListeners);
+        }
+
+        foreach (var listener in listeners)
+        {
+            await listener(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// Test-only seam: runs the same reconnect handling (restore subscriptions, then notify
+    /// registered reconnect listeners such as <see cref="ILeaseInventoryObserver"/> instances)
+    /// that a real broker-side reconnect triggers via <c>FitzConnection.OnReconnect</c>.
+    /// </summary>
+    internal ValueTask SimulateReconnectAsync(CancellationToken ct = default)
+    {
+        return HandleReconnect(ct);
+    }
+
+    /// <summary>
+    /// Registers a listener that runs after every reconnect-driven subscription restore. Used by
+    /// <see cref="ILeaseInventoryObserver"/> to rebuild its view from scratch, since Lease
+    /// subscriptions and state do not survive a broker-side disconnect.
+    /// </summary>
+    internal IDisposable RegisterReconnectListener(Func<CancellationToken, ValueTask> listener)
+    {
+        ArgumentNullException.ThrowIfNull(listener);
+        lock (_reconnectListenersGate)
+        {
+            _reconnectListeners.Add(listener);
+        }
+
+        return new ReconnectListenerRegistration(this, listener);
+    }
+
+    private void RemoveReconnectListener(Func<CancellationToken, ValueTask> listener)
+    {
+        lock (_reconnectListenersGate)
+        {
+            _reconnectListeners.Remove(listener);
+        }
+    }
+
+    public async Task<ILeaseInventoryObserver> ObserveAsync(
+        string pattern,
+        LeaseObserveOptions? options = null,
+        CancellationToken ct = default)
+    {
+        if (!RouteValidation.IsRegistrationPattern(pattern, "lease", 3))
+        {
+            throw new LeaseException($"pattern '{pattern}' must be lease://{{realm}}/{{area}}/{{resource}} or a whole-segment wildcard pattern", "INVALID_ROUTE");
+        }
+
+        var observer = new LeaseInventoryObserver(this, pattern, options ?? new LeaseObserveOptions());
+        await observer.StartAsync(ct).ConfigureAwait(false);
+        return observer;
+    }
+
+    private sealed class ReconnectListenerRegistration : IDisposable
+    {
+        private readonly LeaseClient _owner;
+        private readonly Func<CancellationToken, ValueTask> _listener;
+        private int _disposed;
+
+        public ReconnectListenerRegistration(LeaseClient owner, Func<CancellationToken, ValueTask> listener)
+        {
+            _owner = owner;
+            _listener = listener;
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            _owner.RemoveReconnectListener(_listener);
+        }
     }
 
     private async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)

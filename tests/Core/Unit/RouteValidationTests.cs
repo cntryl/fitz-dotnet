@@ -73,7 +73,8 @@ public sealed class RouteValidationTests
     [InlineData("queue://realm/**")]
     [InlineData("queue://*/area/resource")]
     [InlineData("queue://**/resource")]
-    [InlineData("queue://realm/**/**")]
+    [InlineData("queue://**")]
+    [InlineData("queue://**/renderers/**")]
     public void should_accept_shared_registration_patterns_capable_of_matching_domain_depth(string pattern)
     {
         Assert.True(RouteValidation.IsRegistrationPattern(pattern, "queue", 3));
@@ -85,9 +86,24 @@ public sealed class RouteValidationTests
     [InlineData("queue://realm/area/res*")]
     [InlineData("queue://realm/area")]
     [InlineData("queue://realm/area/resource/extra/**")]
+    [InlineData("queue://realm/**/**")]
+    [InlineData("queue://**/**")]
+    [InlineData("queue://**/**/resource")]
     public void should_reject_invalid_shared_registration_patterns(string pattern)
     {
         Assert.False(RouteValidation.IsRegistrationPattern(pattern, "queue", 3));
+    }
+
+    [Fact]
+    public void should_reject_adjacent_double_wildcard_segments()
+    {
+        Assert.False(RouteValidation.IsRegistrationPattern("lease://acme/**/**", "lease", 3));
+    }
+
+    [Fact]
+    public void should_accept_double_wildcards_separated_by_a_literal_segment()
+    {
+        Assert.True(RouteValidation.IsRegistrationPattern("lease://**/renderers/**", "lease", 3));
     }
 
     [Theory]

@@ -37,6 +37,7 @@ public static class MessageTypes
     public const ushort LeaseSubscribe = 407;
     public const ushort LeaseUnsubscribe = 408;
     public const ushort LeaseNotify = 409; // Server -> Client
+    public const ushort LeaseList = 410;
 
     public const ushort NoticePublish = 500;
     public const ushort NoticeSubscribe = 501;

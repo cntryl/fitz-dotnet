@@ -532,6 +532,99 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
+    public async Task should_accept_whole_segment_wildcard_route_when_subscribing()
+    {
+        // Arrange
+        ushort seenMessageType = 0;
+        byte[]? seenPayload = null;
+
+        using var leaseClient = new LeaseClient(
+            (messageType, payload, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                if (messageType == MessageTypes.LeaseSubscribe)
+                {
+                    seenMessageType = messageType;
+                    seenPayload = payload;
+                    writer.WriteU64(555);
+                }
+                return Task.FromResult(writer.Build());
+            },
+            (messageType, _) => new TestRegistration());
+
+        // Act
+        var subscription = await leaseClient.SubscribeAsync("lease://acme/renderers/*", (_, _) => ValueTask.CompletedTask);
+
+        // Assert
+        Assert.Equal(MessageTypes.LeaseSubscribe, seenMessageType);
+        Assert.NotNull(seenPayload);
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal("lease://acme/renderers/*", reader.ReadString());
+        Assert.True(reader.IsEof);
+
+        await subscription.DisposeAsync();
+    }
+
+    [Theory]
+    [InlineData("lease://acme/renderers/**")]
+    [InlineData("lease://acme/*/doc-1")]
+    [InlineData("lease://*/*/*")]
+    [InlineData("lease://**")]
+    public async Task should_accept_full_wildcard_matrix_when_subscribing(string pattern)
+    {
+        // Arrange
+        using var leaseClient = new LeaseClient(
+            (messageType, _, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                if (messageType == MessageTypes.LeaseSubscribe)
+                {
+                    writer.WriteU64(555);
+                }
+                return Task.FromResult(writer.Build());
+            },
+            (_, _) => new TestRegistration());
+
+        // Act
+        var subscription = await leaseClient.SubscribeAsync(pattern, (_, _) => ValueTask.CompletedTask);
+
+        // Assert
+        Assert.Equal(pattern, subscription.Route);
+        await subscription.DisposeAsync();
+    }
+
+    [Theory]
+    [InlineData("lease://acme/renderers/lock*")]
+    [InlineData("lease://acme/*")]
+    [InlineData("notlease://acme/renderers/*")]
+    [InlineData("lease://acme//doc-1")]
+    public async Task should_reject_malformed_wildcard_route_when_subscribing(string route)
+    {
+        // Arrange
+        using var leaseClient = new LeaseClient(
+            (messageType, _, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                if (messageType == MessageTypes.LeaseSubscribe)
+                {
+                    writer.WriteU64(555);
+                }
+                return Task.FromResult(writer.Build());
+            },
+            (_, _) => new TestRegistration());
+
+        // Act
+        var act = () => leaseClient.SubscribeAsync(route, (_, _) => ValueTask.CompletedTask);
+
+        // Assert
+        var error = await Assert.ThrowsAsync<LeaseException>(act);
+        Assert.Equal("INVALID_ROUTE", error.Code);
+    }
+
+    [Fact]
     public async Task should_restore_lease_subscription_after_reconnect()
     {
         await using var firstTransport = new TestQueuedTransport();
