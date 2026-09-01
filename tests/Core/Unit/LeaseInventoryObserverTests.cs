@@ -7,6 +7,34 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class LeaseInventoryObserverTests
 {
+    [Theory]
+    [InlineData(0, 0.2, 256)]
+    [InlineData(60, -0.1, 256)]
+    [InlineData(60, 1.0, 256)]
+    [InlineData(60, 0.2, 0)]
+    public async Task should_reject_invalid_observer_resource_options(
+        int intervalSeconds,
+        double jitterRatio,
+        int updateBufferCapacity)
+    {
+        // Arrange
+        var broker = new FakeLeaseBroker();
+        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        var options = new LeaseObserveOptions
+        {
+            ReconciliationInterval = TimeSpan.FromSeconds(intervalSeconds),
+            ReconciliationJitterRatio = jitterRatio,
+            UpdateBufferCapacity = updateBufferCapacity,
+        };
+
+        // Act
+        var act = () => leaseClient.ObserveAsync("lease://acme/renderers/*", options);
+
+        // Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(act);
+        Assert.Empty(broker.Calls);
+    }
+
     [Fact]
     public async Task should_subscribe_before_listing_and_apply_buffered_notifications_after_first_list_installs()
     {

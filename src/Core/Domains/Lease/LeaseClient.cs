@@ -816,7 +816,21 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     {
         EnsureLeaseRegistrationPattern(pattern);
 
-        var observer = new LeaseInventoryObserver(this, pattern, options ?? new LeaseObserveOptions());
+        options ??= new LeaseObserveOptions();
+        if (options.ReconciliationInterval <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "ReconciliationInterval must be positive");
+        }
+        if (options.ReconciliationJitterRatio < 0 || options.ReconciliationJitterRatio >= 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "ReconciliationJitterRatio must be in [0, 1)");
+        }
+        if (options.UpdateBufferCapacity <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "UpdateBufferCapacity must be positive");
+        }
+
+        var observer = new LeaseInventoryObserver(this, pattern, options);
         await observer.StartAsync(ct).ConfigureAwait(false);
         return observer;
     }

@@ -14,14 +14,17 @@ public sealed record LeaseObserveOptions
 
     /// <summary>
     /// How often the observer performs a full LIST-based reconciliation as a backstop against a
-    /// missed or dropped LEASE_NOTIFY. Defaults to 60 seconds.
+    /// missed or dropped LEASE_NOTIFY. Defaults to 60 seconds. For a known workload, use
+    /// <c>clamp(shortest expected lease TTL / 2, 5 seconds, 60 seconds)</c>; this targets two
+    /// backstop passes during the shortest lease lifetime without polling faster than
+    /// one bounded full LIST every five seconds per observer.
     /// </summary>
     public TimeSpan ReconciliationInterval { get; init; } = DefaultReconciliationInterval;
 
     /// <summary>
     /// Randomized jitter applied to <see cref="ReconciliationInterval"/> on each cycle, expressed
     /// as a fraction of the interval (0.2 means ±20%), so a fleet of observers does not reconcile
-    /// in lockstep. Defaults to 0.2.
+    /// in lockstep. Must be in the range [0, 1). Defaults to 0.2.
     /// </summary>
     public double ReconciliationJitterRatio { get; init; } = DefaultReconciliationJitterRatio;
 
