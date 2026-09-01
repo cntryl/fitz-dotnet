@@ -121,6 +121,26 @@ public sealed class LeaseListTests
         Assert.Equal((uint)2, result.NextCursor.Offset);
     }
 
+    [Fact]
+    public async Task should_reject_impossible_item_count_without_unbounded_preallocation()
+    {
+        // Arrange
+        using var leaseClient = new LeaseClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU32(uint.MaxValue);
+            writer.WriteU8(0);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var act = () => leaseClient.ListAsync("lease://acme/renderers/*");
+
+        // Assert
+        await Assert.ThrowsAsync<InvalidOperationException>(act);
+    }
+
     [Theory]
     [InlineData((uint)5011)]
     [InlineData((uint)5012)]
