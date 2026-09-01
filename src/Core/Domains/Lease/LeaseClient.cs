@@ -482,7 +482,12 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         var reader = LeaseWireHelpers.ReadSuccess(response, "LIST");
 
         var itemCount = reader.ReadU32();
-        var items = new List<LeaseListItem>(checked((int)itemCount));
+        const int minimumItemWireBytes = 4 + 4 + 8 + 4 + 8 + 4;
+        var plausibleItemCount = reader.RemainingBytes / minimumItemWireBytes;
+        var initialCapacity = itemCount < (uint)plausibleItemCount
+            ? checked((int)itemCount)
+            : plausibleItemCount;
+        var items = new List<LeaseListItem>(initialCapacity);
         for (var i = 0; i < itemCount; i++)
         {
             ct.ThrowIfCancellationRequested();
