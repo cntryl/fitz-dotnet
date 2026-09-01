@@ -28,7 +28,8 @@ public interface ILeaseInventoryObserver : IAsyncDisposable
     /// <summary>
     /// Steady-state changes applied to <see cref="View"/> after the initial bootstrap. Full
     /// relists (the post-bootstrap drain, periodic reconciliation, and reconnect rebootstrap) are
-    /// not individually reported here; read <see cref="View"/> for the authoritative snapshot.
+    /// not individually reported here. This stream is bounded and drops its oldest pending entry
+    /// when full; read <see cref="View"/> for the authoritative snapshot.
     /// </summary>
     IAsyncEnumerable<LeaseInventoryUpdate> Updates { get; }
 }

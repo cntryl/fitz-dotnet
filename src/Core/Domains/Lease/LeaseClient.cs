@@ -462,10 +462,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         int? limit = null,
         CancellationToken ct = default)
     {
-        if (!RouteValidation.IsRegistrationPattern(pattern, "lease", 3))
-        {
-            throw new LeaseException($"pattern '{pattern}' must be lease://{{realm}}/{{area}}/{{resource}} or a whole-segment wildcard pattern", "INVALID_ROUTE");
-        }
+        EnsureLeaseRegistrationPattern(pattern);
         if (limit.HasValue)
         {
             ArgumentOutOfRangeException.ThrowIfNegative(limit.Value, nameof(limit));
@@ -525,27 +522,16 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         return new LeaseListResult(items, nextCursor);
     }
 
-    public async Task<LeaseSubscription> SubscribeAsync(
+    public Task<LeaseSubscription> SubscribeAsync(
         string route,
         CancellationToken ct = default)
     {
-        var buffer = new AsyncSubscriptionBuffer<LeaseChangeEvent>(route);
-        var registration = await SubscribeAsync(route, (notification, _) =>
-        {
-            buffer.Write(notification);
-            return ValueTask.CompletedTask;
-        }, ct: ct).ConfigureAwait(false);
-        buffer.ObserveCompletion(registration.Completion);
-        return new LeaseSubscription(route, buffer.ReadAllAsync(CancellationToken.None), async token =>
-        {
-            buffer.Complete();
-            await registration.UnsubscribeAsync(token).ConfigureAwait(false);
-        }, registration.Completion);
+        return SubscribeObserverAsync(route, invalidate: null, ct);
     }
 
     internal async Task<LeaseSubscription> SubscribeObserverAsync(
         string route,
-        Action<LeaseChangeEvent> invalidate,
+        Action<LeaseChangeEvent>? invalidate,
         CancellationToken ct)
     {
         var buffer = new AsyncSubscriptionBuffer<LeaseChangeEvent>(route);
@@ -569,10 +555,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
-        if (!RouteValidation.IsRegistrationPattern(route, "lease", 3))
-        {
-            throw new LeaseException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}} or a whole-segment wildcard pattern", "INVALID_ROUTE");
-        }
+        EnsureLeaseRegistrationPattern(route);
 
         if (_registerNotificationHandler == null)
         {
@@ -629,6 +612,14 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             }
 
             registration?.Dispose();
+        }
+    }
+
+    private static void EnsureLeaseRegistrationPattern(string pattern)
+    {
+        if (!RouteValidation.IsRegistrationPattern(pattern, "lease", 3))
+        {
+            throw new LeaseException($"pattern '{pattern}' must be lease://{{realm}}/{{area}}/{{resource}} or a whole-segment wildcard pattern", "INVALID_ROUTE");
         }
     }
 
@@ -818,10 +809,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         LeaseObserveOptions? options = null,
         CancellationToken ct = default)
     {
-        if (!RouteValidation.IsRegistrationPattern(pattern, "lease", 3))
-        {
-            throw new LeaseException($"pattern '{pattern}' must be lease://{{realm}}/{{area}}/{{resource}} or a whole-segment wildcard pattern", "INVALID_ROUTE");
-        }
+        EnsureLeaseRegistrationPattern(pattern);
 
         var observer = new LeaseInventoryObserver(this, pattern, options ?? new LeaseObserveOptions());
         await observer.StartAsync(ct).ConfigureAwait(false);

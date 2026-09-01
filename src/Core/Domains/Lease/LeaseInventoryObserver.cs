@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Lease;
+using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz.Domains.Lease;
 
@@ -15,8 +16,7 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
     private readonly LeaseObserveOptions _options;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
-    private readonly Channel<LeaseInventoryUpdate> _updates = Channel.CreateUnbounded<LeaseInventoryUpdate>(
-        new UnboundedChannelOptions { SingleReader = false, SingleWriter = false });
+    private readonly Channel<LeaseInventoryUpdate> _updates;
     private readonly CancellationTokenSource _lifetimeCts = new();
 
     private IDisposable? _reconnectRegistration;
@@ -24,6 +24,9 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
     private CancellationTokenSource? _consumerLoopCts;
     private Task? _consumerLoopTask;
     private Task? _reconciliationLoopTask;
+    private Task? _subscriptionRecoveryTask;
+    private bool _subscriptionRecoveryRequested;
+    private long _subscriptionGeneration;
     private volatile IReadOnlyDictionary<string, LeaseListItem> _view =
         new Dictionary<string, LeaseListItem>(StringComparer.Ordinal);
     private volatile bool _isReady;
@@ -36,6 +39,13 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         _client = client;
         _pattern = pattern;
         _options = options;
+        _updates = Channel.CreateBounded<LeaseInventoryUpdate>(new BoundedChannelOptions(
+            Math.Max(1, options.UpdateBufferCapacity))
+        {
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = false,
+            SingleWriter = false,
+        });
     }
 
     public IReadOnlyDictionary<string, LeaseListItem> View => _view;
@@ -59,6 +69,7 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         }
     }
 
+    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed via the outer using(linked) block; the analyzer cannot follow the try/catch guard around a possibly-already-disposed _lifetimeCts.")]
     private async ValueTask HandleReconnectAsync(CancellationToken ct)
     {
         if (Volatile.Read(ref _disposed) != 0)
@@ -66,18 +77,54 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
             return;
         }
 
-        lock (_gate)
+        // _lifetimeCts may already be disposed if DisposeAsync races past its own disposed
+        // check between here and the CancellationTokenSource.Dispose() call at the end of
+        // teardown; treat that exactly like the disposed check above.
+        CancellationTokenSource linked;
+        try
         {
-            _isReady = false;
+            linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetimeCts.Token);
         }
-        await BootstrapAsync(ct).ConfigureAwait(false);
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        using (linked)
+        {
+            lock (_gate)
+            {
+                _isReady = false;
+                _bootstrapDirty = true;
+                _subscriptionGeneration++;
+            }
+
+            try
+            {
+                // Threading the lifetime token in means DisposeAsync's cancellation actually
+                // stops an in-flight reconnect bootstrap rather than racing it unsynchronized.
+                await BootstrapAsync(linked.Token, isReconnect: true).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
+            {
+                // Disposed concurrently with a reconnect-triggered bootstrap; DisposeAsync
+                // already tears down the subscription and background consumer loop itself.
+            }
+        }
     }
 
-    private async Task BootstrapAsync(CancellationToken ct)
+    private async Task BootstrapAsync(CancellationToken ct, bool isReconnect = false)
     {
         await _refreshGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            // A disposed observer's bootstrap must abort cleanly instead of proceeding to
+            // mutate state that DisposeAsync is about to (or already did) tear down.
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
             lock (_gate)
             {
                 _isReady = false;
@@ -85,25 +132,37 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
                 _pendingRoutes.Clear();
             }
 
-            await StopConsumerLoopAsync().ConfigureAwait(false);
-            if (_subscription is not null)
+            // On a reconnect, LeaseClient.HandleReconnect already restored the wire-level
+            // subscription (RestoreSubscriptionsAsync) for this observer's route before this
+            // listener ran, reusing the same registration/buffer that _subscription reads
+            // from. Tearing it down and re-subscribing here would just add a redundant
+            // UNSUBSCRIBE+SUBSCRIBE round trip pair.
+            if (!isReconnect || _subscription is null)
             {
-                await _subscription.DisposeAsync().ConfigureAwait(false);
-                _subscription = null;
+                await StopConsumerLoopAsync().ConfigureAwait(false);
+                if (_subscription is not null)
+                {
+                    await _subscription.DisposeAsync().ConfigureAwait(false);
+                    _subscription = null;
+                }
+
+                // 1. Subscribe and wait for the acknowledgement (subscription id).
+                var subscription = await _client.SubscribeObserverAsync(
+                    _pattern,
+                    InvalidateNotification,
+                    ct).ConfigureAwait(false);
+                _subscription = subscription;
+                lock (_gate)
+                {
+                    _subscriptionGeneration++;
+                }
+
+                // 2. Start buffering incoming notifications for this subscription; they are not
+                // applied until one LIST pass completes without a concurrent invalidation.
+                var consumerLoopCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+                _consumerLoopCts = consumerLoopCts;
+                _consumerLoopTask = Task.Run(() => ConsumeNotificationsAsync(subscription, consumerLoopCts.Token), CancellationToken.None);
             }
-
-            // 1. Subscribe and wait for the acknowledgement (subscription id).
-            var subscription = await _client.SubscribeObserverAsync(
-                _pattern,
-                InvalidateNotification,
-                ct).ConfigureAwait(false);
-            _subscription = subscription;
-
-            // 2. Start buffering incoming notifications for this subscription; they are not
-            // applied until one LIST pass completes without a concurrent invalidation.
-            var consumerLoopCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
-            _consumerLoopCts = consumerLoopCts;
-            _consumerLoopTask = Task.Run(() => ConsumeNotificationsAsync(subscription, consumerLoopCts.Token), CancellationToken.None);
 
             // 3-5. LIST to completion and install only after a complete pass
             // observed no buffered invalidation. Repeating instead of
@@ -111,9 +170,30 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
             // pagination race for an arbitrarily long bootstrap.
             while (true)
             {
+                long passSubscriptionGeneration;
+                lock (_gate)
+                {
+                    passSubscriptionGeneration = _subscriptionGeneration;
+                }
+
                 var freshView = await ListAllAsync(ct).ConfigureAwait(false);
                 lock (_gate)
                 {
+                    // DisposeAsync can run concurrently while this LIST pass is in flight (it
+                    // blocks on _refreshGate until this method returns); never install a view
+                    // or mark ready once disposal has begun.
+                    if (Volatile.Read(ref _disposed) != 0)
+                    {
+                        return;
+                    }
+
+                    if (_subscriptionGeneration != passSubscriptionGeneration)
+                    {
+                        throw new LeaseException(
+                            "Lease observer subscription changed during bootstrap",
+                            "OBSERVER_SUBSCRIPTION_CHANGED");
+                    }
+
                     if (_bootstrapDirty)
                     {
                         _bootstrapDirty = false;
@@ -147,7 +227,7 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         }
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort background loop; errors are corrected by the next reconciliation or notification.")]
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A terminated subscription is recovered with a new subscribe-before-list bootstrap regardless of its terminal error type.")]
     private async Task ConsumeNotificationsAsync(LeaseSubscription subscription, CancellationToken ct)
     {
         try
@@ -182,7 +262,89 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         catch (OperationCanceledException)
         {
             // Expected on dispose/rebootstrap.
+            return;
         }
+        catch
+        {
+            // Handler overflow/backpressure removes or invalidates the wire
+            // registration. Periodic LIST-only reconciliation cannot repair
+            // that gap, so immediately replace the subscription and rebuild
+            // the view. The recovery loop owns retry/backoff for transient
+            // SUBSCRIBE or LIST failures.
+        }
+
+        RequestSubscriptionRecovery();
+    }
+
+    private void RequestSubscriptionRecovery()
+    {
+        lock (_gate)
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+            {
+                return;
+            }
+
+            _isReady = false;
+            _bootstrapDirty = true;
+            _subscriptionGeneration++;
+            _subscriptionRecoveryRequested = true;
+            if (_subscriptionRecoveryTask is null || _subscriptionRecoveryTask.IsCompleted)
+            {
+                _subscriptionRecoveryTask = Task.Run(RecoverSubscriptionLoopAsync, CancellationToken.None);
+            }
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Subscription recovery retries transient transport, broker, and LIST failures until disposal cancels the observer lifetime.")]
+    private async Task RecoverSubscriptionLoopAsync()
+    {
+        var attempt = 0;
+        while (Volatile.Read(ref _disposed) == 0)
+        {
+            lock (_gate)
+            {
+                _subscriptionRecoveryRequested = false;
+            }
+
+            try
+            {
+                await BootstrapAsync(_lifetimeCts.Token).ConfigureAwait(false);
+                attempt = 0;
+            }
+            catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested)
+            {
+                return;
+            }
+            catch
+            {
+                attempt++;
+                await Task.Delay(NextSubscriptionRecoveryDelay(attempt), _lifetimeCts.Token).ConfigureAwait(false);
+                continue;
+            }
+
+            lock (_gate)
+            {
+                if (_subscriptionRecoveryRequested)
+                {
+                    continue;
+                }
+
+                _subscriptionRecoveryTask = null;
+                return;
+            }
+        }
+    }
+
+    [SuppressMessage("Security", "CA5394:DoNotUseInsecureRandomness", Justification = "Jitter for subscription-recovery timing is not security-sensitive.")]
+    private static TimeSpan NextSubscriptionRecoveryDelay(int attempt)
+    {
+        const double baseMilliseconds = 50;
+        const double maximumMilliseconds = 2_000;
+        var exponent = Math.Min(Math.Max(attempt - 1, 0), 6);
+        var capped = Math.Min(maximumMilliseconds, baseMilliseconds * Math.Pow(2, exponent));
+        var jittered = capped * (0.8 + (Random.Shared.NextDouble() * 0.4));
+        return TimeSpan.FromMilliseconds(Math.Max(baseMilliseconds, jittered));
     }
 
     private async Task HandleSteadyStateNotificationAsync(CancellationToken ct)
@@ -376,12 +538,41 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
             }
         }
 
-        await StopConsumerLoopAsync().ConfigureAwait(false);
-
-        if (_subscription is not null)
+        Task? subscriptionRecoveryTask;
+        lock (_gate)
         {
-            await _subscription.DisposeAsync().ConfigureAwait(false);
-            _subscription = null;
+            subscriptionRecoveryTask = _subscriptionRecoveryTask;
+        }
+        if (subscriptionRecoveryTask is not null)
+        {
+            try
+            {
+                await subscriptionRecoveryTask.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // Expected after lifetime cancellation.
+            }
+        }
+
+        // _disposed is already set above, so no new BootstrapAsync/HandleReconnectAsync call can
+        // start past this point (both check it before ever touching _refreshGate). Acquiring the
+        // gate here therefore just waits out one that is already in flight - once acquired, it is
+        // safe to tear down (and, at the very end, dispose) the shared state without racing it.
+        await _refreshGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            await StopConsumerLoopAsync().ConfigureAwait(false);
+
+            if (_subscription is not null)
+            {
+                await _subscription.DisposeAsync().ConfigureAwait(false);
+                _subscription = null;
+            }
+        }
+        finally
+        {
+            _refreshGate.Release();
         }
 
         _updates.Writer.TryComplete();

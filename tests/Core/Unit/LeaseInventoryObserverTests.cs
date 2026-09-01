@@ -118,16 +118,97 @@ public sealed class LeaseInventoryObserverTests
         // Act
         await using var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
         var subscribeCallsBeforeReconnect = broker.Calls.Count(call => call == "SUBSCRIBE");
+        var unsubscribeCallsBeforeReconnect = broker.Calls.Count(call => call == "UNSUBSCRIBE");
         var listCallsBeforeReconnect = broker.Calls.Count(call => call == "LIST");
 
         await leaseClient.SimulateReconnectAsync();
         await WaitUntilAsync(() => observer.View.ContainsKey("lease://acme/renderers/c"));
 
-        // Assert: a fresh bootstrap re-subscribed and re-listed from scratch.
-        Assert.True(broker.Calls.Count(call => call == "SUBSCRIBE") > subscribeCallsBeforeReconnect);
-        Assert.True(broker.Calls.Count(call => call == "LIST") > listCallsBeforeReconnect);
+        // Assert: RestoreSubscriptionsAsync already re-subscribes the wire-level route, so the
+        // observer's own bootstrap must not tear down and re-establish it a second time - exactly
+        // one SUBSCRIBE (the restore) and zero UNSUBSCRIBE/extra SUBSCRIBE round trips from the
+        // observer, plus exactly one fresh LIST pass.
+        Assert.Equal(subscribeCallsBeforeReconnect + 1, broker.Calls.Count(call => call == "SUBSCRIBE"));
+        Assert.Equal(unsubscribeCallsBeforeReconnect, broker.Calls.Count(call => call == "UNSUBSCRIBE"));
+        Assert.Equal(listCallsBeforeReconnect + 1, broker.Calls.Count(call => call == "LIST"));
         Assert.True(observer.IsReady);
         Assert.True(observer.View.ContainsKey("lease://acme/renderers/c"));
+    }
+
+    [Fact]
+    public async Task should_not_throw_or_leak_when_disposed_while_a_reconnect_bootstrap_is_in_flight()
+    {
+        // Arrange
+        var broker = new FakeLeaseBroker();
+        broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a") });
+        var listGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a") }, before: () => listGate.Task);
+
+        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+
+        var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
+        Assert.True(observer.IsReady);
+
+        // Act: a reconnect-triggered bootstrap is blocked mid-LIST while DisposeAsync races it.
+        var reconnectTask = leaseClient.SimulateReconnectAsync().AsTask();
+        await WaitUntilAsync(() => broker.Calls.Count(call => call == "LIST") == 2);
+
+        var disposeTask = observer.DisposeAsync().AsTask();
+        await Task.Delay(50);
+
+        listGate.SetResult();
+
+        var both = Task.WhenAll(reconnectTask, disposeTask);
+        var raced = await Task.WhenAny(both, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.Same(both, raced);
+
+        // Assert: neither the reconnect callback nor DisposeAsync throws (no unhandled
+        // ObjectDisposedException from a torn-down _refreshGate/_subscription).
+        await reconnectTask;
+        await disposeTask;
+
+        // No live wire subscription remains after dispose completes.
+        Assert.Contains("UNSUBSCRIBE", broker.Calls);
+
+        // No orphaned consumer-loop task keeps running: a post-dispose notification must not
+        // resurrect background processing.
+        broker.PushNotification(broker.LastSubscriptionId, "lease://acme/renderers/z");
+        await Task.Delay(50);
+        Assert.False(observer.View.ContainsKey("lease://acme/renderers/z"));
+    }
+
+    [Fact]
+    public async Task should_resubscribe_and_relist_after_dispatch_overflow_and_transient_subscribe_failure()
+    {
+        // Arrange
+        var broker = new FakeLeaseBroker();
+        broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a") });
+        var rejectNextDispatch = 1;
+        using var leaseClient = new LeaseClient(
+            async (messageType, payload, ct) => new ReadOnlyMemory<byte>(
+                await broker.RequestAsync(messageType, payload.ToArray(), ct)),
+            (messageType, handler) => broker.RegisterNotificationHandler(
+                messageType,
+                payload => handler(payload)),
+            dispatchAsyncHandler: _ => Interlocked.Exchange(ref rejectNextDispatch, 0) == 0);
+
+        await using var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
+        Assert.True(observer.IsReady);
+        broker.QueueSubscribeFailure(new InvalidOperationException("transient subscribe failure"));
+        broker.DefaultListPage = new[] { MakeItem("lease://acme/renderers/recovered") };
+
+        // Act: rejecting dispatch fails and removes the observer's current
+        // registration. The first replacement SUBSCRIBE also fails, forcing
+        // the recovery loop through its bounded retry path.
+        broker.PushNotification(broker.LastSubscriptionId, "lease://acme/renderers/a");
+
+        // Assert
+        await WaitUntilAsync(() => !observer.IsReady);
+        await WaitUntilAsync(
+            () => observer.IsReady && observer.View.ContainsKey("lease://acme/renderers/recovered"),
+            TimeSpan.FromSeconds(5));
+        Assert.Equal(3, broker.Calls.Count(call => call == "SUBSCRIBE"));
+        Assert.True(broker.Calls.Count(call => call == "LIST") >= 2);
     }
 
     [Fact]
@@ -191,6 +272,7 @@ public sealed class LeaseInventoryObserverTests
     private sealed class FakeLeaseBroker
     {
         private readonly ConcurrentQueue<(IReadOnlyList<LeaseListItem> Items, LeaseListCursor? Next, Func<Task>? Before)> _listPages = new();
+        private readonly ConcurrentQueue<Exception> _subscribeFailures = new();
         private long _nextSubscriptionId;
 
         public ConcurrentQueue<string> Calls { get; } = new();
@@ -206,11 +288,20 @@ public sealed class LeaseInventoryObserverTests
             _listPages.Enqueue((items, next, before));
         }
 
+        public void QueueSubscribeFailure(Exception error)
+        {
+            _subscribeFailures.Enqueue(error);
+        }
+
         public async Task<byte[]> RequestAsync(ushort messageType, byte[] payload, CancellationToken ct)
         {
             if (messageType == MessageTypes.LeaseSubscribe)
             {
                 Calls.Enqueue("SUBSCRIBE");
+                if (_subscribeFailures.TryDequeue(out var subscribeFailure))
+                {
+                    throw subscribeFailure;
+                }
                 LastSubscriptionId = (ulong)Interlocked.Increment(ref _nextSubscriptionId);
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
