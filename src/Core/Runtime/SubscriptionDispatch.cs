@@ -16,12 +16,14 @@ internal sealed class SubscriptionRegistration<TNotification> : IDisposable
         Channel<TNotification> channel,
         string domain = "subscription",
         string pattern = "unknown",
-        Func<CancellationToken, ValueTask>? overflowCleanup = null)
+        Func<CancellationToken, ValueTask>? overflowCleanup = null,
+        Action<TNotification>? preDispatch = null)
     {
         Channel = channel;
         _domain = domain;
         _pattern = pattern;
         _overflowCleanup = overflowCleanup;
+        PreDispatch = preDispatch;
         _ = _completion.Task.ContinueWith(
             static task => _ = task.Exception,
             CancellationToken.None,
@@ -30,6 +32,8 @@ internal sealed class SubscriptionRegistration<TNotification> : IDisposable
     }
 
     internal Channel<TNotification> Channel { get; }
+
+    internal Action<TNotification>? PreDispatch { get; }
 
     internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
 

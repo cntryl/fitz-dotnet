@@ -96,6 +96,7 @@ internal static class RouteValidation
 
         var segmentCount = 0;
         var doubleWildcardCount = 0;
+        var previousWasDoubleWildcard = false;
         var segmentStart = pathStart;
         for (var index = pathStart; index <= route.Length; index++)
         {
@@ -126,8 +127,14 @@ internal static class RouteValidation
             }
             if (doubleWildcard)
             {
+                if (previousWasDoubleWildcard)
+                {
+                    failure = RouteValidationFailure.InvalidShape;
+                    return false;
+                }
                 doubleWildcardCount++;
             }
+            previousWasDoubleWildcard = doubleWildcard;
             segmentCount++;
             segmentStart = index + 1;
         }

@@ -17,6 +17,8 @@ public static class FitzErrorCodes
     public const uint LeaseHeld = 5001;
     public const uint LeaseBadRequest = 5008;
     public const uint LeaseInvalidSubscriptionRoute = 5010;
+    public const uint LeaseInvalidListCursor = 5011;
+    public const uint LeaseInvalidListPattern = 5012;
     public const uint RpcInvalidSubscriptionPattern = 6012;
     public const uint RpcSubscriptionLimit = 6013;
     public const uint ScheduleInvalidSubscriptionPattern = 7006;
