@@ -1,7 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Lease;
-using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz.Domains.Lease;
 
@@ -70,6 +69,7 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
     }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Disposed via the outer using(linked) block; the analyzer cannot follow the try/catch guard around a possibly-already-disposed _lifetimeCts.")]
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect recovery retries transient transport, broker, and LIST failures through the bounded subscription-recovery loop.")]
     private async ValueTask HandleReconnectAsync(CancellationToken ct)
     {
         if (Volatile.Read(ref _disposed) != 0)
@@ -109,6 +109,19 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
             {
                 // Disposed concurrently with a reconnect-triggered bootstrap; DisposeAsync
                 // already tears down the subscription and background consumer loop itself.
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested || _lifetimeCts.IsCancellationRequested)
+            {
+                // The reconnect attempt or observer lifetime ended; there is no live
+                // recovery target for a background retry.
+            }
+            catch
+            {
+                // The restored wire subscription may still be healthy, but a failed LIST
+                // leaves the view knowingly stale. Hand recovery to the bounded retry loop;
+                // replacing the subscription also closes any ambiguity about the restored
+                // registration after a transport failure.
+                RequestSubscriptionRecovery();
             }
         }
     }
@@ -189,9 +202,12 @@ internal sealed class LeaseInventoryObserver : ILeaseInventoryObserver
 
                     if (_subscriptionGeneration != passSubscriptionGeneration)
                     {
-                        throw new LeaseException(
-                            "Lease observer subscription changed during bootstrap",
-                            "OBSERVER_SUBSCRIPTION_CHANGED");
+                        // A newer reconnect or subscription-recovery request
+                        // superseded this candidate while LIST was in flight.
+                        // Leave readiness false and release _refreshGate so
+                        // that already-coalesced bootstrap can run next;
+                        // throwing here would escape the reconnect listener.
+                        return;
                     }
 
                     if (_bootstrapDirty)

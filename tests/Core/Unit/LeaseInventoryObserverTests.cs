@@ -206,6 +206,53 @@ public sealed class LeaseInventoryObserverTests
     }
 
     [Fact]
+    public async Task should_coalesce_a_second_reconnect_while_bootstrap_list_is_in_flight()
+    {
+        // Arrange
+        var broker = new FakeLeaseBroker();
+        broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a") });
+        var listGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/stale") }, before: () => listGate.Task);
+        broker.DefaultListPage = new[] { MakeItem("lease://acme/renderers/recovered") };
+        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
+
+        // Act
+        var firstReconnect = leaseClient.SimulateReconnectAsync().AsTask();
+        await WaitUntilAsync(() => broker.Calls.Count(call => call == "LIST") == 2);
+        var secondReconnect = leaseClient.SimulateReconnectAsync().AsTask();
+        listGate.SetResult();
+        await Task.WhenAll(firstReconnect, secondReconnect);
+
+        // Assert
+        Assert.True(observer.IsReady);
+        Assert.True(observer.View.ContainsKey("lease://acme/renderers/recovered"));
+        Assert.False(observer.View.ContainsKey("lease://acme/renderers/stale"));
+    }
+
+    [Fact]
+    public async Task should_retry_a_transient_list_failure_after_reconnect()
+    {
+        // Arrange
+        var broker = new FakeLeaseBroker();
+        broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a") });
+        broker.DefaultListPage = new[] { MakeItem("lease://acme/renderers/recovered") };
+        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
+        broker.QueueListFailure(new InvalidOperationException("transient LIST failure"));
+
+        // Act
+        await leaseClient.SimulateReconnectAsync();
+
+        // Assert
+        await WaitUntilAsync(
+            () => observer.IsReady && observer.View.ContainsKey("lease://acme/renderers/recovered"),
+            TimeSpan.FromSeconds(5));
+        Assert.True(broker.Calls.Count(call => call == "LIST") >= 3);
+        Assert.Equal(3, broker.Calls.Count(call => call == "SUBSCRIBE"));
+    }
+
+    [Fact]
     public async Task should_resubscribe_and_relist_after_dispatch_overflow_and_transient_subscribe_failure()
     {
         // Arrange
@@ -300,6 +347,7 @@ public sealed class LeaseInventoryObserverTests
     private sealed class FakeLeaseBroker
     {
         private readonly ConcurrentQueue<(IReadOnlyList<LeaseListItem> Items, LeaseListCursor? Next, Func<Task>? Before)> _listPages = new();
+        private readonly ConcurrentQueue<Exception> _listFailures = new();
         private readonly ConcurrentQueue<Exception> _subscribeFailures = new();
         private long _nextSubscriptionId;
 
@@ -319,6 +367,11 @@ public sealed class LeaseInventoryObserverTests
         public void QueueSubscribeFailure(Exception error)
         {
             _subscribeFailures.Enqueue(error);
+        }
+
+        public void QueueListFailure(Exception error)
+        {
+            _listFailures.Enqueue(error);
         }
 
         public async Task<byte[]> RequestAsync(ushort messageType, byte[] payload, CancellationToken ct)
@@ -348,6 +401,10 @@ public sealed class LeaseInventoryObserverTests
             if (messageType == MessageTypes.LeaseList)
             {
                 Calls.Enqueue("LIST");
+                if (_listFailures.TryDequeue(out var listFailure))
+                {
+                    throw listFailure;
+                }
                 if (!_listPages.TryDequeue(out var page))
                 {
                     page = (DefaultListPage ?? Array.Empty<LeaseListItem>(), null, null);

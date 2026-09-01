@@ -624,7 +624,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     {
         if (!RouteValidation.IsRegistrationPattern(pattern, "lease", 3))
         {
-            throw new LeaseException($"pattern '{pattern}' must be lease://{{realm}}/{{area}}/{{resource}} or a whole-segment wildcard pattern", "INVALID_ROUTE");
+            throw new LeaseException($"selector '{pattern}' must be lease://{{realm}}/{{area}}/{{resource}} or a whole-segment wildcard pattern", "INVALID_ROUTE");
         }
     }
 
