@@ -10,9 +10,9 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Cntryl.Fitz" Version="0.1.0" />
-    <PackageReference Include="Cntryl.Fitz.Abstractions" Version="0.1.0" />
-    <PackageReference Include="Cntryl.Fitz.DependencyInjection" Version="0.1.0" />
+    <PackageReference Include="Cntryl.Fitz" Version="0.1.1" />
+    <PackageReference Include="Cntryl.Fitz.Abstractions" Version="0.1.1" />
+    <PackageReference Include="Cntryl.Fitz.DependencyInjection" Version="0.1.1" />
   </ItemGroup>
 
 </Project>
