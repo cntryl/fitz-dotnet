@@ -238,6 +238,7 @@ public sealed class ManagedLeaseLifecycleTests
             },
             registerOnDisconnect: disconnects.Register);
         var callbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackCancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var callbackSettled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var pending = leaseClient.WithLeaseAsync(
@@ -245,11 +246,15 @@ public sealed class ManagedLeaseLifecycleTests
             1,
             async (_, cancellationToken) =>
             {
-                using var registration = cancellationToken.Register(() => throw cancellationHookFailure);
+                using var registration = cancellationToken.Register(() =>
+                {
+                    callbackCancellationObserved.TrySetResult();
+                    throw cancellationHookFailure;
+                });
                 callbackStarted.TrySetResult();
                 try
                 {
-                    await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                    await callbackCancellationObserved.Task;
                 }
                 finally
                 {
