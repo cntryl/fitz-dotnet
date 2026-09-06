@@ -13,6 +13,16 @@ Console.WriteLine(typeof(Client).FullName);
 Console.WriteLine(typeof(IKvClient).FullName);
 Console.WriteLine(typeof(ServiceCollectionExtensions).FullName);
 
+foreach (var assembly in new[] { typeof(Client).Assembly, typeof(IKvClient).Assembly, typeof(ServiceCollectionExtensions).Assembly })
+{
+    var name = assembly.GetName();
+    if (name.Version != new Version(1, 0, 0, 0))
+    {
+        throw new InvalidOperationException($"{name.Name} assembly version must remain 1.0.0.0; found {name.Version}.");
+    }
+}
+
+
 static async Task CompilePreviewApiAsync(
     INoticeClient notice,
     IScheduleClient schedule,
