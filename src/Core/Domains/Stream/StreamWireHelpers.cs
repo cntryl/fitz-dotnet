@@ -384,9 +384,9 @@ internal static class StreamWireHelpers
         var status = reader.ReadU8();
         if (status != 0)
         {
-            if (status == 1)
+            if (status is 1 or 2)
             {
-                uint? domainCode = operation == "READ" ? reader.ReadU32() : null;
+                uint? domainCode = status == 2 || operation == "READ" ? reader.ReadU32() : null;
                 var message = reader.ReadString();
                 if (!reader.IsEof)
                 {
