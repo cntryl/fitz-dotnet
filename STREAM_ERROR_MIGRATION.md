@@ -1,6 +1,6 @@
 # Stream error envelope generation 2 (Fitz #238)
 
-This client decodes Stream status 2 as `[u32 BE domain_code][string message]`.
+Release `0.1.2` decodes Stream status 2 as `[u32 BE domain_code][string message]`.
 Legacy status 1 remains supported: READ includes a code; other operations carry
 text only. Unknown codes remain available to callers. Classify OCC using 2001,
 never message wording; backend failures use 2012. No automatic command retry is
