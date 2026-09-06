@@ -15,3 +15,10 @@ local qualification packages are not published releases.
 The .NET client exposes `StreamException.DomainCode`, including 2001 for APPEND
 and COMMIT. Legacy uncoded failures remain null. Go preserves the domain error
 alongside its sentinel via `errors.Join`; use `errors.Is` and `errors.As`.
+
+## .NET assembly identity
+
+Starting with NuGet `0.1.2`, all three .NET assemblies use the permanent assembly
+version `1.0.0.0` (previously `0.1.1.0`). Future package releases advance
+`PackageVersion` independently and must not change `AssemblyVersion`. CI runs
+the packed consumer and checks the assembly identity of all three packages.

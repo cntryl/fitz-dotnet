@@ -51,7 +51,7 @@ jobs:
         run: dotnet pack Fitz.sln -c Release --no-restore --output artifacts/packages
 
       - name: Smoke restore packed packages
-        run: dotnet restore tests/PackageConsumer/PackageConsumer.csproj --source artifacts/packages --source https://api.nuget.org/v3/index.json && dotnet build tests/PackageConsumer/PackageConsumer.csproj -c Release --no-restore
+        run: dotnet restore tests/PackageConsumer/PackageConsumer.csproj --source artifacts/packages --source https://api.nuget.org/v3/index.json && dotnet run --project tests/PackageConsumer/PackageConsumer.csproj -c Release --no-restore
 
       - name: Upload NuGet packages
         uses: actions/upload-artifact@v4

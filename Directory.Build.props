@@ -10,8 +10,9 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
-    <!-- Patch releases advance NuGet packages without changing assembly identity. -->
-    <Version>0.1.1</Version>
+    <!-- Assembly identity stays fixed permanently; release only by advancing PackageVersion. -->
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <PackageVersion>0.1.2</PackageVersion>
     <PackageProjectUrl>https://github.com/cntryl/fitz-dotnet</PackageProjectUrl>
     <RepositoryType>git</RepositoryType>
