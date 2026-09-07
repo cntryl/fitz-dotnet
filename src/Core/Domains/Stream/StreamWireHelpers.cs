@@ -73,9 +73,14 @@ internal static class StreamWireHelpers
     {
         var reader = new BinaryBufferReader(response);
         ReadSuccessStatus(reader, "SUBSCRIBE");
-        if (reader.RemainingBytes != 9 || reader.ReadU8() != 1)
+        if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
             throw new StreamException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
-        return reader.ReadU64();
+        var subscriptionId = reader.ReadU64();
+        if (!reader.IsEof)
+        {
+            _ = ReadLengthPrefixedData(reader, "SUBSCRIBE");
+        }
+        return subscriptionId;
     }
 
     internal static ReadOnlyMemory<byte> ReadOptionalPayload(ReadOnlyMemory<byte> response, string operation)
