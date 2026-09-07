@@ -13,13 +13,13 @@
     <!-- Assembly identity stays fixed permanently; release only by advancing PackageVersion. -->
     <Version>1.0.0</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <PackageVersion>0.1.2</PackageVersion>
+    <PackageVersion>0.1.3</PackageVersion>
     <PackageProjectUrl>https://github.com/cntryl/fitz-dotnet</PackageProjectUrl>
     <RepositoryType>git</RepositoryType>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>fitz distributed-systems kv queue rpc lease notice stream schedule</PackageTags>
-    <PackageReleaseNotes>Preserve structured Stream error codes for APPEND, COMMIT, and sibling operations while retaining legacy response decoding.</PackageReleaseNotes>
+    <PackageReleaseNotes>Accept the current Fitz Stream SUBSCRIBE response framing while retaining compatibility with the legacy response.</PackageReleaseNotes>
     <PackageOutputPath>$(MSBuildThisFileDirectory)artifacts\packages</PackageOutputPath>
   </PropertyGroup>
 

@@ -23,6 +23,35 @@ public sealed class StreamClientTests
         "stream://**",
     };
 
+    [Fact]
+    public async Task should_accept_length_prefixed_payload_given_stream_subscribe_response()
+    {
+        using var stream = new StreamClient(
+            (messageType, _, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                if (messageType == MessageTypes.StreamSubscribe)
+                {
+                    writer.WriteU8(1);
+                    writer.WriteU64(55);
+                    writer.WriteU32(0);
+                }
+                else
+                {
+                    Assert.Equal(MessageTypes.StreamUnsubscribe, messageType);
+                }
+                return Task.FromResult(writer.Build());
+            },
+            (_, _) => new TestRegistration());
+
+        await using var subscription = await stream.SubscribeAsync(
+            "stream://prod/app/*",
+            (_, _) => ValueTask.CompletedTask);
+
+        Assert.NotNull(subscription);
+    }
+
     [Theory]
     [MemberData(nameof(CanonicalStreamSelectors))]
     public void should_accept_selector_given_canonical_stream_fixture_shape(string selector)
