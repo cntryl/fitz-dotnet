@@ -8,6 +8,10 @@
 - `Cntryl.Fitz.Abstractions`: public interfaces and shared contracts
 - `Cntryl.Fitz.DependencyInjection`: DI registration helpers
 
+All three packages support trimming and Native AOT. They enable the .NET AOT
+compatibility analyzers, and CI publishes and executes a Native AOT application
+against the packed NuGet artifacts.
+
 ## Install
 
 ```bash
