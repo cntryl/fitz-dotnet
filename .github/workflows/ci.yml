@@ -53,6 +53,12 @@ jobs:
       - name: Smoke restore packed packages
         run: dotnet restore tests/PackageConsumer/PackageConsumer.csproj --source artifacts/packages --source https://api.nuget.org/v3/index.json && dotnet run --project tests/PackageConsumer/PackageConsumer.csproj -c Release --no-restore
 
+      - name: Publish Native AOT consumer from packed packages
+        run: dotnet publish tests/PackageConsumer/PackageConsumer.csproj -c Release -r linux-x64 -p:PublishAot=true --source artifacts/packages --source https://api.nuget.org/v3/index.json --output artifacts/native-aot
+
+      - name: Run Native AOT consumer
+        run: artifacts/native-aot/PackageConsumer
+
       - name: Upload NuGet packages
         uses: actions/upload-artifact@v4
         with:

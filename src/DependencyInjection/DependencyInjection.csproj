@@ -7,6 +7,7 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <IsAotCompatible>true</IsAotCompatible>
     <PackageId>Cntryl.Fitz.DependencyInjection</PackageId>
     <AssemblyName>Cntryl.Fitz.DependencyInjection</AssemblyName>
     <RootNamespace>Cntryl.Fitz.DependencyInjection</RootNamespace>
