@@ -29,7 +29,10 @@ jobs:
         run: dotnet build Fitz.sln -c Release --no-restore
 
       - name: Run unit tests
-        run: dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName!~Integration
+        run: dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName!~Integration
+
+      - name: Run analyzer tests
+        run: dotnet test test/Fitz.Analyzers.Tests/Fitz.Analyzers.Tests.csproj -c Release --no-build
 
   package:
     timeout-minutes: 10
@@ -51,13 +54,25 @@ jobs:
         run: dotnet pack Fitz.sln -c Release --no-restore --output artifacts/packages
 
       - name: Smoke restore packed packages
-        run: dotnet restore tests/PackageConsumer/PackageConsumer.csproj --source artifacts/packages --source https://api.nuget.org/v3/index.json && dotnet run --project tests/PackageConsumer/PackageConsumer.csproj -c Release --no-restore
+        run: dotnet restore test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj --source artifacts/packages --source https://api.nuget.org/v3/index.json && dotnet run --project test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj -c Release --no-restore
+
+      - name: Set up minimum supported .NET SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "10.0.100"
+
+      - name: Smoke analyzer on minimum supported compiler
+        working-directory: test/Fitz.PackageConsumer
+        run: |
+          dotnet --version
+          dotnet restore Fitz.PackageConsumer.csproj --source ../../artifacts/packages --source https://api.nuget.org/v3/index.json
+          dotnet build Fitz.PackageConsumer.csproj -c Release --no-restore
 
       - name: Publish Native AOT consumer from packed packages
-        run: dotnet publish tests/PackageConsumer/PackageConsumer.csproj -c Release -r linux-x64 -p:PublishAot=true --source artifacts/packages --source https://api.nuget.org/v3/index.json --output artifacts/native-aot
+        run: dotnet publish test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj -c Release -r linux-x64 -p:PublishAot=true --source artifacts/packages --source https://api.nuget.org/v3/index.json --output artifacts/native-aot
 
       - name: Run Native AOT consumer
-        run: artifacts/native-aot/PackageConsumer
+        run: artifacts/native-aot/Fitz.PackageConsumer
 
       - name: Upload NuGet packages
         uses: actions/upload-artifact@v4
@@ -104,17 +119,17 @@ jobs:
         env:
           CONFORMANCE_TRANSPORT: ${{ matrix.transport }}
           CONFORMANCE_AUTH_MODE: ${{ matrix.auth_mode }}
-        run: dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~Conformance
+        run: dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~Conformance
 
       - name: Run domain workflow tests
         if: matrix.transport == 'ws' && matrix.auth_mode == 'anonymous'
-        run: dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~DomainWorkflowIntegrationTests
+        run: dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~DomainWorkflowIntegrationTests
 
       - name: Run invalid JWT auth scenario
         env:
           CONFORMANCE_TRANSPORT: ${{ matrix.transport }}
           CONFORMANCE_AUTH_MODE: anonymous
-        run: dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~should_reject_authentication_given_invalid_jwt_when_connect_called
+        run: dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~ShouldRejectAuthenticationGivenInvalidJwtWhenConnectCalled
 
       - name: Upload conformance results
         if: always()

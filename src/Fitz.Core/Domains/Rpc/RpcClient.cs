@@ -1,0 +1,768 @@
+using System.Diagnostics.CodeAnalysis;
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using Cntryl.Fitz.Abstractions.Domains.Rpc;
+using Cntryl.Fitz.Connection;
+using Cntryl.Fitz.Errors;
+using Cntryl.Fitz.Protocol;
+using Cntryl.Fitz.Runtime;
+
+namespace Cntryl.Fitz.Domains.Rpc;
+
+public sealed class RpcClient : IRpcClient, IDisposable
+{
+    const int CorrelationIdLength = 16;
+    const byte RpcResponseFlagStreamEnd = 0x01;
+    const uint RpcErrorCodeMin = 6001;
+    const uint RpcErrorCodeMax = 6013;
+    const uint RpcBackpressureErrorCode = 6003;
+
+    readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
+    readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
+    readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
+    readonly Func<Func<CancellationToken, ValueTask>, IDisposable>? _onReconnect;
+    readonly Func<CancellationToken>? _getConnectionClosedToken;
+    readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
+    readonly TimeSpan _responseTimeout;
+    readonly Dictionary<string, Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask>> _workers = new(StringComparer.Ordinal);
+    readonly Dictionary<string, uint> _workerConcurrency = new(StringComparer.Ordinal);
+    readonly Dictionary<string, SemaphoreSlim> _workerGates = new(StringComparer.Ordinal);
+    readonly List<SemaphoreSlim> _retiredWorkerGates = [];
+    readonly object _workerSync = new();
+    readonly object _responseSync = new();
+    readonly Dictionary<Guid, RpcCallState> _calls = [];
+
+    IDisposable? _workerReconnectRegistration;
+    IDisposable? _rpcRequestRegistration;
+    IDisposable? _rpcResponseRegistration;
+    bool _rpcRequestHandlerInitialized;
+
+    internal RpcClient(FitzConnection connection)
+        : this(
+            connection.RequestAsync,
+            connection.SendAsync,
+            connection.RegisterNotificationHandler,
+            connection.OnReconnect,
+            () => connection.ConnectionClosedToken,
+            (handler, rejected) => connection.TryDispatchAsyncHandler("rpc", handler, rejected),
+            connectionTimeout: connection.Timeout)
+    {
+    }
+
+    public RpcClient(
+        Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
+        Func<ushort, byte[], CancellationToken, Task>? send = null,
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null,
+        Func<Func<CancellationToken, ValueTask>, IDisposable>? onReconnect = null,
+        Func<CancellationToken>? getConnectionClosedToken = null,
+        Func<Func<CancellationToken, ValueTask>, bool>? dispatchAsyncHandler = null,
+        TimeSpan? connectionTimeout = null)
+        : this(
+            async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
+            send is null
+                ? async (messageType, payload, ct) => { _ = await request(messageType, payload.ToArray(), ct).ConfigureAwait(false); }
+    : async (messageType, payload, ct) => await send(messageType, payload.ToArray(), ct).ConfigureAwait(false),
+            registerNotificationHandler,
+            onReconnect,
+            getConnectionClosedToken,
+            dispatchAsyncHandler is null
+                ? null
+                : (handler, _) => dispatchAsyncHandler(handler),
+            connectionTimeout)
+    {
+    }
+
+    internal RpcClient(
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send,
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null,
+        Func<Func<CancellationToken, ValueTask>, IDisposable>? onReconnect = null,
+        Func<CancellationToken>? getConnectionClosedToken = null,
+        AsyncHandlerDispatch? dispatchAsyncHandler = null,
+        TimeSpan? connectionTimeout = null)
+    {
+        _request = request;
+        _send = send;
+        _registerNotificationHandler = registerNotificationHandler;
+        _onReconnect = onReconnect;
+        _getConnectionClosedToken = getConnectionClosedToken;
+        _dispatchAsyncHandler = dispatchAsyncHandler;
+        _responseTimeout = connectionTimeout ?? TimeSpan.FromSeconds(30);
+    }
+
+    public IAsyncEnumerable<RpcResponseFrame> CallAsync(
+        string route,
+        ReadOnlyMemory<byte> body,
+        CancellationToken ct = default)
+    {
+        if (!RouteValidation.IsConcreteRoute(route, "rpc"))
+        {
+            throw new RpcException($"route '{route}' must be a concrete rpc route", "INVALID_ROUTE");
+        }
+
+        if (_registerNotificationHandler == null)
+        {
+            throw new InvalidOperationException("Notification handlers not configured for RPC streaming");
+        }
+
+        return CallCoreAsync(route, body, ct);
+    }
+
+    async IAsyncEnumerable<RpcResponseFrame> CallCoreAsync(
+        string route,
+        ReadOnlyMemory<byte> body,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        var correlationId = Guid.NewGuid();
+        var correlationBytes = correlationId.ToByteArray();
+        var channel = new SubscriptionChannel<RpcResponseFrame>();
+        var call = new RpcCallState(channel);
+        lock (_responseSync)
+        {
+            EnsureRpcResponseHandlerInitializedLocked();
+            _calls.Add(correlationId, call);
+        }
+
+        using var writer = new BinaryBufferWriter();
+        writer.WriteBytes(correlationBytes);
+        writer.WriteString(route);
+        writer.WriteU32((uint)body.Length);
+        writer.WriteBytes(body.Span);
+
+        try
+        {
+            await _send(MessageTypes.RpcRequest, writer.WrittenMemory, ct).ConfigureAwait(false);
+
+            var connectionClosedToken = _getConnectionClosedToken?.Invoke() ?? CancellationToken.None;
+            using var connectionClosedRegistration = connectionClosedToken.CanBeCanceled
+                ? connectionClosedToken.Register(static state => ((SubscriptionChannel<RpcResponseFrame>)state!).Dispose(), channel)
+                : default;
+
+            while (true)
+            {
+                SubscriptionReadResult<RpcResponseFrame> result;
+                try
+                {
+                    result = await channel.ReadAsync(ct).AsTask().WaitAsync(_responseTimeout, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (TimeoutException)
+                {
+                    throw new RequestTimeoutException($"RPC stream timed out after {_responseTimeout.TotalMilliseconds}ms");
+                }
+
+                if (connectionClosedToken.IsCancellationRequested)
+                {
+                    throw new ConnectionException("Connection closed or reset");
+                }
+
+                if (!result.HasItem)
+                {
+                    break;
+                }
+
+                yield return result.Item;
+            }
+        }
+        finally
+        {
+            lock (_responseSync)
+            {
+                _calls.Remove(correlationId);
+            }
+            channel.Dispose();
+            CryptographicOperations.ZeroMemory(correlationBytes);
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Malformed RPC responses fail only their correlated call.")]
+    void HandleRpcResponse(byte[] payload)
+    {
+        Guid correlationId;
+        try
+        {
+            var reader = new BinaryBufferReader(payload);
+            if (reader.RemainingBytes < CorrelationIdLength)
+            {
+                return;
+            }
+
+            correlationId = new Guid(reader.ReadSpan(CorrelationIdLength));
+            RpcCallState? call;
+            lock (_responseSync)
+            {
+                _calls.TryGetValue(correlationId, out call);
+            }
+            if (call is null)
+            {
+                return;
+            }
+
+            var sequence = reader.ReadU64();
+            if (!call.TryAcceptSequence(sequence))
+            {
+                CompleteRpcCall(
+                    correlationId,
+                    call,
+                    new RpcException($"RPC response sequence {sequence} is out of order", "INVALID_SEQUENCE", domainCode: 6006));
+                return;
+            }
+            var flags = reader.ReadU8();
+            if ((flags & ~RpcResponseFlagStreamEnd) != 0)
+            {
+                throw new ProtocolException("RPC response contains unsupported flags.");
+            }
+
+            var responseBody = reader.ReadBytes(reader.ReadU32());
+            if (!reader.IsEof)
+            {
+                throw new ProtocolException("RPC response contains trailing bytes.");
+            }
+
+            var streamEnd = (flags & RpcResponseFlagStreamEnd) != 0;
+            if (streamEnd && TryDecodeTerminalError(responseBody, out var rpcError))
+            {
+                CompleteRpcCall(correlationId, call, rpcError);
+                return;
+            }
+
+            if (!streamEnd || responseBody.Length > 0)
+            {
+                call.Channel.PostNotification(new RpcResponseFrame(responseBody.AsMemory(), sequence));
+            }
+
+            if (streamEnd)
+            {
+                CompleteRpcCall(correlationId, call);
+            }
+        }
+        catch (Exception exception)
+        {
+            if (payload.Length < CorrelationIdLength)
+            {
+                return;
+            }
+
+            correlationId = new Guid(payload.AsSpan(0, CorrelationIdLength));
+            RpcCallState? call;
+            lock (_responseSync)
+            {
+                _calls.TryGetValue(correlationId, out call);
+            }
+            if (call is not null)
+            {
+                CompleteRpcCall(correlationId, call, exception);
+            }
+        }
+    }
+
+    void EnsureRpcResponseHandlerInitializedLocked() =>
+        _rpcResponseRegistration ??= _registerNotificationHandler!(MessageTypes.RpcResponse, HandleRpcResponse);
+
+    void CompleteRpcCall(Guid correlationId, RpcCallState call, Exception? exception = null)
+    {
+        lock (_responseSync)
+        {
+            if (!_calls.TryGetValue(correlationId, out var registeredCall) || !ReferenceEquals(registeredCall, call))
+            {
+                return;
+            }
+            _calls.Remove(correlationId);
+        }
+        call.Channel.Complete(exception);
+    }
+
+    public async Task<RpcWorkerRegistration> RegisterWorkerAsync(
+        string pattern,
+        Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask> handler,
+        RpcWorkerOptions? options = null,
+        CancellationToken ct = default)
+    {
+        if (!RouteValidation.IsRegistrationPattern(pattern, "rpc"))
+        {
+            throw new RpcException($"pattern '{pattern}' must use whole-segment * or ** wildcards", "INVALID_ROUTE");
+        }
+
+        if (_registerNotificationHandler == null)
+        {
+            throw new InvalidOperationException("Notification handlers not configured for worker registration");
+        }
+
+        var maxConcurrency = options?.MaxConcurrency ?? 1;
+        if (maxConcurrency is < 1 or > 1024)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "MaxConcurrency must be between 1 and 1024.");
+        }
+
+        lock (_workerSync)
+        {
+            if (_workers.ContainsKey(pattern))
+            {
+                throw new RpcException($"worker pattern '{pattern}' is already registered", "ALREADY_REGISTERED");
+            }
+
+            _workers[pattern] = handler;
+            _workerConcurrency[pattern] = maxConcurrency;
+            EnsureRpcRequestHandlerInitializedLocked();
+            _workerGates[pattern] = new SemaphoreSlim(checked((int)maxConcurrency), checked((int)maxConcurrency));
+        }
+
+        try
+        {
+            await SubscribeWorkerAsync(pattern, maxConcurrency, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            RemoveWorker(pattern);
+            throw;
+        }
+
+        lock (_workerSync)
+        {
+            _workerReconnectRegistration ??= _onReconnect?.Invoke(ResubscribeWorkersAsync);
+        }
+
+        return new RpcWorkerRegistration(pattern, unregisterToken => new ValueTask(UnsubscribeWorkerAsync(pattern, unregisterToken)));
+    }
+
+    void EnsureRpcRequestHandlerInitializedLocked()
+    {
+        if (_rpcRequestHandlerInitialized || _registerNotificationHandler == null)
+        {
+            return;
+        }
+
+        _rpcRequestHandlerInitialized = true;
+        _rpcRequestRegistration = _registerNotificationHandler(MessageTypes.RpcRequest, payload =>
+        {
+            if (_dispatchAsyncHandler is not null)
+            {
+                if (!_dispatchAsyncHandler(token => new ValueTask(HandleIncomingRequestAsync(payload, token)), null))
+                {
+                    _ = TrySendBackpressureResponseAsync(payload);
+                }
+
+                return;
+            }
+
+            _ = HandleIncomingRequestAsync(payload, CancellationToken.None);
+        });
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "RPC worker callbacks are user code and must not break notification dispatch.")]
+    async Task HandleIncomingRequestAsync(byte[] payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var reader = new BinaryBufferReader(payload);
+            if (reader.RemainingBytes < CorrelationIdLength)
+            {
+                return;
+            }
+
+            var correlationId = reader.ReadBytes(CorrelationIdLength);
+            var route = reader.ReadString();
+            var bodyLength = reader.ReadU32();
+            if (reader.RemainingBytes < bodyLength)
+            {
+                return;
+            }
+
+            var body = reader.ReadBytes(bodyLength);
+            if (!reader.IsEof)
+            {
+                return;
+            }
+
+            if (!TryGetWorker(route, out var handler, out var concurrencyGate))
+            {
+                return;
+            }
+
+            var writer = new RpcResponseWriter(_send, correlationId);
+            if (!await concurrencyGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            {
+                await writer.SendAsync(
+                    EncodeTerminalErrorBody(RpcBackpressureErrorCode, "Local RPC worker is overloaded"),
+                    isEnd: true,
+                    cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            try
+            {
+                await handler(new RpcRequest(route, body), writer, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                concurrencyGate.Release();
+            }
+        }
+        catch (Exception)
+        {
+            // Handler exceptions are intentionally swallowed to avoid tearing down dispatch.
+        }
+    }
+
+    bool TryGetWorker(
+        string route,
+        out Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask> handler,
+        out SemaphoreSlim concurrencyGate)
+    {
+        lock (_workerSync)
+        {
+            if (_workers.TryGetValue(route, out handler!))
+            {
+                concurrencyGate = _workerGates[route];
+                return true;
+            }
+
+            string? bestPattern = null;
+            (int LiteralSegments, int SingleWildcards, int SegmentCount) bestSpecificity = default;
+            foreach (var entry in _workers)
+            {
+                if (RouteValidation.MatchesPattern(route, entry.Key))
+                {
+                    var specificity = GetPatternSpecificity(entry.Key);
+                    if (bestPattern is null || specificity.CompareTo(bestSpecificity) > 0 ||
+                        (specificity == bestSpecificity && string.CompareOrdinal(entry.Key, bestPattern) < 0))
+                    {
+                        bestPattern = entry.Key;
+                        bestSpecificity = specificity;
+                    }
+                }
+            }
+
+            if (bestPattern is not null)
+            {
+                handler = _workers[bestPattern];
+                concurrencyGate = _workerGates[bestPattern];
+                return true;
+            }
+        }
+
+        handler = default!;
+        concurrencyGate = default!;
+        return false;
+    }
+
+    static (int LiteralSegments, int SingleWildcards, int SegmentCount) GetPatternSpecificity(string pattern)
+    {
+        var pathStart = pattern.IndexOf("://", StringComparison.Ordinal) + 3;
+        var segments = pattern[pathStart..].Split('/');
+        var literals = 0;
+        var singleWildcards = 0;
+        foreach (var segment in segments)
+        {
+            if (segment == "*")
+                singleWildcards++;
+            else if (segment != "**")
+                literals++;
+        }
+        return (literals, singleWildcards, segments.Length);
+    }
+
+    async Task SubscribeWorkerAsync(string pattern, uint maxConcurrency, CancellationToken ct)
+    {
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(pattern);
+        writer.WriteU32(maxConcurrency);
+
+        var response = await _request(MessageTypes.RpcSubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var reader = ReadRpcSuccess(response, "REGISTER");
+
+        if (reader.RemainingBytes >= 8)
+        {
+            _ = reader.ReadU64();
+        }
+
+        if (reader.RemainingBytes > 0)
+        {
+            _ = reader.ReadBytes(reader.RemainingBytes);
+        }
+    }
+
+    async Task UnsubscribeWorkerAsync(string pattern, CancellationToken ct)
+    {
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(pattern);
+        var response = await _request(MessageTypes.RpcUnsubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
+        _ = ReadRpcSuccess(response, "UNREGISTER");
+        lock (_workerSync)
+        {
+            RemoveWorkerLocked(pattern);
+            if (_workers.Count == 0)
+            {
+                _workerReconnectRegistration?.Dispose();
+                _workerReconnectRegistration = null;
+            }
+        }
+    }
+
+    void RemoveWorker(string pattern)
+    {
+        lock (_workerSync)
+        {
+            RemoveWorkerLocked(pattern);
+        }
+    }
+
+    void RemoveWorkerLocked(string pattern)
+    {
+        _workers.Remove(pattern);
+        _workerConcurrency.Remove(pattern);
+        if (_workerGates.Remove(pattern, out var gate))
+        {
+            _retiredWorkerGates.Add(gate);
+        }
+    }
+
+    async ValueTask ResubscribeWorkersAsync(CancellationToken cancellationToken)
+    {
+        KeyValuePair<string, uint>[] snapshot;
+        lock (_workerSync)
+            snapshot = _workerConcurrency.ToArray();
+        foreach (var entry in snapshot)
+        {
+            await SubscribeWorkerAsync(entry.Key, entry.Value, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A best-effort overload response must not break notification dispatch.")]
+    async Task TrySendBackpressureResponseAsync(byte[] payload)
+    {
+        try
+        {
+            if (!TryDecodeInboundRequest(payload, out var correlationId, out _))
+            {
+                return;
+            }
+
+            var writer = new RpcResponseWriter(_send, correlationId);
+            await writer.SendAsync(EncodeTerminalErrorBody(RpcBackpressureErrorCode, "Local RPC worker is overloaded"), isEnd: true).ConfigureAwait(false);
+        }
+        catch
+        {
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Try-decode treats every malformed untrusted frame as a non-match.")]
+    static bool TryDecodeInboundRequest(byte[] payload, out byte[] correlationId, out string route)
+    {
+        correlationId = Array.Empty<byte>();
+        route = string.Empty;
+
+        try
+        {
+            var reader = new BinaryBufferReader(payload);
+            if (reader.RemainingBytes < CorrelationIdLength)
+            {
+                return false;
+            }
+
+            correlationId = reader.ReadBytes(CorrelationIdLength);
+            route = reader.ReadString();
+            if (reader.RemainingBytes < 4)
+            {
+                return false;
+            }
+
+            var bodyLength = reader.ReadU32();
+            if (reader.RemainingBytes < bodyLength)
+            {
+                return false;
+            }
+
+            _ = reader.ReadBytes(bodyLength);
+            return reader.IsEof;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Try-decode treats every malformed untrusted frame as a non-match.")]
+    static bool TryDecodeTerminalError(ReadOnlySpan<byte> payload, out RpcException rpcError)
+    {
+        rpcError = null!;
+
+        try
+        {
+            if (payload.Length < 5)
+            {
+                return false;
+            }
+
+            var reader = new BinaryBufferReader(payload.ToArray());
+            if (reader.ReadU8() != 1)
+            {
+                return false;
+            }
+
+            var code = reader.ReadU32();
+            if (code < RpcErrorCodeMin || code > RpcErrorCodeMax)
+            {
+                return false;
+            }
+
+            var message = reader.ReadString();
+            if (!reader.IsEof)
+            {
+                return false;
+            }
+
+            rpcError = new RpcException(
+                string.IsNullOrWhiteSpace(message) ? "RPC error" : message,
+                MapRpcErrorCode(code),
+                1,
+                code);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    static byte[] EncodeTerminalErrorBody(uint code, string message)
+    {
+        using var writer = new BinaryBufferWriter();
+        writer.WriteU8(1);
+        writer.WriteU32(code);
+        writer.WriteString(message);
+        return writer.Build();
+    }
+
+    static string MapRpcErrorCode(uint code)
+    {
+        return code switch
+        {
+            6001 => "TIMEOUT",
+            6002 => "WORKER_NOT_FOUND",
+            6003 => "BACKPRESSURE",
+            6004 => "ROUTE_NOT_REGISTERED",
+            6005 => "CORRELATION_NOT_FOUND",
+            6006 => "INVALID_SEQUENCE",
+            6007 => "DUPLICATE_CORRELATION",
+            6008 => "WRONG_WORKER",
+            6009 => "UNAUTHORIZED",
+            6010 => "BACKEND_ERROR",
+            6011 => "INVALID_ROUTE",
+            6012 => "INVALID_SUBSCRIPTION_PATTERN",
+            6013 => "SUBSCRIPTION_LIMIT",
+            _ => "DOMAIN_ERROR",
+        };
+    }
+
+    static BinaryBufferReader ReadRpcSuccess(ReadOnlyMemory<byte> response, string operation)
+    {
+        var reader = new BinaryBufferReader(response);
+        var status = reader.ReadU8();
+        if (status == 0)
+        {
+            return reader;
+        }
+
+        if (status != 1)
+        {
+            throw new RpcException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
+        }
+
+        var domainCode = reader.ReadU32();
+        var message = reader.ReadString();
+        if (!reader.IsEof)
+        {
+            throw new RpcException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+        }
+
+        throw new RpcException($"{operation} failed: {message}", MapRpcErrorCode(domainCode), status, domainCode);
+    }
+
+    public void Dispose()
+    {
+        RpcCallState[] calls;
+        lock (_responseSync)
+        {
+            _rpcResponseRegistration?.Dispose();
+            _rpcResponseRegistration = null;
+            calls = [.. _calls.Values];
+            _calls.Clear();
+        }
+        foreach (var call in calls)
+        {
+            call.Channel.Complete(new ObjectDisposedException(nameof(RpcClient)));
+        }
+
+        lock (_workerSync)
+        {
+            _rpcRequestRegistration?.Dispose();
+            _rpcRequestRegistration = null;
+            _workerReconnectRegistration?.Dispose();
+            _workerReconnectRegistration = null;
+            _workers.Clear();
+            _workerConcurrency.Clear();
+            foreach (var gate in _workerGates.Values)
+            {
+                gate.Dispose();
+            }
+            _workerGates.Clear();
+            foreach (var gate in _retiredWorkerGates)
+            {
+                gate.Dispose();
+            }
+            _retiredWorkerGates.Clear();
+        }
+    }
+
+    sealed class RpcCallState(SubscriptionChannel<RpcResponseFrame> channel)
+    {
+        readonly object _gate = new();
+        ulong _nextSequence;
+
+        internal SubscriptionChannel<RpcResponseFrame> Channel { get; } = channel;
+
+        internal bool TryAcceptSequence(ulong sequence)
+        {
+            lock (_gate)
+            {
+                if (sequence != _nextSequence)
+                {
+                    return false;
+                }
+
+                _nextSequence++;
+                return true;
+            }
+        }
+    }
+
+    sealed class RpcResponseWriter : IRpcResponseWriter
+    {
+        readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
+        readonly byte[] _correlationId;
+        ulong _sequence;
+
+        internal RpcResponseWriter(Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send, byte[] correlationId)
+        {
+            _send = send;
+            _correlationId = correlationId;
+        }
+
+        public async ValueTask SendAsync(ReadOnlyMemory<byte> body, bool isEnd = false, CancellationToken ct = default)
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteBytes(_correlationId);
+            writer.WriteU64(_sequence++);
+            writer.WriteU8(isEnd ? RpcResponseFlagStreamEnd : (byte)0);
+            writer.WriteU32((uint)body.Length);
+            writer.WriteBytes(body.Span);
+
+            await _send(MessageTypes.RpcResponse, writer.WrittenMemory, ct).ConfigureAwait(false);
+        }
+    }
+
+}
