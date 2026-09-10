@@ -14,7 +14,7 @@ public static class FitzDiagnostics
         "Invalid Fitz route",
         "'{0}' is not a valid {1} route",
         "Usage",
-        DiagnosticSeverity.Error,
+        DiagnosticSeverity.Warning,
         isEnabledByDefault: true);
 
     internal static readonly DiagnosticDescriptor InvalidPattern = new(
@@ -22,7 +22,7 @@ public static class FitzDiagnostics
         "Invalid Fitz pattern",
         "'{0}' is not a valid {1} pattern or selector",
         "Usage",
-        DiagnosticSeverity.Error,
+        DiagnosticSeverity.Warning,
         isEnabledByDefault: true);
 
     internal static readonly DiagnosticDescriptor DiscardedHandle = new(

@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
-using System.Security.Cryptography;
 using Cntryl.Fitz.Abstractions.Domains.Rpc;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
@@ -23,11 +22,11 @@ public sealed class RpcClient : IRpcClient, IDisposable
     readonly Func<Func<CancellationToken, ValueTask>, IDisposable>? _onReconnect;
     readonly Func<CancellationToken>? _getConnectionClosedToken;
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
+    readonly Action<Exception>? _onWorkerError;
     readonly TimeSpan _responseTimeout;
     readonly Dictionary<string, Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask>> _workers = new(StringComparer.Ordinal);
     readonly Dictionary<string, uint> _workerConcurrency = new(StringComparer.Ordinal);
     readonly Dictionary<string, SemaphoreSlim> _workerGates = new(StringComparer.Ordinal);
-    readonly List<SemaphoreSlim> _retiredWorkerGates = [];
     readonly object _workerSync = new();
     readonly object _responseSync = new();
     readonly Dictionary<Guid, RpcCallState> _calls = [];
@@ -45,7 +44,8 @@ public sealed class RpcClient : IRpcClient, IDisposable
             connection.OnReconnect,
             () => connection.ConnectionClosedToken,
             (handler, rejected) => connection.TryDispatchAsyncHandler("rpc", handler, rejected),
-            connectionTimeout: connection.Timeout)
+            connectionTimeout: connection.Timeout,
+            onWorkerError: connection.ReportAsyncHandlerError)
     {
     }
 
@@ -68,7 +68,8 @@ public sealed class RpcClient : IRpcClient, IDisposable
             dispatchAsyncHandler is null
                 ? null
                 : (handler, _) => dispatchAsyncHandler(handler),
-            connectionTimeout)
+            connectionTimeout,
+            onWorkerError: null)
     {
     }
 
@@ -79,7 +80,8 @@ public sealed class RpcClient : IRpcClient, IDisposable
         Func<Func<CancellationToken, ValueTask>, IDisposable>? onReconnect = null,
         Func<CancellationToken>? getConnectionClosedToken = null,
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
-        TimeSpan? connectionTimeout = null)
+        TimeSpan? connectionTimeout = null,
+        Action<Exception>? onWorkerError = null)
     {
         _request = request;
         _send = send;
@@ -87,6 +89,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
         _onReconnect = onReconnect;
         _getConnectionClosedToken = getConnectionClosedToken;
         _dispatchAsyncHandler = dispatchAsyncHandler;
+        _onWorkerError = onWorkerError;
         _responseTimeout = connectionTimeout ?? TimeSpan.FromSeconds(30);
     }
 
@@ -174,7 +177,6 @@ public sealed class RpcClient : IRpcClient, IDisposable
                 _calls.Remove(correlationId);
             }
             channel.Dispose();
-            CryptographicOperations.ZeroMemory(correlationBytes);
         }
     }
 
@@ -401,9 +403,16 @@ public sealed class RpcClient : IRpcClient, IDisposable
                 concurrencyGate.Release();
             }
         }
-        catch (Exception)
+        catch (Exception exception)
         {
-            // Handler exceptions are intentionally swallowed to avoid tearing down dispatch.
+            try
+            {
+                _onWorkerError?.Invoke(exception);
+            }
+            catch
+            {
+                // Diagnostic sinks must not tear down notification dispatch.
+            }
         }
     }
 
@@ -487,10 +496,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
 
     async Task UnsubscribeWorkerAsync(string pattern, CancellationToken ct)
     {
-        using var writer = new BinaryBufferWriter();
-        writer.WriteString(pattern);
-        var response = await _request(MessageTypes.RpcUnsubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
-        _ = ReadRpcSuccess(response, "UNREGISTER");
+        await UnsubscribeWorkerWireAsync(pattern, ct).ConfigureAwait(false);
         lock (_workerSync)
         {
             RemoveWorkerLocked(pattern);
@@ -500,6 +506,14 @@ public sealed class RpcClient : IRpcClient, IDisposable
                 _workerReconnectRegistration = null;
             }
         }
+    }
+
+    async Task UnsubscribeWorkerWireAsync(string pattern, CancellationToken ct)
+    {
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(pattern);
+        var response = await _request(MessageTypes.RpcUnsubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
+        _ = ReadRpcSuccess(response, "UNREGISTER");
     }
 
     void RemoveWorker(string pattern)
@@ -514,20 +528,39 @@ public sealed class RpcClient : IRpcClient, IDisposable
     {
         _workers.Remove(pattern);
         _workerConcurrency.Remove(pattern);
-        if (_workerGates.Remove(pattern, out var gate))
-        {
-            _retiredWorkerGates.Add(gate);
-        }
+        _workerGates.Remove(pattern);
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored worker before preserving the original failure.")]
     async ValueTask ResubscribeWorkersAsync(CancellationToken cancellationToken)
     {
         KeyValuePair<string, uint>[] snapshot;
         lock (_workerSync)
             snapshot = _workerConcurrency.ToArray();
-        foreach (var entry in snapshot)
+        var restoredPatterns = new List<string>(snapshot.Length);
+        try
         {
-            await SubscribeWorkerAsync(entry.Key, entry.Value, cancellationToken).ConfigureAwait(false);
+            foreach (var entry in snapshot)
+            {
+                await SubscribeWorkerAsync(entry.Key, entry.Value, cancellationToken).ConfigureAwait(false);
+                restoredPatterns.Add(entry.Key);
+            }
+        }
+        catch
+        {
+            foreach (var pattern in restoredPatterns)
+            {
+                try
+                {
+                    await UnsubscribeWorkerWireAsync(pattern, CancellationToken.None).ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Best effort; preserve the original restore failure.
+                }
+            }
+
+            throw;
         }
     }
 
@@ -705,16 +738,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
             _workerReconnectRegistration = null;
             _workers.Clear();
             _workerConcurrency.Clear();
-            foreach (var gate in _workerGates.Values)
-            {
-                gate.Dispose();
-            }
             _workerGates.Clear();
-            foreach (var gate in _retiredWorkerGates)
-            {
-                gate.Dispose();
-            }
-            _retiredWorkerGates.Clear();
         }
     }
 
@@ -740,11 +764,14 @@ public sealed class RpcClient : IRpcClient, IDisposable
         }
     }
 
+    [SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "The send gate may still have concurrent holders when a worker returns and has no resource to release unless AvailableWaitHandle is used.")]
     sealed class RpcResponseWriter : IRpcResponseWriter
     {
         readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
         readonly byte[] _correlationId;
+        readonly SemaphoreSlim _sendGate = new(1, 1);
         ulong _sequence;
+        bool _ended;
 
         internal RpcResponseWriter(Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send, byte[] correlationId)
         {
@@ -754,14 +781,29 @@ public sealed class RpcClient : IRpcClient, IDisposable
 
         public async ValueTask SendAsync(ReadOnlyMemory<byte> body, bool isEnd = false, CancellationToken ct = default)
         {
-            using var writer = new BinaryBufferWriter();
-            writer.WriteBytes(_correlationId);
-            writer.WriteU64(_sequence++);
-            writer.WriteU8(isEnd ? RpcResponseFlagStreamEnd : (byte)0);
-            writer.WriteU32((uint)body.Length);
-            writer.WriteBytes(body.Span);
+            await _sendGate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                if (_ended)
+                {
+                    throw new InvalidOperationException("The RPC response stream has already ended.");
+                }
 
-            await _send(MessageTypes.RpcResponse, writer.WrittenMemory, ct).ConfigureAwait(false);
+                using var writer = new BinaryBufferWriter();
+                writer.WriteBytes(_correlationId);
+                writer.WriteU64(_sequence);
+                writer.WriteU8(isEnd ? RpcResponseFlagStreamEnd : (byte)0);
+                writer.WriteU32((uint)body.Length);
+                writer.WriteBytes(body.Span);
+
+                await _send(MessageTypes.RpcResponse, writer.WrittenMemory, ct).ConfigureAwait(false);
+                _sequence++;
+                _ended = isEnd;
+            }
+            finally
+            {
+                _sendGate.Release();
+            }
         }
     }
 

@@ -138,7 +138,8 @@ public sealed class LeaseListTests
         var act = () => leaseClient.ListAsync("lease://acme/renderers/*");
 
         // Assert
-        await Assert.ThrowsAsync<ProtocolException>(act);
+        var error = await Assert.ThrowsAsync<LeaseException>(act);
+        Assert.Equal("LIST_INVALID_RESPONSE", error.Code);
     }
 
     [Theory]
@@ -188,6 +189,17 @@ public sealed class LeaseListTests
         var act = () => leaseClient.ListAsync("lease://acme/renderers/*", limit: -1);
 
         // Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(act);
+    }
+
+    [Fact]
+    public async Task ShouldRejectLimitGivenZeroValueWhenListingLeases()
+    {
+        using var leaseClient = new LeaseClient((_, _, _) =>
+            throw new InvalidOperationException("should not send request for invalid limit"));
+
+        var act = () => leaseClient.ListAsync("lease://acme/renderers/*", limit: 0);
+
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(act);
     }
 

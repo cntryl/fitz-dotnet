@@ -17,6 +17,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
     readonly Func<Action, IDisposable>? _registerOnDisconnect;
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly int _subscriptionBufferCapacity;
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     readonly object _gate = new();
     readonly Dictionary<string, StreamSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -460,8 +461,13 @@ public sealed class StreamClient : IStreamClient, IDisposable
             {
                 return;
             }
-            var notification = new StreamCommitEvent(route, StreamWireHelpers.TryParseCommitOffset(body));
+            var commitOffset = StreamWireHelpers.ParseCommitOffset(body);
+            var notification = new StreamCommitEvent(route, commitOffset.Offset)
+            {
+                CommitOffsetStatus = commitOffset.Status,
+            };
 
+            SubscriptionRegistration<StreamCommitEvent>[] registrations;
             lock (_gate)
             {
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
@@ -470,11 +476,13 @@ public sealed class StreamClient : IStreamClient, IDisposable
                     return;
                 }
 
-                foreach (var registration in subscription.Registrations.Values)
-                {
-                    if (!registration.Channel.Writer.TryWrite(notification))
-                        _ = registration.FailOverflowAsync();
-                }
+                registrations = [.. subscription.Registrations.Values];
+            }
+
+            foreach (var registration in registrations)
+            {
+                if (!registration.Channel.Writer.TryWrite(notification))
+                    _ = registration.FailOverflowAsync();
             }
         }
         catch
@@ -620,7 +628,6 @@ public sealed class StreamClient : IStreamClient, IDisposable
             _patternsBySubscriptionId.Clear();
         }
 
-        _subscriptionGate.Dispose();
     }
 
     sealed class StreamSubscriptionState

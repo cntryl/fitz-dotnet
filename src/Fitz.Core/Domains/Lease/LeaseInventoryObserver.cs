@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using Cntryl.Fitz.Abstractions.Domains.Lease;
+using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz.Domains.Lease;
 
@@ -10,6 +11,7 @@ namespace Cntryl.Fitz.Domains.Lease;
 /// </summary>
 sealed class LeaseInventoryObserver : ILeaseInventoryObserver
 {
+    const int MaxImmediateConvergencePasses = 3;
     readonly LeaseClient _client;
     readonly string _pattern;
     readonly LeaseObserveOptions _options;
@@ -72,7 +74,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect recovery retries transient transport, broker, and LIST failures through the bounded subscription-recovery loop.")]
     async ValueTask HandleReconnectAsync(CancellationToken ct)
     {
-        if (Volatile.Read(ref _disposed) != 0)
+        if (Volatile.Read(ref _disposed) != 0 || _lifetimeCts.IsCancellationRequested)
         {
             return;
         }
@@ -178,11 +180,13 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
             }
 
             // 3-5. LIST to completion and install only after a complete pass
-            // observed no buffered invalidation. Repeating instead of
-            // marking ready before the drain closes the acknowledgement /
-            // pagination race for an arbitrarily long bootstrap.
+            // observed no buffered invalidation. Retry a bounded number of
+            // immediate passes, then publish the latest complete snapshot;
+            // pending routes and periodic reconciliation converge afterward.
+            var convergencePass = 0;
             while (true)
             {
+                convergencePass++;
                 long passSubscriptionGeneration;
                 lock (_gate)
                 {
@@ -210,12 +214,13 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
                         return;
                     }
 
-                    if (_bootstrapDirty)
+                    if (_bootstrapDirty && convergencePass < MaxImmediateConvergencePasses)
                     {
                         _bootstrapDirty = false;
                         continue;
                     }
 
+                    _bootstrapDirty = false;
                     _view = freshView;
                     _isReady = true;
                     break;
@@ -235,6 +240,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
             if (!_isReady)
             {
                 _bootstrapDirty = true;
+                _pendingRoutes.Add(change.Route);
             }
             else
             {
@@ -287,16 +293,38 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
             // that gap, so immediately replace the subscription and rebuild
             // the view. The recovery loop owns retry/backoff for transient
             // SUBSCRIBE or LIST failures.
+            RequestSubscriptionRecovery();
+            return;
         }
 
-        RequestSubscriptionRecovery();
+        await StopAfterSubscriptionCompletionAsync().ConfigureAwait(false);
+    }
+
+    async Task StopAfterSubscriptionCompletionAsync()
+    {
+        Interlocked.Exchange(ref _reconnectRegistration, null)?.Dispose();
+        lock (_gate)
+        {
+            _isReady = false;
+        }
+
+        try
+        {
+            await _lifetimeCts.CancelAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // DisposeAsync won the race.
+        }
+
+        _updates.Writer.TryComplete();
     }
 
     void RequestSubscriptionRecovery()
     {
         lock (_gate)
         {
-            if (Volatile.Read(ref _disposed) != 0)
+            if (Volatile.Read(ref _disposed) != 0 || _lifetimeCts.IsCancellationRequested)
             {
                 return;
             }
@@ -370,8 +398,10 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         try
         {
             var affectedRoutes = new HashSet<string>(StringComparer.Ordinal);
+            var convergencePass = 0;
             while (true)
             {
+                convergencePass++;
                 lock (_gate)
                 {
                     if (!_isReady || _pendingRoutes.Count == 0)
@@ -394,11 +424,13 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
                         return;
                     }
 
-                    if (_pendingRoutes.Count > 0)
+                    if (_pendingRoutes.Count > 0 && convergencePass < MaxImmediateConvergencePasses)
                     {
                         continue;
                     }
 
+                    affectedRoutes.UnionWith(_pendingRoutes);
+                    _pendingRoutes.Clear();
                     _view = refreshed;
                     foreach (var route in affectedRoutes)
                     {
@@ -486,18 +518,40 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
 
     async Task<Dictionary<string, LeaseListItem>> ListAllAsync(CancellationToken ct)
     {
+        const int maxPages = 10_000;
+        using var listDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        listDeadline.CancelAfter(_options.ListTimeout);
+        var listToken = listDeadline.Token;
         var result = new Dictionary<string, LeaseListItem>(StringComparer.Ordinal);
         LeaseListCursor? cursor = null;
-        do
+        var pageCount = 0;
+        try
         {
-            var page = await _client.ListAsync(_pattern, cursor, limit: null, ct).ConfigureAwait(false);
-            foreach (var item in page.Items)
+            do
             {
-                result[item.Route] = item;
-            }
+                if (++pageCount > maxPages)
+                {
+                    throw new LeaseException($"LIST exceeded the {maxPages}-page safety limit", "LIST_PAGE_LIMIT_EXCEEDED");
+                }
 
-            cursor = page.NextCursor;
-        } while (cursor is not null);
+                var page = await _client.ListAsync(_pattern, cursor, limit: null, listToken).ConfigureAwait(false);
+                foreach (var item in page.Items)
+                {
+                    result[item.Route] = item;
+                }
+
+                if (page.NextCursor is not null && page.NextCursor == cursor)
+                {
+                    throw new LeaseException("LIST returned a non-progressing continuation cursor", "LIST_NON_PROGRESSING_CURSOR");
+                }
+
+                cursor = page.NextCursor;
+            } while (cursor is not null);
+        }
+        catch (OperationCanceledException error) when (!ct.IsCancellationRequested && listDeadline.IsCancellationRequested)
+        {
+            throw new LeaseException("Inventory LIST pass timed out", "LIST_TIMEOUT", error);
+        }
 
         return result;
     }

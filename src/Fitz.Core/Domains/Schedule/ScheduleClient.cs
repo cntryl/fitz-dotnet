@@ -15,6 +15,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
     readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly int _subscriptionBufferCapacity;
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     readonly object _gate = new();
     readonly Dictionary<string, ScheduleSubscriptionState> _subscriptionsByRoute = new(StringComparer.Ordinal);
@@ -118,8 +119,29 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var domainCode = reader.ReadU32();
-            var message = reader.ReadString();
+            uint? domainCode = null;
+            var message = "Schedule LIST failed";
+            try
+            {
+                if (reader.RemainingBytes >= 4)
+                {
+                    domainCode = reader.ReadU32();
+                    if (reader.RemainingBytes >= 4)
+                    {
+                        message = reader.ReadString();
+                    }
+                }
+            }
+            catch (ProtocolException)
+            {
+                throw new ScheduleException("LIST error response is truncated", "LIST_INVALID_RESPONSE", status, domainCode);
+            }
+
+            if (!reader.IsEof)
+            {
+                throw new ScheduleException("LIST error response has trailing or truncated bytes", "LIST_INVALID_RESPONSE", status, domainCode);
+            }
+
             throw new ScheduleException($"LIST failed: {message}", "LIST_FAILED", status, domainCode);
         }
         var totalCount = reader.ReadU64();
@@ -147,7 +169,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
             var deliveryMode = (ScheduleDeliveryMode)deliveryModeValue;
             var payloadLength = reader.ReadU32();
             var payload = reader.ReadBytes(payloadLength);
-            entries.Add(new ScheduleEntry(route, route, cron, deliveryMode, payload));
+            entries.Add(new ScheduleEntry(null, route, cron, deliveryMode, payload));
         }
 
         if (!reader.IsEof)
@@ -399,6 +421,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
                 return;
             }
 
+            SubscriptionRegistration<ScheduleNotification>[] registrations;
             lock (_gate)
             {
                 if (!_routesBySubscriptionId.TryGetValue(subscriptionId, out var route) ||
@@ -407,12 +430,14 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
                     return;
                 }
 
-                var notification = new ScheduleNotification(exactRoute, body);
-                foreach (var registration in subscription.Writers.Values)
-                {
-                    if (!registration.Channel.Writer.TryWrite(notification))
-                        _ = registration.FailOverflowAsync();
-                }
+                registrations = [.. subscription.Writers.Values];
+            }
+
+            var notification = new ScheduleNotification(exactRoute, body);
+            foreach (var registration in registrations)
+            {
+                if (!registration.Channel.Writer.TryWrite(notification))
+                    _ = registration.FailOverflowAsync();
             }
         }
         catch
@@ -445,6 +470,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         return new ScheduleException(message, "INVALID_ROUTE");
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
     async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
     {
         await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -468,11 +494,30 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
             var restoredSubscriptions = new Dictionary<string, ScheduleSubscriptionState>(StringComparer.Ordinal);
             var restoredRoutesById = new Dictionary<ulong, string>();
 
-            foreach (var entry in snapshot)
+            try
             {
-                var subscriptionId = await SubscribeWireAsync(entry.Route, cancellationToken).ConfigureAwait(false);
-                restoredSubscriptions[entry.Route] = entry.Subscription.Clone(subscriptionId);
-                restoredRoutesById[subscriptionId] = entry.Route;
+                foreach (var entry in snapshot)
+                {
+                    var subscriptionId = await SubscribeWireAsync(entry.Route, cancellationToken).ConfigureAwait(false);
+                    restoredSubscriptions[entry.Route] = entry.Subscription.Clone(subscriptionId);
+                    restoredRoutesById[subscriptionId] = entry.Route;
+                }
+            }
+            catch
+            {
+                foreach (var route in restoredSubscriptions.Keys)
+                {
+                    try
+                    {
+                        await UnsubscribeWireAsync(route, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Best effort; preserve the original restore failure.
+                    }
+                }
+
+                throw;
             }
 
             lock (_gate)
@@ -515,7 +560,6 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
             _routesBySubscriptionId.Clear();
         }
 
-        _subscriptionGate.Dispose();
     }
 
     sealed class ScheduleSubscriptionState

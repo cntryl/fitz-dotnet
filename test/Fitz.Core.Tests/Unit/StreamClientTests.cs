@@ -9,6 +9,49 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class StreamClientTests
 {
+    [Theory]
+    [InlineData("{\"last_resource_offset\":0}", StreamCommitOffsetStatus.Present)]
+    [InlineData("{}", StreamCommitOffsetStatus.Absent)]
+    [InlineData("not-json", StreamCommitOffsetStatus.Malformed)]
+    public void ShouldDistinguishOutcomeGivenCommitMetadataWhenParsingOffset(string json, StreamCommitOffsetStatus expected)
+    {
+        var parsed = StreamWireHelpers.ParseCommitOffset(System.Text.Encoding.UTF8.GetBytes(json));
+
+        Assert.Equal(0UL, parsed.Offset);
+        Assert.Equal(expected, parsed.Status);
+    }
+
+    [Fact]
+    public void ShouldRejectClauseKindGivenUndefinedValueWhenEncodingFilter()
+    {
+        var filter = new StreamFilterSet
+        {
+            Clauses = [new StreamFilterClause { Kind = (StreamFilterClauseKind)260 }],
+        };
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => StreamWireHelpers.EncodeStreamFilterSet(filter));
+    }
+
+    [Fact]
+    public async Task ShouldReleaseDisconnectRegistrationGivenCleanupFailureWhenDisposingSession()
+    {
+        var registrations = 0;
+        var session = new StreamSession(
+            (_, _, _) => ValueTask.FromException<ReadOnlyMemory<byte>>(new StreamException("rollback failed", "ROLLBACK_FAILED")),
+            7,
+            _ =>
+            {
+                registrations++;
+                return new TestRegistration(() => registrations--);
+            });
+
+        await session.DisposeAsync();
+
+        Assert.Equal(0, registrations);
+        var error = await Assert.ThrowsAsync<StreamException>(() => session.AppendAsync(0, "body"u8.ToArray()));
+        Assert.Equal("SESSION_CLOSED", error.Code);
+    }
+
     [Fact]
     public async Task ShouldReadPagesUntilCursorHasNoMoreItems()
     {
@@ -833,6 +876,7 @@ public sealed class StreamClientTests
         Assert.NotNull(evt);
         Assert.Equal("stream://prod/app/events", evt!.Route);
         Assert.Equal((ulong)19, evt.CommitOffset);
+        Assert.Equal(StreamCommitOffsetStatus.Present, evt.CommitOffsetStatus);
         Assert.Same(received, evt);
         Assert.NotEqual(default, seenCancellationToken);
         Assert.False(seenCancellationToken.IsCancellationRequested);

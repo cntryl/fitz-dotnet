@@ -21,7 +21,9 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly Action<Exception>? _invalidateSession;
     readonly int _subscriptionBufferCapacity;
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race an active acquisition; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _acquisitionGate = new(1, 1);
     readonly object _gate = new();
     readonly Dictionary<string, LeaseSubscriptionState> _subscriptionsByRoute = new(StringComparer.Ordinal);
@@ -255,7 +257,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             {
                 while (_queuedAcquisitions.TryDequeue(out var waiter))
                 {
-                    if (waiter.TrySetResult(payload))
+                    if (waiter.TrySetResult(payload.ToArray()))
                         break;
                 }
             });
@@ -344,8 +346,22 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             try
             {
                 using var renewalDeadline = CancellationTokenSource.CreateLinkedTokenSource(lifecycle.Token);
-                renewalDeadline.CancelAfter(Min(renewalInterval, TimeSpan.FromSeconds(5)));
+                var remainingLeaseTime = TimeSpan.FromSeconds(ttlSecs) - renewalInterval;
+                var renewalBudget = Min(
+                    TimeSpan.FromSeconds(5),
+                    Min(Max(renewalInterval, TimeSpan.FromSeconds(2)), remainingLeaseTime));
+                renewalDeadline.CancelAfter(renewalBudget);
                 await lease.ExtendAsync(ttlSecs, renewalDeadline.Token).ConfigureAwait(false);
+                if (lease.FencingTokenChanged.IsCompleted)
+                {
+                    lease.Invalidate();
+                    var rotation = new LeaseException(
+                        "Lease renewal changed the callback's fencing authority token",
+                        "FENCING_TOKEN_CHANGED");
+                    leaseLoss = new LeaseException("Lease ownership was lost", "LEASE_LOST", rotation);
+                    lifecycleCancellationError = await CaptureCancellationFailureAsync(lifecycle).ConfigureAwait(false);
+                    break;
+                }
             }
             catch (Exception error)
             {
@@ -435,6 +451,8 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     }
 
     static TimeSpan Min(TimeSpan left, TimeSpan right) => left <= right ? left : right;
+
+    static TimeSpan Max(TimeSpan left, TimeSpan right) => left >= right ? left : right;
 
     public async Task WithLeaseAsync(
         string route,
@@ -528,7 +546,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         EnsureLeaseRegistrationPattern(pattern);
         if (limit.HasValue)
         {
-            ArgumentOutOfRangeException.ThrowIfNegative(limit.Value, nameof(limit));
+            ArgumentOutOfRangeException.ThrowIfLessThan(limit.Value, 1, nameof(limit));
         }
 
         using var writer = new BinaryBufferWriter();
@@ -547,10 +565,12 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         var itemCount = reader.ReadU32();
         const int minimumItemWireBytes = 4 + 4 + 8 + 4 + 8 + 4;
         var plausibleItemCount = reader.RemainingBytes / minimumItemWireBytes;
-        var initialCapacity = itemCount < (uint)plausibleItemCount
-            ? checked((int)itemCount)
-            : plausibleItemCount;
-        var items = new List<LeaseListItem>(initialCapacity);
+        if (itemCount > (uint)plausibleItemCount)
+        {
+            throw new LeaseException("LIST response item count exceeds the remaining payload", "LIST_INVALID_RESPONSE");
+        }
+
+        var items = new List<LeaseListItem>(checked((int)itemCount));
         for (var i = 0; i < itemCount; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -915,6 +935,10 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         {
             throw new ArgumentOutOfRangeException(nameof(options), "UpdateBufferCapacity must be positive");
         }
+        if (options.ListTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(options), "ListTimeout must be positive");
+        }
 
         var observer = new LeaseInventoryObserver(this, pattern, options);
         await observer.StartAsync(ct).ConfigureAwait(false);
@@ -944,6 +968,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
     async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
     {
         await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -967,11 +992,30 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             var restoredSubscriptions = new Dictionary<string, LeaseSubscriptionState>(StringComparer.Ordinal);
             var restoredRoutesById = new Dictionary<ulong, string>();
 
-            foreach (var entry in snapshot)
+            try
             {
-                var subscriptionId = await SubscribeWireAsync(entry.Route, cancellationToken).ConfigureAwait(false);
-                restoredSubscriptions[entry.Route] = entry.Subscription.Clone(subscriptionId);
-                restoredRoutesById[subscriptionId] = entry.Route;
+                foreach (var entry in snapshot)
+                {
+                    var subscriptionId = await SubscribeWireAsync(entry.Route, cancellationToken).ConfigureAwait(false);
+                    restoredSubscriptions[entry.Route] = entry.Subscription.Clone(subscriptionId);
+                    restoredRoutesById[subscriptionId] = entry.Route;
+                }
+            }
+            catch
+            {
+                foreach (var route in restoredSubscriptions.Keys)
+                {
+                    try
+                    {
+                        await UnsubscribeWireAsync(route, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Best effort; preserve the original restore failure.
+                    }
+                }
+
+                throw;
             }
 
             lock (_gate)
@@ -1018,8 +1062,6 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             _routesBySubscriptionId.Clear();
         }
 
-        _subscriptionGate.Dispose();
-        _acquisitionGate.Dispose();
     }
 
     sealed class LeaseSubscriptionState

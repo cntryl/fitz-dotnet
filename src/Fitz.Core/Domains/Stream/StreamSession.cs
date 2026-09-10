@@ -9,7 +9,8 @@ public sealed class StreamSession : IStreamSession
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly ulong _sessionId;
-    readonly IDisposable? _disconnectRegistration;
+    IDisposable? _disconnectRegistration;
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Disposal may race active operations; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _finalizationGate = new(1, 1);
     int _closed;
     int _disposed;
@@ -21,7 +22,15 @@ public sealed class StreamSession : IStreamSession
     {
         _request = request;
         _sessionId = sessionId;
-        _disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
+        var disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
+        if (disconnectRegistration is not null)
+        {
+            Interlocked.Exchange(ref _disconnectRegistration, disconnectRegistration)?.Dispose();
+            if (Volatile.Read(ref _closed) != 0)
+            {
+                Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
+            }
+        }
     }
 
     public async Task<ulong?> AppendAsync(ulong expectedOffset, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte>? metadata = null, string? discriminator = null, CancellationToken ct = default)
@@ -132,7 +141,7 @@ public sealed class StreamSession : IStreamSession
         }
         finally
         {
-            _finalizationGate.Dispose();
+            MarkClosed();
             GC.SuppressFinalize(this);
         }
     }
@@ -162,6 +171,6 @@ public sealed class StreamSession : IStreamSession
             return;
         }
 
-        _disconnectRegistration?.Dispose();
+        Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
     }
 }

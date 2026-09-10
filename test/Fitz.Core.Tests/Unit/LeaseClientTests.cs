@@ -11,6 +11,47 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class LeaseClientTests
 {
     [Fact]
+    public async Task ShouldReleaseDisconnectRegistrationGivenCleanupFailureWhenDisposingLease()
+    {
+        var registrations = 0;
+        await using var lease = new LeaseHandle(
+            (_, _, _) => ValueTask.FromException<ReadOnlyMemory<byte>>(new LeaseException("release failed", "RELEASE_FAILED")),
+            "lease://prod/app/lock",
+            77,
+            _ =>
+            {
+                registrations++;
+                return new TestRegistration(() => registrations--);
+            });
+
+        await lease.DisposeAsync();
+
+        Assert.Equal(0, registrations);
+        var error = await Assert.ThrowsAsync<LeaseException>(() => lease.ExtendAsync(30));
+        Assert.Equal("CLOSED", error.Code);
+    }
+
+    [Fact]
+    public async Task ShouldRecordRotationGivenChangedFencingTokenWhenRenewingLease()
+    {
+        await using var lease = new LeaseHandle(
+            (_, _, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                writer.WriteU64(78);
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
+            },
+            "lease://prod/app/lock",
+            77);
+
+        await lease.ExtendAsync(30);
+
+        Assert.Equal(78UL, lease.FencingToken);
+        Assert.True(lease.FencingTokenChanged.IsCompleted);
+    }
+
+    [Fact]
     public async Task ShouldAllowReleaseRetryAfterRejectedWireOperation()
     {
         var releaseCalls = 0;
@@ -130,6 +171,39 @@ public sealed class LeaseClientTests
 
         var lease = await pending;
         Assert.Equal("lease://prod/app/lock", lease.Route);
+    }
+
+    [Fact]
+    public async Task ShouldCopyPayloadGivenDeferredGrantWhenBorrowedNotificationReturns()
+    {
+        Action<ReadOnlyMemory<byte>>? acquireHandler = null;
+        using var leaseClient = new LeaseClient(
+            (_, _, _) =>
+            {
+                using var queued = new BinaryBufferWriter();
+                queued.WriteU8(0);
+                queued.WriteU8(2);
+                queued.WriteU64(0);
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(queued.Build());
+            },
+            registerNotificationHandler: (_, handler) =>
+            {
+                acquireHandler = handler;
+                return new TestRegistration();
+            });
+
+        var pending = leaseClient.AcquireAsync("lease://prod/app/lock", 30, waitSeconds: 5);
+        await Task.Yield();
+        using var acquired = new BinaryBufferWriter();
+        acquired.WriteU8(0);
+        acquired.WriteU8(0);
+        acquired.WriteU64(91);
+        var borrowed = acquired.Build();
+        acquireHandler!(borrowed);
+        borrowed.AsSpan().Fill(byte.MaxValue);
+
+        await using var lease = await pending;
+        Assert.Equal(91UL, lease.FencingToken);
     }
 
     [Fact]
@@ -314,7 +388,7 @@ public sealed class LeaseClientTests
             }
             else if (messageType == MessageTypes.LeaseRenew)
             {
-                writer.WriteU64(78);
+                writer.WriteU64(77);
             }
 
             return Task.FromResult(writer.Build());

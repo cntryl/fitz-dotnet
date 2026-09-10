@@ -9,6 +9,30 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class ScheduleClientTests
 {
     [Fact]
+    public async Task ShouldReturnTypedErrorGivenStatusOnlyFailureWhenListingSchedules()
+    {
+        using var schedule = new ScheduleClient((_, _, _) =>
+            Task.FromResult(new byte[] { 1 }));
+
+        var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.ListAsync());
+
+        Assert.Equal("LIST_FAILED", error.Code);
+        Assert.Equal((byte)1, error.Status);
+        Assert.Null(error.DomainCode);
+    }
+
+    [Fact]
+    public async Task ShouldRejectTrailingBytesGivenErrorResponseWhenListingSchedules()
+    {
+        using var schedule = new ScheduleClient((_, _, _) =>
+            Task.FromResult(new byte[] { 1, 42 }));
+
+        var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.ListAsync());
+
+        Assert.Equal("LIST_INVALID_RESPONSE", error.Code);
+    }
+
+    [Fact]
     public async Task ShouldPreserveBackendErrorCodeGivenCodedScheduleListFailure()
     {
         using var schedule = new ScheduleClient((_, _, _) =>
@@ -223,6 +247,7 @@ public sealed class ScheduleClientTests
         // Assert
         Assert.Equal((ulong)12, page.TotalCount);
         Assert.Single(page.Entries);
+        Assert.Null(page.Entries[0].Id);
         Assert.Equal("schedule://prod/app/jobs/run", page.Entries[0].Route);
         Assert.Equal("*/5 * * * *", page.Entries[0].Cron);
         Assert.Equal(ScheduleDeliveryMode.Single, page.Entries[0].DeliveryMode);

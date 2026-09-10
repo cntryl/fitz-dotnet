@@ -212,12 +212,17 @@ public sealed class WebSocketTransport : ITransport
                 return;
             }
 
-            if (socket.State == WebSocketState.Open)
+            try
             {
-                await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "client closing", cancellationToken).ConfigureAwait(false);
+                if (socket.State == WebSocketState.Open)
+                {
+                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "client closing", cancellationToken).ConfigureAwait(false);
+                }
             }
-
-            socket.Dispose();
+            finally
+            {
+                socket.Dispose();
+            }
         }
         finally
         {
@@ -233,11 +238,12 @@ public sealed class WebSocketTransport : ITransport
 
     ClientWebSocket EnsureSocket()
     {
-        if (_socket is null || _socket.State != WebSocketState.Open)
+        var socket = Volatile.Read(ref _socket);
+        if (socket is null || socket.State != WebSocketState.Open)
         {
             throw new InvalidOperationException("Transport is not connected.");
         }
 
-        return _socket;
+        return socket;
     }
 }

@@ -15,6 +15,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
     readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly int _subscriptionBufferCapacity;
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     readonly object _gate = new();
     readonly Dictionary<string, QueueSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -124,9 +125,9 @@ public sealed class QueueClient : IQueueClient, IDisposable
             throw new QueueException($"route '{route}' must be a concrete queue route or a whole-segment wildcard pattern", "INVALID_ROUTE");
         }
 
-        var normalizedBatchSize = batchSize > 0 ? batchSize : 1;
+        ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1, nameof(batchSize));
 
-        return await ReserveOnceAsync(route, leaseSeconds, normalizedBatchSize, waitSeconds, ct).ConfigureAwait(false);
+        return await ReserveOnceAsync(route, leaseSeconds, batchSize, waitSeconds, ct).ConfigureAwait(false);
     }
 
     async Task<IQueueReservedItem[]> ReserveOnceAsync(
@@ -424,6 +425,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
             {
                 return;
             }
+            SubscriptionRegistration<QueueAvailabilityEvent>[] registrations;
             lock (_gate)
             {
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
@@ -432,14 +434,16 @@ public sealed class QueueClient : IQueueClient, IDisposable
                     return;
                 }
 
-                var notification = new QueueAvailabilityEvent(
-                    eventRoute,
-                    notificationPayload);
-                foreach (var registration in subscription.Registrations.Values)
-                {
-                    if (!registration.Channel.Writer.TryWrite(notification))
-                        _ = registration.FailOverflowAsync();
-                }
+                registrations = [.. subscription.Registrations.Values];
+            }
+
+            var notification = new QueueAvailabilityEvent(
+                eventRoute,
+                notificationPayload);
+            foreach (var registration in registrations)
+            {
+                if (!registration.Channel.Writer.TryWrite(notification))
+                    _ = registration.FailOverflowAsync();
             }
         }
         catch
@@ -449,6 +453,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
 
     async ValueTask HandleReconnect(CancellationToken cancellationToken) => await RestoreSubscriptionsAsync(cancellationToken).ConfigureAwait(false);
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
     async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
     {
         await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -472,11 +477,30 @@ public sealed class QueueClient : IQueueClient, IDisposable
             var restoredSubscriptions = new Dictionary<string, QueueSubscriptionState>(StringComparer.Ordinal);
             var restoredPatternsById = new Dictionary<ulong, string>();
 
-            foreach (var entry in snapshot)
+            try
             {
-                var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
-                restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
-                restoredPatternsById[subscriptionId] = entry.Pattern;
+                foreach (var entry in snapshot)
+                {
+                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
+                    restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
+                    restoredPatternsById[subscriptionId] = entry.Pattern;
+                }
+            }
+            catch
+            {
+                foreach (var pattern in restoredSubscriptions.Keys)
+                {
+                    try
+                    {
+                        await UnsubscribeWireAsync(pattern, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Best effort; preserve the original restore failure.
+                    }
+                }
+
+                throw;
             }
 
             lock (_gate)
@@ -519,7 +543,6 @@ public sealed class QueueClient : IQueueClient, IDisposable
             _patternsBySubscriptionId.Clear();
         }
 
-        _subscriptionGate.Dispose();
     }
 
     sealed class QueueSubscriptionState

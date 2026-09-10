@@ -12,6 +12,9 @@ public sealed record LeaseObserveOptions
     /// <summary>Default bounded capacity of the observer update stream.</summary>
     public const int DefaultUpdateBufferCapacity = 256;
 
+    /// <summary>Default deadline for one complete paginated inventory LIST pass.</summary>
+    public static readonly TimeSpan DefaultListTimeout = TimeSpan.FromSeconds(30);
+
     /// <summary>
     /// How often the observer performs a full LIST-based reconciliation as a backstop against a
     /// missed or dropped LEASE_NOTIFY. Defaults to 60 seconds. For a known workload, use
@@ -34,4 +37,9 @@ public sealed record LeaseObserveOptions
     /// remains the authoritative current snapshot. Defaults to 256.
     /// </summary>
     public int UpdateBufferCapacity { get; init; } = DefaultUpdateBufferCapacity;
+
+    /// <summary>
+    /// Maximum duration of one complete paginated LIST pass. Defaults to 30 seconds.
+    /// </summary>
+    public TimeSpan ListTimeout { get; init; } = DefaultListTimeout;
 }

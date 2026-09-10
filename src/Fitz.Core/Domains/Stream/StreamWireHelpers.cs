@@ -24,6 +24,11 @@ static class StreamWireHelpers
         writer.WriteU32((uint)filter.Clauses.Count);
         foreach (var clause in filter.Clauses)
         {
+            if (!Enum.IsDefined(clause.Kind))
+            {
+                throw new ArgumentOutOfRangeException(nameof(filter), clause.Kind, "Unknown stream filter clause kind");
+            }
+
             writer.WriteU8((byte)clause.Kind);
             switch (clause.Kind)
             {
@@ -347,8 +352,8 @@ static class StreamWireHelpers
         return reader.ReadMemory(payloadLengthInt);
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort metadata parsing treats malformed broker payloads as an absent offset.")]
-    internal static ulong TryParseCommitOffset(ReadOnlySpan<byte> payload)
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort metadata parsing reports malformed broker payloads without failing notification delivery.")]
+    internal static (ulong Offset, StreamCommitOffsetStatus Status) ParseCommitOffset(ReadOnlySpan<byte> payload)
     {
         try
         {
@@ -362,20 +367,25 @@ static class StreamWireHelpers
 
                 if (reader.ValueTextEquals("last_resource_offset"u8))
                 {
-                    return reader.Read() && reader.TokenType == JsonTokenType.Number ? reader.GetUInt64() : 0;
+                    return reader.Read() && reader.TokenType == JsonTokenType.Number
+                        ? (reader.GetUInt64(), StreamCommitOffsetStatus.Present)
+                        : (0, StreamCommitOffsetStatus.Malformed);
                 }
 
                 if (reader.ValueTextEquals("first_resource_offset"u8))
                 {
-                    return reader.Read() && reader.TokenType == JsonTokenType.Number ? reader.GetUInt64() : 0;
+                    return reader.Read() && reader.TokenType == JsonTokenType.Number
+                        ? (reader.GetUInt64(), StreamCommitOffsetStatus.Present)
+                        : (0, StreamCommitOffsetStatus.Malformed);
                 }
             }
         }
         catch
         {
+            return (0, StreamCommitOffsetStatus.Malformed);
         }
 
-        return 0;
+        return (0, StreamCommitOffsetStatus.Absent);
     }
 
     static void WriteBincodeString(BinaryBufferWriter writer, string value)

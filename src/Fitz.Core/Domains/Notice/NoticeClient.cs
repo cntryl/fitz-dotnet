@@ -16,6 +16,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
     readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly int _subscriptionBufferCapacity;
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     readonly object _gate = new();
     readonly Dictionary<string, NoticeSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -295,6 +296,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
             {
                 return;
             }
+            SubscriptionRegistration<NoticeMessage>[] registrations;
             lock (_gate)
             {
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
@@ -303,12 +305,14 @@ public sealed class NoticeClient : INoticeClient, IDisposable
                     return;
                 }
 
-                var message = new NoticeMessage(route, body);
-                foreach (var registration in subscription.Writers.Values)
-                {
-                    if (!registration.Channel.Writer.TryWrite(message))
-                        _ = registration.FailOverflowAsync();
-                }
+                registrations = [.. subscription.Writers.Values];
+            }
+
+            var message = new NoticeMessage(route, body);
+            foreach (var registration in registrations)
+            {
+                if (!registration.Channel.Writer.TryWrite(message))
+                    _ = registration.FailOverflowAsync();
             }
         }
         catch
@@ -318,6 +322,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
 
     async ValueTask HandleReconnect(CancellationToken cancellationToken) => await RestoreSubscriptionsAsync(cancellationToken).ConfigureAwait(false);
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
     async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
     {
         await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -341,11 +346,30 @@ public sealed class NoticeClient : INoticeClient, IDisposable
             var restoredSubscriptions = new Dictionary<string, NoticeSubscriptionState>(StringComparer.Ordinal);
             var restoredPatternsById = new Dictionary<ulong, string>();
 
-            foreach (var entry in snapshot)
+            try
             {
-                var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
-                restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
-                restoredPatternsById[subscriptionId] = entry.Pattern;
+                foreach (var entry in snapshot)
+                {
+                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
+                    restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
+                    restoredPatternsById[subscriptionId] = entry.Pattern;
+                }
+            }
+            catch
+            {
+                foreach (var subscriptionId in restoredPatternsById.Keys)
+                {
+                    try
+                    {
+                        await UnsubscribeWireAsync(subscriptionId, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Best effort; preserve the original restore failure.
+                    }
+                }
+
+                throw;
             }
 
             lock (_gate)
@@ -388,7 +412,6 @@ public sealed class NoticeClient : INoticeClient, IDisposable
             _patternsBySubscriptionId.Clear();
         }
 
-        _subscriptionGate.Dispose();
     }
 
     sealed class NoticeSubscriptionState

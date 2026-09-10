@@ -26,7 +26,11 @@ public interface IQueueClient
 /// <summary>
 /// Represents a reserved message from the queue lease operation.
 /// </summary>
-public interface IQueueReservedItem
+/// <remarks>
+/// Complete the item or dispose it asynchronously. Disposal releases local lifecycle resources;
+/// the current Fitz wire protocol does not provide a queue nack operation.
+/// </remarks>
+public interface IQueueReservedItem : IAsyncDisposable
 {
     string Route { get; }
     ReadOnlyMemory<byte> Body { get; }

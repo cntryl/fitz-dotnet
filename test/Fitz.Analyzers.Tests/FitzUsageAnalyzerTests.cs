@@ -145,6 +145,38 @@ public sealed class FitzUsageAnalyzerTests
     }
 
     [Fact]
+    public async Task ShouldReportWarningGivenInvalidRouteWhenAnalyzing()
+    {
+        var diagnostics = await GetDiagnosticsAsync(LeaseSource(
+            "await using var lease = await client.AcquireAsync(\"lease://realm/bad*value/name\", 30);"));
+
+        var diagnostic = Assert.Single(diagnostics.Where(item => item.Id == FitzDiagnostics.InvalidRouteId));
+        Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
+    }
+
+    [Fact]
+    public async Task ShouldNotOfferFixGivenInvalidSchemeReplacementWhenRegisteringRouteFix()
+    {
+        using var workspace = CreateWorkspace(
+            LeaseSource("await using var lease = await client.AcquireAsync(\"queue://realm\", 30);"),
+            out var document);
+        var compilation = await document.Project.GetCompilationAsync();
+        Assert.NotNull(compilation);
+        var diagnostic = Assert.Single((await compilation.WithAnalyzers([new FitzUsageAnalyzer()])
+            .GetAnalyzerDiagnosticsAsync()).Where(item => item.Id == FitzDiagnostics.InvalidRouteId));
+        var actions = new List<Microsoft.CodeAnalysis.CodeActions.CodeAction>();
+        var provider = new FitzCodeFixProvider();
+
+        await provider.RegisterCodeFixesAsync(new CodeFixContext(
+            document,
+            diagnostic,
+            (action, _) => actions.Add(action),
+            CancellationToken.None));
+
+        Assert.Empty(actions);
+    }
+
+    [Fact]
     public async Task HandleFixRetainsAndDisposesResult()
     {
         var fixedSource = await ApplyFirstFixAsync(

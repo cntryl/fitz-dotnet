@@ -21,4 +21,5 @@ public abstract class QueueItem : IQueueReservedItem
     public abstract Task ExtendAsync(ulong leaseSeconds, CancellationToken ct = default);
     public abstract Task CompleteAsync(CancellationToken ct = default);
     public abstract Task CompleteWithTokenAsync(ulong token, CancellationToken ct = default);
+    public abstract ValueTask DisposeAsync();
 }

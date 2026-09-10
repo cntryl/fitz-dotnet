@@ -6,6 +6,21 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class MultiplexerTests
 {
     [Fact]
+    public async Task ShouldReturnTypedErrorGivenDisposedMultiplexerWhenRequesting()
+    {
+        var mux = new Multiplexer();
+        mux.Dispose();
+
+        var error = await Assert.ThrowsAsync<ConnectionException>(() => mux.RequestAsync(
+            90,
+            [],
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromSeconds(1)));
+
+        Assert.Contains("closed", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Dispatch_RestoreInProgress_BuffersNotificationsUntilActivation()
     {
         using var mux = new Multiplexer();

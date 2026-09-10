@@ -9,6 +9,56 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class QueueClientTests
 {
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public async Task ShouldRejectBatchSizeGivenNonpositiveValueWhenReserving(int batchSize)
+    {
+        var requestCalled = false;
+        using var queue = new QueueClient((_, _, _) =>
+        {
+            requestCalled = true;
+            return Task.FromResult(Array.Empty<byte>());
+        });
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            queue.ReserveAsync("queue://prod/app/tasks", 30, batchSize));
+
+        Assert.False(requestCalled);
+    }
+
+    [Fact]
+    public async Task ShouldReleaseDisconnectRegistrationGivenReservedItemWhenDisposing()
+    {
+        var registrations = 0;
+        using var queue = new QueueClient(
+            (_, _, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                writer.WriteU32(1);
+                writer.WriteU64(7);
+                writer.WriteU64(11);
+                writer.WriteU32(4);
+                writer.WriteBytes("body"u8);
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
+            },
+            registerOnDisconnect: _ =>
+            {
+                registrations++;
+                return new TestRegistration(() => registrations--);
+            });
+
+        var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", 30));
+        Assert.Equal(1, registrations);
+
+        await item.DisposeAsync();
+
+        Assert.Equal(0, registrations);
+        var error = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(10));
+        Assert.Equal("ITEM_CLOSED", error.Code);
+    }
+
     [Fact]
     public async Task ShouldRejectImpossibleReserveCountBeforeAllocating()
     {

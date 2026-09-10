@@ -41,19 +41,14 @@ public sealed class FitzConnection : IAsyncDisposable
     Task? _connectionLossTask;
     [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The reconnect token is disposed when its loop exits and defensively by DisposeAsync.")]
     CancellationTokenSource? _reconnectCts;
-    [SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The timer is atomically detached and disposed by StopHeartbeat and DisposeAsync.")]
-    Timer? _heartbeatTimer;
     volatile bool _authAttemptIsReconnect;
     volatile bool _closeRequested;
     volatile bool _authRejected;
-    volatile bool _sessionConfirmed;
     volatile bool _hasEstablishedSession;
     volatile bool _reconnectExhausted;
     long _nextReconnectListenerId;
     long _nextDisconnectListenerId;
     long _readyWaiterCount;
-    DateTimeOffset _lastInboundActivity = DateTimeOffset.UtcNow;
-    DateTimeOffset _lastOutboundActivity = DateTimeOffset.UtcNow;
     volatile ConnectionState _state = ConnectionState.Disconnected;
     int _disposed;
 
@@ -99,7 +94,7 @@ public sealed class FitzConnection : IAsyncDisposable
             {
                 dispatcher = new AsyncHandlerDispatcher(
                     _config.ResolvedAsyncHandlers.MaxConcurrency,
-                    ResolveAsyncHandlerTimeout(),
+                    _config.ResolvedAsyncHandlers.Timeout ?? System.Threading.Timeout.InfiniteTimeSpan,
                     Math.Max(_config.ResolvedAsyncHandlers.QueueCapacity, 0),
                     OnAsyncHandlerError,
                     onMetricsChanged: OnAsyncHandlerMetricsChanged,
@@ -110,6 +105,8 @@ public sealed class FitzConnection : IAsyncDisposable
 
         return dispatcher.TryDispatch(handler, onRejected);
     }
+
+    internal void ReportAsyncHandlerError(Exception exception) => OnAsyncHandlerError(exception);
 
     internal async ValueTask<T> ExecuteWithRetryAsync<T>(
         RetryOperation operation,
@@ -281,13 +278,13 @@ public sealed class FitzConnection : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         await WaitForRequestReadyAsync(cancellationToken).ConfigureAwait(false);
+        var frame = FrameCodec.Encode(messageType, payload.Span);
         ITransport? requestTransport = null;
 
         try
         {
             using var slot = await AcquireRequestSlotAsync(cancellationToken).ConfigureAwait(false);
             var transport = requestTransport = EnsureTransport();
-            var frame = FrameCodec.Encode(messageType, payload.Span);
 
             var response = await _multiplexer.RequestAsync(
                 messageType,
@@ -295,7 +292,6 @@ public sealed class FitzConnection : IAsyncDisposable
                 async (data, token) =>
                 {
                     await transport.SendAsync(data, token).ConfigureAwait(false);
-                    MarkOutboundActivity();
                 },
                 Timeout,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -335,15 +331,14 @@ public sealed class FitzConnection : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         await WaitForRequestReadyAsync(cancellationToken).ConfigureAwait(false);
+        var frame = FrameCodec.Encode(messageType, payload.Span);
         ITransport? sendTransport = null;
 
         try
         {
             using var slot = await AcquireRequestSlotAsync(cancellationToken).ConfigureAwait(false);
-            var frame = FrameCodec.Encode(messageType, payload.Span);
             sendTransport = EnsureTransport();
             await sendTransport.SendAsync(frame, cancellationToken).ConfigureAwait(false);
-            MarkOutboundActivity();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -405,7 +400,6 @@ public sealed class FitzConnection : IAsyncDisposable
         }
         await TryCancelAsync(reconnectCts).ConfigureAwait(false);
         await TryCancelAsync(connectCts).ConfigureAwait(false);
-        StopHeartbeat();
         var handlerDispatchers = SnapshotAsyncHandlerDispatchers();
         SetState(ConnectionState.Closed);
         NotifyDisconnect();
@@ -508,7 +502,6 @@ public sealed class FitzConnection : IAsyncDisposable
         }
 
         await CloseAsync().ConfigureAwait(false);
-        Interlocked.Exchange(ref _heartbeatTimer, null)?.Dispose();
         _receiveLoopCts?.Dispose();
         _connectCts?.Dispose();
         _reconnectCts?.Dispose();
@@ -580,8 +573,6 @@ public sealed class FitzConnection : IAsyncDisposable
 
         ResetSessionState(isReconnect);
         Interlocked.Exchange(ref _requestGate, CreateRequestGate()).Close();
-        StopHeartbeat();
-
         SetState(isReconnect ? ConnectionState.Reconnecting : ConnectionState.Connecting);
         EmitLifecycleEvent(isReconnect ? "reconnect_start" : "connect_start");
 
@@ -602,8 +593,6 @@ public sealed class FitzConnection : IAsyncDisposable
         try
         {
             await transport.ConnectAsync(cancellationToken).ConfigureAwait(false);
-            MarkInboundActivity();
-
             SetState(ConnectionState.Connected);
             _multiplexer.BeginSession();
             StartReceiveLoop();
@@ -621,7 +610,6 @@ public sealed class FitzConnection : IAsyncDisposable
             try
             {
                 await transport.SendAsync(connectFrame, cancellationToken).ConfigureAwait(false);
-                MarkOutboundActivity();
             }
             finally
             {
@@ -645,7 +633,6 @@ public sealed class FitzConnection : IAsyncDisposable
 
             _multiplexer.SetConnected();
             _reconnectExhausted = false;
-            StartHeartbeat();
 
             if (isReconnect)
             {
@@ -655,6 +642,7 @@ public sealed class FitzConnection : IAsyncDisposable
 
             await ThrowIfAttemptFailedAsync(transport).ConfigureAwait(false);
 
+            _hasEstablishedSession = true;
             SetState(ConnectionState.Authenticated);
             EmitLifecycleEvent(isReconnect ? "reconnect_succeeded" : "connect_succeeded");
         }
@@ -663,13 +651,12 @@ public sealed class FitzConnection : IAsyncDisposable
             _multiplexer.AbortNotificationRestore();
             activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
             RecordCustomSpanException(customSpan, ex);
-            StopHeartbeat();
             _requestGate.Close();
             _multiplexer.SetDisconnected();
 
             var authFailure = ex is AuthenticationException
                 ? ex
-                : !isReconnect && IsUnconfirmedSessionLoss()
+                : !isReconnect && _authRejected
                     ? new AuthenticationException(DescribeConnectionLoss(ex), ex)
                     : ex;
 
@@ -776,7 +763,6 @@ public sealed class FitzConnection : IAsyncDisposable
                 try
                 {
                     using var data = await receiveTransport.ReceiveAsync(token).ConfigureAwait(false);
-                    MarkInboundActivity();
                     if (data.IsClosed)
                     {
                         throw new ConnectionException("Transport closed.");
@@ -787,16 +773,9 @@ public sealed class FitzConnection : IAsyncDisposable
                         _frameParser.Append(data.Memory.Span);
                     }
 
-                    var observedFrame = false;
                     while (_frameParser.TryReadFrame(out var frame))
                     {
-                        observedFrame = true;
                         _multiplexer.Dispatch(frame.MessageType, frame.Payload);
-                    }
-
-                    if (observedFrame)
-                    {
-                        ConfirmSession();
                     }
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested || _closeRequested)
@@ -869,7 +848,6 @@ public sealed class FitzConnection : IAsyncDisposable
             return;
         }
 
-        StopHeartbeat();
         SignalConnectionClosed();
         NotifyDisconnect();
         _requestGate.Close();
@@ -881,7 +859,7 @@ public sealed class FitzConnection : IAsyncDisposable
         {
             _authFailure?.TrySetException(new ConnectionException(DescribeConnectionLoss(exception), exception));
         }
-        else if (stateAtLoss == ConnectionState.Authenticating || IsUnconfirmedSessionLoss())
+        else if (stateAtLoss == ConnectionState.Authenticating)
         {
             _authRejected = true;
             var authError = exception as AuthenticationException
@@ -1045,24 +1023,11 @@ public sealed class FitzConnection : IAsyncDisposable
 
     void ResetSessionState(bool isReconnect)
     {
-        _sessionConfirmed = false;
         _authRejected = false;
         if (!isReconnect)
         {
             _hasEstablishedSession = false;
         }
-    }
-
-    void ConfirmSession()
-    {
-        _sessionConfirmed = true;
-        _hasEstablishedSession = true;
-    }
-
-    bool IsUnconfirmedSessionLoss()
-    {
-        return !_sessionConfirmed
-            && State is ConnectionState.Authenticating or ConnectionState.Authenticated;
     }
 
     void RenewConnectionClosedToken()
@@ -1247,20 +1212,6 @@ public sealed class FitzConnection : IAsyncDisposable
 
         previous.TrySetResult(true);
     }
-
-    void StartHeartbeat() => StopHeartbeat();
-
-    void StopHeartbeat()
-    {
-        var timer = Interlocked.Exchange(ref _heartbeatTimer, null);
-        timer?.Dispose();
-    }
-
-    void MarkInboundActivity() => _lastInboundActivity = DateTimeOffset.UtcNow;
-
-    void MarkOutboundActivity() => _lastOutboundActivity = DateTimeOffset.UtcNow;
-
-    TimeSpan ResolveAsyncHandlerTimeout() => _config.ResolvedAsyncHandlers.Timeout ?? Timeout;
 
     AsyncHandlerDispatcher[] SnapshotAsyncHandlerDispatchers()
     {

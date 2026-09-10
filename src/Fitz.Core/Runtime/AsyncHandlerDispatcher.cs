@@ -155,10 +155,9 @@ sealed class AsyncHandlerDispatcher
                 _activeCount--;
             }
 
-            while (!_closed && _activeCount < _maxConcurrency && _queue.Count > 0)
+            if (!_closed && _activeCount < _maxConcurrency && _queue.Count > 0)
             {
                 StartUnsafe(_queue.Dequeue());
-                break;
             }
 
             activeCount = _activeCount;

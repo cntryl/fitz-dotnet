@@ -260,6 +260,97 @@ public sealed class RpcClientTests
         Assert.True(reader.IsEof);
     }
 
+    [Fact]
+    public async Task ShouldReportErrorGivenWorkerHandlerFailureWhenDispatchingRequest()
+    {
+        Action<byte[]>? incomingHandler = null;
+        var reported = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var rpc = new RpcClient(
+            request: (_, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 }),
+            send: (_, _, _) => ValueTask.CompletedTask,
+            registerNotificationHandler: (_, handler) =>
+            {
+                incomingHandler = handler;
+                return new TestRegistration();
+            },
+            onWorkerError: exception => reported.TrySetResult(exception));
+        await using var registration = await rpc.RegisterWorkerAsync(
+            "rpc://prod/app/failing",
+            (_, _, _) => ValueTask.FromException(new InvalidOperationException("worker failed")));
+
+        using var incoming = new BinaryBufferWriter();
+        incoming.WriteBytes(new byte[16]);
+        incoming.WriteString("rpc://prod/app/failing");
+        incoming.WriteU32(0);
+        incomingHandler!(incoming.Build());
+
+        var exception = await reported.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.IsType<InvalidOperationException>(exception);
+        Assert.Equal("worker failed", exception.Message);
+    }
+
+    [Fact]
+    public async Task ShouldSerializeResponsesGivenConcurrentSendsWhenWorkerEndsStream()
+    {
+        Action<byte[]>? incomingHandler = null;
+        var sentPayloads = new List<byte[]>();
+        var sentSync = new object();
+        var activeSends = 0;
+        var maxActiveSends = 0;
+        var completed = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var rpc = new RpcClient(
+            request: (_, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 }),
+            send: async (_, payload, sendCancellationToken) =>
+            {
+                var active = Interlocked.Increment(ref activeSends);
+                lock (sentSync)
+                {
+                    maxActiveSends = Math.Max(maxActiveSends, active);
+                }
+                await Task.Delay(25, sendCancellationToken);
+                lock (sentSync)
+                {
+                    sentPayloads.Add(payload.ToArray());
+                }
+                Interlocked.Decrement(ref activeSends);
+            },
+            registerNotificationHandler: (_, handler) =>
+            {
+                incomingHandler = handler;
+                return new TestRegistration();
+            });
+        await using var registration = await rpc.RegisterWorkerAsync(
+            "rpc://prod/app/stream",
+            async (_, writer, workerCancellationToken) =>
+            {
+                await Task.WhenAll(
+                    writer.SendAsync("first"u8.ToArray(), ct: workerCancellationToken).AsTask(),
+                    writer.SendAsync("last"u8.ToArray(), isEnd: true, workerCancellationToken).AsTask());
+                var afterEnd = await Record.ExceptionAsync(() => writer.SendAsync("late"u8.ToArray(), ct: workerCancellationToken).AsTask());
+                completed.TrySetResult(afterEnd);
+            },
+            new RpcWorkerOptions { MaxConcurrency = 2 });
+
+        using var incoming = new BinaryBufferWriter();
+        incoming.WriteBytes(new byte[16]);
+        incoming.WriteString("rpc://prod/app/stream");
+        incoming.WriteU32(0);
+        incomingHandler!(incoming.Build());
+
+        var afterEndError = await completed.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.IsType<InvalidOperationException>(afterEndError);
+        Assert.Equal(1, maxActiveSends);
+        Assert.Equal(2, sentPayloads.Count);
+        Assert.Equal(new ulong[] { 0, 1 }, sentPayloads.Select(ReadSequence));
+
+        static ulong ReadSequence(byte[] payload)
+        {
+            var reader = new BinaryBufferReader(payload);
+            _ = reader.ReadBytes(16);
+            return reader.ReadU64();
+        }
+    }
+
     [Theory]
     [InlineData(0u)]
     [InlineData(1025u)]

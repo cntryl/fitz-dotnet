@@ -61,10 +61,24 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
         }
 
         var descriptor = rule.IsPattern ? FitzDiagnostics.InvalidPattern : FitzDiagnostics.InvalidRoute;
+        var properties = ImmutableDictionary<string, string?>.Empty.Add("ExpectedScheme", rule.Scheme);
+        var marker = value.IndexOf("://", StringComparison.Ordinal);
+        if (marker >= 0)
+        {
+            var suggested = rule.Scheme + "://" + value.Substring(marker + 3);
+            var suggestionIsValid = rule.IsPattern
+                ? FitzRouteRules.IsValidPattern(suggested, rule.Scheme!, rule.RequiredSegments, rule.IsStreamSelector)
+                : FitzRouteRules.IsValidConcrete(suggested, rule.Scheme!, rule.RequiredSegments);
+            if (suggestionIsValid)
+            {
+                properties = properties.Add("SuggestedAddress", suggested);
+            }
+        }
+
         context.ReportDiagnostic(Diagnostic.Create(
             descriptor,
             argument.Syntax.GetLocation(),
-            properties: ImmutableDictionary<string, string?>.Empty.Add("ExpectedScheme", rule.Scheme),
+            properties: properties,
             value,
             rule.Scheme));
     }

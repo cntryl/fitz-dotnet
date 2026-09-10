@@ -69,7 +69,7 @@ public sealed class ManagedLeaseAuthorityTests
     }
 
     [Fact]
-    public async Task ShouldKeepAdmissionAuthorityStableGivenRenewalRotatesLiveToken()
+    public async Task ShouldSurfaceLeaseLossGivenRotatedAuthorityTokenWhenRenewing()
     {
         var renewalCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         ulong? releaseToken = null;
@@ -97,17 +97,19 @@ public sealed class ManagedLeaseAuthorityTests
             return Task.FromResult(SuccessResponse());
         });
 
-        var observed = await leaseClient.WithLeaseAsync(
+        var error = await Assert.ThrowsAsync<LeaseException>(() => leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
             1,
             async (authority, cancellationToken) =>
             {
                 await renewalCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
                 return authority;
-            });
+            }));
 
-        Assert.Equal((ulong)77, observed.FencingToken);
-        Assert.Equal((ulong)78, releaseToken);
+        Assert.Equal("LEASE_LOST", error.Code);
+        var rotation = Assert.IsType<LeaseException>(error.InnerException);
+        Assert.Equal("FENCING_TOKEN_CHANGED", rotation.Code);
+        Assert.Null(releaseToken);
     }
 
     [Fact]

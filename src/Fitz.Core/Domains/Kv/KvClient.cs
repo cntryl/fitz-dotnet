@@ -16,6 +16,7 @@ public sealed class KvClient : IKvClient, IDisposable
     readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly int _subscriptionBufferCapacity;
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     readonly object _gate = new();
     readonly Dictionary<string, KvSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
@@ -71,6 +72,14 @@ public sealed class KvClient : IKvClient, IDisposable
         if (!RouteValidation.IsFixedRoute(route, "kv", 3))
         {
             throw new KvException($"route '{route}' must be kv://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+        }
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown KV transaction mode");
+        }
+        if (!Enum.IsDefined(durability))
+        {
+            throw new ArgumentOutOfRangeException(nameof(durability), durability, "Unknown KV durability mode");
         }
 
         using var writer = new BinaryBufferWriter();
@@ -208,10 +217,7 @@ public sealed class KvClient : IKvClient, IDisposable
                 return;
             }
 
-            using var writer = new BinaryBufferWriter();
-            writer.WriteString(pattern);
-            var response = await _request(MessageTypes.KvUnsubscribe, writer.WrittenMemory, cancellationToken).ConfigureAwait(false);
-            DecodeSubscriptionResponse(response, "UNSUBSCRIBE", expectSubscriptionId: false);
+            await UnsubscribeWireAsync(pattern, cancellationToken).ConfigureAwait(false);
 
             lock (_gate)
             {
@@ -229,6 +235,14 @@ public sealed class KvClient : IKvClient, IDisposable
         }
 
         registration?.Dispose();
+    }
+
+    async Task UnsubscribeWireAsync(string pattern, CancellationToken cancellationToken)
+    {
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(pattern);
+        var response = await _request(MessageTypes.KvUnsubscribe, writer.WrittenMemory, cancellationToken).ConfigureAwait(false);
+        DecodeSubscriptionResponse(response, "UNSUBSCRIBE", expectSubscriptionId: false);
     }
 
     static ulong? DecodeSubscriptionResponse(
@@ -273,17 +287,20 @@ public sealed class KvClient : IKvClient, IDisposable
             var mutationCount = reader.ReadU64();
             if (!reader.IsEof)
                 return;
+            SubscriptionRegistration<KvNotification>[] registrations;
             lock (_gate)
             {
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
                     !_subscriptionsByPattern.TryGetValue(pattern, out var state))
                     return;
-                var notification = new KvNotification(route, mutationCount);
-                foreach (var writer in state.Writers.Values)
-                {
-                    if (!writer.Channel.Writer.TryWrite(notification))
-                        _ = writer.FailOverflowAsync();
-                }
+                registrations = [.. state.Writers.Values];
+            }
+
+            var notification = new KvNotification(route, mutationCount);
+            foreach (var writer in registrations)
+            {
+                if (!writer.Channel.Writer.TryWrite(notification))
+                    _ = writer.FailOverflowAsync();
             }
         }
         catch
@@ -291,6 +308,7 @@ public sealed class KvClient : IKvClient, IDisposable
         }
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
     async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
     {
         await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -303,11 +321,30 @@ public sealed class KvClient : IKvClient, IDisposable
             }
             var restoredSubscriptions = new Dictionary<string, KvSubscriptionState>(StringComparer.Ordinal);
             var restoredPatternsById = new Dictionary<ulong, string>();
-            foreach (var entry in entries)
+            try
             {
-                var subscriptionId = await SubscribeWireAsync(entry.Key, cancellationToken).ConfigureAwait(false);
-                restoredSubscriptions[entry.Key] = entry.Value.Clone(subscriptionId);
-                restoredPatternsById[subscriptionId] = entry.Key;
+                foreach (var entry in entries)
+                {
+                    var subscriptionId = await SubscribeWireAsync(entry.Key, cancellationToken).ConfigureAwait(false);
+                    restoredSubscriptions[entry.Key] = entry.Value.Clone(subscriptionId);
+                    restoredPatternsById[subscriptionId] = entry.Key;
+                }
+            }
+            catch
+            {
+                foreach (var pattern in restoredSubscriptions.Keys)
+                {
+                    try
+                    {
+                        await UnsubscribeWireAsync(pattern, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch
+                    {
+                        // Best effort; preserve the original restore failure.
+                    }
+                }
+
+                throw;
             }
 
             lock (_gate)
@@ -340,7 +377,6 @@ public sealed class KvClient : IKvClient, IDisposable
             _subscriptionsByPattern.Clear();
             _patternsBySubscriptionId.Clear();
         }
-        _subscriptionGate.Dispose();
     }
 
     sealed class KvSubscriptionState

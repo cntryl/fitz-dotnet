@@ -10,7 +10,7 @@ sealed class QueueReservedItem : QueueItem
     readonly ulong _id;
     readonly ulong _token;
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _requestFn;
-    readonly IDisposable? _disconnectRegistration;
+    IDisposable? _disconnectRegistration;
     int _state;
 
     internal QueueReservedItem(
@@ -26,7 +26,15 @@ sealed class QueueReservedItem : QueueItem
         _id = id;
         _token = token;
         _requestFn = requestFn;
-        _disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
+        var disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
+        if (disconnectRegistration is not null)
+        {
+            Interlocked.Exchange(ref _disconnectRegistration, disconnectRegistration)?.Dispose();
+            if (Volatile.Read(ref _state) != 0)
+            {
+                Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
+            }
+        }
     }
 
     public override async Task ExtendAsync(ulong leaseSeconds, CancellationToken ct = default)
@@ -61,6 +69,13 @@ sealed class QueueReservedItem : QueueItem
     public override Task CompleteAsync(CancellationToken ct = default) => CompleteCoreAsync(_token, ct);
 
     public override Task CompleteWithTokenAsync(ulong token, CancellationToken ct = default) => CompleteCoreAsync(token, ct);
+
+    public override ValueTask DisposeAsync()
+    {
+        MarkClosed();
+        GC.SuppressFinalize(this);
+        return ValueTask.CompletedTask;
+    }
 
     async Task CompleteCoreAsync(ulong token, CancellationToken ct)
     {
@@ -115,7 +130,7 @@ sealed class QueueReservedItem : QueueItem
             return;
         }
 
-        _disconnectRegistration?.Dispose();
+        Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
     }
 
     void BeginCompletion()

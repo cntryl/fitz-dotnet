@@ -55,8 +55,8 @@ Runtime defaults now match the TS client truth surface:
 - transport defaults to `auto`
 - reconnect is enabled
 - retry is enabled
-- heartbeat is enabled
-- async handler timeout defaults to the client timeout
+- transport-native keepalive is enabled
+- async handlers have no deadline unless `AsyncHandlerOptions.Timeout` is configured
 - request queue size defaults to `1024`
 
 KV commit, stream finalization, queue completion, and lease release become
@@ -89,6 +89,8 @@ exposes the concrete matched route, including `StreamRecord.Route` for event
 records. Route-less reserve/read responses are not supported. If any item
 contains an invalid concrete route, the entire response fails closed; the
 client never returns a partial reservation or read batch.
+Reserved queue items are async-disposable; dispose any item that will not be
+completed so its connection-lifetime registration is released.
 
 Queue `waitSeconds` uses the broker-native RESERVE wait field. A broker that
 rejects that field fails the request directly; the client does not downgrade
@@ -114,6 +116,8 @@ Callback delivery uses an independent bounded queue configured with
 exposes `Completion`: normal unsubscribe completes it, while callback queue
 overflow faults it with `AsyncHandlerOverflowException`, terminates the local
 registration, and is surfaced by async enumeration as the same typed failure.
+Callbacks have no default deadline; configure `AsyncHandlerOptions.Timeout`
+explicitly when the application wants slow callbacks to be cancelled.
 An unsubscribe rejected by the broker remains retryable.
 RPC worker saturation continues to use broker-visible protocol backpressure.
 

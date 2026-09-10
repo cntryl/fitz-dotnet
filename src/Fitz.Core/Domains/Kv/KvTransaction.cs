@@ -11,7 +11,8 @@ public sealed class KvTransaction : IKvTransaction
     readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
     readonly string _route;
     readonly ulong _txId;
-    readonly IDisposable? _disconnectRegistration;
+    IDisposable? _disconnectRegistration;
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Disposal may race active operations; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _finalizationGate = new(1, 1);
     int _closed;
     int _disposed;
@@ -27,7 +28,15 @@ public sealed class KvTransaction : IKvTransaction
         _route = route;
         _txId = txId;
         _retryRequest = retryRequest;
-        _disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
+        var disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
+        if (disconnectRegistration is not null)
+        {
+            Interlocked.Exchange(ref _disconnectRegistration, disconnectRegistration)?.Dispose();
+            if (Volatile.Read(ref _closed) != 0)
+            {
+                Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
+            }
+        }
     }
 
     public async Task<KvGetResult> GetAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
@@ -243,7 +252,7 @@ public sealed class KvTransaction : IKvTransaction
         }
         finally
         {
-            _finalizationGate.Dispose();
+            MarkClosed();
             GC.SuppressFinalize(this);
         }
     }
@@ -338,6 +347,6 @@ public sealed class KvTransaction : IKvTransaction
             return;
         }
 
-        _disconnectRegistration?.Dispose();
+        Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
     }
 }

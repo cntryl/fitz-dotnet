@@ -11,8 +11,10 @@ public sealed class LeaseHandle : ILease
     IDisposable? _disconnectRegistration;
     int _closed;
     int _disposed;
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Disposal may race active operations; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _operationGate = new(1, 1);
     readonly TaskCompletionSource _connectionLost = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    readonly TaskCompletionSource _fencingTokenChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     internal LeaseHandle(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
@@ -39,6 +41,8 @@ public sealed class LeaseHandle : ILease
     public ulong FencingToken { get; private set; }
 
     internal Task ConnectionLost => _connectionLost.Task;
+
+    internal Task FencingTokenChanged => _fencingTokenChanged.Task;
 
     internal void Invalidate() => MarkClosed();
 
@@ -106,7 +110,8 @@ public sealed class LeaseHandle : ILease
         }
         finally
         {
-            _operationGate.Dispose();
+            MarkClosed();
+            GC.SuppressFinalize(this);
         }
     }
 
@@ -123,10 +128,17 @@ public sealed class LeaseHandle : ILease
         var reader = LeaseWireHelpers.ReadSuccess(response, operation);
         if (reader.RemainingBytes >= 8)
         {
-            FencingToken = reader.ReadU64();
+            var previousToken = FencingToken;
+            var renewedToken = reader.ReadU64();
             if (!reader.IsEof)
             {
                 throw new LeaseException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+            }
+
+            FencingToken = renewedToken;
+            if (renewedToken != previousToken)
+            {
+                _fencingTokenChanged.TrySetResult();
             }
         }
         else
@@ -145,13 +157,7 @@ public sealed class LeaseHandle : ILease
         throw new LeaseException("Lease handle is no longer valid after disconnect", "CLOSED");
     }
 
-    void MarkClosed()
-    {
-        if (!TryMarkClosed())
-        {
-            return;
-        }
-    }
+    void MarkClosed() => _ = TryMarkClosed();
 
     void MarkConnectionLost()
     {

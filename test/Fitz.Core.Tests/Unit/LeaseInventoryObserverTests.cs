@@ -1,12 +1,116 @@
 using System.Collections.Concurrent;
 using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Domains.Lease;
+using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class LeaseInventoryObserverTests
 {
+    [Fact]
+    public async Task ShouldRejectOptionsGivenNonpositiveListTimeoutWhenObserving()
+    {
+        var broker = new FakeLeaseBroker();
+        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        var options = new LeaseObserveOptions { ListTimeout = TimeSpan.Zero };
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            leaseClient.ObserveAsync("lease://acme/renderers/*", options));
+
+        Assert.Empty(broker.Calls);
+    }
+
+    [Fact]
+    public async Task ShouldReturnTypedTimeoutGivenSlowListPassWhenObserving()
+    {
+        using var leaseClient = new LeaseClient(
+            async (messageType, _, cancellationToken) =>
+            {
+                if (messageType == MessageTypes.LeaseSubscribe)
+                {
+                    using var response = new BinaryBufferWriter();
+                    response.WriteU8(0);
+                    response.WriteU64(1);
+                    return response.Build();
+                }
+
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return ReadOnlyMemory<byte>.Empty;
+            },
+            registerNotificationHandler: (_, _) => new TestRegistration());
+        var options = new LeaseObserveOptions { ListTimeout = TimeSpan.FromMilliseconds(20) };
+
+        var error = await Assert.ThrowsAsync<LeaseException>(() =>
+            leaseClient.ObserveAsync("lease://acme/renderers/*", options));
+
+        Assert.Equal("LIST_TIMEOUT", error.Code);
+    }
+
+    [Fact]
+    public async Task ShouldStopAndCompleteUpdatesGivenNormalSubscriptionCompletionWhenClientCloses()
+    {
+        var broker = new FakeLeaseBroker();
+        broker.QueueListPage([MakeItem("lease://acme/renderers/a")]);
+        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
+        var updatesCompleted = Task.Run(async () =>
+        {
+            await foreach (var _ in observer.Updates)
+            {
+            }
+        });
+
+        leaseClient.Dispose();
+
+        await updatesCompleted.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.False(observer.IsReady);
+        var callsAtShutdown = broker.Calls.Count;
+        await Task.Delay(100);
+        Assert.Equal(callsAtShutdown, broker.Calls.Count);
+        await observer.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ShouldBoundConvergenceGivenContinuouslyDirtyInventoryWhenBootstrapping()
+    {
+        var broker = new FakeLeaseBroker();
+        for (var i = 0; i < 10; i++)
+        {
+            broker.QueueListPage(
+                [MakeItem("lease://acme/renderers/a")],
+                before: () =>
+                {
+                    broker.PushNotification(broker.LastSubscriptionId, "lease://acme/renderers/a");
+                    return Task.CompletedTask;
+                });
+        }
+        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+
+        var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*")
+            .WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.True(observer.IsReady);
+        Assert.InRange(broker.Calls.Count(call => call == "LIST"), 3, 6);
+        await observer.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ShouldRejectCursorGivenNonProgressingLeaseListWhenBootstrapping()
+    {
+        var broker = new FakeLeaseBroker();
+        var cursor = new LeaseListCursor(7, 10);
+        broker.QueueListPage([], cursor);
+        broker.QueueListPage([], cursor);
+        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+
+        var error = await Assert.ThrowsAsync<LeaseException>(() =>
+            leaseClient.ObserveAsync("lease://acme/renderers/*"));
+
+        Assert.Equal("LIST_NON_PROGRESSING_CURSOR", error.Code);
+        Assert.Equal(2, broker.Calls.Count(call => call == "LIST"));
+    }
+
     [Theory]
     [InlineData(0, 0.2, 256)]
     [InlineData(60, -0.1, 256)]

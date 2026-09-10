@@ -225,6 +225,58 @@ public sealed class ClientTests
     }
 
     [Fact]
+    public async Task ShouldReconnectGivenAuthenticatedTransportWhenClosedBeforeInboundFrame()
+    {
+        await using var firstTransport = new QueuedTransport();
+        await using var reconnectTransport = new QueuedTransport();
+        var factoryCalls = 0;
+        await using var client = new Client(new ClientConfig(
+            new Uri("ws://localhost:4190/ws"),
+            AuthSettleDelay: TimeSpan.Zero,
+            Reconnect: new ReconnectOptions(true, MaxAttempts: 2, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
+            TransportFactory: _ => factoryCalls++ == 0 ? firstTransport : reconnectTransport));
+
+        await client.ConnectAsync();
+        firstTransport.QueueClosed();
+
+        await WaitForConditionAsync(
+            () => client.IsConnected && factoryCalls == 2,
+            TimeSpan.FromSeconds(1));
+        Assert.Equal(ConnectionState.Authenticated, client.State);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ShouldKeepConnectionGivenOversizedCallerPayloadWhenEncoding(bool request)
+    {
+        await using var transport = new QueuedTransport();
+        var factoryCalls = 0;
+        await using var connection = new FitzConnection(
+            new ClientConfig(
+                new Uri("ws://localhost:4190/ws"),
+                AuthSettleDelay: TimeSpan.Zero,
+                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero)),
+            () =>
+            {
+                factoryCalls++;
+                return transport;
+            });
+        await connection.ConnectAsync();
+
+        var oversizedPayload = new byte[ushort.MaxValue + 1];
+        var operation = request
+            ? connection.RequestAsync(42, oversizedPayload).AsTask()
+            : connection.SendAsync(42, oversizedPayload).AsTask();
+
+        await Assert.ThrowsAsync<ProtocolException>(() => operation);
+        await Task.Delay(50);
+        Assert.Equal(ConnectionState.Authenticated, connection.State);
+        Assert.Equal(1, factoryCalls);
+        Assert.Single(transport.SentFrames);
+    }
+
+    [Fact]
     public async Task ShouldRetryStartupTransportFailuresGivenConnectWhenReady()
     {
         var attempts = 0;
@@ -651,6 +703,28 @@ public sealed class ClientTests
         await queueCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         releaseNotice.TrySetResult();
+    }
+
+    [Fact]
+    public async Task ShouldUseInfiniteTimeoutGivenDefaultHandlerOptionsWhenDispatchingAsyncHandler()
+    {
+        await using var transport = new IdleTransport();
+        await using var connection = new FitzConnection(
+            new ClientConfig(
+                new Uri("ws://localhost:4190/ws"),
+                Timeout: TimeSpan.FromMilliseconds(20),
+                AsyncHandlers: new AsyncHandlerOptions(MaxConcurrency: 1),
+                TransportFactory: _ => transport),
+            () => transport);
+        var completed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        Assert.True(connection.TryDispatchAsyncHandler("notice", async cancellationToken =>
+        {
+            await Task.Delay(75, CancellationToken.None);
+            completed.TrySetResult(cancellationToken.IsCancellationRequested);
+        }));
+
+        Assert.False(await completed.Task.WaitAsync(TimeSpan.FromSeconds(1)));
     }
 
     [Fact]

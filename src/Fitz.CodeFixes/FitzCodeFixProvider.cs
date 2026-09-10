@@ -45,19 +45,17 @@ public sealed class FitzCodeFixProvider : CodeFixProvider
     {
         var literal = root.FindNode(diagnostic.Location.SourceSpan).DescendantNodesAndSelf()
             .OfType<LiteralExpressionSyntax>().FirstOrDefault();
-        if (literal?.Token.ValueText is not { } value ||
+        if (literal is null ||
             !diagnostic.Properties.TryGetValue("ExpectedScheme", out var scheme) || scheme is null)
         {
             return;
         }
 
-        var marker = value.IndexOf("://", StringComparison.Ordinal);
-        if (marker < 0 || string.Equals(value.Substring(0, marker), scheme, StringComparison.Ordinal))
+        if (!diagnostic.Properties.TryGetValue("SuggestedAddress", out var corrected) || corrected is null)
         {
             return;
         }
 
-        var corrected = scheme + "://" + value.Substring(marker + 3);
         context.RegisterCodeFix(
             CodeAction.Create(
                 $"Use '{scheme}://' scheme",

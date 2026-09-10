@@ -340,7 +340,7 @@ public sealed class Multiplexer : IDisposable
         {
             lock (_gate)
             {
-                if (_laneStateCts.IsCancellationRequested)
+                if (_disposed || _laneStateCts.IsCancellationRequested)
                 {
                     throw new ConnectionException("Connection closed or reset");
                 }
@@ -486,6 +486,11 @@ public sealed class Multiplexer : IDisposable
     {
         lock (_gate)
         {
+            if (_disposed)
+            {
+                throw new ConnectionException("Connection multiplexer is closed");
+            }
+
             if (_requestLanes.TryGetValue(messageType, out var lane))
             {
                 return lane;
@@ -501,6 +506,11 @@ public sealed class Multiplexer : IDisposable
     {
         lock (_gate)
         {
+            if (_disposed)
+            {
+                throw new ConnectionException("Connection multiplexer is closed");
+            }
+
             return _laneStateCts.Token;
         }
     }
@@ -559,14 +569,6 @@ public sealed class Multiplexer : IDisposable
         }
         catch
         {
-        }
-    }
-
-    void RemovePending(ushort messageType, PendingRequest request)
-    {
-        lock (_gate)
-        {
-            RemoveRequest(request);
         }
     }
 

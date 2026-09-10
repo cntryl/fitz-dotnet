@@ -10,6 +10,47 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class KvClientTests
 {
+    [Theory]
+    [InlineData(2, 0)]
+    [InlineData(0, 260)]
+    public async Task ShouldRejectUndefinedEnumGivenInvalidValueWhenBeginningTransaction(int mode, int durability)
+    {
+        var requestCalled = false;
+        using var kv = new KvClient((_, _, _) =>
+        {
+            requestCalled = true;
+            return Task.FromResult(Array.Empty<byte>());
+        });
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => kv.BeginAsync(
+            "kv://prod/app/users",
+            (Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability)durability,
+            (Cntryl.Fitz.Abstractions.Domains.Kv.KvMode)mode));
+
+        Assert.False(requestCalled);
+    }
+
+    [Fact]
+    public async Task ShouldReleaseDisconnectRegistrationGivenCleanupFailureWhenDisposingTransaction()
+    {
+        var registrations = 0;
+        var transaction = new KvTransaction(
+            (_, _, _) => ValueTask.FromException<ReadOnlyMemory<byte>>(new KvException("rollback failed", "ROLLBACK_FAILED")),
+            "kv://prod/app/users",
+            7,
+            _ =>
+            {
+                registrations++;
+                return new global::Cntryl.Fitz.Core.Tests.Unit.TestRegistration(() => registrations--);
+            });
+
+        await transaction.DisposeAsync();
+
+        Assert.Equal(0, registrations);
+        var error = await Assert.ThrowsAsync<KvException>(() => transaction.GetAsync("key"u8.ToArray()));
+        Assert.Equal("TX_CLOSED", error.Code);
+    }
+
     [Fact]
     public async Task ShouldRejectImpossibleScanCountBeforeAllocating()
     {

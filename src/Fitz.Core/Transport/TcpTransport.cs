@@ -151,14 +151,26 @@ public sealed class TcpTransport : ITransport
         }
 
         var payload = ArrayPool<byte>.Shared.Rent(frameLength);
-        var payloadRead = await ReadExactOrClosedAsync(stream, payload.AsMemory(0, frameLength), cancellationToken).ConfigureAwait(false);
-        if (payloadRead == 0)
+        var ownsPayload = true;
+        try
         {
-            ArrayPool<byte>.Shared.Return(payload, clearArray: true);
-            return PooledFrame.Closed;
-        }
+            var payloadRead = await ReadExactOrClosedAsync(stream, payload.AsMemory(0, frameLength), cancellationToken).ConfigureAwait(false);
+            if (payloadRead == 0)
+            {
+                return PooledFrame.Closed;
+            }
 
-        return PooledFrame.FromRentedBuffer(payload, frameLength);
+            var frame = PooledFrame.FromRentedBuffer(payload, frameLength);
+            ownsPayload = false;
+            return frame;
+        }
+        finally
+        {
+            if (ownsPayload)
+            {
+                ArrayPool<byte>.Shared.Return(payload, clearArray: true);
+            }
+        }
     }
 
     public async Task CloseAsync(CancellationToken cancellationToken = default)
@@ -212,12 +224,14 @@ public sealed class TcpTransport : ITransport
 
     NetworkStream EnsureStream()
     {
-        if (_stream is null || _client is null || !_client.Connected)
+        var stream = Volatile.Read(ref _stream);
+        var client = Volatile.Read(ref _client);
+        if (stream is null || client is null || !client.Connected)
         {
             throw new InvalidOperationException("Transport is not connected.");
         }
 
-        return _stream;
+        return stream;
     }
 
     void ConfigureKeepAlive(Socket socket)
