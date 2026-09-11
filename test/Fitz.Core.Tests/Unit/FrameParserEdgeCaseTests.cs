@@ -6,68 +6,97 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class FrameParserEdgeCaseTests
 {
     [Fact]
-    public void ShouldParseMessageTypeZero()
+    public void ShouldParseMessageTypeZeroGivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser();
         var encoded = FrameCodec.Encode(0, [0xAA, 0xBB]);
+
+        // Act
         var frames = parser.ParseFrames(encoded);
+
+        // Assert
         Assert.Single(frames);
         Assert.Equal((ushort)0, frames[0].MessageType);
     }
 
     [Fact]
-    public void ShouldParseMessageType254()
+    public void ShouldParseMessageType254GivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser();
         var encoded = FrameCodec.Encode(254, [0x11, 0x22]);
+
+        // Act
         var frames = parser.ParseFrames(encoded);
+
+        // Assert
         Assert.Single(frames);
         Assert.Equal((ushort)254, frames[0].MessageType);
     }
 
     [Fact]
-    public void ShouldParseMessageType255EscapeBoundary()
+    public void ShouldParseMessageType255EscapeBoundaryGivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser();
         var encoded = FrameCodec.Encode(255, [0x33, 0x44]);
+
+        // Act
         var frames = parser.ParseFrames(encoded);
+
+        // Assert
         Assert.Single(frames);
         Assert.Equal((ushort)255, frames[0].MessageType);
     }
 
     [Fact]
-    public void ShouldParseLargeMessageType()
+    public void ShouldParseLargeMessageTypeGivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser();
         var encoded = FrameCodec.Encode(65535, [0x55, 0x66]);
+
+        // Act
         var frames = parser.ParseFrames(encoded);
+
+        // Assert
         Assert.Single(frames);
         Assert.Equal((ushort)65535, frames[0].MessageType);
     }
 
     [Fact]
-    public void ShouldParseEmptyPayload()
+    public void ShouldParseEmptyPayloadGivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser();
         var encoded = FrameCodec.Encode(500, []);
+
+        // Act
         var frames = parser.ParseFrames(encoded);
+
+        // Assert
         Assert.Single(frames);
         Assert.True(frames[0].Payload.IsEmpty);
     }
 
     [Fact]
-    public void ShouldHandleByteByByteFragmentation()
+    public void ShouldHandleByteByByteFragmentationGivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser();
         var encoded = FrameCodec.Encode(100, [0xAA, 0xBB, 0xCC]);
         var parseResults = new List<IReadOnlyList<Frame>>();
 
+
+        // Act
         for (var i = 0; i < encoded.Length; i++)
         {
             var chunk = encoded.AsSpan(i, 1).ToArray();
             parseResults.Add(parser.ParseFrames(chunk));
         }
 
+        // Assert
         for (var i = 0; i < encoded.Length - 1; i++)
             Assert.Empty(parseResults[i]);
         Assert.Single(parseResults[^1]);
@@ -75,8 +104,9 @@ public sealed class FrameParserEdgeCaseTests
     }
 
     [Fact]
-    public void ShouldParseMultipleMixedTypeFrames()
+    public void ShouldParseMultipleMixedTypeFramesGivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser();
         var first = FrameCodec.Encode(100, [0x11]);
         var second = FrameCodec.Encode(300, [0x22]);
@@ -86,7 +116,11 @@ public sealed class FrameParserEdgeCaseTests
         second.CopyTo(input, first.Length);
         third.CopyTo(input, first.Length + second.Length);
 
+
+        // Act
         var frames = parser.ParseFrames(input);
+
+        // Assert
         Assert.Equal(3, frames.Count);
         Assert.Equal((ushort)100, frames[0].MessageType);
         Assert.Equal((ushort)300, frames[1].MessageType);
@@ -94,8 +128,9 @@ public sealed class FrameParserEdgeCaseTests
     }
 
     [Fact]
-    public void ShouldHandleFragmentationAtTypeBoundary()
+    public void ShouldHandleFragmentationAtTypeBoundaryGivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser();
         var frame254 = FrameCodec.Encode(254, [0xAA]);
         var frame255 = FrameCodec.Encode(255, [0xBB]);
@@ -105,8 +140,12 @@ public sealed class FrameParserEdgeCaseTests
 
         var midpoint = frame254.Length + 1;
         var first = parser.ParseFrames(combined.AsSpan(0, midpoint).ToArray());
+
+        // Act
         var second = parser.ParseFrames(combined.AsSpan(midpoint).ToArray());
 
+
+        // Assert
         Assert.Single(first);
         Assert.Equal((ushort)254, first[0].MessageType);
         Assert.Single(second);
@@ -114,23 +153,29 @@ public sealed class FrameParserEdgeCaseTests
     }
 
     [Fact]
-    public void ShouldParseLargePayload()
+    public void ShouldParseLargePayloadGivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser();
         var largePayload = new byte[4096];
         for (var i = 0; i < largePayload.Length; i++)
             largePayload[i] = (byte)(i % 256);
         var encoded = FrameCodec.Encode(600, largePayload);
 
+
+        // Act
         var frames = parser.ParseFrames(encoded);
+
+        // Assert
         Assert.Single(frames);
         Assert.Equal((ushort)600, frames[0].MessageType);
         Assert.Equal(largePayload, frames[0].Payload.ToArray());
     }
 
     [Fact]
-    public void ShouldHandleLargePayloadFragmentation()
+    public void ShouldHandleLargePayloadFragmentationGivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser();
         var largePayload = new byte[2048];
         for (var i = 0; i < largePayload.Length; i++)
@@ -141,8 +186,12 @@ public sealed class FrameParserEdgeCaseTests
         var twoThirds = (encoded.Length * 2) / 3;
         var first = parser.ParseFrames(encoded.AsSpan(0, oneThird).ToArray());
         var second = parser.ParseFrames(encoded.AsSpan(oneThird, twoThirds - oneThird).ToArray());
+
+        // Act
         var third = parser.ParseFrames(encoded.AsSpan(twoThirds).ToArray());
 
+
+        // Assert
         Assert.Empty(first);
         Assert.Empty(second);
         Assert.Single(third);
@@ -150,16 +199,21 @@ public sealed class FrameParserEdgeCaseTests
     }
 
     [Fact]
-    public void ShouldMaintainStateAcrossCalls()
+    public void ShouldMaintainStateAcrossCallsGivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser();
         var frame1 = FrameCodec.Encode(100, [0x11, 0x22, 0x33]);
         var frame2 = FrameCodec.Encode(200, [0x44, 0x55, 0x66]);
 
         var result1 = parser.ParseFrames(frame1.AsSpan(0, frame1.Length / 2).ToArray());
         var result2 = parser.ParseFrames(frame1.AsSpan(frame1.Length / 2).ToArray());
+
+        // Act
         var result3 = parser.ParseFrames(frame2);
 
+
+        // Assert
         Assert.Empty(result1);
         Assert.Single(result2);
         Assert.Single(result3);
@@ -168,21 +222,31 @@ public sealed class FrameParserEdgeCaseTests
     }
 
     [Fact]
-    public void ShouldParseEmptyInput()
+    public void ShouldParseEmptyInputGivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser();
+
+        // Act
         var frames = parser.ParseFrames([]);
+
+        // Assert
         Assert.Empty(frames);
     }
 
     [Fact]
-    public void ShouldRejectFragmentedDataBeforeExceedingCustomBufferCap()
+    public void ShouldRejectFragmentedDataBeforeExceedingCustomBufferCapGivenProtocolBytesWhenParsing()
     {
+        // Arrange
         var parser = new FrameParser(100);
         var oversizedFrame = FrameCodec.Encode(100, new byte[100]);
 
+
+        // Act
         var frames = parser.ParseFrames(oversizedFrame.AsSpan(0, 60));
 
+
+        // Assert
         Assert.Empty(frames);
         var error = Assert.Throws<ProtocolException>(() => parser.Append(oversizedFrame.AsSpan(60, 41)));
         Assert.Contains("100", error.Message, StringComparison.Ordinal);

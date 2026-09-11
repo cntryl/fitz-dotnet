@@ -10,8 +10,11 @@ public sealed class TcpTransportTests
     [Theory]
     [InlineData(0, 1024)]
     [InlineData(1000, 0)]
-    public void ShouldRejectInvalidBoundsGivenTcpTransport(int timeoutMilliseconds, int maxFrameSize)
+    public void ShouldRejectInvalidBoundsGivenTcpTransportWhenTransportOperationRuns(int timeoutMilliseconds, int maxFrameSize)
     {
+        // Arrange
+        // Act
+        // Assert
         Assert.Throws<ArgumentOutOfRangeException>(() => new TcpTransport(
             new Uri("tcp://localhost:4191"),
             TimeSpan.FromMilliseconds(timeoutMilliseconds),
@@ -19,7 +22,7 @@ public sealed class TcpTransportTests
     }
 
     [Fact]
-    public async Task ShouldSendAndReceiveLengthPrefixedFramesGivenTcpTransport()
+    public async Task ShouldSendAndReceiveLengthPrefixedFramesGivenTcpTransportWhenTransportOperationRuns()
     {
         // Arrange
         using var listener = new TcpListener(IPAddress.Loopback, 0);
@@ -52,7 +55,7 @@ public sealed class TcpTransportTests
     }
 
     [Fact]
-    public async Task ShouldRejectConnectionCloseGivenPartialFramePayload()
+    public async Task ShouldRejectConnectionCloseGivenPartialFramePayloadWhenTransportOperationRuns()
     {
         // Arrange
         using var listener = new TcpListener(IPAddress.Loopback, 0);

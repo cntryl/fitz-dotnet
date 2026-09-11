@@ -23,6 +23,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
     readonly Dictionary<string, StreamSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
     readonly Dictionary<ulong, string> _patternsBySubscriptionId = [];
     IDisposable? _notificationRegistration;
+    int _disposed;
     bool _notificationHandlerInitialized;
     long _nextHandleId;
     readonly IDisposable? _reconnectRegistration;
@@ -50,6 +51,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
             async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
             NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
     {
+        ArgumentNullException.ThrowIfNull(request);
     }
 
     internal StreamClient(
@@ -70,6 +72,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
 
     public async Task<IStreamSession> BeginAsync(string route, ReadOnlyMemory<byte>? ingestMetadata = null, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ValidateExactStreamRoute(route);
 
         using var writer = new BinaryBufferWriter();
@@ -98,6 +101,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         ulong? cursorFingerprint = null, ulong? capturedWatermark = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(route);
         ValidateStreamSelector(route);
         _ = RouteValidation.TryGetStreamSelectorScope(route, out var scope);
@@ -155,6 +159,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         ulong? cursorFingerprint = null, ulong? capturedWatermark = null,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ValidateStreamSelector(route);
 
         using var writer = new BinaryBufferWriter();
@@ -193,6 +198,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
 
     public async Task<StreamRecord?> PeekAsync(string route, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ValidateExactStreamRoute(route);
 
         using var writer = new BinaryBufferWriter();
@@ -214,6 +220,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
 
     public async Task<StreamMetadata> MetadataAsync(string route, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ValidateExactStreamRoute(route);
 
         using var writer = new BinaryBufferWriter();
@@ -263,6 +270,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         string pattern,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         var buffer = new AsyncSubscriptionBuffer<StreamCommitEvent>(pattern, _subscriptionBufferCapacity);
         var registration = await SubscribeAsync(pattern, (notification, _) =>
         {
@@ -432,6 +440,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
     {
         lock (_gate)
         {
+            ThrowIfDisposed();
             if (_notificationHandlerInitialized)
             {
                 return;
@@ -612,6 +621,11 @@ public sealed class StreamClient : IStreamClient, IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _notificationRegistration?.Dispose();
         _reconnectRegistration?.Dispose();
         lock (_gate)
@@ -629,6 +643,8 @@ public sealed class StreamClient : IStreamClient, IDisposable
         }
 
     }
+
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
     sealed class StreamSubscriptionState
     {

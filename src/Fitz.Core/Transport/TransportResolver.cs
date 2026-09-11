@@ -5,6 +5,7 @@ public static class TransportResolver
     public static ITransport Resolve(ClientConfig config)
     {
         ArgumentNullException.ThrowIfNull(config);
+        config.Validate();
 
         return config.ResolvedTransportKind switch
         {

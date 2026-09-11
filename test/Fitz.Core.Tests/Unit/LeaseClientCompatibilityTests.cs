@@ -5,8 +5,9 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class LeaseClientCompatibilityTests
 {
     [Fact]
-    public async Task ShouldPreserveLegacyCustomClientAndOneArgumentCallbacks()
+    public async Task ShouldPreserveOneArgumentCallbacksGivenLegacyClientWhenManagedLeaseRuns()
     {
+        // Arrange
         ILeaseClient client = new LegacyLeaseClient();
         var nonGenericInvoked = false;
 
@@ -14,6 +15,8 @@ public sealed class LeaseClientCompatibilityTests
             "lease://prod/app/generic",
             30,
             cancellationToken => ValueTask.FromResult(!cancellationToken.IsCancellationRequested));
+
+        // Act
         await client.WithLeaseAsync(
             "lease://prod/app/non-generic",
             30,
@@ -23,13 +26,18 @@ public sealed class LeaseClientCompatibilityTests
                 return ValueTask.CompletedTask;
             });
 
+
+        // Assert
         Assert.True(result);
         Assert.True(nonGenericInvoked);
     }
 
     [Fact]
-    public async Task ShouldFailClearlyGivenAuthorityCallbackOnLegacyCustomClient()
+    public async Task ShouldFailClearlyGivenAuthorityCallbackOnLegacyCustomClientWhenManagedLeaseRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         ILeaseClient client = new LegacyLeaseClient();
 
         var generic = await Assert.ThrowsAsync<NotSupportedException>(() => client.WithLeaseAsync(

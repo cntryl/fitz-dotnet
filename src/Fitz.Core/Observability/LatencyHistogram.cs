@@ -14,6 +14,7 @@ public sealed class LatencyHistogram
     /// </summary>
     public void Record(long microseconds)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(microseconds);
         lock (_lock)
         {
             _samples.Add(microseconds);
@@ -25,6 +26,11 @@ public sealed class LatencyHistogram
     /// </summary>
     public long GetPercentile(double percentile)
     {
+        if (double.IsNaN(percentile) || percentile < 0 || percentile > 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(percentile), "Percentile must be between 0 and 1 inclusive.");
+        }
+
         lock (_lock)
         {
             if (_samples.Count == 0)

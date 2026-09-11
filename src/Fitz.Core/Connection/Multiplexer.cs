@@ -189,6 +189,7 @@ public sealed class Multiplexer : IDisposable
         long handlerId;
         lock (_gate)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             handlerId = ++_nextHandlerId;
             if (!_notificationHandlers.TryGetValue(messageType, out var registrations))
             {

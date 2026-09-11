@@ -29,6 +29,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     readonly Dictionary<string, LeaseSubscriptionState> _subscriptionsByRoute = new(StringComparer.Ordinal);
     readonly Dictionary<ulong, string> _routesBySubscriptionId = [];
     IDisposable? _notificationRegistration;
+    int _disposed;
     IDisposable? _acquireNotificationRegistration;
     readonly IDisposable? _acquisitionDisconnectRegistration;
     readonly ConcurrentQueue<TaskCompletionSource<ReadOnlyMemory<byte>>> _queuedAcquisitions = new();
@@ -65,6 +66,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
             async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
             NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
     {
+        ArgumentNullException.ThrowIfNull(request);
     }
 
     internal LeaseClient(
@@ -85,7 +87,11 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         _invalidateSession = invalidateSession;
     }
 
-    public async Task<ILease> AcquireAsync(string route, ulong ttlSecs, uint waitSeconds = 0, CancellationToken ct = default) => await AcquireLeaseAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
+    public async Task<ILease> AcquireAsync(string route, ulong ttlSecs, uint waitSeconds = 0, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        return await AcquireLeaseAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
+    }
 
     async Task<LeaseHandle> AcquireLeaseAsync(string route, ulong ttlSecs, uint waitSeconds, CancellationToken ct)
     {
@@ -251,6 +257,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
 
     void EnsureAcquireNotificationHandlerInitialized()
     {
+        ThrowIfDisposed();
         if (_registerNotificationHandler is null)
             throw new InvalidOperationException("Notification handlers not configured for queued lease acquisition");
         lock (_gate)
@@ -278,6 +285,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         LeaseExecutionOptions? options = null,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(callback);
         return await WithLeaseAsync(
             route,
@@ -298,6 +306,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         LeaseExecutionOptions? options = null,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(callback);
         ct.ThrowIfCancellationRequested();
         if (ttlSecs == 0 || ttlSecs > uint.MaxValue / 1000)
@@ -466,6 +475,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         LeaseExecutionOptions? options = null,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(callback);
         await WithLeaseAsync(
             route,
@@ -482,6 +492,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         LeaseExecutionOptions? options = null,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(callback);
         await WithLeaseAsync(
             route,
@@ -497,6 +508,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
 
     public async Task<LeaseInfo> QueryAsync(string route, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         if (!RouteValidation.IsFixedRoute(route, "lease", 3))
         {
             throw new LeaseException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
@@ -514,6 +526,11 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         var reader = LeaseWireHelpers.ReadSuccess(response, "QUERY");
 
         var hasHolder = reader.ReadU8();
+        if (hasHolder > 1)
+        {
+            throw new LeaseException($"QUERY response has invalid holder flag {hasHolder}", "QUERY_INVALID_RESPONSE");
+        }
+
         if (hasHolder == 0)
         {
             if (reader.RemainingBytes != 4)
@@ -548,6 +565,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         int? limit = null,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         EnsureLeaseRegistrationPattern(pattern);
         if (limit.HasValue)
         {
@@ -566,6 +584,10 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
 
         var response = await _request(MessageTypes.LeaseList, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = LeaseWireHelpers.ReadSuccess(response, "LIST");
+        if (reader.RemainingBytes < 5)
+        {
+            throw new LeaseException("LIST response is missing its item count or has_next flag", "LIST_INVALID_RESPONSE");
+        }
 
         var itemCount = reader.ReadU32();
         const int minimumItemWireBytes = 4 + 4 + 8 + 4 + 8 + 4;
@@ -617,7 +639,11 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
 
     public Task<LeaseSubscription> SubscribeAsync(
         string route,
-        CancellationToken ct = default) => SubscribeObserverAsync(route, invalidate: null, ct);
+        CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        return SubscribeObserverAsync(route, invalidate: null, ct);
+    }
 
     internal async Task<LeaseSubscription> SubscribeObserverAsync(
         string route,
@@ -810,6 +836,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
     {
         lock (_gate)
         {
+            ThrowIfDisposed();
             if (_notificationHandlerInitialized)
             {
                 return;
@@ -925,6 +952,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         LeaseObserveOptions? options = null,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         EnsureLeaseRegistrationPattern(pattern);
 
         options ??= new LeaseObserveOptions();
@@ -932,7 +960,9 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         {
             throw new ArgumentOutOfRangeException(nameof(options), "ReconciliationInterval must be positive");
         }
-        if (options.ReconciliationJitterRatio < 0 || options.ReconciliationJitterRatio >= 1)
+        if (double.IsNaN(options.ReconciliationJitterRatio) ||
+            options.ReconciliationJitterRatio < 0 ||
+            options.ReconciliationJitterRatio >= 1)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "ReconciliationJitterRatio must be in [0, 1)");
         }
@@ -1047,6 +1077,11 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _notificationRegistration?.Dispose();
         _acquireNotificationRegistration?.Dispose();
         _acquisitionDisconnectRegistration?.Dispose();
@@ -1068,6 +1103,8 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         }
 
     }
+
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
     sealed class LeaseSubscriptionState
     {

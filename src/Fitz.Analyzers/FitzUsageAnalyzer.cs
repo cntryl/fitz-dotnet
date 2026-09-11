@@ -140,7 +140,7 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
             }
 
             var constant = GetConstantValue(argument.Value);
-            if (!IsInvalidConstant(argument.Parameter.Name, constant))
+            if (!IsInvalidConstant(invocation.TargetMethod, apiSymbols, argument.Parameter.Name, constant))
             {
                 continue;
             }
@@ -165,11 +165,23 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
         return constant;
     }
 
-    static bool IsInvalidConstant(string parameterName, Optional<object?> constant)
+    static bool IsInvalidConstant(
+        IMethodSymbol method,
+        FitzRouteRules.ApiSymbols apiSymbols,
+        string parameterName,
+        Optional<object?> constant)
     {
         if (!constant.HasValue || constant.Value is null)
         {
             return false;
+        }
+
+        if (parameterName == "limit" &&
+            method.Name == "ListAsync" &&
+            apiSymbols.TryGetClientName(method, out var clientName) &&
+            clientName == "ILeaseClient")
+        {
+            return ToInt64(constant.Value) <= 0;
         }
 
         return parameterName switch

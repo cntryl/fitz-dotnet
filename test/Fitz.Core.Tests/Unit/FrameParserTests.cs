@@ -76,9 +76,14 @@ public sealed class FrameParserTests
     [Fact]
     public void ShouldReturnDetachedPayloadsGivenParseFramesWhenParserBufferIsReused()
     {
+        // Arrange
         var parser = new FrameParser();
+
+        // Act
         var firstFrames = parser.ParseFrames(FrameCodec.Encode(100, [0x1, 0x2, 0x3]));
 
+
+        // Assert
         Assert.Single(firstFrames);
 
         var firstPayload = firstFrames[0].Payload;

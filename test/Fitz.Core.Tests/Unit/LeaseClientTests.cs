@@ -11,15 +11,80 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class LeaseClientTests
 {
     [Fact]
+    public async Task ShouldReturnTypedErrorGivenEmptyResponseWhenQueryingLease()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var leaseClient = new LeaseClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+
+        var error = await Assert.ThrowsAsync<LeaseException>(() =>
+            leaseClient.QueryAsync("lease://prod/app/lock"));
+
+        Assert.Equal("QUERY_INVALID_RESPONSE", error.Code);
+    }
+
+    [Fact]
+    public async Task ShouldRejectZeroTtlGivenLeaseHandleWhenExtendingBeforeTransport()
+    {
+        // Arrange
+        var requestCalled = false;
+
+        // Act
+        await using var lease = new LeaseHandle(
+            (_, _, _) =>
+            {
+                requestCalled = true;
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(Array.Empty<byte>());
+            },
+            "lease://prod/app/lock",
+            77);
+
+
+        // Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => lease.ExtendAsync(0));
+
+        Assert.False(requestCalled);
+    }
+
+    [Fact]
+    public async Task ShouldRejectInvalidHolderFlagGivenMalformedResponseWhenQueryingLease()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var leaseClient = new LeaseClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(2);
+            writer.WriteString("owner");
+            writer.WriteU64(30);
+            writer.WriteU32(0);
+            return Task.FromResult(writer.Build());
+        });
+
+        var error = await Assert.ThrowsAsync<LeaseException>(() =>
+            leaseClient.QueryAsync("lease://prod/app/lock"));
+
+        Assert.Equal("QUERY_INVALID_RESPONSE", error.Code);
+    }
+
+    [Fact]
     public async Task ShouldRejectZeroTtlGivenAcquireWhenBeforeTransport()
     {
+        // Arrange
         var requestCalled = false;
+
+        // Act
         using var leaseClient = new LeaseClient((_, _, _) =>
         {
             requestCalled = true;
             return Task.FromResult(Array.Empty<byte>());
         });
 
+
+        // Assert
         var error = await Assert.ThrowsAsync<LeaseException>(() =>
             leaseClient.AcquireAsync("lease://prod/app/lock", 0));
 
@@ -30,6 +95,7 @@ public sealed class LeaseClientTests
     [Fact]
     public async Task ShouldReleaseDisconnectRegistrationGivenCleanupFailureWhenDisposingLease()
     {
+        // Arrange
         var registrations = 0;
         await using var lease = new LeaseHandle(
             (_, _, _) => ValueTask.FromException<ReadOnlyMemory<byte>>(new LeaseException("release failed", "RELEASE_FAILED")),
@@ -41,8 +107,12 @@ public sealed class LeaseClientTests
                 return new TestRegistration(() => registrations--);
             });
 
+
+        // Act
         await lease.DisposeAsync();
 
+
+        // Assert
         Assert.Equal(0, registrations);
         var error = await Assert.ThrowsAsync<LeaseException>(() => lease.ExtendAsync(30));
         Assert.Equal("CLOSED", error.Code);
@@ -51,6 +121,7 @@ public sealed class LeaseClientTests
     [Fact]
     public async Task ShouldRecordRotationGivenChangedFencingTokenWhenRenewingLease()
     {
+        // Arrange
         await using var lease = new LeaseHandle(
             (_, _, _) =>
             {
@@ -62,15 +133,20 @@ public sealed class LeaseClientTests
             "lease://prod/app/lock",
             77);
 
+
+        // Act
         await lease.ExtendAsync(30);
 
+
+        // Assert
         Assert.Equal(78UL, lease.FencingToken);
         Assert.True(lease.FencingTokenChanged.IsCompleted);
     }
 
     [Fact]
-    public async Task ShouldAllowReleaseRetryAfterRejectedWireOperation()
+    public async Task ShouldAllowReleaseRetryAfterRejectedWireOperationGivenLeaseClientWhenOperationRuns()
     {
+        // Arrange
         var releaseCalls = 0;
         using var leaseClient = new LeaseClient((messageType, _, _) =>
         {
@@ -94,8 +170,12 @@ public sealed class LeaseClientTests
 
             return Task.FromResult(writer.Build());
         });
+
+        // Act
         var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
 
+
+        // Assert
         await Assert.ThrowsAsync<LeaseException>(() => lease.ReleaseAsync());
         await lease.ReleaseAsync();
         var closed = await Assert.ThrowsAsync<LeaseException>(() => lease.ReleaseAsync());
@@ -126,8 +206,9 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task ShouldReleaseOnDisposeGivenCancelledExtend()
+    public async Task ShouldReleaseOnDisposeGivenCancelledExtendWhenLeaseOperationRuns()
     {
+        // Arrange
         var releaseCalls = 0;
         using var leaseClient = new LeaseClient((messageType, _, ct) =>
         {
@@ -151,7 +232,11 @@ public sealed class LeaseClientTests
 
         var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
         using var cancellation = new CancellationTokenSource();
+
+        // Act
         await cancellation.CancelAsync();
+
+        // Assert
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => lease.ExtendAsync(60, cancellation.Token));
         await lease.DisposeAsync();
 
@@ -159,8 +244,11 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task ShouldAwaitDeferredAcquiredFrameGivenQueuedResponse()
+    public async Task ShouldAwaitDeferredAcquiredFrameGivenQueuedResponseWhenLeaseOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         Action<byte[]>? acquireHandler = null;
         using var leaseClient = new LeaseClient(
             (_, _, _) =>
@@ -193,6 +281,7 @@ public sealed class LeaseClientTests
     [Fact]
     public async Task ShouldCopyPayloadGivenDeferredGrantWhenBorrowedNotificationReturns()
     {
+        // Arrange
         Action<ReadOnlyMemory<byte>>? acquireHandler = null;
         using var leaseClient = new LeaseClient(
             (_, _, _) =>
@@ -219,15 +308,24 @@ public sealed class LeaseClientTests
         acquireHandler!(borrowed);
         borrowed.AsSpan().Fill(byte.MaxValue);
 
+
+        // Act
         await using var lease = await pending;
+
+        // Assert
         Assert.Equal(91UL, lease.FencingToken);
     }
 
     [Fact]
-    public async Task ShouldSerializeAcquisitionLifecycleUntilDeferredFrameArrives()
+    public async Task ShouldSerializeAcquisitionLifecycleUntilDeferredFrameArrivesGivenLeaseClientWhenOperationRuns()
     {
+        // Arrange
         Action<byte[]>? acquireHandler = null;
+
+        // Act
         var acquireCalls = 0;
+
+        // Assert
         using var leaseClient = new LeaseClient(
             (messageType, _, _) =>
             {
@@ -261,10 +359,13 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task AcquireAsync_DeferredGrantArrivesAfterTimeout_DoesNotReachNextCaller()
+    public async Task ShouldDiscardDeferredGrantGivenTimedOutAcquireWhenNextCallerWaits()
     {
+        // Arrange
         Action<byte[]>? acquireHandler = null;
         var acquireCalls = 0;
+
+        // Act
         using var leaseClient = new LeaseClient(
             (_, _, _) =>
             {
@@ -281,6 +382,8 @@ public sealed class LeaseClientTests
                 return new TestRegistration();
             });
 
+
+        // Assert
         await Assert.ThrowsAsync<RequestTimeoutException>(() =>
             leaseClient.AcquireAsync("lease://prod/app/first", 30, waitSeconds: 1));
 
@@ -466,7 +569,7 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task ShouldReleaseOnceGivenRepeatedAsyncDisposalOfLiveLease()
+    public async Task ShouldReleaseOnceGivenRepeatedAsyncDisposalOfLiveLeaseWhenLeaseOperationRuns()
     {
         // Arrange
         var releaseCalls = 0;
@@ -497,9 +600,11 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task ShouldNotSurfaceReleaseFailureGivenAsyncDisposalOfLiveLease()
+    public async Task ShouldNotSurfaceReleaseFailureGivenAsyncDisposalOfLiveLeaseWhenLeaseOperationRuns()
     {
         // Arrange
+        // Act
+        // Assert
         using var leaseClient = new LeaseClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
@@ -591,9 +696,11 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task ShouldMarkLeaseAsClosedAfterDisconnect()
+    public async Task ShouldMarkLeaseAsClosedAfterDisconnectGivenLeaseClientWhenOperationRuns()
     {
         // Arrange
+        // Act
+        // Assert
         await using var transport = new TestQueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
@@ -632,6 +739,7 @@ public sealed class LeaseClientTests
     [Fact]
     public async Task ShouldRejectExtendGivenStaleHandleWhenReconnectCompletes()
     {
+        // Arrange
         await using var firstTransport = new TestQueuedTransport();
         await using var secondTransport = new TestQueuedTransport();
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -680,8 +788,12 @@ public sealed class LeaseClientTests
         var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
 
         firstTransport.QueueClosed();
+
+        // Act
         await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
+
+        // Assert
         var ex = await Assert.ThrowsAsync<LeaseException>(() => lease.ExtendAsync(60));
 
         Assert.Equal("CLOSED", ex.Code);
@@ -691,7 +803,7 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task ShouldAcceptWholeSegmentWildcardRouteWhenSubscribing()
+    public async Task ShouldAcceptWholeSegmentWildcardRouteGivenValidPatternWhenSubscribing()
     {
         // Arrange
         ushort seenMessageType = 0;
@@ -730,7 +842,7 @@ public sealed class LeaseClientTests
     [InlineData("lease://acme/*/doc-1")]
     [InlineData("lease://*/*/*")]
     [InlineData("lease://**")]
-    public async Task ShouldAcceptFullWildcardMatrixWhenSubscribing(string pattern)
+    public async Task ShouldAcceptFullWildcardMatrixGivenValidPatternsWhenSubscribing(string pattern)
     {
         // Arrange
         using var leaseClient = new LeaseClient(
@@ -759,7 +871,7 @@ public sealed class LeaseClientTests
     [InlineData("lease://acme/*")]
     [InlineData("notlease://acme/renderers/*")]
     [InlineData("lease://acme//doc-1")]
-    public async Task ShouldRejectMalformedWildcardRouteWhenSubscribing(string route)
+    public async Task ShouldRejectMalformedWildcardRouteGivenInvalidPatternWhenSubscribing(string route)
     {
         // Arrange
         using var leaseClient = new LeaseClient(
@@ -784,8 +896,9 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task ShouldRestoreLeaseSubscriptionAfterReconnect()
+    public async Task ShouldRestoreLeaseSubscriptionAfterReconnectGivenLeaseClientWhenOperationRuns()
     {
+        // Arrange
         await using var firstTransport = new TestQueuedTransport();
         await using var secondTransport = new TestQueuedTransport();
         var firstNotification = new TaskCompletionSource<LeaseChangeEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -869,7 +982,10 @@ public sealed class LeaseClientTests
             firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseNotify, notification.WrittenSpan));
         }
 
+        // Act
         var initialEvent = await firstNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Assert
         Assert.Equal("lease://prod/app/lock", initialEvent.Route);
 
         firstTransport.QueueClosed();

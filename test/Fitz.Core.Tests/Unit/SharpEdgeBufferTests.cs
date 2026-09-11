@@ -11,11 +11,16 @@ public sealed class SharpEdgeBufferTests
     [Fact]
     public void ShouldThrowBeforeAllocatingGivenDisposedWriterWhenBuilding()
     {
+        // Arrange
         var writer = new BinaryBufferWriter();
         writer.WriteBytes(new byte[ushort.MaxValue]);
         writer.Dispose();
 
+
+        // Act
         var before = GC.GetAllocatedBytesForCurrentThread();
+
+        // Assert
         Assert.Throws<ObjectDisposedException>(writer.Build);
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
@@ -23,8 +28,9 @@ public sealed class SharpEdgeBufferTests
     }
 
     [Fact]
-    public async Task NoticePublishKeepsPooledPayloadAliveUntilSendCompletes()
+    public async Task ShouldKeepPooledPayloadAliveGivenNoticePublishWhenSendCompletes()
     {
+        // Arrange
         var sendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var allowRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         byte[]? observed = null;
@@ -46,16 +52,21 @@ public sealed class SharpEdgeBufferTests
         var publish = client.PublishAsync("notice://prod/app/events", "body"u8.ToArray());
         await sendStarted.Task;
         allowRead.TrySetResult();
+
+        // Act
         await publish;
 
+
+        // Assert
         Assert.Equal(expected, observed);
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task StreamFinalizationKeepsPooledPayloadAliveUntilRequestCompletes(bool commit)
+    public async Task ShouldKeepPooledPayloadAliveGivenStreamFinalizationWhenRequestCompletes(bool commit)
     {
+        // Arrange
         var requestStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var allowRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         byte[]? observed = null;
@@ -80,14 +91,21 @@ public sealed class SharpEdgeBufferTests
         var finalize = commit ? session.CommitAsync() : session.RollbackAsync();
         await requestStarted.Task;
         allowRead.TrySetResult();
+
+        // Act
         await finalize;
 
+
+        // Assert
         Assert.Equal(expectedWriter.Build(), observed);
     }
 
     [Fact]
-    public void BinaryReaderRejectsUntrustedLengthBeforeAllocating()
+    public void ShouldRejectUntrustedLengthGivenBinaryReaderWhenAllocating()
     {
+        // Arrange
+        // Act
+        // Assert
         var reader = new BinaryBufferReader(new byte[] { 0x7F, 0xFF, 0xFF, 0xFF });
 
         var exception = Assert.Throws<ProtocolException>(() => reader.ReadBytes(reader.ReadU32()));
@@ -96,22 +114,32 @@ public sealed class SharpEdgeBufferTests
     }
 
     [Fact]
-    public void DisposedWriterRejectsBufferAccess()
+    public void ShouldRejectBufferAccessGivenDisposedWriterWhenReadingOutput()
     {
+        // Arrange
         var writer = new BinaryBufferWriter();
         writer.WriteU8(1);
+
+        // Act
         writer.Dispose();
 
+
+        // Assert
         Assert.Throws<ObjectDisposedException>(() => _ = writer.WrittenMemory);
         Assert.Throws<ObjectDisposedException>(() => _ = writer.Build());
     }
 
     [Fact]
-    public void DisposedPooledFrameRejectsBufferAccess()
+    public void ShouldRejectBufferAccessGivenDisposedPooledFrameWhenReadingPayload()
     {
+        // Arrange
         var frame = PooledFrame.FromRentedBuffer(System.Buffers.ArrayPool<byte>.Shared.Rent(8), 1);
+
+        // Act
         frame.Dispose();
 
+
+        // Assert
         Assert.Throws<ObjectDisposedException>(() => _ = frame.Memory);
     }
 }

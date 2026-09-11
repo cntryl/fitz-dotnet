@@ -8,8 +8,9 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class DependencyInjectionTests
 {
     [Fact]
-    public async Task ShouldConnectAndCloseClientWithHostedLifecycle()
+    public async Task ShouldConnectAndCloseClientWithHostedLifecycleGivenHostedClientWhenLifecycleRuns()
     {
+        // Arrange
         await using var transport = new TestQueuedTransport();
         var services = new ServiceCollection();
         services.AddFitzClient(new ClientConfig(
@@ -17,7 +18,11 @@ public sealed class DependencyInjectionTests
             AuthSettleDelay: TimeSpan.Zero,
             TransportFactory: _ => transport));
         await using var provider = services.BuildServiceProvider();
+
+        // Act
         var client = provider.GetRequiredService<IClient>();
+
+        // Assert
         var hostedService = Assert.Single(provider.GetServices<IHostedService>());
 
         await hostedService.StartAsync(CancellationToken.None);

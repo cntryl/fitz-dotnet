@@ -2,6 +2,7 @@ using System.Collections.Immutable;
 using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Analyzers;
 using Cntryl.Fitz.CodeFixes;
+using Cntryl.Fitz.Domains.Lease;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeFixes;
 using Microsoft.CodeAnalysis.CSharp;
@@ -16,16 +17,23 @@ public sealed class FitzUsageAnalyzerTests
     [InlineData("await client.AcquireAsync(\"queue://realm/area/name\", 30);", FitzDiagnostics.InvalidRouteId)]
     [InlineData("await client.ListAsync(\"lease://realm/bad*value/name\");", FitzDiagnostics.InvalidPatternId)]
     [InlineData("await client.AcquireAsync(\"lease://realm/area/name\", 0);", FitzDiagnostics.InvalidArgumentId)]
-    public async Task ReportsInvalidConstantUsage(string operation, string expectedId)
+    [InlineData("_ = await client.ListAsync(\"lease://realm/area/*\", limit: 0);", FitzDiagnostics.InvalidArgumentId)]
+    public async Task ShouldReportInvalidConstantUsageGivenAnalyzerInputWhenAnalyzing(string operation, string expectedId)
     {
+        // Arrange
+        // Act
+        // Assert
         var diagnostics = await GetDiagnosticsAsync(LeaseSource(operation));
 
         Assert.Contains(diagnostics, diagnostic => diagnostic.Id == expectedId);
     }
 
     [Fact]
-    public async Task ReportsDiscardedLifecycleHandle()
+    public async Task ShouldReportDiscardedLifecycleHandleGivenAnalyzerInputWhenAnalyzing()
     {
+        // Arrange
+        // Act
+        // Assert
         var diagnostics = await GetDiagnosticsAsync(LeaseSource(
             "await client.AcquireAsync(\"lease://realm/area/name\", 30);"));
 
@@ -33,8 +41,11 @@ public sealed class FitzUsageAnalyzerTests
     }
 
     [Fact]
-    public async Task AcceptsRetainedHandleAndNonconstantRoute()
+    public async Task ShouldAcceptRetainedHandleAndNonconstantRouteGivenAnalyzerInputWhenAnalyzing()
     {
+        // Arrange
+        // Act
+        // Assert
         var diagnostics = await GetDiagnosticsAsync("""
             using Cntryl.Fitz.Abstractions.Domains.Lease;
             class Consumer
@@ -50,8 +61,32 @@ public sealed class FitzUsageAnalyzerTests
     }
 
     [Fact]
-    public async Task AcceptsRuntimeSupportedRealmStreamSelector()
+    public async Task ShouldReportDiagnosticsGivenConcreteClientInvocationWhenArgumentsInvalid()
     {
+        // Arrange
+        // Act
+        // Assert
+        var diagnostics = await GetDiagnosticsAsync("""
+            using Cntryl.Fitz.Domains.Lease;
+            class Consumer
+            {
+                static async Task Run(LeaseClient client)
+                {
+                    await using var lease = await client.AcquireAsync("queue://realm/area/name", 0);
+                }
+            }
+            """);
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.InvalidRouteId);
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.InvalidArgumentId);
+    }
+
+    [Fact]
+    public async Task ShouldAcceptRuntimeSupportedRealmStreamSelectorGivenAnalyzerInputWhenAnalyzing()
+    {
+        // Arrange
+        // Act
+        // Assert
         var diagnostics = await GetDiagnosticsAsync("""
             using Cntryl.Fitz.Abstractions.Domains.Stream;
             class Consumer
@@ -67,8 +102,11 @@ public sealed class FitzUsageAnalyzerTests
     }
 
     [Fact]
-    public async Task AcceptsRuntimeSupportedStreamReadSelectors()
+    public async Task ShouldAcceptRuntimeSupportedStreamReadSelectorsGivenAnalyzerInputWhenAnalyzing()
     {
+        // Arrange
+        // Act
+        // Assert
         var diagnostics = await GetDiagnosticsAsync("""
             using Cntryl.Fitz.Abstractions.Domains.Stream;
             class Consumer
@@ -89,8 +127,11 @@ public sealed class FitzUsageAnalyzerTests
     }
 
     [Fact]
-    public async Task SubscribeAsync_LeaseWildcardPattern_ProducesNoRouteDiagnostic()
+    public async Task ShouldProduceNoRouteDiagnosticGivenLeaseWildcardPatternWhenAnalyzingSubscribe()
     {
+        // Arrange
+        // Act
+        // Assert
         var diagnostics = await GetDiagnosticsAsync(LeaseSource(
             "await using var subscription = await client.SubscribeAsync(\"lease://prod/app/*\");"));
 
@@ -99,8 +140,11 @@ public sealed class FitzUsageAnalyzerTests
     }
 
     [Fact]
-    public async Task ReportsNonWholeSecondQueueDelay()
+    public async Task ShouldReportNonWholeSecondQueueDelayGivenAnalyzerInputWhenAnalyzing()
     {
+        // Arrange
+        // Act
+        // Assert
         var diagnostics = await GetDiagnosticsAsync("""
             using Cntryl.Fitz.Abstractions.Domains.Queue;
             class Consumer
@@ -119,8 +163,11 @@ public sealed class FitzUsageAnalyzerTests
     }
 
     [Fact]
-    public async Task IgnoresLookalikeConsumerInterface()
+    public async Task ShouldIgnoreLookalikeConsumerInterfaceGivenAnalyzerInputWhenAnalyzing()
     {
+        // Arrange
+        // Act
+        // Assert
         var diagnostics = await GetDiagnosticsAsync("""
             namespace Cntryl.Fitz.Consumer;
             interface ILeaseClient { Task AcquireAsync(string route, ulong ttlSecs); }
@@ -135,8 +182,11 @@ public sealed class FitzUsageAnalyzerTests
     }
 
     [Fact]
-    public async Task RouteFixReplacesWrongScheme()
+    public async Task ShouldReplaceWrongSchemeGivenRouteDiagnosticWhenApplyingFix()
     {
+        // Arrange
+        // Act
+        // Assert
         var fixedSource = await ApplyFirstFixAsync(
             LeaseSource("await using var lease = await client.AcquireAsync(\"queue://realm/area/name\", 30);"),
             FitzDiagnostics.InvalidRouteId);
@@ -147,6 +197,9 @@ public sealed class FitzUsageAnalyzerTests
     [Fact]
     public async Task ShouldReportWarningGivenInvalidRouteWhenAnalyzing()
     {
+        // Arrange
+        // Act
+        // Assert
         var diagnostics = await GetDiagnosticsAsync(LeaseSource(
             "await using var lease = await client.AcquireAsync(\"lease://realm/bad*value/name\", 30);"));
 
@@ -157,10 +210,15 @@ public sealed class FitzUsageAnalyzerTests
     [Fact]
     public async Task ShouldNotOfferFixGivenInvalidSchemeReplacementWhenRegisteringRouteFix()
     {
+        // Arrange
         using var workspace = CreateWorkspace(
             LeaseSource("await using var lease = await client.AcquireAsync(\"queue://realm\", 30);"),
             out var document);
+
+        // Act
         var compilation = await document.Project.GetCompilationAsync();
+
+        // Assert
         Assert.NotNull(compilation);
         var diagnostic = Assert.Single((await compilation.WithAnalyzers([new FitzUsageAnalyzer()])
             .GetAnalyzerDiagnosticsAsync()).Where(item => item.Id == FitzDiagnostics.InvalidRouteId));
@@ -177,8 +235,11 @@ public sealed class FitzUsageAnalyzerTests
     }
 
     [Fact]
-    public async Task HandleFixRetainsAndDisposesResult()
+    public async Task ShouldRetainAndDisposeResultGivenDiscardedHandleDiagnosticWhenApplyingFix()
     {
+        // Arrange
+        // Act
+        // Assert
         var fixedSource = await ApplyFirstFixAsync(
             LeaseSource("await client.AcquireAsync(\"lease://realm/area/name\", 30);"),
             FitzDiagnostics.DiscardedHandleId);
@@ -253,5 +314,6 @@ public sealed class FitzUsageAnalyzerTests
         }
 
         yield return MetadataReference.CreateFromFile(typeof(ILeaseClient).Assembly.Location);
+        yield return MetadataReference.CreateFromFile(typeof(LeaseClient).Assembly.Location);
     }
 }

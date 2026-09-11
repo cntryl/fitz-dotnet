@@ -21,6 +21,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
     readonly Dictionary<string, QueueSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
     readonly Dictionary<ulong, string> _patternsBySubscriptionId = [];
     IDisposable? _notificationRegistration;
+    int _disposed;
     readonly Func<Action, IDisposable>? _registerOnDisconnect;
     bool _notificationHandlerInitialized;
     long _nextHandleId;
@@ -44,6 +45,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
             async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
             NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
     {
+        ArgumentNullException.ThrowIfNull(request);
     }
 
     internal QueueClient(
@@ -66,6 +68,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         int? delayMs = null,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         if (!RouteValidation.IsFixedRoute(route, "queue", 3))
         {
             throw new QueueException($"route '{route}' must be queue://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
@@ -89,7 +92,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         }
 
         var response = await _request(MessageTypes.QueueEnqueue, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
+        var reader = QueueWireHelpers.ReadResponse(response, "ENQUEUE");
         var status = reader.ReadU8();
         if (status != 0)
         {
@@ -119,6 +122,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         int? waitSeconds = null,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(route);
         if (!RouteValidation.IsRegistrationPattern(route, "queue", 3))
         {
@@ -162,7 +166,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         }
 
         var response = await _request(MessageTypes.QueueReserve, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
+        var reader = QueueWireHelpers.ReadResponse(response, "RESERVE");
         var status = reader.ReadU8();
         if (status != 0)
         {
@@ -213,6 +217,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         string pattern,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         var buffer = new AsyncSubscriptionBuffer<QueueAvailabilityEvent>(pattern, _subscriptionBufferCapacity);
         var registration = await SubscribeAsync(pattern, (notification, _) =>
         {
@@ -311,7 +316,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         writer.WriteString(pattern);
 
         var response = await _request(MessageTypes.QueueSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
+        var reader = QueueWireHelpers.ReadResponse(response, "SUBSCRIBE");
         var status = reader.ReadU8();
         if (status != 0)
         {
@@ -339,12 +344,22 @@ public sealed class QueueClient : IQueueClient, IDisposable
         writer.WriteString(pattern);
 
         var response = await _request(MessageTypes.QueueUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
+        var reader = QueueWireHelpers.ReadResponse(response, "UNSUBSCRIBE");
         var status = reader.ReadU8();
         if (status != 0)
         {
             var message = reader.ReadString();
+            if (!reader.IsEof)
+            {
+                throw new QueueException("UNSUBSCRIBE error response has trailing bytes", "UNSUBSCRIBE_INVALID_RESPONSE", status);
+            }
+
             throw new QueueException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status);
+        }
+
+        if (!reader.IsEof)
+        {
+            throw new QueueException("UNSUBSCRIBE response has trailing bytes", "UNSUBSCRIBE_INVALID_RESPONSE");
         }
     }
 
@@ -401,6 +416,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
     {
         lock (_gate)
         {
+            ThrowIfDisposed();
             if (_notificationHandlerInitialized)
             {
                 return;
@@ -532,6 +548,11 @@ public sealed class QueueClient : IQueueClient, IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _notificationRegistration?.Dispose();
         _reconnectRegistration?.Dispose();
         lock (_gate)
@@ -549,6 +570,8 @@ public sealed class QueueClient : IQueueClient, IDisposable
         }
 
     }
+
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
     sealed class QueueSubscriptionState
     {

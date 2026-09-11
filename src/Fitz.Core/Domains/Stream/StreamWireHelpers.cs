@@ -397,6 +397,11 @@ static class StreamWireHelpers
 
     static void ReadSuccessStatus(BinaryBufferReader reader, string operation)
     {
+        if (reader.IsEof)
+        {
+            throw new StreamException($"{operation} response is empty", $"{operation}_INVALID_RESPONSE");
+        }
+
         var status = reader.ReadU8();
         if (status != 0)
         {

@@ -16,9 +16,10 @@ public sealed class ThroughputMeter
     /// </summary>
     public void RecordOperations(int count)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
         lock (_lock)
         {
-            _operationCount += count;
+            _operationCount = checked(_operationCount + count);
         }
     }
 
@@ -29,7 +30,7 @@ public sealed class ThroughputMeter
     {
         lock (_lock)
         {
-            _operationCount++;
+            _operationCount = checked(_operationCount + 1);
         }
     }
 

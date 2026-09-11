@@ -32,6 +32,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
     readonly Dictionary<Guid, RpcCallState> _calls = [];
 
     IDisposable? _workerReconnectRegistration;
+    int _disposed;
     IDisposable? _rpcRequestRegistration;
     IDisposable? _rpcResponseRegistration;
     bool _rpcRequestHandlerInitialized;
@@ -71,6 +72,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
             connectionTimeout,
             onWorkerError: null)
     {
+        ArgumentNullException.ThrowIfNull(request);
     }
 
     internal RpcClient(
@@ -98,6 +100,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
         ReadOnlyMemory<byte> body,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         if (!RouteValidation.IsConcreteRoute(route, "rpc"))
         {
             throw new RpcException($"route '{route}' must be a concrete rpc route", "INVALID_ROUTE");
@@ -261,8 +264,11 @@ public sealed class RpcClient : IRpcClient, IDisposable
         }
     }
 
-    void EnsureRpcResponseHandlerInitializedLocked() =>
+    void EnsureRpcResponseHandlerInitializedLocked()
+    {
+        ThrowIfDisposed();
         _rpcResponseRegistration ??= _registerNotificationHandler!(MessageTypes.RpcResponse, HandleRpcResponse);
+    }
 
     void CompleteRpcCall(Guid correlationId, RpcCallState call, Exception? exception = null)
     {
@@ -283,6 +289,8 @@ public sealed class RpcClient : IRpcClient, IDisposable
         RpcWorkerOptions? options = null,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(handler);
         if (!RouteValidation.IsRegistrationPattern(pattern, "rpc"))
         {
             throw new RpcException($"pattern '{pattern}' must use whole-segment * or ** wildcards", "INVALID_ROUTE");
@@ -332,6 +340,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
 
     void EnsureRpcRequestHandlerInitializedLocked()
     {
+        ThrowIfDisposed();
         if (_rpcRequestHandlerInitialized || _registerNotificationHandler == null)
         {
             return;
@@ -693,6 +702,11 @@ public sealed class RpcClient : IRpcClient, IDisposable
 
     static BinaryBufferReader ReadRpcSuccess(ReadOnlyMemory<byte> response, string operation)
     {
+        if (response.IsEmpty)
+        {
+            throw new RpcException($"{operation} response is empty", $"{operation}_INVALID_RESPONSE");
+        }
+
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status == 0)
@@ -717,6 +731,11 @@ public sealed class RpcClient : IRpcClient, IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         RpcCallState[] calls;
         lock (_responseSync)
         {
@@ -741,6 +760,8 @@ public sealed class RpcClient : IRpcClient, IDisposable
             _workerGates.Clear();
         }
     }
+
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
     sealed class RpcCallState(SubscriptionChannel<RpcResponseFrame> channel)
     {

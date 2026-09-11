@@ -13,17 +13,27 @@ public sealed partial class ConformanceSmokeTests
     [Fact]
     public async Task ShouldRejectAuthenticationGivenInvalidJwtWhenConnectCalled()
     {
+        // Arrange
         var transport = IntegrationFixture.GetConformanceTransport();
+
+        // Act
         var result = await RunCs002AuthFailure(transport);
+
+        // Assert
         Assert.Equal("pass", result.Verdict);
     }
 
     [Fact]
     public async Task ShouldWriteJsonResultGivenEnabledFlagWhenRunningConformanceSuite()
     {
+        // Arrange
         var config = IntegrationFixture.GetConformanceRunConfig();
+
+        // Act
         var aggregate = await RunConformanceSuiteAsync(config);
 
+
+        // Assert
         Assert.Equal(17, aggregate.Scenarios.Count);
         Assert.Equal(config.ClientName, aggregate.Client);
         Assert.Equal(config.Transport, aggregate.Transport);
@@ -34,8 +44,9 @@ public sealed partial class ConformanceSmokeTests
     }
 
     [Fact]
-    public async Task ShouldIncreaseManagedLeaseAuthorityGivenSuccessiveOwnership()
+    public async Task ShouldIncreaseManagedLeaseAuthorityGivenSuccessiveOwnershipWhenScenarioRuns()
     {
+        // Arrange
         var transport = IntegrationFixture.GetConformanceTransport();
         var authMode = IntegrationFixture.GetConformanceAuthMode();
         var route = IntegrationFixture.CreateUniqueRoute("lease");
@@ -48,11 +59,15 @@ public sealed partial class ConformanceSmokeTests
             route,
             30,
             static (authority, _) => ValueTask.FromResult(authority.FencingToken));
+
+        // Act
         var successorAuthority = await successor.Lease.WithLeaseAsync(
             route,
             30,
             static (authority, _) => ValueTask.FromResult(authority.FencingToken));
 
+
+        // Assert
         Assert.True(
             successorAuthority > firstAuthority,
             $"Expected successor fencing token {successorAuthority} to exceed prior token {firstAuthority}.");

@@ -9,9 +9,10 @@ public sealed class ManagedLeaseLifecycleTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task ShouldCancelCallbackPromptlyAndSkipRenewalAndReleaseGivenDisconnect(
+    public async Task ShouldCancelCallbackPromptlyAndSkipRenewalAndReleaseGivenDisconnectWhenLeaseLifecycleRuns(
         bool authorityAware)
     {
+        // Arrange
         var disconnects = new DisconnectRegistry();
         var renewCalls = 0;
         var releaseCalls = 0;
@@ -63,7 +64,11 @@ public sealed class ManagedLeaseLifecycleTests
                 300,
                 RunCallback,
                 ct: parentCancellation.Token);
+
+        // Act
         await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Assert
         Assert.Equal(1, disconnects.Count);
 
         disconnects.SignalDisconnect();
@@ -104,9 +109,10 @@ public sealed class ManagedLeaseLifecycleTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task ShouldCancelCallbackDuringSynchronousPreAwaitWorkGivenDisconnect(
+    public async Task ShouldCancelCallbackDuringSynchronousPreAwaitWorkGivenDisconnectWhenLeaseLifecycleRuns(
         bool authorityAware)
     {
+        // Arrange
         var disconnects = new DisconnectRegistry();
         using var leaseClient = new LeaseClient(
             (messageType, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(
@@ -158,8 +164,12 @@ public sealed class ManagedLeaseLifecycleTests
         });
         await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
+
+        // Act
         disconnects.SignalDisconnect();
 
+
+        // Assert
         try
         {
             var error = await Assert.ThrowsAsync<LeaseException>(
@@ -192,8 +202,9 @@ public sealed class ManagedLeaseLifecycleTests
     }
 
     [Fact]
-    public async Task ShouldDisposeRegistrationGivenDisconnectDuringRegistration()
+    public async Task ShouldDisposeRegistrationGivenDisconnectDuringRegistrationWhenLeaseLifecycleRuns()
     {
+        // Arrange
         var registrationDisposals = 0;
         using var leaseClient = new LeaseClient(
             (messageType, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(
@@ -206,14 +217,19 @@ public sealed class ManagedLeaseLifecycleTests
                 return new TestRegistration(() => Interlocked.Increment(ref registrationDisposals));
             });
 
+
+        // Act
         await using var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
 
+
+        // Assert
         Assert.Equal(1, Volatile.Read(ref registrationDisposals));
     }
 
     [Fact]
-    public async Task ShouldAggregateLeaseLossAndCancellationHookFailureAfterCallbackSettles()
+    public async Task ShouldAggregateLifecycleFailuresGivenLeaseLossWhenCallbackSettles()
     {
+        // Arrange
         var disconnects = new DisconnectRegistry();
         var renewalFailure = new InvalidOperationException("renewal failed");
         var cancellationHookFailure = new InvalidOperationException("cancellation hook failed");
@@ -261,8 +277,12 @@ public sealed class ManagedLeaseLifecycleTests
                     callbackSettled.TrySetResult();
                 }
             });
+
+        // Act
         await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
+
+        // Assert
         var leaseLoss = await Assert.ThrowsAsync<LeaseException>(
             () => pending.WaitAsync(TimeSpan.FromSeconds(2)));
 

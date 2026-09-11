@@ -9,8 +9,56 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class ScheduleClientTests
 {
     [Fact]
+    public async Task ShouldReturnTypedErrorGivenTruncatedSuccessWhenListingSchedules()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var schedule = new ScheduleClient((_, _, _) => Task.FromResult(new byte[] { 0 }));
+
+        var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.ListAsync());
+
+        Assert.Equal("LIST_INVALID_RESPONSE", error.Code);
+    }
+
+    [Fact]
+    public async Task ShouldReturnTypedErrorGivenEmptyResponseWhenCancelingSchedule()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var schedule = new ScheduleClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+
+        var error = await Assert.ThrowsAsync<ScheduleException>(() =>
+            schedule.CancelAsync("schedule://prod/app/jobs/run"));
+
+        Assert.Equal("CANCEL_INVALID_RESPONSE", error.Code);
+    }
+
+    [Fact]
+    public async Task ShouldRejectInvalidCreatedRouteFlagGivenMalformedResponseWhenCreatingSchedule()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var schedule = new ScheduleClient((_, _, _) =>
+            Task.FromResult(new byte[] { 0, 2 }));
+
+        var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.CreateAsync(
+            "schedule://prod/app/jobs/run",
+            "*/5 * * * *",
+            ScheduleDeliveryMode.Single,
+            ReadOnlyMemory<byte>.Empty));
+
+        Assert.Equal("CREATE_INVALID_RESPONSE", error.Code);
+    }
+
+    [Fact]
     public async Task ShouldReturnTypedErrorGivenStatusOnlyFailureWhenListingSchedules()
     {
+        // Arrange
+        // Act
+        // Assert
         using var schedule = new ScheduleClient((_, _, _) =>
             Task.FromResult(new byte[] { 1 }));
 
@@ -24,6 +72,9 @@ public sealed class ScheduleClientTests
     [Fact]
     public async Task ShouldRejectTrailingBytesGivenErrorResponseWhenListingSchedules()
     {
+        // Arrange
+        // Act
+        // Assert
         using var schedule = new ScheduleClient((_, _, _) =>
             Task.FromResult(new byte[] { 1, 42 }));
 
@@ -33,8 +84,11 @@ public sealed class ScheduleClientTests
     }
 
     [Fact]
-    public async Task ShouldPreserveBackendErrorCodeGivenCodedScheduleListFailure()
+    public async Task ShouldPreserveBackendErrorCodeGivenCodedScheduleListFailureWhenScheduleOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         using var schedule = new ScheduleClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
@@ -51,8 +105,11 @@ public sealed class ScheduleClientTests
     }
 
     [Fact]
-    public async Task ShouldPreserveMessageGivenScheduleErrorResponse()
+    public async Task ShouldPreserveMessageGivenScheduleErrorResponseWhenScheduleOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         using var schedule = new ScheduleClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
@@ -71,6 +128,9 @@ public sealed class ScheduleClientTests
     [Fact]
     public async Task ShouldRejectUnauthorizedCreateGivenReadOnlyPermissionsWhenCreateCalled()
     {
+        // Arrange
+        // Act
+        // Assert
         using var schedule = new ScheduleClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
@@ -219,7 +279,7 @@ public sealed class ScheduleClientTests
     }
 
     [Fact]
-    public async Task ShouldReturnEntriesAndTotalCountGivenCanonicalListResponse()
+    public async Task ShouldReturnEntriesAndTotalCountGivenCanonicalListResponseWhenScheduleOperationRuns()
     {
         // Arrange
         byte[]? seenPayload = null;

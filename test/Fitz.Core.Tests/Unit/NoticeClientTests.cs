@@ -10,8 +10,51 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class NoticeClientTests
 {
     [Fact]
-    public async Task SubscribeAsync_ConfiguredEnumerableCapacity_IsEnforced()
+    public async Task ShouldRejectSubscriptionGivenDisposedClientWhenBeforeHandlerRegistration()
     {
+        // Arrange
+        var handlerRegistrations = 0;
+        var notice = new NoticeClient(
+            (_, _, _) => Task.CompletedTask,
+            (_, _, _) => Task.FromResult(new byte[] { 0, 1, 0, 0, 0, 0, 0, 0, 0, 55 }),
+            (_, _) =>
+            {
+                handlerRegistrations++;
+                return new TestRegistration();
+            });
+
+        // Act
+        notice.Dispose();
+
+
+        // Assert
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            notice.SubscribeAsync("notice://prod/app/*"));
+
+        Assert.Equal(0, handlerRegistrations);
+    }
+
+    [Fact]
+    public async Task ShouldReturnTypedErrorGivenEmptyResponseWhenSubscribingNotice()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var notice = new NoticeClient(
+            (_, _, _) => Task.CompletedTask,
+            (_, _, _) => Task.FromResult(Array.Empty<byte>()),
+            (_, _) => new TestRegistration());
+
+        var error = await Assert.ThrowsAsync<NoticeException>(() =>
+            notice.SubscribeAsync("notice://prod/app/*"));
+
+        Assert.Equal("SUBSCRIBE_INVALID_RESPONSE", error.Code);
+    }
+
+    [Fact]
+    public async Task ShouldEnforceEnumerableCapacityGivenConfiguredLimitWhenSubscribing()
+    {
+        // Arrange
         Action<ReadOnlyMemory<byte>>? notifyHandler = null;
         using var notice = new NoticeClient(
             (_, _, _) => ValueTask.CompletedTask,
@@ -37,8 +80,12 @@ public sealed class NoticeClientTests
 
         notifyHandler!(NoticeNotification(55, "first"));
         await Task.Delay(50);
+
+        // Act
         notifyHandler(NoticeNotification(55, "second"));
 
+
+        // Assert
         await Assert.ThrowsAsync<SubscriptionBackpressureException>(() =>
             subscription.Completion.WaitAsync(TimeSpan.FromSeconds(1)));
         Assert.True(await enumerator.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
@@ -47,8 +94,9 @@ public sealed class NoticeClientTests
     }
 
     [Fact]
-    public async Task UnsubscribeAsync_WireFailure_LeavesEnumerableActiveAndRetryable()
+    public async Task ShouldUnsubscribeAsyncWireFailureLeavesEnumerableActiveAndRetryableGivenNoticeClientWhenOperationRuns()
     {
+        // Arrange
         Action<ReadOnlyMemory<byte>>? notifyHandler = null;
         var unsubscribeAttempts = 0;
         using var notice = new NoticeClient(
@@ -75,8 +123,12 @@ public sealed class NoticeClientTests
                 return new TestRegistration();
             });
         var subscription = await notice.SubscribeAsync("notice://prod/app/*");
+
+        // Act
         await using var enumerator = subscription.GetAsyncEnumerator();
 
+
+        // Assert
         await Assert.ThrowsAsync<ConnectionException>(() => subscription.UnsubscribeAsync().AsTask());
         notifyHandler!(NoticeNotification(55, "still-active"));
 
@@ -261,8 +313,11 @@ public sealed class NoticeClientTests
     }
 
     [Fact]
-    public async Task ShouldCancelNoticeHandlerTokenGivenSubscriptionDisposedWhileHandlerIsRunning()
+    public async Task ShouldCancelNoticeHandlerTokenGivenSubscriptionDisposedWhileHandlerIsRunningWhenNoticeOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         Action<byte[]>? notifyHandler = null;
 
         using var notice = new NoticeClient(
@@ -321,8 +376,11 @@ public sealed class NoticeClientTests
     }
 
     [Fact]
-    public async Task ShouldSkipQueuedNoticeMessagesGivenSubscriptionDisposedBeforeNextHandlerRuns()
+    public async Task ShouldSkipQueuedNoticeMessagesGivenSubscriptionDisposedBeforeNextHandlerRunsWhenNoticeOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         Action<byte[]>? notifyHandler = null;
 
         using var notice = new NoticeClient(

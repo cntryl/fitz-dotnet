@@ -10,18 +10,53 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class KvClientTests
 {
+    [Fact]
+    public async Task ShouldRejectInvalidFoundFlagGivenMalformedResponseWhenGettingValue()
+    {
+        // Arrange
+        using var kv = new KvClient((messageType, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            if (messageType == MessageTypes.KvBegin)
+            {
+                writer.WriteU64(7);
+            }
+            else
+            {
+                writer.WriteU8(2);
+            }
+
+            return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
+        });
+
+        // Act
+        var transaction = await kv.BeginAsync("kv://prod/app/data", KvDurability.Sync);
+
+
+        // Assert
+        var error = await Assert.ThrowsAsync<KvException>(() => transaction.GetAsync("key"u8.ToArray()));
+
+        Assert.Equal("GET_INVALID_RESPONSE", error.Code);
+    }
+
     [Theory]
     [InlineData(2, 0)]
     [InlineData(0, 260)]
     public async Task ShouldRejectUndefinedEnumGivenInvalidValueWhenBeginningTransaction(int mode, int durability)
     {
+        // Arrange
         var requestCalled = false;
+
+        // Act
         using var kv = new KvClient((_, _, _) =>
         {
             requestCalled = true;
             return Task.FromResult(Array.Empty<byte>());
         });
 
+
+        // Assert
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => kv.BeginAsync(
             "kv://prod/app/users",
             (Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability)durability,
@@ -33,6 +68,7 @@ public sealed class KvClientTests
     [Fact]
     public async Task ShouldReleaseDisconnectRegistrationGivenCleanupFailureWhenDisposingTransaction()
     {
+        // Arrange
         var registrations = 0;
         var transaction = new KvTransaction(
             (_, _, _) => ValueTask.FromException<ReadOnlyMemory<byte>>(new KvException("rollback failed", "ROLLBACK_FAILED")),
@@ -44,16 +80,21 @@ public sealed class KvClientTests
                 return new global::Cntryl.Fitz.Core.Tests.Unit.TestRegistration(() => registrations--);
             });
 
+
+        // Act
         await transaction.DisposeAsync();
 
+
+        // Assert
         Assert.Equal(0, registrations);
         var error = await Assert.ThrowsAsync<KvException>(() => transaction.GetAsync("key"u8.ToArray()));
         Assert.Equal("TX_CLOSED", error.Code);
     }
 
     [Fact]
-    public async Task ShouldRejectImpossibleScanCountBeforeAllocating()
+    public async Task ShouldRejectImpossibleScanCountBeforeAllocatingGivenActiveTransactionWhenOperationRuns()
     {
+        // Arrange
         using var kv = new KvClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
@@ -64,8 +105,12 @@ public sealed class KvClientTests
                 writer.WriteU32(uint.MaxValue);
             return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
         });
+
+        // Act
         var transaction = await kv.BeginAsync("kv://prod/app/data", KvDurability.Sync);
 
+
+        // Assert
         var exception = await Assert.ThrowsAsync<KvException>(() =>
             transaction.ScanAsync(new KvScanQuery()));
 
@@ -73,8 +118,9 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task ShouldAllowCommitRetryAfterRejectedWireOperation()
+    public async Task ShouldAllowCommitRetryAfterRejectedWireOperationGivenActiveTransactionWhenOperationRuns()
     {
+        // Arrange
         var commitCalls = 0;
         using var kv = new KvClient((messageType, _, _) =>
         {
@@ -97,8 +143,12 @@ public sealed class KvClientTests
 
             return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
         });
+
+        // Act
         var transaction = await kv.BeginAsync("kv://prod/app/data", KvDurability.Sync);
 
+
+        // Assert
         await Assert.ThrowsAsync<KvException>(() => transaction.CommitAsync());
         await transaction.CommitAsync();
         var closed = await Assert.ThrowsAsync<KvException>(() => transaction.CommitAsync());
@@ -108,8 +158,9 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task ShouldKeepTransactionRetryableGivenRejectedCommit()
+    public async Task ShouldKeepTransactionRetryableGivenRejectedCommitWhenTransactionOperationRuns()
     {
+        // Arrange
         var rollbackRequests = 0;
         using var kv = new KvClient((messageType, _, _) =>
         {
@@ -125,10 +176,14 @@ public sealed class KvClientTests
             }
             return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
         });
+
+        // Act
         var transaction = await kv.BeginAsync(
             "kv://realm/area/resource",
             Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Sync);
 
+
+        // Assert
         await Assert.ThrowsAsync<KvException>(() => transaction.CommitAsync());
         await transaction.DisposeAsync();
         var error = await Assert.ThrowsAsync<KvException>(
@@ -327,7 +382,7 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task ShouldInsertKeySuccessfullyWhenCallingInsertAsync()
+    public async Task ShouldInsertKeySuccessfullyGivenValidTransactionWhenCallingInsertAsync()
     {
         // Arrange
         var calls = new List<ushort>();
@@ -354,7 +409,7 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task ShouldDeleteKeySuccessfullyWhenCallingDeleteAsync()
+    public async Task ShouldDeleteKeySuccessfullyGivenValidTransactionWhenCallingDeleteAsync()
     {
         // Arrange
         var calls = new List<ushort>();
@@ -381,7 +436,7 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task ShouldDeleteRangeSuccessfullyWhenCallingDeleteRangeAsync()
+    public async Task ShouldDeleteRangeSuccessfullyGivenValidTransactionWhenCallingDeleteRangeAsync()
     {
         // Arrange
         var calls = new List<ushort>();
@@ -408,7 +463,7 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task ShouldScanKeysSuccessfullyWhenCallingScanAsync()
+    public async Task ShouldScanKeysSuccessfullyGivenValidTransactionWhenCallingScanAsync()
     {
         // Arrange
         ushort seenMessageType = 0;
@@ -457,7 +512,7 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task ShouldRejectEmptyRouteBeforeBeginningTransaction()
+    public async Task ShouldRejectEmptyRouteBeforeBeginningTransactionGivenActiveTransactionWhenOperationRuns()
     {
         // Arrange
         var requestCount = 0;
@@ -480,8 +535,9 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task ShouldMarkTransactionAsClosedAfterReconnect()
+    public async Task ShouldMarkTransactionAsClosedAfterReconnectGivenActiveTransactionWhenOperationRuns()
     {
+        // Arrange
         await using var firstTransport = new TestQueuedTransport();
         await using var secondTransport = new TestQueuedTransport();
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -529,8 +585,12 @@ public sealed class KvClientTests
         var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
 
         firstTransport.QueueClosed();
+
+        // Act
         await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
+
+        // Assert
         var ex = await Assert.ThrowsAsync<KvException>(() => tx.GetAsync("user:1"u8.ToArray()));
 
         Assert.Equal("TX_CLOSED", ex.Code);

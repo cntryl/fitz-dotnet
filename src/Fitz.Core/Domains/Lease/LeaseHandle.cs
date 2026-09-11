@@ -48,6 +48,7 @@ public sealed class LeaseHandle : ILease
 
     public async Task ExtendAsync(ulong ttlSecs, CancellationToken ct = default)
     {
+        ArgumentOutOfRangeException.ThrowIfZero(ttlSecs, nameof(ttlSecs));
         await _operationGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {

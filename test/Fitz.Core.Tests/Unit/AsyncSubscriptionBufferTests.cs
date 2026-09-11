@@ -5,7 +5,7 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class AsyncSubscriptionBufferTests
 {
     [Fact]
-    public async Task Write_CapacityExceeded_TerminatesOnlySlowBuffer()
+    public async Task ShouldTerminateOnlySlowBufferGivenCapacityExceededWhenWriting()
     {
         // Arrange
         var slow = new AsyncSubscriptionBuffer<int>("notice://realm/area/*", 1);

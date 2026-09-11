@@ -10,9 +10,12 @@ public sealed class ManagedLeaseAuthorityTests
     [Theory]
     [InlineData((byte)0)]
     [InlineData((byte)1)]
-    public async Task ShouldPassExactAdmissionAuthorityGivenImmediateAcquire(byte responseType)
+    public async Task ShouldPassExactAdmissionAuthorityGivenImmediateAcquireWhenManagedLeaseRuns(byte responseType)
     {
+        // Arrange
         LeaseAuthority? observed = null;
+
+        // Act
         using var leaseClient = new LeaseClient((messageType, _, _) =>
         {
             return Task.FromResult(messageType == MessageTypes.LeaseAcquire
@@ -20,6 +23,8 @@ public sealed class ManagedLeaseAuthorityTests
                 : SuccessResponse());
         });
 
+
+        // Assert
         var result = await leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
             30,
@@ -35,10 +40,15 @@ public sealed class ManagedLeaseAuthorityTests
     }
 
     [Fact]
-    public async Task ShouldPassFinalAuthorityGivenQueuedAcquire()
+    public async Task ShouldPassFinalAuthorityGivenQueuedAcquireWhenManagedLeaseRuns()
     {
+        // Arrange
         Action<byte[]>? acquireHandler = null;
+
+        // Act
         LeaseAuthority? observed = null;
+
+        // Assert
         using var leaseClient = new LeaseClient(
             (messageType, _, _) => Task.FromResult(messageType == MessageTypes.LeaseAcquire
                 ? AcquireResponse(2, 13)
@@ -71,8 +81,13 @@ public sealed class ManagedLeaseAuthorityTests
     [Fact]
     public async Task ShouldSurfaceLeaseLossGivenRotatedAuthorityTokenWhenRenewing()
     {
+        // Arrange
         var renewalCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Act
         ulong? releaseToken = null;
+
+        // Assert
         using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             if (messageType == MessageTypes.LeaseAcquire)
@@ -113,12 +128,15 @@ public sealed class ManagedLeaseAuthorityTests
     }
 
     [Fact]
-    public async Task ShouldNotInvokeAuthorityCallbackGivenFailedAcquire()
+    public async Task ShouldNotInvokeAuthorityCallbackGivenFailedAcquireWhenManagedLeaseRuns()
     {
+        // Arrange
         var callbackInvoked = false;
         using var leaseClient = new LeaseClient((_, _, _) =>
             Task.FromResult(ErrorResponse(5001, "held by another owner")));
 
+
+        // Act
         var act = () => leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
             30,
@@ -128,13 +146,16 @@ public sealed class ManagedLeaseAuthorityTests
                 return ValueTask.CompletedTask;
             });
 
+
+        // Assert
         await Assert.ThrowsAsync<LeaseException>(act);
         Assert.False(callbackInvoked);
     }
 
     [Fact]
-    public async Task ShouldNotInvokeAuthorityCallbackGivenQueuedAcquireTimesOut()
+    public async Task ShouldNotInvokeAuthorityCallbackGivenQueuedAcquireTimesOutWhenManagedLeaseRuns()
     {
+        // Arrange
         Action<byte[]>? acquireHandler = null;
         var callbackInvoked = false;
         using var leaseClient = new LeaseClient(
@@ -156,8 +177,12 @@ public sealed class ManagedLeaseAuthorityTests
                 return ValueTask.CompletedTask;
             },
             new LeaseExecutionOptions { WaitForAvailability = true, WaitSeconds = 1 });
+
+        // Act
         await Task.Yield();
 
+
+        // Assert
         Assert.NotNull(acquireHandler);
         acquireHandler(ErrorResponse(5006, "lease wait timed out"));
 
@@ -167,8 +192,9 @@ public sealed class ManagedLeaseAuthorityTests
     }
 
     [Fact]
-    public async Task ShouldNotInvokeAuthorityCallbackGivenQueuedAcquireIsCancelled()
+    public async Task ShouldNotInvokeAuthorityCallbackGivenQueuedAcquireIsCancelledWhenManagedLeaseRuns()
     {
+        // Arrange
         var callbackInvoked = false;
         using var cancellation = new CancellationTokenSource();
         using var leaseClient = new LeaseClient(
@@ -189,15 +215,20 @@ public sealed class ManagedLeaseAuthorityTests
             cancellation.Token);
         await Task.Yield();
 
+
+        // Act
         await cancellation.CancelAsync();
 
+
+        // Assert
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
         Assert.False(callbackInvoked);
     }
 
     [Fact]
-    public async Task ShouldPreserveOneArgumentManagedLeaseCallbacks()
+    public async Task ShouldPreserveOneArgumentManagedLeaseCallbacksGivenLeaseAcquisitionWhenCallbackRuns()
     {
+        // Arrange
         var acquireCount = 0UL;
         var nonGenericInvoked = false;
         using var leaseClient = new LeaseClient((messageType, _, _) =>
@@ -211,6 +242,8 @@ public sealed class ManagedLeaseAuthorityTests
             "lease://prod/app/generic",
             30,
             cancellationToken => ValueTask.FromResult(!cancellationToken.IsCancellationRequested));
+
+        // Act
         await leaseClient.WithLeaseAsync(
             "lease://prod/app/non-generic",
             30,
@@ -220,6 +253,8 @@ public sealed class ManagedLeaseAuthorityTests
                 return ValueTask.CompletedTask;
             });
 
+
+        // Assert
         Assert.True(result);
         Assert.True(nonGenericInvoked);
     }

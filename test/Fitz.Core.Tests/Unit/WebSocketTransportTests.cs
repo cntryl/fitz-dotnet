@@ -9,30 +9,41 @@ public sealed class WebSocketTransportTests
     [Theory]
     [InlineData("http://localhost:4190/ws", "ws://localhost:4190/ws")]
     [InlineData("https://localhost/ws", "wss://localhost/ws")]
-    public void ShouldNormalizeHttpSchemeGivenAutomaticWebSocketTransport(string configured, string expected)
+    public void ShouldNormalizeHttpSchemeGivenAutomaticWebSocketTransportWhenTransportOperationRuns(string configured, string expected)
     {
+        // Arrange
+        // Act
+        // Assert
         var transport = Assert.IsType<WebSocketTransport>(TransportResolver.Resolve(new ClientConfig(new Uri(configured))));
 
         Assert.Equal(new Uri(expected), transport.Url);
     }
 
     [Fact]
-    public void ShouldConfigureNativeWebsocketPingTimeout()
+    public void ShouldConfigureNativeWebsocketPingTimeoutGivenWebSocketTransportWhenOperationRuns()
     {
+        // Arrange
         using var socket = new ClientWebSocket();
         var heartbeat = new HeartbeatOptions(
             Interval: TimeSpan.FromSeconds(7),
             Timeout: TimeSpan.FromSeconds(3));
 
+
+        // Act
         WebSocketTransport.ConfigureHeartbeat(socket.Options, heartbeat);
 
+
+        // Assert
         Assert.Equal(TimeSpan.FromSeconds(7), socket.Options.KeepAliveInterval);
         Assert.Equal(TimeSpan.FromSeconds(3), socket.Options.KeepAliveTimeout);
     }
 
     [Fact]
-    public async Task ShouldRejectSendLargerThanConfiguredFrameCap()
+    public async Task ShouldRejectSendLargerThanConfiguredFrameCapGivenWebSocketTransportWhenOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         await using var transport = new WebSocketTransport(
             new Uri("ws://localhost:4190/ws"),
             TimeSpan.FromSeconds(1),
@@ -43,8 +54,11 @@ public sealed class WebSocketTransportTests
     }
 
     [Fact]
-    public void ShouldRejectTextMessageGivenWebsocketReceiveFrame()
+    public void ShouldRejectTextMessageGivenWebsocketReceiveFrameWhenTransportOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         var error = Assert.Throws<ProtocolException>(() =>
             WebSocketTransport.EnsureBinaryMessage(WebSocketMessageType.Text));
 
@@ -52,5 +66,5 @@ public sealed class WebSocketTransportTests
     }
 
     [Fact]
-    public void ShouldAcceptBinaryMessageGivenWebsocketReceiveFrame() => WebSocketTransport.EnsureBinaryMessage(WebSocketMessageType.Binary);
+    public void ShouldAcceptBinaryMessageGivenWebsocketReceiveFrameWhenTransportOperationRuns() => WebSocketTransport.EnsureBinaryMessage(WebSocketMessageType.Binary);
 }

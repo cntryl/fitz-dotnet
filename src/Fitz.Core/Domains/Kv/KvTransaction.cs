@@ -61,6 +61,11 @@ public sealed class KvTransaction : IKvTransaction
         }
 
         var found = reader.ReadU8();
+        if (found > 1)
+        {
+            throw new KvException($"GET response has invalid found flag {found}", "GET_INVALID_RESPONSE");
+        }
+
         if (found != 1)
         {
             if (reader.IsEof)

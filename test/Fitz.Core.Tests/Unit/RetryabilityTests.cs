@@ -8,6 +8,9 @@ public sealed class RetryabilityTests
     [Fact]
     public void ShouldClassifyErrorsAsRetryableGivenTransientCodesWhenPolicyEvaluated()
     {
+        // Arrange
+        // Act
+        // Assert
         Assert.True(Retryability.IsRetryable(new TimeoutException("timed out")));
         Assert.True(Retryability.IsRetryable(new RequestTimeoutException("timed out")));
         Assert.True(Retryability.IsRetryable(new ConnectionException("connection closed")));
@@ -20,6 +23,9 @@ public sealed class RetryabilityTests
     [Fact]
     public void ShouldClassifyErrorsAsNonretryableGivenFatalCodesWhenPolicyEvaluated()
     {
+        // Arrange
+        // Act
+        // Assert
         Assert.False(Retryability.IsRetryable(new InvalidOperationException("boom")));
         Assert.False(Retryability.IsRetryable(new AuthenticationException("unauthorized")));
         Assert.False(Retryability.IsRetryable(new QueueException("invalid token", "INVALID_TOKEN", 1, 4001)));

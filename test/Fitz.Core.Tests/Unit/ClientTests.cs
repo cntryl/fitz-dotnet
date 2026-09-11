@@ -12,8 +12,34 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class ClientTests
 {
     [Fact]
-    public async Task ShouldBoundAllRetryAttemptsByOneOperationDeadline()
+    public void ShouldRejectUndefinedTransportGivenClientConfigurationWhenConnectionOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
+        var config = new ClientConfig(
+            new Uri("ws://localhost:4190/ws"),
+            Transport: (ClientTransport)99);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => new Client(config));
+    }
+
+    [Fact]
+    public void ShouldRejectNullUrlGivenClientConfigurationAtPublicBoundariesWhenConnectionOperationRuns()
+    {
+        // Arrange
+        // Act
+        // Assert
+        var config = new ClientConfig(null!);
+
+        Assert.Throws<ArgumentNullException>(() => new Client(config));
+        Assert.Throws<ArgumentNullException>(() => TransportResolver.Resolve(config));
+    }
+
+    [Fact]
+    public async Task ShouldBoundAllRetryAttemptsByOneOperationDeadlineGivenConfiguredClientWhenOperationRuns()
+    {
+        // Arrange
         await using var transport = new FakeTransport();
         await using var connection = new FitzConnection(
             new ClientConfig(
@@ -23,6 +49,8 @@ public sealed class ClientTests
             () => transport);
 
         var started = DateTimeOffset.UtcNow;
+
+        // Act
         var operation = connection.ExecuteWithRetryAsync(
             new RetryOperation("kv", "get", RetryClass.ReplayableRead),
             async token =>
@@ -31,13 +59,16 @@ public sealed class ClientTests
                 return true;
             }).AsTask();
 
+
+        // Assert
         await Assert.ThrowsAsync<RequestTimeoutException>(() => operation);
         Assert.True(DateTimeOffset.UtcNow - started < TimeSpan.FromSeconds(1));
     }
 
     [Fact]
-    public async Task ShouldPreserveCallerCancellationAcrossRetryDeadline()
+    public async Task ShouldPreserveCallerCancellationAcrossRetryDeadlineGivenConfiguredClientWhenOperationRuns()
     {
+        // Arrange
         await using var transport = new FakeTransport();
         await using var connection = new FitzConnection(
             new ClientConfig(
@@ -46,6 +77,8 @@ public sealed class ClientTests
             () => transport);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(25));
 
+
+        // Act
         var operation = connection.ExecuteWithRetryAsync(
             new RetryOperation("kv", "get", RetryClass.ReplayableRead),
             async token =>
@@ -55,11 +88,13 @@ public sealed class ClientTests
             },
             cancellation.Token).AsTask();
 
+
+        // Assert
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
     }
 
     [Fact]
-    public async Task ShouldCloseOnceGivenRepeatedCloseCalls()
+    public async Task ShouldCloseOnceGivenRepeatedCloseCallsWhenConnectionOperationRuns()
     {
         // Arrange
         await using var transport = new FakeTransport();
@@ -76,40 +111,55 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public void ShouldExposeTypedTransportGivenTypedClientConfig()
+    public void ShouldExposeTypedTransportGivenTypedClientConfigWhenConnectionOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), ClientTransport.WebSocket);
 
         Assert.Equal(ClientTransport.WebSocket, config.Transport);
     }
 
     [Fact]
-    public void ShouldDefaultToSpecSafeTotalFrameLimit()
+    public void ShouldDefaultToSpecSafeTotalFrameLimitGivenConfiguredClientWhenOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         var config = new ClientConfig(new Uri("ws://localhost:4190/ws"));
 
         Assert.Equal(65_540, config.MaxFrameSize);
     }
 
     [Fact]
-    public void ShouldPreserveExplicitTransportGivenClientConfig()
+    public void ShouldPreserveExplicitTransportGivenClientConfigWhenConnectionOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         var config = new ClientConfig(new Uri("tcp://localhost:4191"), Transport: ClientTransport.Tcp);
 
         Assert.Equal(ClientTransport.Tcp, config.Transport);
     }
 
     [Fact]
-    public void ShouldDefaultMaxInFlightRequestsWhenNotSpecified()
+    public void ShouldDefaultMaxInFlightRequestsGivenNoConfiguredValueWhenResolved()
     {
+        // Arrange
+        // Act
+        // Assert
         var config = new ClientConfig(new Uri("ws://localhost:4190/ws"));
 
         Assert.Equal(256, config.MaxInFlightRequests);
     }
 
     [Fact]
-    public void ShouldPreserveMaxInFlightRequestsGivenClientConfig()
+    public void ShouldPreserveMaxInFlightRequestsGivenClientConfigWhenConnectionOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), MaxInFlightRequests: 12);
 
         Assert.Equal(12, config.MaxInFlightRequests);
@@ -118,9 +168,14 @@ public sealed class ClientTests
     [Fact]
     public void ShouldResolveTransportGivenWebsocketAndTcpEndpointsWhenConfigured()
     {
+        // Arrange
         var websocket = new ClientConfig(new Uri("ws://localhost:4190/ws"));
+
+        // Act
         var tcp = new ClientConfig(new Uri("tcp://localhost:4191"));
 
+
+        // Assert
         Assert.Equal(ClientTransport.Auto, websocket.Transport);
         Assert.Equal(ClientTransport.WebSocket, websocket.ResolvedTransportKind);
         Assert.Equal(ClientTransport.Auto, tcp.Transport);
@@ -133,8 +188,11 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public void ShouldKeepAsyncHandlerQueueCapacityIndependentFromRequestQueueAndConcurrency()
+    public void ShouldKeepHandlerQueueCapacityIndependentGivenRequestLimitsWhenResolvingConfig()
     {
+        // Arrange
+        // Act
+        // Assert
         var config = new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
             AsyncHandlers: new AsyncHandlerOptions(MaxConcurrency: 3, QueueCapacity: 19),
@@ -205,7 +263,7 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task ShouldThrowAuthenticationExceptionGivenTransportCloseDuringAuthentication()
+    public async Task ShouldThrowAuthenticationExceptionGivenTransportCloseDuringAuthenticationWhenConnectionOperationRuns()
     {
         // Arrange
         await using var transport = new FakeTransport(receive: _ => new ValueTask<PooledFrame>(PooledFrame.Closed));
@@ -227,6 +285,7 @@ public sealed class ClientTests
     [Fact]
     public async Task ShouldReconnectGivenAuthenticatedTransportWhenClosedBeforeInboundFrame()
     {
+        // Arrange
         await using var firstTransport = new QueuedTransport();
         await using var reconnectTransport = new QueuedTransport();
         var factoryCalls = 0;
@@ -239,15 +298,20 @@ public sealed class ClientTests
         await client.ConnectAsync();
         firstTransport.QueueClosed();
 
+
+        // Act
         await WaitForConditionAsync(
             () => client.IsConnected && factoryCalls == 2,
             TimeSpan.FromSeconds(1));
+
+        // Assert
         Assert.Equal(ConnectionState.Authenticated, client.State);
     }
 
     [Fact]
     public async Task ShouldDiscardPartialFrameGivenReconnectWhenNextSessionResponds()
     {
+        // Arrange
         await using var firstTransport = new QueuedTransport();
         await using var reconnectTransport = new QueuedTransport();
         reconnectTransport.AfterSend = sentFrameCount =>
@@ -271,8 +335,12 @@ public sealed class ClientTests
         firstTransport.QueueClosed();
         await WaitForConditionAsync(() => client.IsConnected && factoryCalls == 2, TimeSpan.FromSeconds(1));
 
+
+        // Act
         var result = await client.Lease.QueryAsync("lease://prod/app/lock");
 
+
+        // Assert
         Assert.False(result.IsHeld);
     }
 
@@ -281,6 +349,7 @@ public sealed class ClientTests
     [InlineData(true)]
     public async Task ShouldKeepConnectionGivenOversizedCallerPayloadWhenEncoding(bool request)
     {
+        // Arrange
         await using var transport = new QueuedTransport();
         var factoryCalls = 0;
         await using var connection = new FitzConnection(
@@ -296,10 +365,14 @@ public sealed class ClientTests
         await connection.ConnectAsync();
 
         var oversizedPayload = new byte[ushort.MaxValue + 1];
+
+        // Act
         var operation = request
             ? connection.RequestAsync(42, oversizedPayload).AsTask()
             : connection.SendAsync(42, oversizedPayload).AsTask();
 
+
+        // Assert
         await Assert.ThrowsAsync<ProtocolException>(() => operation);
         await Task.Delay(50);
         Assert.Equal(ConnectionState.Authenticated, connection.State);
@@ -310,6 +383,7 @@ public sealed class ClientTests
     [Fact]
     public async Task ShouldRetryStartupTransportFailuresGivenConnectWhenReady()
     {
+        // Arrange
         var attempts = 0;
         await using var client = new Client(
             new ClientConfig(
@@ -324,19 +398,27 @@ public sealed class ClientTests
                         : new IdleTransport();
                 }));
 
+
+        // Act
         await client.ConnectWhenReadyAsync(new ConnectWhenReadyOptions(
             Timeout: TimeSpan.FromMilliseconds(1000),
             Backoff: TimeSpan.FromMilliseconds(1),
             MaxBackoff: TimeSpan.FromMilliseconds(1)));
 
+
+        // Assert
         Assert.Equal(2, attempts);
         Assert.True(client.IsConnected);
     }
 
+
     [Fact]
     public async Task ShouldNotRetryAuthenticationGivenRejectedConnectWhenReconnectEnabled()
     {
+        // Arrange
         var attempts = 0;
+
+        // Act
         await using var client = new Client(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
@@ -347,6 +429,8 @@ public sealed class ClientTests
                     return new FakeTransport(_ => new ValueTask<PooledFrame>(PooledFrame.Closed));
                 }));
 
+
+        // Assert
         await Assert.ThrowsAsync<AuthenticationException>(() =>
             client.ConnectWhenReadyAsync(new ConnectWhenReadyOptions(
                 Timeout: TimeSpan.FromMilliseconds(250),
@@ -359,7 +443,10 @@ public sealed class ClientTests
     [Fact]
     public async Task ShouldTimeoutGivenConnectWhenReadyTotalDeadlineExpires()
     {
+        // Arrange
         var attempts = 0;
+
+        // Act
         await using var client = new Client(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
@@ -369,6 +456,8 @@ public sealed class ClientTests
                     return new FailingConnectTransport(new IOException("dial failed"));
                 }));
 
+
+        // Assert
         await Assert.ThrowsAsync<TimeoutException>(() =>
             client.ConnectWhenReadyAsync(new ConnectWhenReadyOptions(
                 Timeout: TimeSpan.FromMilliseconds(50),
@@ -379,8 +468,9 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task ShouldCoalesceConcurrentConnectCallsOntoOneInflightAttempt()
+    public async Task ShouldCoalesceConcurrentConnectCallsOntoOneInflightAttemptGivenConfiguredClientWhenOperationRuns()
     {
+        // Arrange
         var releaseConnect = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var attempts = 0;
         await using var client = new Client(
@@ -394,8 +484,12 @@ public sealed class ClientTests
 
         var first = client.ConnectAsync();
         var second = client.ConnectAsync();
+
+        // Act
         await Task.Delay(25);
 
+
+        // Assert
         Assert.Equal(1, attempts);
 
         releaseConnect.TrySetResult();
@@ -406,6 +500,7 @@ public sealed class ClientTests
     [Fact]
     public async Task ShouldStopReconnectingGivenCloseDuringBackoffWhenCloseCalled()
     {
+        // Arrange
         var releaseFirstReceive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var firstTransport = new QueuedTransport();
         firstTransport.AfterSend = sentFrameCount =>
@@ -441,16 +536,21 @@ public sealed class ClientTests
         releaseFirstReceive.SetResult();
         await WaitForConditionAsync(() => !client.IsConnected, TimeSpan.FromSeconds(1));
 
+
+        // Act
         await client.DisposeAsync();
 
+
+        // Assert
         Assert.Equal(1, factoryCalls);
         Assert.Empty(secondTransport.SentFrames);
         Assert.False(client.IsConnected);
     }
 
     [Fact]
-    public async Task ShouldCancelAndAwaitInflightReconnectGivenCloseDuringTransportConnect()
+    public async Task ShouldCancelAndAwaitInflightReconnectGivenCloseDuringTransportConnectWhenConnectionOperationRuns()
     {
+        // Arrange
         await using var firstTransport = new QueuedTransport();
         firstTransport.AfterSend = sentFrameCount =>
         {
@@ -473,8 +573,12 @@ public sealed class ClientTests
         firstTransport.QueueClosed();
         await WaitForConditionAsync(() => factoryCalls == 2, TimeSpan.FromSeconds(1));
 
+
+        // Act
         await client.CloseAsync().WaitAsync(TimeSpan.FromSeconds(1));
 
+
+        // Assert
         Assert.True(reconnectTransport.CancellationObserved);
         Assert.False(client.IsConnected);
     }
@@ -515,8 +619,9 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task ShouldRetryReconnectGivenTransportClosesDuringReconnectAuthentication()
+    public async Task ShouldRetryReconnectGivenTransportClosesDuringReconnectAuthenticationWhenConnectionOperationRuns()
     {
+        // Arrange
         await using var firstTransport = CreateConfirmingTransport();
         await using var interruptedReconnect = new QueuedTransport();
         interruptedReconnect.AfterSend = sentFrameCount =>
@@ -544,17 +649,22 @@ public sealed class ClientTests
         await client.ConnectAsync();
         firstTransport.QueueClosed();
 
+
+        // Act
         await WaitForConditionAsync(
             () => client.IsConnected && factoryCalls >= 3,
             TimeSpan.FromSeconds(1));
 
+
+        // Assert
         Assert.Equal(3, factoryCalls);
         Assert.Contains("reconnect_succeeded", lifecycleEvents, StringComparer.Ordinal);
     }
 
     [Fact]
-    public async Task ShouldRetryReconnectAndInvokeAllListenersGivenRestoreFailure()
+    public async Task ShouldRetryReconnectAndInvokeAllListenersGivenRestoreFailureWhenConnectionOperationRuns()
     {
+        // Arrange
         await using var firstTransport = CreateConfirmingTransport();
         await using var failedRestoreTransport = CreateConfirmingTransport();
         await using var restoredTransport = CreateConfirmingTransport();
@@ -604,12 +714,16 @@ public sealed class ClientTests
         await connection.ConnectAsync();
         firstTransport.QueueClosed();
 
+
+        // Act
         await WaitForConditionAsync(
             () => connection.State == ConnectionState.Authenticated
                 && factoryCalls >= 3
                 && Volatile.Read(ref reconnectSuccesses) == 1,
             TimeSpan.FromSeconds(1));
 
+
+        // Assert
         Assert.Equal(3, factoryCalls);
         Assert.Equal(2, failingListenerCalls);
         Assert.Equal(2, remainingListenerCalls);
@@ -618,8 +732,9 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task Reconnect_RestorationStillRunning_DoesNotPublishAuthenticatedState()
+    public async Task ShouldWithholdAuthenticatedStateGivenRestorationInProgressWhenReconnectRuns()
     {
+        // Arrange
         await using var firstTransport = CreateConfirmingTransport();
         await using var reconnectTransport = CreateConfirmingTransport();
         var restoreStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -639,8 +754,12 @@ public sealed class ClientTests
 
         await connection.ConnectAsync();
         firstTransport.QueueClosed();
+
+        // Act
         await restoreStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
+
+        // Assert
         Assert.Equal(ConnectionState.Reconnecting, connection.State);
 
         releaseRestore.TrySetResult();
@@ -650,8 +769,9 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task ExecuteWithRetryAsync_InfiniteBackoff_WaitsForCancellationWithoutRetrying()
+    public async Task ShouldWaitForCancellationWithoutRetryingGivenInfiniteBackoffWhenExecutingRetryPolicy()
     {
+        // Arrange
         await using var transport = new FakeTransport();
         await using var connection = new FitzConnection(
             new ClientConfig(
@@ -666,6 +786,8 @@ public sealed class ClientTests
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
         var attempts = 0;
 
+
+        // Act
         var operation = connection.ExecuteWithRetryAsync(
             new RetryOperation("kv", "get", RetryClass.ReplayableRead),
             _ =>
@@ -675,13 +797,16 @@ public sealed class ClientTests
             },
             cancellation.Token).AsTask();
 
+
+        // Assert
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
         Assert.Equal(1, Volatile.Read(ref attempts));
     }
 
     [Fact]
-    public async Task ExecuteWithRetryAsync_OuterDeadlineCancelsSentRequest_ResetsResponseLane()
+    public async Task ShouldResetResponseLaneGivenSentRequestWhenOuterDeadlineExpires()
     {
+        // Arrange
         await using var transport = CreateConfirmingTransport();
         await using var connection = new FitzConnection(
             new ClientConfig(
@@ -692,10 +817,14 @@ public sealed class ClientTests
             () => transport);
         await connection.ConnectAsync();
 
+
+        // Act
         var operation = connection.ExecuteWithRetryAsync(
             new RetryOperation("kv", "get", RetryClass.ReplayableRead),
             cancellationToken => connection.RequestAsync(88, ReadOnlyMemory<byte>.Empty, cancellationToken)).AsTask();
 
+
+        // Assert
         await Assert.ThrowsAsync<RequestTimeoutException>(() => operation);
         await WaitForConditionAsync(
             () => connection.State != ConnectionState.Authenticated,
@@ -703,8 +832,9 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task TryDispatchAsyncHandler_SaturatedDomain_DoesNotRejectAnotherDomain()
+    public async Task ShouldIsolateBackpressureGivenOneSaturatedDomainWhenDispatchingAnotherDomain()
     {
+        // Arrange
         await using var transport = new FakeTransport();
         await using var connection = new FitzConnection(
             new ClientConfig(
@@ -717,8 +847,12 @@ public sealed class ClientTests
             () => transport);
         var noticeStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseNotice = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Act
         var queueCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
+
+        // Assert
         Assert.True(connection.TryDispatchAsyncHandler("notice", async cancellationToken =>
         {
             noticeStarted.TrySetResult();
@@ -739,6 +873,7 @@ public sealed class ClientTests
     [Fact]
     public async Task ShouldUseInfiniteTimeoutGivenDefaultHandlerOptionsWhenDispatchingAsyncHandler()
     {
+        // Arrange
         await using var transport = new IdleTransport();
         await using var connection = new FitzConnection(
             new ClientConfig(
@@ -747,8 +882,12 @@ public sealed class ClientTests
                 AsyncHandlers: new AsyncHandlerOptions(MaxConcurrency: 1),
                 TransportFactory: _ => transport),
             () => transport);
+
+        // Act
         var completed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
+
+        // Assert
         Assert.True(connection.TryDispatchAsyncHandler("notice", async cancellationToken =>
         {
             await Task.Delay(75, CancellationToken.None);
@@ -759,8 +898,11 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public void ClientConfig_FiniteBackoffWithInfiniteMaximum_IsAccepted()
+    public void ShouldAcceptFiniteBackoffGivenInfiniteMaximumWhenValidatingClientConfig()
     {
+        // Arrange
+        // Act
+        // Assert
         using var client = new Client(new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
             Retry: new RetryOptions(
@@ -772,8 +914,9 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task ShouldSurfaceRequestFailureWithoutWaitingForBackgroundReconnect()
+    public async Task ShouldSurfaceRequestFailureWithoutWaitingForBackgroundReconnectGivenConfiguredClientWhenOperationRuns()
     {
+        // Arrange
         await using var firstTransport = new QueuedTransport();
         firstTransport.AfterSend = sentFrameCount =>
         {
@@ -798,10 +941,14 @@ public sealed class ClientTests
             TransportFactory: _ => factoryCalls++ == 0 ? firstTransport : reconnectTransport));
         await client.ConnectAsync();
 
+
+        // Act
         var request = client.Kv.BeginAsync(
             "kv://prod/app/users",
             Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
 
+
+        // Assert
         var exception = await Assert.ThrowsAsync<ConnectionException>(
             () => request.WaitAsync(TimeSpan.FromMilliseconds(500)));
         Assert.Contains("send failed", exception.Message, StringComparison.Ordinal);
@@ -809,8 +956,9 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task ShouldResetConnectionGivenUncorrelatedRequestTimeout()
+    public async Task ShouldResetConnectionGivenUncorrelatedRequestTimeoutWhenConnectionOperationRuns()
     {
+        // Arrange
         await using var transport = new QueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
@@ -832,8 +980,12 @@ public sealed class ClientTests
             )
         );
 
+
+        // Act
         await client.ConnectAsync();
 
+
+        // Assert
         var ex = await Assert.ThrowsAsync<RequestTimeoutException>(() =>
             client.Kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async));
 
@@ -844,6 +996,7 @@ public sealed class ClientTests
     [Fact]
     public async Task ShouldBoundConcurrentOutboundRequestsGivenMaxOneWhenSecondRequestStarts()
     {
+        // Arrange
         await using var transport = new QueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
@@ -873,7 +1026,11 @@ public sealed class ClientTests
 
         var secondRequest = connection.RequestAsync(77, "second"u8.ToArray());
 
+
+        // Act
         await Task.Delay(50);
+
+        // Assert
         Assert.False(secondRequest.IsCompleted);
         Assert.Equal(2, transport.SentFrames.Count);
 
@@ -888,9 +1045,12 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task ShouldThrowRequestQueueFullGivenWaiterLimitReached()
+    public async Task ShouldThrowRequestQueueFullGivenWaiterLimitReachedWhenConnectionOperationRuns()
     {
+        // Arrange
         await using var transport = new QueuedTransport();
+
+        // Act
         await using var connection = new FitzConnection(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
@@ -898,6 +1058,8 @@ public sealed class ClientTests
                 MaxInFlightRequests: 1,
                 MaxRequestQueueSize: 1),
             () => transport);
+
+        // Assert
         try
         {
             await connection.ConnectAsync();
@@ -926,8 +1088,9 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task ShouldReceiveNoticeNotificationGivenConnectionBackedSubscription()
+    public async Task ShouldReceiveNoticeNotificationGivenConnectionBackedSubscriptionWhenConnectionOperationRuns()
     {
+        // Arrange
         await using var transport = new QueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
@@ -972,8 +1135,12 @@ public sealed class ClientTests
         }
 
         var message = await received.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Act
         var result = (message.Route, Body: message.Body.ToArray());
 
+
+        // Assert
         Assert.Equal("notice://prod/app/events", result.Route);
         Assert.Equal("hello", System.Text.Encoding.UTF8.GetString(result.Body));
 

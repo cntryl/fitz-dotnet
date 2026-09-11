@@ -17,7 +17,7 @@ public sealed class StreamErrorEnvelopeTests
     [InlineData("METADATA", 2012u, "backend unavailable")]
     [InlineData("SUBSCRIBE", 2010u, "invalid pattern")]
     [InlineData("UNSUBSCRIBE", 2012u, "backend unavailable")]
-    public void ShouldPreserveVersionedDomainCodeIndependentlyOfWording(string operation, uint code, string message)
+    public void ShouldPreserveVersionedDomainCodeIndependentlyOfWordingGivenErrorEnvelopeWhenDecoding(string operation, uint code, string message)
     {
         // Arrange
         using var writer = new BinaryBufferWriter();
@@ -40,7 +40,7 @@ public sealed class StreamErrorEnvelopeTests
     [InlineData("APPEND", null)]
     [InlineData("COMMIT", null)]
     [InlineData("READ", 2001u)]
-    public void ShouldPreserveLegacyErrorEnvelopes(string operation, uint? code)
+    public void ShouldPreserveLegacyErrorEnvelopesGivenErrorEnvelopeWhenDecoding(string operation, uint? code)
     {
         // Arrange
         using var writer = new BinaryBufferWriter();

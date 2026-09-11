@@ -9,12 +9,29 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class StreamClientTests
 {
+    [Fact]
+    public async Task ShouldReturnTypedErrorGivenEmptyResponseWhenPeekingStream()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var stream = new StreamClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+
+        var error = await Assert.ThrowsAsync<StreamException>(() =>
+            stream.PeekAsync("stream://prod/app/events"));
+
+        Assert.Equal("LAST_INVALID_RESPONSE", error.Code);
+    }
+
     [Theory]
     [InlineData("{\"last_resource_offset\":0}", StreamCommitOffsetStatus.Present)]
     [InlineData("{}", StreamCommitOffsetStatus.Absent)]
     [InlineData("not-json", StreamCommitOffsetStatus.Malformed)]
     public void ShouldDistinguishOutcomeGivenCommitMetadataWhenParsingOffset(string json, StreamCommitOffsetStatus expected)
     {
+        // Arrange
+        // Act
+        // Assert
         var parsed = StreamWireHelpers.ParseCommitOffset(System.Text.Encoding.UTF8.GetBytes(json));
 
         Assert.Equal(0UL, parsed.Offset);
@@ -24,6 +41,9 @@ public sealed class StreamClientTests
     [Fact]
     public void ShouldRejectClauseKindGivenUndefinedValueWhenEncodingFilter()
     {
+        // Arrange
+        // Act
+        // Assert
         var filter = new StreamFilterSet
         {
             Clauses = [new StreamFilterClause { Kind = (StreamFilterClauseKind)260 }],
@@ -35,6 +55,7 @@ public sealed class StreamClientTests
     [Fact]
     public async Task ShouldReleaseDisconnectRegistrationGivenCleanupFailureWhenDisposingSession()
     {
+        // Arrange
         var registrations = 0;
         var session = new StreamSession(
             (_, _, _) => ValueTask.FromException<ReadOnlyMemory<byte>>(new StreamException("rollback failed", "ROLLBACK_FAILED")),
@@ -45,16 +66,23 @@ public sealed class StreamClientTests
                 return new TestRegistration(() => registrations--);
             });
 
+
+        // Act
         await session.DisposeAsync();
 
+
+        // Assert
         Assert.Equal(0, registrations);
         var error = await Assert.ThrowsAsync<StreamException>(() => session.AppendAsync(0, "body"u8.ToArray()));
         Assert.Equal("SESSION_CLOSED", error.Code);
     }
 
     [Fact]
-    public async Task ShouldReadPagesUntilCursorHasNoMoreItems()
+    public async Task ShouldReadPagesUntilCursorHasNoMoreItemsGivenStreamClientWhenOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         var requestedOffsets = new List<ulong>();
         using var stream = new StreamClient((messageType, payload, _) =>
         {
@@ -101,8 +129,11 @@ public sealed class StreamClientTests
     ];
 
     [Fact]
-    public async Task ShouldAcceptLengthPrefixedPayloadGivenStreamSubscribeResponse()
+    public async Task ShouldAcceptLengthPrefixedPayloadGivenStreamSubscribeResponseWhenStreamOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         using var stream = new StreamClient(
             (messageType, _, _) =>
             {
@@ -131,11 +162,12 @@ public sealed class StreamClientTests
 
     [Theory]
     [MemberData(nameof(CanonicalStreamSelectors))]
-    public void ShouldAcceptSelectorGivenCanonicalStreamFixtureShape(string selector) => Assert.True(RouteValidation.IsStreamSelector(selector));
+    public void ShouldAcceptSelectorGivenCanonicalStreamFixtureShapeWhenStreamOperationRuns(string selector) => Assert.True(RouteValidation.IsStreamSelector(selector));
 
     [Fact]
-    public async Task ShouldRollbackAlreadyRestoredPatternsGivenPartialReconnectFailure()
+    public async Task ShouldRollbackAlreadyRestoredPatternsGivenPartialReconnectFailureWhenStreamOperationRuns()
     {
+        // Arrange
         var calls = new List<ushort>();
         var subscribeCalls = 0;
         using var stream = new StreamClient(
@@ -167,10 +199,14 @@ public sealed class StreamClientTests
             (_, _) => new TestRegistration());
         _ = await stream.SubscribeAsync("stream://prod/app/*", (_, _) => ValueTask.CompletedTask);
         _ = await stream.SubscribeAsync("stream://prod/other/*", (_, _) => ValueTask.CompletedTask);
+
+        // Act
         var restore = typeof(StreamClient).GetMethod(
             "RestoreSubscriptionsAsync",
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
 
+
+        // Assert
         var pending = Assert.IsType<ValueTask>(restore!.Invoke(stream, [CancellationToken.None]));
         await Assert.ThrowsAsync<StreamException>(pending.AsTask);
 
@@ -183,8 +219,9 @@ public sealed class StreamClientTests
     [InlineData("stream://*/*/resource")]
     [InlineData("stream://**")]
     [InlineData("stream://*/*/*")]
-    public void ShouldDecodePerRecordGlobalOffsetGivenGlobalSelector(string selector)
+    public void ShouldDecodePerRecordGlobalOffsetGivenGlobalSelectorWhenStreamOperationRuns(string selector)
     {
+        // Arrange
         using var data = new BinaryBufferWriter();
         data.WriteU32(1);
         data.WriteString("stream://prod/app/events");
@@ -207,8 +244,12 @@ public sealed class StreamClientTests
         data.WriteU8(0);
         data.WriteU8(0);
 
+
+        // Act
         var page = StreamWireHelpers.ReadReadPage(data.WrittenMemory, "READ", selector);
 
+
+        // Assert
         Assert.Equal((ulong)99, Assert.Single(page.Items).Record!.GlobalOffset);
         Assert.Equal((ulong)99, page.Cursor.LastGlobalOffset);
     }
@@ -304,8 +345,11 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task ShouldMatchServerStreamSelectorGrammarAndEncodeCanonicalCursorOptions()
+    public async Task ShouldMatchServerStreamSelectorGrammarAndEncodeCanonicalCursorOptionsGivenStreamClientWhenOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         using var stream = new StreamClient((_, payload, _) =>
         {
             var request = new BinaryBufferReader(payload);
@@ -558,6 +602,9 @@ public sealed class StreamClientTests
     [Fact]
     public async Task ShouldReturnRawPageGivenFilteredItemsWhenReadingStreamPage()
     {
+        // Arrange
+        // Act
+        // Assert
         using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamRead, messageType);
@@ -652,7 +699,7 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task ShouldReturnConcreteRoutesGivenWildcardStreamRead()
+    public async Task ShouldReturnConcreteRoutesGivenWildcardStreamReadWhenStreamOperationRuns()
     {
         // Arrange
         using var stream = new StreamClient((messageType, _, _) =>
@@ -688,7 +735,7 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task ShouldRejectWildcardRouteGivenStreamReadResponse()
+    public async Task ShouldRejectWildcardRouteGivenStreamReadResponseWhenStreamOperationRuns()
     {
         // Arrange
         using var stream = new StreamClient((_, _, _) =>
@@ -794,6 +841,9 @@ public sealed class StreamClientTests
     [Fact]
     public async Task ShouldRejectWildcardRouteGivenLastResponseWhenPeekingStream()
     {
+        // Arrange
+        // Act
+        // Assert
         using var stream = new StreamClient((_, _, _) =>
         {
             using var data = new BinaryBufferWriter();
@@ -1024,6 +1074,8 @@ public sealed class StreamClientTests
     public async Task ShouldIgnoreCommitPayloadGivenSuccessResponseWhenCommitting()
     {
         // Arrange
+        // Act
+        // Assert
         using var stream = new StreamClient((messageType, payload, _) =>
         {
             using var writer = new BinaryBufferWriter();
@@ -1083,8 +1135,9 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task ShouldMarkStreamSessionAsClosedAfterDisconnect()
+    public async Task ShouldMarkStreamSessionAsClosedAfterDisconnectGivenStreamClientWhenOperationRuns()
     {
+        // Arrange
         await using var transport = new TestQueuedTransport();
         transport.AfterSend = sentFrameCount =>
         {
@@ -1111,8 +1164,12 @@ public sealed class StreamClientTests
         await connection.ConnectAsync();
         var session = await stream.BeginAsync("stream://prod/app/events");
 
+
+        // Act
         await connection.CloseAsync();
 
+
+        // Assert
         var ex = await Assert.ThrowsAsync<StreamException>(() => session.AppendAsync(12, "entry"u8.ToArray()));
 
         Assert.Equal("SESSION_CLOSED", ex.Code);
@@ -1120,8 +1177,9 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task ShouldMarkStreamSessionAsClosedAfterReconnect()
+    public async Task ShouldMarkStreamSessionAsClosedAfterReconnectGivenStreamClientWhenOperationRuns()
     {
+        // Arrange
         await using var firstTransport = new TestQueuedTransport();
         await using var secondTransport = new TestQueuedTransport();
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1170,8 +1228,12 @@ public sealed class StreamClientTests
         var session = await stream.BeginAsync("stream://prod/app/events");
 
         firstTransport.QueueClosed();
+
+        // Act
         await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
+
+        // Assert
         var ex = await Assert.ThrowsAsync<StreamException>(() => session.AppendAsync(12, "entry"u8.ToArray()));
 
         Assert.Equal("SESSION_CLOSED", ex.Code);
@@ -1181,8 +1243,9 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task ShouldRestoreStreamSubscriptionAfterReconnect()
+    public async Task ShouldRestoreStreamSubscriptionAfterReconnectGivenStreamClientWhenOperationRuns()
     {
+        // Arrange
         await using var firstTransport = new TestQueuedTransport();
         await using var secondTransport = new TestQueuedTransport();
         var firstNotification = new TaskCompletionSource<StreamCommitEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1272,7 +1335,10 @@ public sealed class StreamClientTests
             firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamNotify, notification.WrittenSpan));
         }
 
+        // Act
         var initialEvent = await firstNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Assert
         Assert.Equal((ulong)19, initialEvent.CommitOffset);
 
         firstTransport.QueueClosed();

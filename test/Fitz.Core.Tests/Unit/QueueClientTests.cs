@@ -9,6 +9,82 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class QueueClientTests
 {
+    [Fact]
+    public async Task ShouldReturnTypedErrorGivenEmptyResponseWhenEnqueuingQueueItem()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var queue = new QueueClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+
+        var error = await Assert.ThrowsAsync<QueueException>(() =>
+            queue.EnqueueAsync("queue://prod/app/tasks", ReadOnlyMemory<byte>.Empty));
+
+        Assert.Equal("ENQUEUE_INVALID_RESPONSE", error.Code);
+    }
+
+    [Fact]
+    public async Task ShouldRejectZeroLeaseGivenReservedItemWhenExtendingBeforeTransport()
+    {
+        // Arrange
+        var requestCalled = false;
+
+        // Act
+        await using var item = new QueueReservedItem(
+            "queue://prod/app/tasks",
+            ReadOnlyMemory<byte>.Empty,
+            QueueItem.AttemptUnavailable,
+            7,
+            11,
+            (_, _, _) =>
+            {
+                requestCalled = true;
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(Array.Empty<byte>());
+            });
+
+
+        // Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => item.ExtendAsync(0));
+
+        Assert.False(requestCalled);
+    }
+
+    [Fact]
+    public async Task ShouldPreserveSubscriptionGivenTrailingBytesWhenUnsubscribingQueue()
+    {
+        // Arrange
+        var unsubscribeAttempts = 0;
+        using var queue = new QueueClient(
+            (messageType, _, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                if (messageType == MessageTypes.QueueSubscribe)
+                {
+                    writer.WriteU8(1);
+                    writer.WriteU64(55);
+                }
+                else if (messageType == MessageTypes.QueueUnsubscribe && Interlocked.Increment(ref unsubscribeAttempts) == 1)
+                {
+                    writer.WriteU8(42);
+                }
+
+                return Task.FromResult(writer.Build());
+            },
+            (_, _) => new TestRegistration());
+
+        // Act
+        var subscription = await queue.SubscribeAsync("queue://prod/app/*", (_, _) => ValueTask.CompletedTask);
+
+
+        // Assert
+        var error = await Assert.ThrowsAsync<QueueException>(() => subscription.UnsubscribeAsync().AsTask());
+        await subscription.UnsubscribeAsync();
+
+        Assert.Equal("UNSUBSCRIBE_INVALID_RESPONSE", error.Code);
+        Assert.Equal(2, unsubscribeAttempts);
+    }
+
     [Theory]
     [InlineData(0UL, null)]
     [InlineData(30UL, -1)]
@@ -16,13 +92,18 @@ public sealed class QueueClientTests
         ulong leaseSeconds,
         int? waitSeconds)
     {
+        // Arrange
         var requestCalled = false;
+
+        // Act
         using var queue = new QueueClient((_, _, _) =>
         {
             requestCalled = true;
             return Task.FromResult(Array.Empty<byte>());
         });
 
+
+        // Assert
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
             queue.ReserveAsync("queue://prod/app/tasks", leaseSeconds, waitSeconds: waitSeconds));
 
@@ -34,13 +115,18 @@ public sealed class QueueClientTests
     [InlineData(-5)]
     public async Task ShouldRejectBatchSizeGivenNonpositiveValueWhenReserving(int batchSize)
     {
+        // Arrange
         var requestCalled = false;
+
+        // Act
         using var queue = new QueueClient((_, _, _) =>
         {
             requestCalled = true;
             return Task.FromResult(Array.Empty<byte>());
         });
 
+
+        // Assert
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
             queue.ReserveAsync("queue://prod/app/tasks", 30, batchSize));
 
@@ -50,7 +136,10 @@ public sealed class QueueClientTests
     [Fact]
     public async Task ShouldReleaseDisconnectRegistrationGivenReservedItemWhenDisposing()
     {
+        // Arrange
         var registrations = 0;
+
+        // Act
         using var queue = new QueueClient(
             (_, _, _) =>
             {
@@ -69,6 +158,8 @@ public sealed class QueueClientTests
                 return new TestRegistration(() => registrations--);
             });
 
+
+        // Assert
         var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", 30));
         Assert.Equal(1, registrations);
 
@@ -80,8 +171,11 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task ShouldRejectImpossibleReserveCountBeforeAllocating()
+    public async Task ShouldRejectImpossibleReserveCountBeforeAllocatingGivenQueueClientWhenOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         using var queue = new QueueClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
@@ -97,9 +191,12 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task ShouldAllowCompleteRetryAfterRejectedWireOperation()
+    public async Task ShouldAllowCompleteRetryAfterRejectedWireOperationGivenQueueClientWhenOperationRuns()
     {
+        // Arrange
         var completeCalls = 0;
+
+        // Act
         using var queue = new QueueClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
@@ -123,6 +220,8 @@ public sealed class QueueClientTests
             }
             return Task.FromResult(writer.Build());
         });
+
+        // Assert
         var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", 30));
 
         await Assert.ThrowsAsync<QueueException>(() => item.CompleteAsync());
@@ -168,8 +267,11 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task ShouldPreserveErrorCodeAndMessageGivenEnqueueFailure()
+    public async Task ShouldPreserveErrorCodeAndMessageGivenEnqueueFailureWhenQueueOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         using var queue = new QueueClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
@@ -221,6 +323,7 @@ public sealed class QueueClientTests
     [Fact]
     public async Task ShouldEncodeVisibilityDelayGivenNonzeroDelayWhenEnqueueing()
     {
+        // Arrange
         byte[]? seenPayload = null;
         using var queue = new QueueClient((_, payload, _) =>
         {
@@ -233,7 +336,11 @@ public sealed class QueueClientTests
 
         await queue.EnqueueAsync("queue://prod/app/tasks", "job-1"u8.ToArray(), delayMs: 2_000);
 
+
+        // Act
         var reader = new BinaryBufferReader(seenPayload!);
+
+        // Assert
         Assert.Equal("queue://prod/app/tasks", reader.ReadString());
         Assert.Equal((uint)5, reader.ReadU32());
         Assert.Equal("job-1", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(5)));
@@ -243,7 +350,7 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task ShouldRejectSubsecondVisibilityDelayWhenEnqueueing()
+    public async Task ShouldRejectSubsecondVisibilityDelayGivenUnsupportedPrecisionWhenEnqueueing()
     {
         // Arrange
         byte[]? seenPayload = null;
@@ -302,7 +409,7 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task ShouldReturnConcreteRoutesGivenWildcardQueueReserve()
+    public async Task ShouldReturnConcreteRoutesGivenWildcardQueueReserveWhenQueueOperationRuns()
     {
         // Arrange
         using var queue = new QueueClient((messageType, _, _) =>
@@ -330,7 +437,7 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task ShouldRejectWildcardRouteGivenQueueReserveResponse()
+    public async Task ShouldRejectWildcardRouteGivenQueueReserveResponseWhenQueueOperationRuns()
     {
         // Arrange
         using var queue = new QueueClient((_, _, _) =>
@@ -353,7 +460,7 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task ShouldSendOneBlockingReserveGivenWaitSeconds()
+    public async Task ShouldSendOneBlockingReserveGivenWaitSecondsWhenQueueOperationRuns()
     {
         // Arrange
         var reserveCallCount = 0;
@@ -378,7 +485,7 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task ShouldSurfaceBrokerRejectionWithoutPollingDowngradeGivenWaitSeconds()
+    public async Task ShouldSurfaceBrokerRejectionWithoutPollingDowngradeGivenWaitSecondsWhenQueueOperationRuns()
     {
         // Arrange
         var reserveCallCount = 0;
@@ -528,7 +635,7 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task ShouldMarkReservedItemAsClosedAfterDisconnect()
+    public async Task ShouldMarkReservedItemAsClosedAfterDisconnectGivenQueueClientWhenOperationRuns()
     {
         // Arrange
         Action? onDisconnect = null;
@@ -568,8 +675,9 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task ShouldMarkReservedItemAsClosedAfterReconnect()
+    public async Task ShouldMarkReservedItemAsClosedAfterReconnectGivenQueueClientWhenOperationRuns()
     {
+        // Arrange
         await using var firstTransport = new TestQueuedTransport();
         await using var secondTransport = new TestQueuedTransport();
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -618,7 +726,11 @@ public sealed class QueueClientTests
         using var queue = new QueueClient(connection);
 
         await connection.ConnectAsync();
+
+        // Act
         var items = await queue.ReserveAsync("queue://prod/app/tasks", 30);
+
+        // Assert
         var item = Assert.Single(items);
 
         firstTransport.QueueClosed();
@@ -633,8 +745,9 @@ public sealed class QueueClientTests
     }
 
     [Fact]
-    public async Task ShouldRestoreQueueSubscriptionAfterReconnect()
+    public async Task ShouldRestoreQueueSubscriptionAfterReconnectGivenQueueClientWhenOperationRuns()
     {
+        // Arrange
         await using var firstTransport = new TestQueuedTransport();
         await using var secondTransport = new TestQueuedTransport();
         var firstNotification = new TaskCompletionSource<QueueAvailabilityEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -722,7 +835,10 @@ public sealed class QueueClientTests
             firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueNotify, notification.WrittenSpan));
         }
 
+        // Act
         var initialEvent = await firstNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Assert
         Assert.Equal("initial", System.Text.Encoding.UTF8.GetString(initialEvent.Payload.Span));
 
         firstTransport.QueueClosed();

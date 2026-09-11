@@ -21,6 +21,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
     readonly Dictionary<string, ScheduleSubscriptionState> _subscriptionsByRoute = new(StringComparer.Ordinal);
     readonly Dictionary<ulong, string> _routesBySubscriptionId = [];
     IDisposable? _notificationRegistration;
+    int _disposed;
     bool _notificationHandlerInitialized;
     long _nextHandleId;
     readonly IDisposable? _reconnectRegistration;
@@ -42,6 +43,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
             async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
             NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
     {
+        ArgumentNullException.ThrowIfNull(request);
     }
 
     internal ScheduleClient(
@@ -58,6 +60,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
 
     public async Task<string?> CreateAsync(string route, string cron, ScheduleDeliveryMode deliveryMode, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ValidateScheduleRoute(route);
         if (deliveryMode is not ScheduleDeliveryMode.Broadcast and not ScheduleDeliveryMode.Single)
         {
@@ -72,15 +75,26 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         writer.WriteBytes(payload.Span);
         var data = await AssertSuccessAsync(MessageTypes.ScheduleCreate, writer.WrittenMemory, "CREATE", ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(data);
-        if (!reader.IsEof && reader.ReadU8() == 1)
+        if (!reader.IsEof)
         {
-            var createdRoute = reader.ReadString();
-            if (!reader.IsEof)
+            var hasCreatedRoute = reader.ReadU8();
+            if (hasCreatedRoute > 1)
             {
-                throw new ScheduleException("CREATE response has trailing bytes", "CREATE_INVALID_RESPONSE");
+                throw new ScheduleException(
+                    $"CREATE response has invalid created route flag {hasCreatedRoute}",
+                    "CREATE_INVALID_RESPONSE");
             }
 
-            return createdRoute;
+            if (hasCreatedRoute == 1)
+            {
+                var createdRoute = reader.ReadString();
+                if (!reader.IsEof)
+                {
+                    throw new ScheduleException("CREATE response has trailing bytes", "CREATE_INVALID_RESPONSE");
+                }
+
+                return createdRoute;
+            }
         }
 
         if (!reader.IsEof)
@@ -93,6 +107,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
 
     public async Task CancelAsync(string route, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ValidateScheduleRoute(route);
 
         using var writer = new BinaryBufferWriter();
@@ -106,6 +121,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
 
     public async Task<ScheduleListPage> ListAsync(ulong? offset = null, ulong? limit = null, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         using var writer = new BinaryBufferWriter();
         writer.WriteU8((byte)(offset.HasValue ? 1 : 0));
         if (offset.HasValue)
@@ -115,6 +131,11 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
             writer.WriteU64(limit.Value);
 
         var response = await _request(MessageTypes.ScheduleListPage, writer.WrittenMemory, ct).ConfigureAwait(false);
+        if (response.IsEmpty)
+        {
+            throw new ScheduleException("LIST response is empty", "LIST_INVALID_RESPONSE");
+        }
+
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -143,6 +164,10 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
             }
 
             throw new ScheduleException($"LIST failed: {message}", "LIST_FAILED", status, domainCode);
+        }
+        if (reader.RemainingBytes < 9)
+        {
+            throw new ScheduleException("LIST response is missing its total count or entry sentinel", "LIST_INVALID_RESPONSE");
         }
         var totalCount = reader.ReadU64();
         var entries = new List<ScheduleEntry>();
@@ -182,6 +207,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
 
     public async Task<IReadOnlyList<ScheduleEntry>> ListBySelectorAsync(string selector, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         if (!RouteValidation.IsRegistrationPattern(selector, "schedule", 4))
         {
             throw new ScheduleException($"pattern '{selector}' must use whole-segment wildcards and match a four-segment schedule route", "INVALID_ROUTE");
@@ -208,6 +234,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         string pattern,
         CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         var buffer = new AsyncSubscriptionBuffer<ScheduleNotification>(pattern, _subscriptionBufferCapacity);
         var registration = await SubscribeAsync(pattern, (notification, _) =>
         {
@@ -353,6 +380,11 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         writer.WriteString(route);
 
         var response = await _request(MessageTypes.ScheduleSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        if (response.IsEmpty)
+        {
+            throw new ScheduleException("SUBSCRIBE response is empty", "SUBSCRIBE_INVALID_RESPONSE");
+        }
+
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)
@@ -391,6 +423,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
     {
         lock (_gate)
         {
+            ThrowIfDisposed();
             if (_notificationHandlerInitialized)
             {
                 return;
@@ -544,6 +577,11 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _notificationRegistration?.Dispose();
         _reconnectRegistration?.Dispose();
         lock (_gate)
@@ -561,6 +599,8 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         }
 
     }
+
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
     sealed class ScheduleSubscriptionState
     {
@@ -590,6 +630,11 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
     async ValueTask<ReadOnlyMemory<byte>> AssertSuccessAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct)
     {
         var response = await _request(messageType, payload, ct).ConfigureAwait(false);
+        if (response.IsEmpty)
+        {
+            throw new ScheduleException($"{operation} response is empty", $"{operation}_INVALID_RESPONSE");
+        }
+
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
         if (status != 0)

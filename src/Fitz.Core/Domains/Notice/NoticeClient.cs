@@ -23,6 +23,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
     readonly Dictionary<ulong, string> _patternsBySubscriptionId = [];
     IDisposable? _notificationRegistration;
     bool _notificationHandlerInitialized;
+    int _disposed;
     long _nextHandleId;
     readonly IDisposable? _reconnectRegistration;
 
@@ -48,6 +49,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
                 : async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
             NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
     {
+        ArgumentNullException.ThrowIfNull(send);
     }
 
     internal NoticeClient(
@@ -66,6 +68,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
 
     public async Task PublishAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         if (!RouteValidation.IsFixedRoute(route, "notice", 3))
         {
             throw new NoticeException($"route '{route}' must be notice://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
@@ -80,6 +83,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
 
     public async Task<NoticeSubscription> SubscribeAsync(string pattern, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         var buffer = new AsyncSubscriptionBuffer<NoticeMessage>(pattern, _subscriptionBufferCapacity);
         var registration = await SubscribeAsync(pattern, (notification, _) =>
         {
@@ -96,6 +100,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
 
     internal async Task<NoticeSubscription> SubscribeAsync(string pattern, Func<NoticeMessage, CancellationToken, ValueTask> handler, CancellationToken ct = default)
     {
+        ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(handler);
         if (!RouteValidation.IsRegistrationPattern(pattern, "notice"))
         {
@@ -267,6 +272,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
     {
         lock (_gate)
         {
+            ThrowIfDisposed();
             if (_notificationHandlerInitialized)
             {
                 return;
@@ -396,6 +402,11 @@ public sealed class NoticeClient : INoticeClient, IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _notificationRegistration?.Dispose();
         _reconnectRegistration?.Dispose();
         lock (_gate)
@@ -413,6 +424,8 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         }
 
     }
+
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
     sealed class NoticeSubscriptionState
     {

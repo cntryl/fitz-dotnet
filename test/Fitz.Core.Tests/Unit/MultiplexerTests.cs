@@ -6,11 +6,30 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class MultiplexerTests
 {
     [Fact]
-    public async Task ShouldReturnTypedErrorGivenDisposedMultiplexerWhenRequesting()
+    public void ShouldRejectNotificationRegistrationGivenDisposedMultiplexerWhenDispatching()
     {
+        // Arrange
         var mux = new Multiplexer();
+
+        // Act
         mux.Dispose();
 
+
+        // Assert
+        Assert.Throws<ObjectDisposedException>(() => mux.RegisterNotificationHandler(90, _ => { }));
+    }
+
+    [Fact]
+    public async Task ShouldReturnTypedErrorGivenDisposedMultiplexerWhenRequesting()
+    {
+        // Arrange
+        var mux = new Multiplexer();
+
+        // Act
+        mux.Dispose();
+
+
+        // Assert
         var error = await Assert.ThrowsAsync<ConnectionException>(() => mux.RequestAsync(
             90,
             [],
@@ -21,15 +40,20 @@ public sealed class MultiplexerTests
     }
 
     [Fact]
-    public async Task Dispatch_RestoreInProgress_BuffersNotificationsUntilActivation()
+    public async Task ShouldBufferNotificationsGivenRestoreInProgressWhenDispatchingBeforeActivation()
     {
+        // Arrange
         using var mux = new Multiplexer();
         var received = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var registration = mux.RegisterNotificationHandler(90, payload => received.TrySetResult(payload));
         mux.BeginNotificationRestore();
         mux.SetConnected();
 
+
+        // Act
         mux.Dispatch(90, [0xAB]);
+
+        // Assert
         Assert.False(received.Task.IsCompleted);
 
         mux.CompleteNotificationRestore();
@@ -146,7 +170,7 @@ public sealed class MultiplexerTests
     }
 
     [Fact]
-    public async Task ShouldDispatchToAllRegisteredHandlersGivenNotificationMessage()
+    public async Task ShouldDispatchToAllRegisteredHandlersGivenNotificationMessageWhenDispatching()
     {
         // Arrange
         using var mux = new Multiplexer();
@@ -232,7 +256,7 @@ public sealed class MultiplexerTests
     }
 
     [Fact]
-    public async Task ShouldNotDeliverMatcherRejectedResponseToUncorrelatedRequest()
+    public async Task ShouldNotDeliverMatcherRejectedResponseToUncorrelatedRequestGivenActiveMultiplexerWhenDispatching()
     {
         // Arrange
         using var mux = new Multiplexer();
@@ -283,7 +307,7 @@ public sealed class MultiplexerTests
     }
 
     [Fact]
-    public async Task ShouldMatchResponsesToCorrelatedRequestsGivenSameMessageType()
+    public async Task ShouldMatchResponsesToCorrelatedRequestsGivenSameMessageTypeWhenDispatching()
     {
         // Arrange
         using var mux = new Multiplexer();
@@ -330,7 +354,7 @@ public sealed class MultiplexerTests
     }
 
     [Fact]
-    public async Task ShouldDeliverUnmatchedResponsesToNotificationHandlersGivenMatchingByCorrelationFails()
+    public async Task ShouldDeliverUnmatchedResponsesToNotificationHandlersGivenMatchingByCorrelationFailsWhenDispatching()
     {
         // Arrange
         using var mux = new Multiplexer();
@@ -366,9 +390,11 @@ public sealed class MultiplexerTests
     }
 
     [Fact]
-    public async Task ShouldIgnoreStaleResponseWhenDisconnectedBeforeFollowingRequest()
+    public async Task ShouldIgnoreStaleResponseGivenPriorDisconnectWhenFollowingRequestStarts()
     {
         // Arrange
+        // Act
+        // Assert
         using var mux = new Multiplexer();
         mux.SetConnected();
 
@@ -399,8 +425,9 @@ public sealed class MultiplexerTests
     }
 
     [Fact]
-    public async Task ShouldResetConnectionAndFailWaitersWhenUncorrelatedRequestTimesOut()
+    public async Task ShouldResetConnectionAndFailWaitersGivenUncorrelatedRequestWhenTimeoutExpires()
     {
+        // Arrange
         using var mux = new Multiplexer();
         mux.SetConnected();
 
@@ -409,12 +436,16 @@ public sealed class MultiplexerTests
             [0x1],
             static (_, _) => Task.CompletedTask,
             TimeSpan.FromMilliseconds(20));
+
+        // Act
         var waiter = mux.RequestAsync(
             141,
             [0x2],
             static (_, _) => Task.CompletedTask,
             TimeSpan.FromSeconds(2));
 
+
+        // Assert
         var timeout = await Assert.ThrowsAsync<RequestTimeoutException>(() => timedOut);
         var reset = await Assert.ThrowsAsync<ConnectionException>(() => waiter);
 

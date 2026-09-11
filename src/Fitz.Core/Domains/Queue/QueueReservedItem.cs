@@ -39,6 +39,7 @@ sealed class QueueReservedItem : QueueItem
 
     public override async Task ExtendAsync(ulong leaseSeconds, CancellationToken ct = default)
     {
+        ArgumentOutOfRangeException.ThrowIfZero(leaseSeconds, nameof(leaseSeconds));
         ThrowIfClosed();
 
         using var writer = new BinaryBufferWriter();
@@ -48,7 +49,7 @@ sealed class QueueReservedItem : QueueItem
         writer.WriteU64(leaseSeconds);
 
         var response = await _requestFn(MessageTypes.QueueExtend, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = new BinaryBufferReader(response);
+        var reader = QueueWireHelpers.ReadResponse(response, "EXTEND");
         var status = reader.ReadU8();
         if (status != 0)
         {
@@ -88,7 +89,7 @@ sealed class QueueReservedItem : QueueItem
             writer.WriteU64(token);
 
             var response = await _requestFn(MessageTypes.QueueComplete, writer.WrittenMemory, ct).ConfigureAwait(false);
-            var reader = new BinaryBufferReader(response);
+            var reader = QueueWireHelpers.ReadResponse(response, "COMPLETE");
             var status = reader.ReadU8();
             if (status != 0)
             {

@@ -6,8 +6,11 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class ConformanceContractTests
 {
     [Fact]
-    public void ShouldMatchSharedConformanceSuiteIds()
+    public void ShouldMatchSharedConformanceSuiteIdsGivenSharedContractWhenValidating()
     {
+        // Arrange
+        // Act
+        // Assert
         var suite = Cntryl.Fitz.Core.Tests.Integration.ConformanceSmokeTests.ConformanceSuiteDefinition.Load(
             Cntryl.Fitz.Core.Tests.Integration.IntegrationFixture.GetConformanceSuitePath());
 
@@ -17,8 +20,9 @@ public sealed class ConformanceContractTests
     }
 
     [Fact]
-    public void ShouldEmitSharedConformanceResultShape()
+    public void ShouldEmitSharedConformanceResultShapeGivenSharedContractWhenValidating()
     {
+        // Arrange
         var aggregate = Cntryl.Fitz.Core.Tests.Integration.ConformanceResultBuilder.BuildAggregate(
             "fitz-cross-language-client-conformance",
             "fitz-dotnet",
@@ -50,8 +54,12 @@ public sealed class ConformanceContractTests
             ]);
 
         using var document = JsonDocument.Parse(JsonSerializer.Serialize(aggregate));
+
+        // Act
         var root = document.RootElement;
 
+
+        // Assert
         Assert.Equal("fitz-cross-language-client-conformance", root.GetProperty("suite").GetString());
         Assert.Equal("1.0", root.GetProperty("version").GetString());
         Assert.Equal("fitz-dotnet", root.GetProperty("client").GetString());

@@ -22,6 +22,7 @@ public sealed class KvClient : IKvClient, IDisposable
     readonly Dictionary<string, KvSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
     readonly Dictionary<ulong, string> _patternsBySubscriptionId = [];
     IDisposable? _notificationRegistration;
+    int _disposed;
     readonly IDisposable? _reconnectRegistration;
     bool _notificationHandlerInitialized;
     long _nextHandleId;
@@ -45,6 +46,7 @@ public sealed class KvClient : IKvClient, IDisposable
     public KvClient(Func<ushort, byte[], CancellationToken, Task<byte[]>> request)
         : this(async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)))
     {
+        ArgumentNullException.ThrowIfNull(request);
     }
 
     internal KvClient(
@@ -69,6 +71,7 @@ public sealed class KvClient : IKvClient, IDisposable
         KvMode mode = KvMode.ReadWrite,
         CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         if (!RouteValidation.IsFixedRoute(route, "kv", 3))
         {
             throw new KvException($"route '{route}' must be kv://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
@@ -109,6 +112,7 @@ public sealed class KvClient : IKvClient, IDisposable
         string pattern,
         CancellationToken cancellationToken = default)
     {
+        ThrowIfDisposed();
         var buffer = new AsyncSubscriptionBuffer<KvNotification>(pattern, _subscriptionBufferCapacity);
         var registration = await SubscribeAsync(pattern, (notification, _) =>
         {
@@ -265,6 +269,7 @@ public sealed class KvClient : IKvClient, IDisposable
     {
         lock (_gate)
         {
+            ThrowIfDisposed();
             if (_notificationHandlerInitialized)
                 return;
             if (_registerNotificationHandler is null)
@@ -365,6 +370,11 @@ public sealed class KvClient : IKvClient, IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _notificationRegistration?.Dispose();
         _reconnectRegistration?.Dispose();
         lock (_gate)
@@ -378,6 +388,8 @@ public sealed class KvClient : IKvClient, IDisposable
             _patternsBySubscriptionId.Clear();
         }
     }
+
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
     sealed class KvSubscriptionState
     {

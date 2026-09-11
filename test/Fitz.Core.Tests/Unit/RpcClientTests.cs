@@ -9,10 +9,56 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class RpcClientTests
 {
     [Fact]
-    public async Task ShouldRegisterOneResponseHandlerAcrossMultipleCalls()
+    public async Task ShouldRejectNullHandlerGivenWorkerRegistrationWhenBeforeTransport()
     {
+        // Arrange
+        var requestCalled = false;
+
+        // Act
+        using var rpc = new RpcClient(
+            (_, _, _) =>
+            {
+                requestCalled = true;
+                return Task.FromResult(Array.Empty<byte>());
+            },
+            registerNotificationHandler: (_, _) => new TestRegistration());
+
+
+        // Assert
+        await Assert.ThrowsAsync<ArgumentNullException>(() => rpc.RegisterWorkerAsync(
+            "rpc://prod/app/*",
+            null!));
+
+        Assert.False(requestCalled);
+    }
+
+    [Fact]
+    public async Task ShouldReturnTypedErrorGivenEmptyResponseWhenRegisteringWorker()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var rpc = new RpcClient(
+            (_, _, _) => Task.FromResult(Array.Empty<byte>()),
+            registerNotificationHandler: (_, _) => new TestRegistration());
+
+        var error = await Assert.ThrowsAsync<RpcException>(() => rpc.RegisterWorkerAsync(
+            "rpc://prod/app/*",
+            (_, _, _) => ValueTask.CompletedTask));
+
+        Assert.Equal("REGISTER_INVALID_RESPONSE", error.Code);
+    }
+
+    [Fact]
+    public async Task ShouldRegisterOneResponseHandlerAcrossMultipleCallsGivenRpcClientWhenOperationRuns()
+    {
+        // Arrange
         Action<byte[]>? responseHandler = null;
+
+        // Act
         var responseRegistrations = 0;
+
+        // Assert
         using var rpc = new RpcClient(
             (_, payload, _) =>
             {
@@ -48,8 +94,11 @@ public sealed class RpcClientTests
     }
 
     [Fact]
-    public void ShouldValidateRouteBeforeRpcCallIsEnumerated()
+    public void ShouldValidateRouteBeforeRpcCallIsEnumeratedGivenRpcClientWhenOperationRuns()
     {
+        // Arrange
+        // Act
+        // Assert
         using var rpc = new RpcClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
 
         var exception = Assert.Throws<RpcException>(() =>
@@ -59,12 +108,17 @@ public sealed class RpcClientTests
     }
 
     [Fact]
-    public async Task ShouldRegisterRequestHandlerOnceGivenConcurrentWorkerRegistration()
+    public async Task ShouldRegisterRequestHandlerOnceGivenConcurrentWorkerRegistrationWhenRpcOperationRuns()
     {
+        // Arrange
         var bothRequestsStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseResponses = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var requestCount = 0;
+
+        // Act
         var handlerRegistrations = 0;
+
+        // Assert
         using var rpc = new RpcClient(
             async (_, _, _) =>
             {
@@ -156,6 +210,8 @@ public sealed class RpcClientTests
     [Fact]
     public async Task ShouldThrowRpcExceptionGivenTerminalErrorResponseWhenCallingRpc()
     {
+        // Arrange
+        // Act
         Action<byte[]>? responseHandler = null;
         using var rpc = new RpcClient(
             (_, payload, _) =>
@@ -200,7 +256,7 @@ public sealed class RpcClientTests
     }
 
     [Fact]
-    public async Task ShouldRegisterWorkerAndDispatchRequestGivenIncomingRpcMessage()
+    public async Task ShouldRegisterWorkerAndDispatchRequestGivenIncomingRpcMessageWhenRpcOperationRuns()
     {
         // Arrange
         ushort seenMessageType = 0;
@@ -263,6 +319,7 @@ public sealed class RpcClientTests
     [Fact]
     public async Task ShouldReportErrorGivenWorkerHandlerFailureWhenDispatchingRequest()
     {
+        // Arrange
         Action<byte[]>? incomingHandler = null;
         var reported = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var rpc = new RpcClient(
@@ -284,7 +341,11 @@ public sealed class RpcClientTests
         incoming.WriteU32(0);
         incomingHandler!(incoming.Build());
 
+
+        // Act
         var exception = await reported.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Assert
         Assert.IsType<InvalidOperationException>(exception);
         Assert.Equal("worker failed", exception.Message);
     }
@@ -292,6 +353,7 @@ public sealed class RpcClientTests
     [Fact]
     public async Task ShouldSerializeResponsesGivenConcurrentSendsWhenWorkerEndsStream()
     {
+        // Arrange
         Action<byte[]>? incomingHandler = null;
         var sentPayloads = new List<byte[]>();
         var sentSync = new object();
@@ -337,7 +399,11 @@ public sealed class RpcClientTests
         incoming.WriteU32(0);
         incomingHandler!(incoming.Build());
 
+
+        // Act
         var afterEndError = await completed.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Assert
         Assert.IsType<InvalidOperationException>(afterEndError);
         Assert.Equal(1, maxActiveSends);
         Assert.Equal(2, sentPayloads.Count);
@@ -354,7 +420,7 @@ public sealed class RpcClientTests
     [Theory]
     [InlineData(0u)]
     [InlineData(1025u)]
-    public async Task ShouldRejectWorkerConcurrencyOutsideWireRange(uint maxConcurrency)
+    public async Task ShouldRejectWorkerConcurrencyOutsideWireRangeGivenRpcClientWhenOperationRuns(uint maxConcurrency)
     {
         // Arrange
         var requestCalled = false;
@@ -382,7 +448,7 @@ public sealed class RpcClientTests
     [Theory]
     [InlineData(1u)]
     [InlineData(1024u)]
-    public async Task ShouldEncodeWorkerConcurrencyAtWireBoundaries(uint maxConcurrency)
+    public async Task ShouldEncodeWorkerConcurrencyAtWireBoundariesGivenRpcClientWhenOperationRuns(uint maxConcurrency)
     {
         // Arrange
         byte[]? seenPayload = null;
@@ -440,6 +506,8 @@ public sealed class RpcClientTests
     public async Task ShouldThrowOperationCanceledGivenCanceledTokenWhenCallingRpc()
     {
         // Arrange
+        // Act
+        // Assert
         using var rpc = new RpcClient(
             (_, _, _) =>
             {

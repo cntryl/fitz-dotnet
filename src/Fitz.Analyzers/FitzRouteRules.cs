@@ -21,6 +21,13 @@ static class FitzRouteRules
             AddClient(clients, compilation, "Cntryl.Fitz.Abstractions.Domains.Rpc.IRpcClient");
             AddClient(clients, compilation, "Cntryl.Fitz.Abstractions.Domains.Schedule.IScheduleClient");
             AddClient(clients, compilation, "Cntryl.Fitz.Abstractions.Domains.Stream.IStreamClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Kv.KvClient", "IKvClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Queue.QueueClient", "IQueueClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Lease.LeaseClient", "ILeaseClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Notice.NoticeClient", "INoticeClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Rpc.RpcClient", "IRpcClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Schedule.ScheduleClient", "IScheduleClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Stream.StreamClient", "IStreamClient");
             _clients = clients.ToImmutable();
 
             var lifecycleHandles = ImmutableArray.CreateBuilder<INamedTypeSymbol>();
@@ -40,7 +47,7 @@ static class FitzRouteRules
             {
                 if (SymbolEqualityComparer.Default.Equals(containingType, client.Symbol))
                 {
-                    clientName = client.Symbol.Name;
+                    clientName = client.ClientName;
                     return true;
                 }
             }
@@ -78,11 +85,12 @@ static class FitzRouteRules
         static void AddClient(
             ImmutableArray<ClientSymbol>.Builder clients,
             Compilation compilation,
-            string metadataName)
+            string metadataName,
+            string? clientName = null)
         {
             if (compilation.GetTypeByMetadataName(metadataName) is { } symbol)
             {
-                clients.Add(new ClientSymbol(symbol));
+                clients.Add(new ClientSymbol(symbol, clientName ?? symbol.Name));
             }
         }
 
@@ -99,9 +107,15 @@ static class FitzRouteRules
 
         readonly struct ClientSymbol
         {
-            internal ClientSymbol(INamedTypeSymbol symbol) => Symbol = symbol;
+            internal ClientSymbol(INamedTypeSymbol symbol, string clientName)
+            {
+                Symbol = symbol;
+                ClientName = clientName;
+            }
 
             internal INamedTypeSymbol Symbol { get; }
+
+            internal string ClientName { get; }
         }
     }
 

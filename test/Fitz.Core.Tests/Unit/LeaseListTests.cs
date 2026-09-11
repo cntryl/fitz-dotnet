@@ -9,6 +9,19 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class LeaseListTests
 {
     [Fact]
+    public async Task ShouldReturnTypedErrorGivenTruncatedSuccessWhenListingLeases()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var lease = new LeaseClient((_, _, _) => Task.FromResult(new byte[] { 0 }));
+
+        var error = await Assert.ThrowsAsync<LeaseException>(() => lease.ListAsync("lease://prod/app/*"));
+
+        Assert.Equal("LIST_INVALID_RESPONSE", error.Code);
+    }
+
+    [Fact]
     public async Task ShouldEncodePatternAndDefaultLimitGivenNoCursorWhenListing()
     {
         // Arrange
@@ -43,7 +56,7 @@ public sealed class LeaseListTests
     }
 
     [Fact]
-    public async Task ShouldEncodeCursorAndLimitWhenListing()
+    public async Task ShouldEncodeCursorAndLimitGivenPaginationOptionsWhenListing()
     {
         // Arrange
         byte[]? seenPayload = null;
@@ -122,7 +135,7 @@ public sealed class LeaseListTests
     }
 
     [Fact]
-    public async Task ShouldRejectImpossibleItemCountWithoutUnboundedPreallocation()
+    public async Task ShouldRejectImpossibleItemCountWithoutUnboundedPreallocationGivenLeaseListRequestWhenProcessing()
     {
         // Arrange
         using var leaseClient = new LeaseClient((_, _, _) =>
@@ -145,7 +158,7 @@ public sealed class LeaseListTests
     [Theory]
     [InlineData((uint)5011)]
     [InlineData((uint)5012)]
-    public async Task ShouldPreserveDomainCodeGivenTypedListError(uint domainCode)
+    public async Task ShouldPreserveDomainCodeGivenTypedListErrorWhenParsingListResponse(uint domainCode)
     {
         // Arrange
         using var leaseClient = new LeaseClient((_, _, _) =>
@@ -166,7 +179,7 @@ public sealed class LeaseListTests
     }
 
     [Fact]
-    public async Task ShouldRejectMalformedListPattern()
+    public async Task ShouldRejectMalformedListPatternGivenLeaseListRequestWhenProcessing()
     {
         // Arrange
         using var leaseClient = new LeaseClient((_, _, _) => throw new InvalidOperationException("should not send request for invalid pattern"));
@@ -180,7 +193,7 @@ public sealed class LeaseListTests
     }
 
     [Fact]
-    public async Task ShouldRejectNegativeLimit()
+    public async Task ShouldRejectNegativeLimitGivenLeaseListRequestWhenProcessing()
     {
         // Arrange
         using var leaseClient = new LeaseClient((_, _, _) => throw new InvalidOperationException("should not send request for invalid limit"));
@@ -195,17 +208,25 @@ public sealed class LeaseListTests
     [Fact]
     public async Task ShouldRejectLimitGivenZeroValueWhenListingLeases()
     {
+        // Arrange
         using var leaseClient = new LeaseClient((_, _, _) =>
             throw new InvalidOperationException("should not send request for invalid limit"));
 
+
+        // Act
         var act = () => leaseClient.ListAsync("lease://acme/renderers/*", limit: 0);
 
+
+        // Assert
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(act);
     }
 
     [Fact]
-    public void ErrorCodesMatchWireProtocol()
+    public void ShouldMatchWireProtocolGivenLeaseErrorCodesWhenValidated()
     {
+        // Arrange
+        // Act
+        // Assert
         Assert.Equal((uint)5011, FitzErrorCodes.LeaseInvalidListCursor);
         Assert.Equal((uint)5012, FitzErrorCodes.LeaseInvalidListPattern);
     }

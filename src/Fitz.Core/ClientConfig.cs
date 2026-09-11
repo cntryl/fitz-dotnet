@@ -36,9 +36,14 @@ public sealed record ClientConfig(
 
     internal void Validate()
     {
+        ArgumentNullException.ThrowIfNull(Url);
         if (!Url.IsAbsoluteUri)
         {
             throw new ArgumentException("The Fitz URL must be absolute.", nameof(Url));
+        }
+        if (!Enum.IsDefined(Transport))
+        {
+            throw new ArgumentOutOfRangeException(nameof(Transport), Transport, "Unknown client transport.");
         }
 
         ValidatePositiveTimeout(Timeout, nameof(Timeout));

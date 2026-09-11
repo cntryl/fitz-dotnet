@@ -6,8 +6,9 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class SubscriptionDispatchTests
 {
     [Fact]
-    public async Task Close_QueuedCallback_CancelsCallbackCompletion()
+    public async Task ShouldCancelQueuedCallbackGivenActiveSubscriptionWhenDispatcherCloses()
     {
+        // Arrange
         var firstChannel = Channel.CreateUnbounded<int>();
         var secondChannel = Channel.CreateUnbounded<int>();
         using var firstRegistration = new SubscriptionRegistration<int>(firstChannel);
@@ -40,8 +41,12 @@ public sealed class SubscriptionDispatchTests
         secondChannel.Writer.TryWrite(2);
         await secondQueued.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
+
+        // Act
         dispatcher.Close();
 
+
+        // Assert
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             secondRegistration.Completion.WaitAsync(TimeSpan.FromSeconds(1)));
         releaseFirst.TrySetResult();
@@ -49,8 +54,9 @@ public sealed class SubscriptionDispatchTests
     }
 
     [Fact]
-    public async Task ShouldFailCompletionAndCleanupGivenDispatchQueueOverflow()
+    public async Task ShouldFailCompletionAndCleanupGivenDispatchQueueOverflowWhenDispatching()
     {
+        // Arrange
         var channel = Channel.CreateUnbounded<int>();
         var cleanupCalled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var registration = new SubscriptionRegistration<int>(
@@ -64,8 +70,12 @@ public sealed class SubscriptionDispatchTests
             });
         SubscriptionPump.Start(registration, (_, _) => ValueTask.CompletedTask, (_, _) => false);
 
+
+        // Act
         channel.Writer.TryWrite(1);
 
+
+        // Assert
         var error = await Assert.ThrowsAsync<AsyncHandlerOverflowException>(
             () => registration.Completion.WaitAsync(TimeSpan.FromSeconds(1)));
         Assert.Equal(AsyncHandlerOverflowException.ErrorCode, error.Code);
@@ -77,6 +87,9 @@ public sealed class SubscriptionDispatchTests
     [Fact]
     public async Task ShouldReturnFromStartGivenMessageAlreadyQueuedWhenPumpBegins()
     {
+        // Arrange
+        // Act
+        // Assert
         var channel = Channel.CreateUnbounded<int>(new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -102,8 +115,9 @@ public sealed class SubscriptionDispatchTests
     }
 
     [Fact]
-    public async Task ShouldCancelHandlerTokenGivenRegistrationDisposedWhileHandlerIsRunning()
+    public async Task ShouldCancelHandlerTokenGivenRegistrationDisposedWhileHandlerIsRunningWhenDispatching()
     {
+        // Arrange
         var channel = Channel.CreateUnbounded<int>(new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -128,7 +142,11 @@ public sealed class SubscriptionDispatchTests
 
         channel.Writer.TryWrite(1);
 
+
+        // Act
         var handlerToken = await handlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Assert
         Assert.NotEqual(default, handlerToken);
         Assert.False(handlerToken.IsCancellationRequested);
 
@@ -138,8 +156,9 @@ public sealed class SubscriptionDispatchTests
     }
 
     [Fact]
-    public async Task ShouldSkipQueuedMessagesGivenRegistrationDisposedBeforeNextHandlerRuns()
+    public async Task ShouldSkipQueuedMessagesGivenRegistrationDisposedBeforeNextHandlerRunsWhenDispatching()
     {
+        // Arrange
         var channel = Channel.CreateUnbounded<int>(new UnboundedChannelOptions
         {
             SingleReader = true,
@@ -171,8 +190,12 @@ public sealed class SubscriptionDispatchTests
         registration.Dispose();
         releaseFirstHandler.TrySetResult();
 
+
+        // Act
         await Task.Delay(100);
 
+
+        // Assert
         lock (handledMessages)
         {
             Assert.Equal([1], handledMessages);

@@ -11,10 +11,15 @@ public sealed class LeaseInventoryObserverTests
     [Fact]
     public async Task ShouldRejectOptionsGivenNonpositiveListTimeoutWhenObserving()
     {
+        // Arrange
         var broker = new FakeLeaseBroker();
         using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+
+        // Act
         var options = new LeaseObserveOptions { ListTimeout = TimeSpan.Zero };
 
+
+        // Assert
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
             leaseClient.ObserveAsync("lease://acme/renderers/*", options));
 
@@ -24,6 +29,7 @@ public sealed class LeaseInventoryObserverTests
     [Fact]
     public async Task ShouldReturnTypedTimeoutGivenSlowListPassWhenObserving()
     {
+        // Arrange
         using var leaseClient = new LeaseClient(
             async (messageType, _, cancellationToken) =>
             {
@@ -39,8 +45,12 @@ public sealed class LeaseInventoryObserverTests
                 return ReadOnlyMemory<byte>.Empty;
             },
             registerNotificationHandler: (_, _) => new TestRegistration());
+
+        // Act
         var options = new LeaseObserveOptions { ListTimeout = TimeSpan.FromMilliseconds(20) };
 
+
+        // Assert
         var error = await Assert.ThrowsAsync<LeaseException>(() =>
             leaseClient.ObserveAsync("lease://acme/renderers/*", options));
 
@@ -50,6 +60,7 @@ public sealed class LeaseInventoryObserverTests
     [Fact]
     public async Task ShouldStopAndCompleteUpdatesGivenNormalSubscriptionCompletionWhenClientCloses()
     {
+        // Arrange
         var broker = new FakeLeaseBroker();
         broker.QueueListPage([MakeItem("lease://acme/renderers/a")]);
         using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
@@ -63,7 +74,11 @@ public sealed class LeaseInventoryObserverTests
 
         leaseClient.Dispose();
 
+
+        // Act
         await updatesCompleted.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Assert
         Assert.False(observer.IsReady);
         var callsAtShutdown = broker.Calls.Count;
         await Task.Delay(100);
@@ -74,6 +89,7 @@ public sealed class LeaseInventoryObserverTests
     [Fact]
     public async Task ShouldBoundConvergenceGivenContinuouslyDirtyInventoryWhenBootstrapping()
     {
+        // Arrange
         var broker = new FakeLeaseBroker();
         for (var i = 0; i < 10; i++)
         {
@@ -87,9 +103,13 @@ public sealed class LeaseInventoryObserverTests
         }
         using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
 
+
+        // Act
         var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*")
             .WaitAsync(TimeSpan.FromSeconds(1));
 
+
+        // Assert
         Assert.True(observer.IsReady);
         Assert.InRange(broker.Calls.Count(call => call == "LIST"), 3, 6);
         await observer.DisposeAsync();
@@ -98,12 +118,17 @@ public sealed class LeaseInventoryObserverTests
     [Fact]
     public async Task ShouldRejectCursorGivenNonProgressingLeaseListWhenBootstrapping()
     {
+        // Arrange
         var broker = new FakeLeaseBroker();
         var cursor = new LeaseListCursor(7, 10);
         broker.QueueListPage([], cursor);
         broker.QueueListPage([], cursor);
+
+        // Act
         using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
 
+
+        // Assert
         var error = await Assert.ThrowsAsync<LeaseException>(() =>
             leaseClient.ObserveAsync("lease://acme/renderers/*"));
 
@@ -115,8 +140,9 @@ public sealed class LeaseInventoryObserverTests
     [InlineData(0, 0.2, 256)]
     [InlineData(60, -0.1, 256)]
     [InlineData(60, 1.0, 256)]
+    [InlineData(60, double.NaN, 256)]
     [InlineData(60, 0.2, 0)]
-    public async Task ShouldRejectInvalidObserverResourceOptions(
+    public async Task ShouldRejectInvalidObserverResourceOptionsGivenActiveObserverWhenLifecycleChanges(
         int intervalSeconds,
         double jitterRatio,
         int updateBufferCapacity)
@@ -140,7 +166,7 @@ public sealed class LeaseInventoryObserverTests
     }
 
     [Fact]
-    public async Task ShouldSubscribeBeforeListingAndApplyBufferedNotificationsAfterFirstListInstalls()
+    public async Task ShouldApplyBufferedNotificationsGivenBootstrapListWhenSubscriptionStartsFirst()
     {
         // Arrange
         var broker = new FakeLeaseBroker();
@@ -171,7 +197,7 @@ public sealed class LeaseInventoryObserverTests
     }
 
     [Fact]
-    public async Task ShouldRelistOnSteadyStateNotificationsToPreserveCompleteItems()
+    public async Task ShouldPreserveCompleteItemsGivenSteadyStateNotificationWhenObserverRelists()
     {
         // Arrange
         var broker = new FakeLeaseBroker();
@@ -211,7 +237,7 @@ public sealed class LeaseInventoryObserverTests
     }
 
     [Fact]
-    public async Task ShouldReconcileOnAPeriodicInterval()
+    public async Task ShouldReconcileOnAPeriodicIntervalGivenActiveObserverWhenLifecycleChanges()
     {
         // Arrange
         var broker = new FakeLeaseBroker();
@@ -238,7 +264,7 @@ public sealed class LeaseInventoryObserverTests
     }
 
     [Fact]
-    public async Task ShouldRebootstrapFromScratchWhenTheConnectionReconnects()
+    public async Task ShouldRebootstrapFromScratchGivenConnectionLossWhenConnectionReconnects()
     {
         // Arrange
         var broker = new FakeLeaseBroker();
@@ -268,7 +294,7 @@ public sealed class LeaseInventoryObserverTests
     }
 
     [Fact]
-    public async Task ShouldNotThrowOrLeakWhenDisposedWhileAReconnectBootstrapIsInFlight()
+    public async Task ShouldNotThrowOrLeakGivenReconnectBootstrapInFlightWhenDisposed()
     {
         // Arrange
         var broker = new FakeLeaseBroker();
@@ -310,7 +336,7 @@ public sealed class LeaseInventoryObserverTests
     }
 
     [Fact]
-    public async Task ShouldCoalesceASecondReconnectWhileBootstrapListIsInFlight()
+    public async Task ShouldCoalesceReconnectGivenBootstrapListInFlightWhenSecondReconnectOccurs()
     {
         // Arrange
         var broker = new FakeLeaseBroker();
@@ -335,7 +361,7 @@ public sealed class LeaseInventoryObserverTests
     }
 
     [Fact]
-    public async Task ShouldRetryATransientListFailureAfterReconnect()
+    public async Task ShouldRetryATransientListFailureAfterReconnectGivenActiveObserverWhenLifecycleChanges()
     {
         // Arrange
         var broker = new FakeLeaseBroker();
@@ -357,7 +383,7 @@ public sealed class LeaseInventoryObserverTests
     }
 
     [Fact]
-    public async Task ShouldResubscribeAndRelistAfterDispatchOverflowAndTransientSubscribeFailure()
+    public async Task ShouldRecoverInventoryGivenDispatchOverflowWhenResubscribeInitiallyFails()
     {
         // Arrange
         var broker = new FakeLeaseBroker();
@@ -391,7 +417,7 @@ public sealed class LeaseInventoryObserverTests
     }
 
     [Fact]
-    public async Task ShouldStopBackgroundWorkAndUnsubscribeWhenDisposed()
+    public async Task ShouldStopBackgroundWorkAndUnsubscribeGivenActiveObserverWhenDisposed()
     {
         // Arrange
         var broker = new FakeLeaseBroker();
