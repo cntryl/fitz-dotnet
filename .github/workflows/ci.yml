@@ -78,7 +78,7 @@ jobs:
         run: artifacts/native-aot/Fitz.PackageConsumer
 
       - name: Upload NuGet packages
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fitz-dotnet-packages
           path: artifacts/packages
@@ -136,7 +136,7 @@ jobs:
 
       - name: Upload conformance results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fitz-dotnet-conformance-${{ matrix.transport }}-${{ matrix.auth_mode }}
           path: artifacts/conformance-${{ matrix.transport }}-${{ matrix.auth_mode }}.json
