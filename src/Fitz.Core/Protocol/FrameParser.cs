@@ -9,7 +9,7 @@ namespace Cntryl.Fitz.Protocol;
 public sealed class FrameParser
 {
     const int InitialCapacity = 1024;
-    const int DefaultMaxBufferSize = ushort.MaxValue + FrameCodec.MaxHeaderSize;
+    const int DefaultMaxBufferSize = FrameCodec.MaxTransportFrameSize;
 
     readonly int _maxBufferSize;
     byte[] _buffer;

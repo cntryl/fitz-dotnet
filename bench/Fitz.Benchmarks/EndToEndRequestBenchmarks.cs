@@ -37,6 +37,10 @@ public class EndToEndRequestBenchmarks : IAsyncDisposable
     [Params(0, 1)]
     public int RoundTripMs { get; set; }
 
+    /// <summary>Whether the broker advertises <c>CAP_CORRELATION</c>.</summary>
+    [Params(false, true)]
+    public bool Correlated { get; set; }
+
     [GlobalSetup]
     public async Task Setup()
     {
@@ -51,8 +55,19 @@ public class EndToEndRequestBenchmarks : IAsyncDisposable
 
         _connection = new FitzConnection(
             config,
-            () => new LoopbackTransport(roundTripLatency: TimeSpan.FromMilliseconds(RoundTripMs)));
+            () => new LoopbackTransport(
+                roundTripLatency: TimeSpan.FromMilliseconds(RoundTripMs),
+                correlationEnabled: Correlated));
         await _connection.ConnectAsync().ConfigureAwait(false);
+
+        if (Correlated)
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (!_connection.CorrelationEnabled)
+            {
+                await Task.Delay(1, timeout.Token).ConfigureAwait(false);
+            }
+        }
     }
 
     [GlobalCleanup]

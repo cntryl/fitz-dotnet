@@ -4,6 +4,23 @@ public static class MessageTypes
 {
     public const ushort Connect = 1;
 
+    /// <summary>
+    /// Labels the request record that immediately follows it in the same transport frame with a
+    /// client-generated <c>u64</c> identifier.
+    /// </summary>
+    public const ushort Correlate = 2;
+
+    /// <summary>
+    /// Echoes a <see cref="Correlate"/> identifier ahead of the response it belongs to, in the same
+    /// transport frame. The broker sends it only for requests that carried <see cref="Correlate"/>.
+    /// </summary>
+    public const ushort Correlated = 3;
+
+    /// <summary>
+    /// Unsolicited broker capability advertisement, sent once per session on connect.
+    /// </summary>
+    public const ushort ServerHello = 4;
+
     public const ushort KvBegin = 100;
     public const ushort KvCommit = 101;
     public const ushort KvRollback = 102;

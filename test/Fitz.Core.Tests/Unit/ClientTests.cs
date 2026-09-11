@@ -129,7 +129,7 @@ public sealed class ClientTests
         // Assert
         var config = new ClientConfig(new Uri("ws://localhost:4190/ws"));
 
-        Assert.Equal(65_540, config.MaxFrameSize);
+        Assert.Equal(FrameCodec.MaxTransportFrameSize, config.MaxFrameSize);
     }
 
     [Fact]

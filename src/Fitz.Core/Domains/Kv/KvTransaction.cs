@@ -14,6 +14,8 @@ public sealed class KvTransaction : IKvTransaction
     IDisposable? _disconnectRegistration;
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Disposal may race active operations; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _finalizationGate = new(1, 1);
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Disposal may race active operations; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
+    readonly SemaphoreSlim _operationGate = new(1, 1);
     int _closed;
     int _disposed;
 
@@ -294,16 +296,24 @@ public sealed class KvTransaction : IKvTransaction
 
     async Task ExpectStatusAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct, bool ensureOpen = true)
     {
-        if (ensureOpen)
+        await _operationGate.WaitAsync(ct).ConfigureAwait(false);
+        try
         {
-            ThrowIfClosed();
-        }
-        var response = await _request(messageType, payload, ct).ConfigureAwait(false);
-        var reader = KvWireHelpers.ReadSuccess(response, operation);
+            if (ensureOpen)
+            {
+                ThrowIfClosed();
+            }
+            var response = await _request(messageType, payload, ct).ConfigureAwait(false);
+            var reader = KvWireHelpers.ReadSuccess(response, operation);
 
-        if (!reader.IsEof)
+            if (!reader.IsEof)
+            {
+                throw new KvException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+            }
+        }
+        finally
         {
-            throw new KvException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+            _operationGate.Release();
         }
     }
 
@@ -321,18 +331,27 @@ public sealed class KvTransaction : IKvTransaction
         }
     }
 
-    ValueTask<ReadOnlyMemory<byte>> RequestWithRetryAsync(
+    async ValueTask<ReadOnlyMemory<byte>> RequestWithRetryAsync(
         RetryOperation operation,
         ushort messageType,
         ReadOnlyMemory<byte> payload,
         CancellationToken cancellationToken)
     {
-        if (_retryRequest is null)
+        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            return _request(messageType, payload, cancellationToken);
-        }
+            ThrowIfClosed();
+            if (_retryRequest is null)
+            {
+                return await _request(messageType, payload, cancellationToken).ConfigureAwait(false);
+            }
 
-        return _retryRequest(operation, messageType, payload, cancellationToken);
+            return await _retryRequest(operation, messageType, payload, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _operationGate.Release();
+        }
     }
 
     void ThrowIfClosed()

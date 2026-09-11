@@ -16,7 +16,7 @@ public sealed record ClientConfig(
     WebSocketOptions? WebSocket = null,
     FitzObservabilityOptions? Observability = null,
     AsyncHandlerOptions? AsyncHandlers = null,
-    int MaxFrameSize = 65_540,
+    int MaxFrameSize = FrameCodec.MaxTransportFrameSize,
     int MaxInFlightRequests = 256,
     int MaxRequestQueueSize = 1024,
     Func<ClientConfig, ITransport>? TransportFactory = null
@@ -52,10 +52,10 @@ public sealed record ClientConfig(
             throw new ArgumentOutOfRangeException(nameof(AuthSettleDelay), "Authentication settlement delay cannot be negative.");
         }
 
-        if (MaxFrameSize is < FrameCodec.MaxHeaderSize or > ushort.MaxValue + FrameCodec.MaxHeaderSize)
+        if (MaxFrameSize is < FrameCodec.MaxHeaderSize or > FrameCodec.MaxTransportFrameSize)
         {
             throw new ArgumentOutOfRangeException(nameof(MaxFrameSize),
-                $"MaxFrameSize must be between {FrameCodec.MaxHeaderSize} and {ushort.MaxValue + FrameCodec.MaxHeaderSize}; the Fitz wire payload length is a 16-bit value.");
+                $"MaxFrameSize must be between {FrameCodec.MaxHeaderSize} and {FrameCodec.MaxTransportFrameSize}; the Fitz wire payload length is 16-bit and a correlated transport frame includes its label.");
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxInFlightRequests);
