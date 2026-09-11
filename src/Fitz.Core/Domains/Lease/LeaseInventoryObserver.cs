@@ -221,6 +221,11 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
                     }
 
                     _bootstrapDirty = false;
+                    // Every route buffered before this converged LIST pass is represented by the
+                    // snapshot being installed. Leaving those routes pending lets the channel
+                    // consumer replay the same notification after readiness flips and issue a
+                    // redundant relist against an already-current view.
+                    _pendingRoutes.Clear();
                     _view = freshView;
                     _isReady = true;
                     break;
