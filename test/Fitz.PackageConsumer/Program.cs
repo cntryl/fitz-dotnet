@@ -1,4 +1,5 @@
 using Cntryl.Fitz;
+using Cntryl.Fitz.Abstractions;
 using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Abstractions.Domains.Notice;
@@ -21,6 +22,27 @@ foreach (var assembly in new[] { typeof(Client).Assembly, typeof(IKvClient).Asse
     {
         throw new InvalidOperationException($"{name.Name} assembly version must remain 1.0.0.0; found {name.Version}.");
     }
+}
+
+uint[] rpcErrorCodes =
+[
+    FitzErrorCodes.RpcTimeout,
+    FitzErrorCodes.RpcWorkerNotFound,
+    FitzErrorCodes.RpcBackpressure,
+    FitzErrorCodes.RpcRouteNotRegistered,
+    FitzErrorCodes.RpcCorrelationNotFound,
+    FitzErrorCodes.RpcInvalidSequence,
+    FitzErrorCodes.RpcDuplicateCorrelation,
+    FitzErrorCodes.RpcWrongWorker,
+    FitzErrorCodes.RpcUnauthorized,
+    FitzErrorCodes.RpcBackendError,
+    FitzErrorCodes.RpcInvalidRoute,
+    FitzErrorCodes.RpcInvalidSubscriptionPattern,
+    FitzErrorCodes.RpcSubscriptionLimit,
+];
+if (!rpcErrorCodes.SequenceEqual(Enumerable.Range(6001, 13).Select(static code => (uint)code)))
+{
+    throw new InvalidOperationException("RPC error code constants must cover the canonical 6001-6013 range.");
 }
 
 

@@ -33,10 +33,13 @@ anything reported outside a local investigation.
 The real `FitzConnection` request path over an in-memory transport: encode, request gate,
 multiplexer lane, send, receive loop, frame parse, dispatch, completion.
 
-`RoundTripMs` adds simulated network latency. At `0` every nanosecond is client-side work; at `1`
-the results show what the per-message-type request lane costs, because `ConcurrentSameMessageType`
-matches `SequentialRequests` exactly while `ConcurrentAcrossMessageTypes` is ~7.8× faster. That
-lane is `MUX-1` in `docs/sharp-edges-evidence-ledger.md` — protocol-deferred, not a local defect.
+`RoundTripMs` adds simulated network latency; at `0` every nanosecond is client-side work.
+`Correlated` controls whether the loopback broker advertises `CAP_CORRELATION`.
+
+The interesting comparison is `ConcurrentSameMessageType` across the `Correlated` axis. Uncorrelated,
+it matches `SequentialRequests` exactly, because the client holds one in-flight request per message
+type — a correctness requirement, since the broker does not answer same-type requests in receive
+order. Correlated, the lane disappears and the same work completes in about one round trip.
 
 ### HotPathComponentBenchmarks
 
@@ -86,9 +89,10 @@ From [PERF_GUIDELINES.md](../../PERF_GUIDELINES.md):
 | Request-response round trip | <10 µs | `EndToEndRequestBenchmarks` (`RoundTripMs=0`) |
 | Allocation per request | <150 B | `EndToEndRequestBenchmarks` |
 
-The concurrency targets in that document (5,000 concurrent RPC streams, <2 µs correlation lookup
-at that load) are not reachable while `MUX-1` stands, because a request holds its message-type
-lane until its response arrives.
+The concurrency targets in that document (5,000 concurrent RPC streams, <2 µs correlation lookup at
+that load) apply only when the broker advertises `CAP_CORRELATION`. Against a legacy broker a request
+still holds its message-type lane until its response arrives, and no amount of client concurrency
+changes that.
 
 ## Adding a benchmark
 

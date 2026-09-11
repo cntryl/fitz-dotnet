@@ -60,6 +60,67 @@ public static class FrameCodec
         return output;
     }
 
+    /// <summary>
+    /// Length of a <c>CORRELATE</c>/<c>CORRELATED</c> record: a 1-byte type, a 2-byte length, and an
+    /// 8-byte big-endian identifier.
+    /// </summary>
+    public const int CorrelationRecordSize = 11;
+
+    /// <summary>
+    /// Largest legal transport frame: a correlation record followed by an extended-type record
+    /// carrying the maximum 16-bit payload.
+    /// </summary>
+    internal const int MaxTransportFrameSize = CorrelationRecordSize + MaxHeaderSize + ushort.MaxValue;
+
+    /// <summary>
+    /// Encodes a <c>CORRELATE</c> record immediately followed by the request it labels, as the two
+    /// records of a single transport frame.
+    /// </summary>
+    /// <remarks>
+    /// The spec requires the label to precede its request in the same transport frame, so the two
+    /// records are built together and handed to the transport as one send.
+    /// </remarks>
+    public static byte[] EncodeCorrelated(ulong correlationId, ushort messageType, ReadOnlySpan<byte> payload)
+    {
+        if (correlationId == 0)
+        {
+            throw new ProtocolException("Correlation identifier zero is reserved and must not be sent.");
+        }
+
+        if (payload.Length > ushort.MaxValue)
+        {
+            throw new ProtocolException($"Payload length {payload.Length} exceeds the 65535-byte Fitz wire limit.");
+        }
+
+        var requestLength = GetTypeLength(messageType) + 2 + payload.Length;
+        var output = GC.AllocateUninitializedArray<byte>(CorrelationRecordSize + requestLength);
+
+        output[0] = (byte)MessageTypes.Correlate;
+        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(1, 2), sizeof(ulong));
+        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(3, 8), correlationId);
+        EncodeInto(messageType, payload, output.AsSpan(CorrelationRecordSize));
+        return output;
+    }
+
+    /// <summary>
+    /// Reads the identifier from a <c>CORRELATE</c>/<c>CORRELATED</c> record payload.
+    /// </summary>
+    public static ulong ReadCorrelationId(ReadOnlySpan<byte> payload)
+    {
+        if (payload.Length != sizeof(ulong))
+        {
+            throw new ProtocolException($"Correlation record carries {payload.Length} bytes; expected 8.");
+        }
+
+        var correlationId = BinaryPrimitives.ReadUInt64BigEndian(payload);
+        if (correlationId == 0)
+        {
+            throw new ProtocolException("Correlation identifier zero is reserved.");
+        }
+
+        return correlationId;
+    }
+
     public static Frame DecodeStrict(ReadOnlyMemory<byte> frameBytes)
     {
         var span = frameBytes.Span;

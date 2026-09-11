@@ -127,7 +127,7 @@ public sealed class RpcClientTests
                     bothRequestsStarted.TrySetResult();
                 }
                 await releaseResponses.Task;
-                return new byte[] { 0 };
+                return new byte[] { 0, 0, 0, 0, 0 };
             },
             registerNotificationHandler: (messageType, _) =>
             {
@@ -255,6 +255,84 @@ public sealed class RpcClientTests
         Assert.Contains("worker missing", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(6001u, "TIMEOUT", true)]
+    [InlineData(6002u, "WORKER_NOT_FOUND", true)]
+    [InlineData(6003u, "BACKPRESSURE", true)]
+    [InlineData(6004u, "ROUTE_NOT_REGISTERED", true)]
+    [InlineData(6005u, "CORRELATION_NOT_FOUND", false)]
+    [InlineData(6006u, "INVALID_SEQUENCE", false)]
+    [InlineData(6007u, "DUPLICATE_CORRELATION", false)]
+    [InlineData(6008u, "WRONG_WORKER", false)]
+    [InlineData(6009u, "UNAUTHORIZED", false)]
+    [InlineData(6010u, "BACKEND_ERROR", false)]
+    [InlineData(6011u, "INVALID_ROUTE", false)]
+    [InlineData(6012u, "INVALID_SUBSCRIPTION_PATTERN", false)]
+    [InlineData(6013u, "SUBSCRIPTION_LIMIT", false)]
+    public async Task ShouldMapCanonicalErrorGivenRpcDomainCodeWhenCallTerminates(
+        uint domainCode,
+        string expectedCode,
+        bool retryable)
+    {
+        // Arrange
+        Action<byte[]>? responseHandler = null;
+        using var rpc = new RpcClient(
+            (_, payload, _) =>
+            {
+                var request = new BinaryBufferReader(payload);
+                var correlationId = request.ReadBytes(16);
+
+                using var errorBody = new BinaryBufferWriter();
+                errorBody.WriteU8(1);
+                errorBody.WriteU32(domainCode);
+                errorBody.WriteString(expectedCode);
+
+                using var response = new BinaryBufferWriter();
+                response.WriteBytes(correlationId);
+                response.WriteU64(0);
+                response.WriteU8(1);
+                response.WriteU32((uint)errorBody.WrittenMemory.Length);
+                response.WriteBytes(errorBody.WrittenSpan);
+                responseHandler!(response.Build());
+                return Task.FromResult(Array.Empty<byte>());
+            },
+            registerNotificationHandler: (_, handler) =>
+            {
+                responseHandler = handler;
+                return new TestRegistration();
+            });
+
+        // Act
+        var error = await Assert.ThrowsAsync<RpcException>(async () =>
+        {
+            await foreach (var _ in rpc.CallAsync("rpc://prod/app/error", ReadOnlyMemory<byte>.Empty))
+            {
+            }
+        });
+
+        // Assert
+        Assert.Equal(expectedCode, error.Code);
+        Assert.Equal(domainCode, error.DomainCode);
+        Assert.Equal(retryable, Retryability.IsRetryable(error));
+    }
+
+    [Fact]
+    public async Task ShouldRejectMalformedControlSuccessGivenMissingLengthWhenRegisteringWorker()
+    {
+        // Arrange
+        using var rpc = new RpcClient(
+            (_, _, _) => Task.FromResult(new byte[] { 0 }),
+            registerNotificationHandler: (_, _) => new TestRegistration());
+
+        // Act
+        var act = () => rpc.RegisterWorkerAsync(
+            "rpc://prod/app/*",
+            (_, _, _) => ValueTask.CompletedTask);
+
+        // Assert
+        await Assert.ThrowsAsync<ProtocolException>(act);
+    }
+
     [Fact]
     public async Task ShouldRegisterWorkerAndDispatchRequestGivenIncomingRpcMessageWhenRpcOperationRuns()
     {
@@ -272,6 +350,7 @@ public sealed class RpcClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+                writer.WriteU32(0);
                 return Task.FromResult(writer.Build());
             },
             (_, _, _) => Task.CompletedTask,
@@ -323,7 +402,7 @@ public sealed class RpcClientTests
         Action<byte[]>? incomingHandler = null;
         var reported = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var rpc = new RpcClient(
-            request: (_, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 }),
+            request: (_, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0, 0, 0, 0, 0 }),
             send: (_, _, _) => ValueTask.CompletedTask,
             registerNotificationHandler: (_, handler) =>
             {
@@ -361,7 +440,7 @@ public sealed class RpcClientTests
         var maxActiveSends = 0;
         var completed = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var rpc = new RpcClient(
-            request: (_, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 }),
+            request: (_, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0, 0, 0, 0, 0 }),
             send: async (_, payload, sendCancellationToken) =>
             {
                 var active = Interlocked.Increment(ref activeSends);
@@ -458,6 +537,7 @@ public sealed class RpcClientTests
                 seenPayload = payload.ToArray();
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+                writer.WriteU32(0);
                 return Task.FromResult(writer.Build());
             },
             (_, _, _) => Task.CompletedTask,

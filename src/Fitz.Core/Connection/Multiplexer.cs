@@ -13,6 +13,9 @@ public sealed class Multiplexer : IDisposable
 {
     readonly object _gate = new();
     readonly Dictionary<ushort, LinkedList<PendingRequest>> _pending = [];
+    // Correlated requests are keyed by their identifier, so dispatch is O(1) and independent of how
+    // many requests of the same message type are in flight.
+    readonly Dictionary<ulong, PendingRequest> _correlated = [];
     readonly Dictionary<ushort, SemaphoreSlim> _requestLanes = [];
     readonly Dictionary<ushort, Dictionary<long, NotificationHandler>> _notificationHandlers = [];
     // Handler registration is rare and dispatch is per-frame, so the fan-out array is built once
@@ -208,6 +211,34 @@ public sealed class Multiplexer : IDisposable
     }
 
     /// <summary>
+    /// Dispatches a response that arrived behind a <c>CORRELATED</c> record, routing it by
+    /// identifier rather than by arrival order.
+    /// </summary>
+    /// <returns>
+    /// <see langword="false"/> when no request is waiting on the identifier, which happens when the
+    /// caller already gave up. The frame is then dropped rather than handed to an unrelated waiter.
+    /// </returns>
+    public bool DispatchCorrelated(ulong correlationId, ushort messageType, ReadOnlyMemory<byte> payload)
+    {
+        PendingRequest? pending;
+        lock (_gate)
+        {
+            if (_state != ConnectionState.Authenticated)
+            {
+                return false;
+            }
+
+            if (!_correlated.Remove(correlationId, out pending))
+            {
+                return false;
+            }
+        }
+
+        pending.CompleteResponse(payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray());
+        return true;
+    }
+
+    /// <summary>
     /// Dispatches a frame payload to a pending request or notification handlers.
     /// </summary>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Notification handlers are user callbacks and must not break frame dispatch.")]
@@ -302,13 +333,17 @@ public sealed class Multiplexer : IDisposable
         Func<ReadOnlyMemory<byte>, CancellationToken, Task> send,
         TimeSpan timeout,
         Func<ReadOnlyMemory<byte>, bool>? responseMatcher = null,
+        ulong correlationId = 0,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(send);
 
         SemaphoreSlim? lane = null;
         CancellationTokenSource? laneWaitCts = null;
-        if (responseMatcher is null)
+
+        // A correlated request needs no lane: its response carries the identifier back, so any
+        // number of the same message type may be in flight at once.
+        if (responseMatcher is null && correlationId == 0)
         {
             lane = GetLane(messageType);
 
@@ -335,7 +370,10 @@ public sealed class Multiplexer : IDisposable
         }
 
         var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var request = new PendingRequest(this, messageType, timeout, tcs, responseMatcher, cancellationToken);
+        var request = new PendingRequest(this, messageType, timeout, tcs, responseMatcher, cancellationToken)
+        {
+            CorrelationId = correlationId,
+        };
 
         try
         {
@@ -346,13 +384,25 @@ public sealed class Multiplexer : IDisposable
                     throw new ConnectionException("Connection closed or reset");
                 }
 
-                if (!_pending.TryGetValue(messageType, out var pendingQueue))
+                if (correlationId != 0)
                 {
-                    pendingQueue = new LinkedList<PendingRequest>();
-                    _pending[messageType] = pendingQueue;
+                    if (!_correlated.TryAdd(correlationId, request))
+                    {
+                        throw new ProtocolException(
+                            $"Correlation identifier {correlationId} is already in flight on this connection.");
+                    }
+                }
+                else
+                {
+                    if (!_pending.TryGetValue(messageType, out var pendingQueue))
+                    {
+                        pendingQueue = new LinkedList<PendingRequest>();
+                        _pending[messageType] = pendingQueue;
+                    }
+
+                    request.QueueNode = pendingQueue.AddLast(request);
                 }
 
-                request.QueueNode = pendingQueue.AddLast(request);
                 request.SessionEpoch = _sessionEpoch;
             }
 
@@ -400,7 +450,9 @@ public sealed class Multiplexer : IDisposable
                 }
             }
 
+            pending.AddRange(_correlated.Values);
             _pending.Clear();
+            _correlated.Clear();
         }
 
         foreach (var request in pending)
@@ -421,6 +473,7 @@ public sealed class Multiplexer : IDisposable
             _requestLanes.Clear();
             _notificationHandlers.Clear();
             _notificationHandlerSnapshots.Clear();
+            _correlated.Clear();
         }
     }
 
@@ -466,6 +519,17 @@ public sealed class Multiplexer : IDisposable
     {
         lock (_gate)
         {
+            if (request.CorrelationId != 0)
+            {
+                // Only drop the entry if it is still this request's: a late duplicate response must
+                // not evict a newer request that reused the identifier.
+                if (_correlated.TryGetValue(request.CorrelationId, out var registered)
+                    && ReferenceEquals(registered, request))
+                {
+                    _correlated.Remove(request.CorrelationId);
+                }
+            }
+
             if (_pending.TryGetValue(request.MessageType, out var queue))
             {
                 if (request.QueueNode is not null)
@@ -550,7 +614,9 @@ public sealed class Multiplexer : IDisposable
                 }
             }
 
+            affected.AddRange(_correlated.Values);
             _pending.Clear();
+            _correlated.Clear();
         }
 
         laneStateCts?.Cancel();
@@ -655,6 +721,15 @@ public sealed class Multiplexer : IDisposable
 
         internal LinkedListNode<PendingRequest>? QueueNode { get; set; }
 
+        /// <summary>Non-zero when this request was labelled with a <c>CORRELATE</c> record.</summary>
+        internal ulong CorrelationId { get; init; }
+
+        /// <summary>
+        /// A correlated request is matched by identifier, so cancelling or timing it out cannot
+        /// desynchronize a response lane the way an uncorrelated one does.
+        /// </summary>
+        internal bool IsIdentified => _responseMatcher is not null || CorrelationId != 0;
+
         internal long SessionEpoch { get; set; }
 
         internal ushort MessageType => _messageType;
@@ -694,7 +769,7 @@ public sealed class Multiplexer : IDisposable
                 }
 
                 _completionKind = CompletionKind.Canceled;
-                desynchronize = _sent && !IsCorrelated;
+                desynchronize = _sent && !IsIdentified;
             }
 
             Promise.TrySetCanceled(_cancellationToken);
@@ -720,7 +795,7 @@ public sealed class Multiplexer : IDisposable
                 }
 
                 _completionKind = CompletionKind.TimedOut;
-                desynchronize = _sent && !IsCorrelated;
+                desynchronize = _sent && !IsIdentified;
             }
 
             var suffix = desynchronize ? "; the response lane was reset to prevent response misdelivery." : string.Empty;
@@ -746,7 +821,7 @@ public sealed class Multiplexer : IDisposable
                 completionKind = _completionKind;
             }
 
-            if (IsCorrelated || completionKind is not (CompletionKind.Canceled or CompletionKind.TimedOut))
+            if (IsIdentified || completionKind is not (CompletionKind.Canceled or CompletionKind.TimedOut))
             {
                 return;
             }

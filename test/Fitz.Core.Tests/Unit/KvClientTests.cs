@@ -11,6 +11,43 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class KvClientTests
 {
     [Fact]
+    public async Task ShouldSerializeOperationsGivenConcurrentCallsOnSameTransaction()
+    {
+        // Arrange
+        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var requestCount = 0;
+        await using var transaction = new KvTransaction(RequestAsync, "kv://prod/app/data", 7);
+
+        async ValueTask<ReadOnlyMemory<byte>> RequestAsync(
+            ushort messageType,
+            ReadOnlyMemory<byte> payload,
+            CancellationToken cancellationToken)
+        {
+            _ = messageType;
+            _ = payload;
+            if (Interlocked.Increment(ref requestCount) == 1)
+            {
+                firstStarted.TrySetResult();
+                await releaseFirst.Task.WaitAsync(cancellationToken);
+            }
+
+            return new byte[] { 0 };
+        }
+
+        // Act
+        var first = transaction.PutAsync("one"u8.ToArray(), "1"u8.ToArray());
+        await firstStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var second = transaction.PutAsync("two"u8.ToArray(), "2"u8.ToArray());
+
+        // Assert
+        Assert.Equal(1, Volatile.Read(ref requestCount));
+        releaseFirst.TrySetResult();
+        await Task.WhenAll(first, second);
+        Assert.Equal(2, Volatile.Read(ref requestCount));
+    }
+
+    [Fact]
     public async Task ShouldRejectInvalidFoundFlagGivenMalformedResponseWhenGettingValue()
     {
         // Arrange

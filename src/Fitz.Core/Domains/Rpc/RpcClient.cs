@@ -1,5 +1,7 @@
+using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
+using Cntryl.Fitz.Abstractions;
 using Cntryl.Fitz.Abstractions.Domains.Rpc;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Errors;
@@ -14,7 +16,33 @@ public sealed class RpcClient : IRpcClient, IDisposable
     const byte RpcResponseFlagStreamEnd = 0x01;
     const uint RpcErrorCodeMin = 6001;
     const uint RpcErrorCodeMax = 6013;
-    const uint RpcBackpressureErrorCode = 6003;
+    const uint RpcBackpressureErrorCode = FitzErrorCodes.RpcBackpressure;
+
+    static byte[] GuidToNetworkBytes(Guid value)
+    {
+        var bytes = value.ToByteArray();
+        var a = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(0, 4));
+        var b = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(4, 2));
+        var c = BinaryPrimitives.ReadUInt16LittleEndian(bytes.AsSpan(6, 2));
+        BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(0, 4), a);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(4, 2), b);
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(6, 2), c);
+        return bytes;
+    }
+
+    static Guid GuidFromNetworkBytes(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length != CorrelationIdLength)
+        {
+            throw new ProtocolException("RPC correlation UUID must contain 16 bytes.");
+        }
+        Span<byte> little = stackalloc byte[CorrelationIdLength];
+        bytes.CopyTo(little);
+        BinaryPrimitives.WriteUInt32LittleEndian(little[..4], BinaryPrimitives.ReadUInt32BigEndian(bytes[..4]));
+        BinaryPrimitives.WriteUInt16LittleEndian(little.Slice(4, 2), BinaryPrimitives.ReadUInt16BigEndian(bytes.Slice(4, 2)));
+        BinaryPrimitives.WriteUInt16LittleEndian(little.Slice(6, 2), BinaryPrimitives.ReadUInt16BigEndian(bytes.Slice(6, 2)));
+        return new Guid(little);
+    }
 
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
@@ -120,7 +148,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
         [EnumeratorCancellation] CancellationToken ct)
     {
         var correlationId = Guid.NewGuid();
-        var correlationBytes = correlationId.ToByteArray();
+        var correlationBytes = GuidToNetworkBytes(correlationId);
         var channel = new SubscriptionChannel<RpcResponseFrame>();
         var call = new RpcCallState(channel);
         lock (_responseSync)
@@ -195,7 +223,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
                 return;
             }
 
-            correlationId = new Guid(reader.ReadSpan(CorrelationIdLength));
+            correlationId = GuidFromNetworkBytes(reader.ReadSpan(CorrelationIdLength));
             RpcCallState? call;
             lock (_responseSync)
             {
@@ -207,14 +235,6 @@ public sealed class RpcClient : IRpcClient, IDisposable
             }
 
             var sequence = reader.ReadU64();
-            if (!call.TryAcceptSequence(sequence))
-            {
-                CompleteRpcCall(
-                    correlationId,
-                    call,
-                    new RpcException($"RPC response sequence {sequence} is out of order", "INVALID_SEQUENCE", domainCode: 6006));
-                return;
-            }
             var flags = reader.ReadU8();
             if ((flags & ~RpcResponseFlagStreamEnd) != 0)
             {
@@ -231,6 +251,13 @@ public sealed class RpcClient : IRpcClient, IDisposable
             if (streamEnd && TryDecodeTerminalError(responseBody, out var rpcError))
             {
                 CompleteRpcCall(correlationId, call, rpcError);
+                return;
+            }
+
+            if (!call.TryAcceptSequence(sequence))
+            {
+                CompleteRpcCall(correlationId, call,
+                    new RpcException($"RPC response sequence {sequence} is out of order", "INVALID_SEQUENCE", domainCode: FitzErrorCodes.RpcInvalidSequence));
                 return;
             }
 
@@ -251,7 +278,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
                 return;
             }
 
-            correlationId = new Guid(payload.AsSpan(0, CorrelationIdLength));
+            correlationId = GuidFromNetworkBytes(payload.AsSpan(0, CorrelationIdLength));
             RpcCallState? call;
             lock (_responseSync)
             {
@@ -490,17 +517,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
         writer.WriteU32(maxConcurrency);
 
         var response = await _request(MessageTypes.RpcSubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = ReadRpcSuccess(response, "REGISTER");
-
-        if (reader.RemainingBytes >= 8)
-        {
-            _ = reader.ReadU64();
-        }
-
-        if (reader.RemainingBytes > 0)
-        {
-            _ = reader.ReadBytes(reader.RemainingBytes);
-        }
+        _ = ReadRpcSuccess(response, "REGISTER");
     }
 
     async Task UnsubscribeWorkerAsync(string pattern, CancellationToken ct)
@@ -683,24 +700,24 @@ public sealed class RpcClient : IRpcClient, IDisposable
     {
         return code switch
         {
-            6001 => "TIMEOUT",
-            6002 => "WORKER_NOT_FOUND",
-            6003 => "BACKPRESSURE",
-            6004 => "ROUTE_NOT_REGISTERED",
-            6005 => "CORRELATION_NOT_FOUND",
-            6006 => "INVALID_SEQUENCE",
-            6007 => "DUPLICATE_CORRELATION",
-            6008 => "WRONG_WORKER",
-            6009 => "UNAUTHORIZED",
-            6010 => "BACKEND_ERROR",
-            6011 => "INVALID_ROUTE",
-            6012 => "INVALID_SUBSCRIPTION_PATTERN",
-            6013 => "SUBSCRIPTION_LIMIT",
+            FitzErrorCodes.RpcTimeout => "TIMEOUT",
+            FitzErrorCodes.RpcWorkerNotFound => "WORKER_NOT_FOUND",
+            FitzErrorCodes.RpcBackpressure => "BACKPRESSURE",
+            FitzErrorCodes.RpcRouteNotRegistered => "ROUTE_NOT_REGISTERED",
+            FitzErrorCodes.RpcCorrelationNotFound => "CORRELATION_NOT_FOUND",
+            FitzErrorCodes.RpcInvalidSequence => "INVALID_SEQUENCE",
+            FitzErrorCodes.RpcDuplicateCorrelation => "DUPLICATE_CORRELATION",
+            FitzErrorCodes.RpcWrongWorker => "WRONG_WORKER",
+            FitzErrorCodes.RpcUnauthorized => "UNAUTHORIZED",
+            FitzErrorCodes.RpcBackendError => "BACKEND_ERROR",
+            FitzErrorCodes.RpcInvalidRoute => "INVALID_ROUTE",
+            FitzErrorCodes.RpcInvalidSubscriptionPattern => "INVALID_SUBSCRIPTION_PATTERN",
+            FitzErrorCodes.RpcSubscriptionLimit => "SUBSCRIPTION_LIMIT",
             _ => "DOMAIN_ERROR",
         };
     }
 
-    static BinaryBufferReader ReadRpcSuccess(ReadOnlyMemory<byte> response, string operation)
+    static byte[] ReadRpcSuccess(ReadOnlyMemory<byte> response, string operation)
     {
         if (response.IsEmpty)
         {
@@ -711,7 +728,12 @@ public sealed class RpcClient : IRpcClient, IDisposable
         var status = reader.ReadU8();
         if (status == 0)
         {
-            return reader;
+            var data = reader.ReadBytes(reader.ReadU32());
+            if (!reader.IsEof)
+            {
+                throw new RpcException($"{operation} success response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+            }
+            return data;
         }
 
         if (status != 1)

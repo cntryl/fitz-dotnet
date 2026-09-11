@@ -51,6 +51,11 @@ public sealed class FitzConnection : IAsyncDisposable
     long _readyWaiterCount;
     volatile ConnectionState _state = ConnectionState.Disconnected;
     int _disposed;
+    // Capabilities are per-session: a reconnect must observe a fresh SERVER_HELLO before the client
+    // may correlate again, because the peer may not be the broker that answered last time. Packed
+    // into a long so the receive loop can publish it atomically to request threads.
+    long _capabilityState;
+    long _nextCorrelationId;
 
     public FitzConnection(ClientConfig config, Func<ITransport> transportFactory)
     {
@@ -63,6 +68,72 @@ public sealed class FitzConnection : IAsyncDisposable
     }
 
     public ConnectionState State => _state;
+
+    /// <summary>
+    /// Whether the broker advertised <c>CAP_CORRELATION</c> for the current session.
+    /// </summary>
+    /// <remarks>
+    /// False until a <c>SERVER_HELLO</c> arrives, and false for the whole session against a broker
+    /// that never sends one. Requests issued before the advertisement are simply uncorrelated.
+    /// </remarks>
+    public bool CorrelationEnabled => Capabilities.SupportsCorrelation;
+
+    /// <summary>The capabilities advertised for the current session.</summary>
+    public ServerCapabilities Capabilities => UnpackCapabilities(Interlocked.Read(ref _capabilityState));
+
+    static ServerCapabilities UnpackCapabilities(long packed) =>
+        new((ushort)(packed >> 32), unchecked((uint)packed));
+
+    static long PackCapabilities(ServerCapabilities capabilities) =>
+        ((long)capabilities.ProtocolVersion << 32) | capabilities.CapabilityBits;
+
+    /// <summary>
+    /// Records a broker capability advertisement. An unparseable or unrecognised advertisement is
+    /// ignored rather than rejected: it must never be more disruptive than a missing one.
+    /// </summary>
+    void ApplyServerHello(ReadOnlySpan<byte> payload)
+    {
+        if (!ServerCapabilities.TryParse(payload, out var capabilities))
+        {
+            return;
+        }
+
+        Interlocked.Exchange(ref _capabilityState, PackCapabilities(capabilities));
+        Log(FitzLogLevel.Debug, "fitz.connection.server_hello", new Dictionary<string, object?>
+        {
+            ["protocol_version"] = capabilities.ProtocolVersion,
+            ["correlation"] = capabilities.SupportsCorrelation,
+        });
+    }
+
+    /// <summary>
+    /// Whether a message type may carry a <c>CORRELATE</c> label.
+    /// </summary>
+    /// <remarks>
+    /// RPC <c>REQUEST</c>/<c>RESPONSE</c> carry their own end-to-end 16-byte UUID and the broker
+    /// does not additionally frame-correlate them, so labelling one would leave the caller waiting
+    /// for a <c>CORRELATED</c> record that never arrives. They travel through
+    /// <see cref="SendAsync"/> today and so never reach this path; the guard keeps that true if
+    /// they are ever routed through a request instead.
+    /// </remarks>
+    static bool IsFrameCorrelatable(ushort messageType) =>
+        messageType is not (MessageTypes.RpcRequest or MessageTypes.RpcResponse);
+
+    /// <summary>
+    /// Allocates an identifier that is unique among this connection's in-flight requests.
+    /// Zero is reserved by the wire format and skipped.
+    /// </summary>
+    ulong NextCorrelationId()
+    {
+        while (true)
+        {
+            var next = unchecked((ulong)Interlocked.Increment(ref _nextCorrelationId));
+            if (next != 0)
+            {
+                return next;
+            }
+        }
+    }
 
     internal TimeSpan Timeout => _config.Timeout ?? TimeSpan.FromSeconds(30);
     internal int SubscriptionBufferCapacity => _config.ResolvedAsyncHandlers.SubscriptionBufferCapacity;
@@ -278,7 +349,15 @@ public sealed class FitzConnection : IAsyncDisposable
         CancellationToken cancellationToken = default)
     {
         await WaitForRequestReadyAsync(cancellationToken).ConfigureAwait(false);
-        var frame = FrameCodec.Encode(messageType, payload.Span);
+
+        // Read the capability once: if the advertisement lands mid-request the decision must stay
+        // consistent between the frame we encode and the way we register the request.
+        var correlationId = CorrelationEnabled && IsFrameCorrelatable(messageType)
+            ? NextCorrelationId()
+            : 0UL;
+        var frame = correlationId == 0
+            ? FrameCodec.Encode(messageType, payload.Span)
+            : FrameCodec.EncodeCorrelated(correlationId, messageType, payload.Span);
         ITransport? requestTransport = null;
 
         try
@@ -293,6 +372,7 @@ public sealed class FitzConnection : IAsyncDisposable
                 frame,
                 transport.SendAsync,
                 Timeout,
+                correlationId: correlationId,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 
             return response;
@@ -304,8 +384,11 @@ public sealed class FitzConnection : IAsyncDisposable
         catch (RequestTimeoutException)
         {
             RecordRequestTimeout(messageType);
-            ScheduleConnectionLoss(new ConnectionException(
-                $"Response lane {messageType} timed out and was reset to prevent response misdelivery."), requestTransport);
+            if (correlationId == 0)
+            {
+                ScheduleConnectionLoss(new ConnectionException(
+                    $"Response lane {messageType} timed out and was reset to prevent response misdelivery."), requestTransport);
+            }
             throw;
         }
         catch (RequestQueueFullException)
@@ -595,6 +678,9 @@ public sealed class FitzConnection : IAsyncDisposable
             SetState(ConnectionState.Connected);
             _multiplexer.BeginSession();
             _frameParser.Reset();
+            // A new transport session has not advertised anything yet. Until its SERVER_HELLO
+            // arrives the client behaves as it would against a legacy broker.
+            Interlocked.Exchange(ref _capabilityState, 0L);
             StartReceiveLoop();
 
             SetState(ConnectionState.Authenticating);
@@ -773,10 +859,7 @@ public sealed class FitzConnection : IAsyncDisposable
                         _frameParser.Append(data.Memory.Span);
                     }
 
-                    while (_frameParser.TryReadFrame(out var frame))
-                    {
-                        _multiplexer.Dispatch(frame.MessageType, frame.Payload);
-                    }
+                    DrainParsedFrames();
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested || _closeRequested)
                 {
@@ -789,6 +872,57 @@ public sealed class FitzConnection : IAsyncDisposable
                 }
             }
         }, token);
+    }
+
+    /// <summary>
+    /// Reads every complete record the parser holds and routes it.
+    /// </summary>
+    /// <remarks>
+    /// A <c>CORRELATED</c> record labels the record that immediately follows it in the same
+    /// transport frame, so the two are read as a pair. A label with nothing after it is a protocol
+    /// violation: the client's request-to-response mapping would be ambiguous, and there is no
+    /// caller left to answer, so the session is torn down rather than guessed at.
+    /// </remarks>
+    void DrainParsedFrames()
+    {
+        while (_frameParser.TryReadFrame(out var frame))
+        {
+            if (frame.MessageType != MessageTypes.Correlated)
+            {
+                DispatchFrame(frame.MessageType, frame.Payload);
+                continue;
+            }
+
+            var correlationId = FrameCodec.ReadCorrelationId(frame.Payload.Span);
+            if (!_frameParser.TryReadFrame(out var labelled))
+            {
+                throw new ProtocolException(
+                    $"Transport frame ended after a CORRELATED record for identifier {correlationId}.");
+            }
+
+            if (labelled.MessageType == MessageTypes.Correlated)
+            {
+                throw new ProtocolException("A CORRELATED record cannot label another CORRELATED record.");
+            }
+
+            if (!_multiplexer.DispatchCorrelated(correlationId, labelled.MessageType, labelled.Payload))
+            {
+                // The caller already gave up. Dropping is correct: handing this to any other waiter
+                // is exactly the misdelivery correlation exists to prevent.
+                RecordOrphanedCorrelatedResponse(labelled.MessageType);
+            }
+        }
+    }
+
+    void DispatchFrame(ushort messageType, ReadOnlyMemory<byte> payload)
+    {
+        if (messageType == MessageTypes.ServerHello)
+        {
+            ApplyServerHello(payload.Span);
+            return;
+        }
+
+        _multiplexer.Dispatch(messageType, payload);
     }
 
     void ScheduleConnectionLoss(Exception exception, ITransport? failedTransport = null)
@@ -1279,6 +1413,18 @@ public sealed class FitzConnection : IAsyncDisposable
         });
         RecordCustomCounter("fitz.request.timeout");
         FitzDiagnostics.RequestTimeouts.Add(1);
+    }
+
+    /// <summary>
+    /// A correlated response arrived for a request nobody is waiting on any more, usually because
+    /// the caller timed out or cancelled first. The frame is dropped, never rehomed.
+    /// </summary>
+    void RecordOrphanedCorrelatedResponse(ushort messageType)
+    {
+        Log(FitzLogLevel.Debug, "fitz.response.orphaned", new Dictionary<string, object?>
+        {
+            ["messageType"] = messageType,
+        });
     }
 
     void RecordRetry(RetryOperation operation, int attempt, TimeSpan delay, Exception exception)
