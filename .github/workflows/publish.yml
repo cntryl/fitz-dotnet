@@ -7,6 +7,9 @@ permissions:
   contents: read
   packages: write
 
+env:
+  NuGetPackageSourceCredentials_cntryl: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }}
+
 jobs:
   publish:
     runs-on: ubuntu-latest
