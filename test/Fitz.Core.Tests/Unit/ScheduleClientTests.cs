@@ -319,4 +319,32 @@ public sealed class ScheduleClientTests
         Assert.Equal((byte)1, reader.ReadU8());
         Assert.Equal((ulong)25, reader.ReadU64());
     }
+
+    [Fact]
+    public async Task ShouldRejectInvalidDeliveryModeGivenMalformedListResponseWhenScheduleOperationRuns()
+    {
+        // Arrange
+        using var schedule = new ScheduleClient((messageType, _, _) =>
+        {
+            Assert.Equal(MessageTypes.ScheduleListPage, messageType);
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU64(1);
+            writer.WriteU8(1);
+            writer.WriteString("schedule://prod/app/jobs/run");
+            writer.WriteString("*/5 * * * *");
+            writer.WriteU8(2);
+            writer.WriteU32(0);
+            writer.WriteU8(0);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.ListAsync());
+
+        // Assert
+        Assert.Equal("LIST_INVALID_RESPONSE", error.Code);
+        Assert.Contains("invalid delivery mode 2", error.Message, StringComparison.Ordinal);
+    }
 }

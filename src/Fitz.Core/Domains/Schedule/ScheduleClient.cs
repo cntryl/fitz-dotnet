@@ -187,11 +187,11 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
             var route = reader.ReadString();
             var cron = reader.ReadString();
             var deliveryModeValue = reader.ReadU8();
-            if (!Enum.IsDefined(typeof(ScheduleDeliveryMode), deliveryModeValue))
+            var deliveryMode = (ScheduleDeliveryMode)deliveryModeValue;
+            if (deliveryMode is not ScheduleDeliveryMode.Broadcast and not ScheduleDeliveryMode.Single)
             {
                 throw new ScheduleException($"LIST response has invalid delivery mode {deliveryModeValue}", "LIST_INVALID_RESPONSE");
             }
-            var deliveryMode = (ScheduleDeliveryMode)deliveryModeValue;
             var payloadLength = reader.ReadU32();
             var payload = reader.ReadBytes(payloadLength);
             entries.Add(new ScheduleEntry(null, route, cron, deliveryMode, payload));
