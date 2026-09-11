@@ -359,7 +359,7 @@ Every phase includes explicit perf validation:
 
 1. **Encode/decode microbenchmarks** (BenchmarkDotNet)
    - Target: <100 ns encode, <200 ns decode
-   - Run: `dotnet run --project tests/Benchmarks/Benchmarks.csproj`
+   - Run: `dotnet run --project bench/Fitz.Benchmarks/Fitz.Benchmarks.csproj`
 
 2. **Correlation lookup stress test**
    - Target: <2 μs @ 5K concurrent RPC streams

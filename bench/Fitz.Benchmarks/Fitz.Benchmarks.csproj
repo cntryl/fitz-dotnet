@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Cntryl.Fitz.Benchmarks</RootNamespace>
+    <Description>Performance benchmarks for Fitz .NET client using BenchmarkDotNet.</Description>
+    <IsPackable>false</IsPackable>
+    <!-- BenchmarkDotNet requires public, non-sealed benchmark classes. -->
+    <NoWarn>$(NoWarn);CA1063;CA1515;CA1812;CA1816;CA1822</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Fitz.Core\Fitz.Core.csproj" />
+    <ProjectReference Include="..\..\src\Fitz.Abstractions\Fitz.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

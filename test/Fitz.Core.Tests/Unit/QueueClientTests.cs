@@ -1,0 +1,852 @@
+using Cntryl.Fitz.Abstractions.Domains.Queue;
+using Cntryl.Fitz.Connection;
+using Cntryl.Fitz.Domains.Queue;
+using Cntryl.Fitz.Errors;
+using Cntryl.Fitz.Protocol;
+using Cntryl.Fitz.Transport;
+
+namespace Cntryl.Fitz.Core.Tests.Unit;
+
+public sealed class QueueClientTests
+{
+    [Fact]
+    public async Task ShouldReturnTypedErrorGivenEmptyResponseWhenEnqueuingQueueItem()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var queue = new QueueClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+
+        var error = await Assert.ThrowsAsync<QueueException>(() =>
+            queue.EnqueueAsync("queue://prod/app/tasks", ReadOnlyMemory<byte>.Empty));
+
+        Assert.Equal("ENQUEUE_INVALID_RESPONSE", error.Code);
+    }
+
+    [Fact]
+    public async Task ShouldRejectZeroLeaseGivenReservedItemWhenExtendingBeforeTransport()
+    {
+        // Arrange
+        var requestCalled = false;
+
+        // Act
+        await using var item = new QueueReservedItem(
+            "queue://prod/app/tasks",
+            ReadOnlyMemory<byte>.Empty,
+            QueueItem.AttemptUnavailable,
+            7,
+            11,
+            (_, _, _) =>
+            {
+                requestCalled = true;
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(Array.Empty<byte>());
+            });
+
+
+        // Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => item.ExtendAsync(0));
+
+        Assert.False(requestCalled);
+    }
+
+    [Fact]
+    public async Task ShouldPreserveSubscriptionGivenTrailingBytesWhenUnsubscribingQueue()
+    {
+        // Arrange
+        var unsubscribeAttempts = 0;
+        using var queue = new QueueClient(
+            (messageType, _, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                if (messageType == MessageTypes.QueueSubscribe)
+                {
+                    writer.WriteU8(1);
+                    writer.WriteU64(55);
+                }
+                else if (messageType == MessageTypes.QueueUnsubscribe && Interlocked.Increment(ref unsubscribeAttempts) == 1)
+                {
+                    writer.WriteU8(42);
+                }
+
+                return Task.FromResult(writer.Build());
+            },
+            (_, _) => new TestRegistration());
+
+        // Act
+        var subscription = await queue.SubscribeAsync("queue://prod/app/*", (_, _) => ValueTask.CompletedTask);
+
+
+        // Assert
+        var error = await Assert.ThrowsAsync<QueueException>(() => subscription.UnsubscribeAsync().AsTask());
+        await subscription.UnsubscribeAsync();
+
+        Assert.Equal("UNSUBSCRIBE_INVALID_RESPONSE", error.Code);
+        Assert.Equal(2, unsubscribeAttempts);
+    }
+
+    [Theory]
+    [InlineData(0UL, null)]
+    [InlineData(30UL, -1)]
+    public async Task ShouldRejectInvalidLeaseArgumentsGivenReserveWhenBeforeTransport(
+        ulong leaseSeconds,
+        int? waitSeconds)
+    {
+        // Arrange
+        var requestCalled = false;
+
+        // Act
+        using var queue = new QueueClient((_, _, _) =>
+        {
+            requestCalled = true;
+            return Task.FromResult(Array.Empty<byte>());
+        });
+
+
+        // Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            queue.ReserveAsync("queue://prod/app/tasks", leaseSeconds, waitSeconds: waitSeconds));
+
+        Assert.False(requestCalled);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public async Task ShouldRejectBatchSizeGivenNonpositiveValueWhenReserving(int batchSize)
+    {
+        // Arrange
+        var requestCalled = false;
+
+        // Act
+        using var queue = new QueueClient((_, _, _) =>
+        {
+            requestCalled = true;
+            return Task.FromResult(Array.Empty<byte>());
+        });
+
+
+        // Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            queue.ReserveAsync("queue://prod/app/tasks", 30, batchSize));
+
+        Assert.False(requestCalled);
+    }
+
+    [Fact]
+    public async Task ShouldReleaseDisconnectRegistrationGivenReservedItemWhenDisposing()
+    {
+        // Arrange
+        var registrations = 0;
+
+        // Act
+        using var queue = new QueueClient(
+            (_, _, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                writer.WriteU32(1);
+                writer.WriteU64(7);
+                writer.WriteU64(11);
+                writer.WriteU32(4);
+                writer.WriteBytes("body"u8);
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
+            },
+            registerOnDisconnect: _ =>
+            {
+                registrations++;
+                return new TestRegistration(() => registrations--);
+            });
+
+
+        // Assert
+        var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", 30));
+        Assert.Equal(1, registrations);
+
+        await item.DisposeAsync();
+
+        Assert.Equal(0, registrations);
+        var error = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(10));
+        Assert.Equal("ITEM_CLOSED", error.Code);
+    }
+
+    [Fact]
+    public async Task ShouldRejectImpossibleReserveCountBeforeAllocatingGivenQueueClientWhenOperationRuns()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var queue = new QueueClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU32(uint.MaxValue);
+            return Task.FromResult(writer.Build());
+        });
+
+        var exception = await Assert.ThrowsAsync<QueueException>(() =>
+            queue.ReserveAsync("queue://prod/app/tasks", 30));
+
+        Assert.Equal("RESERVE_INVALID_RESPONSE", exception.Code);
+    }
+
+    [Fact]
+    public async Task ShouldAllowCompleteRetryAfterRejectedWireOperationGivenQueueClientWhenOperationRuns()
+    {
+        // Arrange
+        var completeCalls = 0;
+
+        // Act
+        using var queue = new QueueClient((messageType, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            if (messageType == MessageTypes.QueueReserve)
+            {
+                writer.WriteU8(0);
+                writer.WriteU32(1);
+                writer.WriteU64(7);
+                writer.WriteU64(11);
+                writer.WriteU32(4);
+                writer.WriteBytes("body"u8);
+            }
+            else if (Interlocked.Increment(ref completeCalls) == 1)
+            {
+                writer.WriteU8(1);
+                writer.WriteString("try again");
+            }
+            else
+            {
+                writer.WriteU8(0);
+            }
+            return Task.FromResult(writer.Build());
+        });
+
+        // Assert
+        var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", 30));
+
+        await Assert.ThrowsAsync<QueueException>(() => item.CompleteAsync());
+        await item.CompleteAsync();
+        var closed = await Assert.ThrowsAsync<QueueException>(() => item.CompleteAsync());
+
+        Assert.Equal("ITEM_CLOSED", closed.Code);
+        Assert.Equal(2, completeCalls);
+    }
+
+    [Fact]
+    public async Task ShouldPreserveBrokerMessageGivenInvalidTokenWhenCompletingItem()
+    {
+        // Arrange
+        using var queue = new QueueClient((messageType, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            if (messageType == MessageTypes.QueueReserve)
+            {
+                writer.WriteU8(0);
+                writer.WriteU32(1);
+                writer.WriteU64(7);
+                writer.WriteU64(11);
+                writer.WriteU32(4);
+                writer.WriteBytes("body"u8);
+            }
+            else
+            {
+                writer.WriteU8(1);
+                writer.WriteString("InvalidToken");
+            }
+            return Task.FromResult(writer.Build());
+        });
+        var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", 30));
+
+        // Act
+        var act = () => item.CompleteAsync();
+
+        // Assert
+        var error = await Assert.ThrowsAsync<QueueException>(act);
+        Assert.Contains("InvalidToken", error.Message, StringComparison.Ordinal);
+        Assert.Null(error.DomainCode);
+    }
+
+    [Fact]
+    public async Task ShouldPreserveErrorCodeAndMessageGivenEnqueueFailureWhenQueueOperationRuns()
+    {
+        // Arrange
+        // Act
+        // Assert
+        using var queue = new QueueClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(1);
+            writer.WriteU32(4008);
+            writer.WriteString("queue backend unavailable");
+            return Task.FromResult(writer.Build());
+        });
+
+        var error = await Assert.ThrowsAsync<QueueException>(() =>
+            queue.EnqueueAsync("queue://prod/app/tasks", "job"u8.ToArray()));
+
+        Assert.Equal((uint)4008, error.DomainCode);
+        Assert.Equal("queue backend unavailable", error.Message);
+    }
+
+    [Fact]
+    public async Task ShouldReturnMessageIdGivenSuccessResponseWhenEnqueueing()
+    {
+        // Arrange
+        ushort seenMessageType = 0;
+        byte[]? seenPayload = null;
+
+        using var queue = new QueueClient((messageType, payload, _) =>
+        {
+            seenMessageType = messageType;
+            seenPayload = payload;
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU64(555);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var id = await queue.EnqueueAsync("queue://prod/app/tasks", "job-1"u8.ToArray());
+
+        // Assert
+        Assert.Equal((ulong)555, id);
+        Assert.Equal(MessageTypes.QueueEnqueue, seenMessageType);
+        Assert.NotNull(seenPayload);
+
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal("queue://prod/app/tasks", reader.ReadString());
+        Assert.Equal((uint)5, reader.ReadU32());
+        Assert.Equal("job-1", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(5)));
+    }
+
+    [Fact]
+    public async Task ShouldEncodeVisibilityDelayGivenNonzeroDelayWhenEnqueueing()
+    {
+        // Arrange
+        byte[]? seenPayload = null;
+        using var queue = new QueueClient((_, payload, _) =>
+        {
+            seenPayload = payload;
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU64(555);
+            return Task.FromResult(writer.Build());
+        });
+
+        await queue.EnqueueAsync("queue://prod/app/tasks", "job-1"u8.ToArray(), delayMs: 2_000);
+
+
+        // Act
+        var reader = new BinaryBufferReader(seenPayload!);
+
+        // Assert
+        Assert.Equal("queue://prod/app/tasks", reader.ReadString());
+        Assert.Equal((uint)5, reader.ReadU32());
+        Assert.Equal("job-1", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(5)));
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal((ulong)2, reader.ReadU64());
+        Assert.True(reader.IsEof);
+    }
+
+    [Fact]
+    public async Task ShouldRejectSubsecondVisibilityDelayGivenUnsupportedPrecisionWhenEnqueueing()
+    {
+        // Arrange
+        byte[]? seenPayload = null;
+        using var queue = new QueueClient((_, payload, _) =>
+        {
+            seenPayload = payload;
+            return Task.FromResult(new byte[] { 0 });
+        });
+
+        // Act
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            queue.EnqueueAsync("queue://prod/app/tasks", "job-1"u8.ToArray(), delayMs: 1));
+
+        // Assert
+        Assert.Null(seenPayload);
+    }
+
+    [Fact]
+    public async Task ShouldReturnReservedItemsGivenSuccessResponseWhenReserving()
+    {
+        // Arrange
+        byte[]? seenPayload = null;
+        using var queue = new QueueClient((messageType, payload, _) =>
+        {
+            Assert.Equal(MessageTypes.QueueReserve, messageType);
+            seenPayload = payload;
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU32(1);
+            writer.WriteU64(555);
+            writer.WriteU64(777);
+            writer.WriteU32(5);
+            writer.WriteBytes("job-1"u8);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var items = await queue.ReserveAsync("queue://prod/app/tasks", 30, batchSize: 2, waitSeconds: 10);
+
+        // Assert
+        Assert.NotNull(seenPayload);
+        Assert.Single(items);
+        Assert.Equal("queue://prod/app/tasks", items[0].Route);
+        Assert.Equal("job-1", System.Text.Encoding.UTF8.GetString(items[0].Body.Span));
+        Assert.Equal(QueueItem.AttemptUnavailable, items[0].Attempt);
+
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal("queue://prod/app/tasks", reader.ReadString());
+        Assert.Equal((ulong)30, reader.ReadU64());
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal((uint)2, reader.ReadU32());
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal((ulong)10, reader.ReadU64());
+        Assert.True(reader.IsEof);
+    }
+
+    [Fact]
+    public async Task ShouldReturnConcreteRoutesGivenWildcardQueueReserveWhenQueueOperationRuns()
+    {
+        // Arrange
+        using var queue = new QueueClient((messageType, _, _) =>
+        {
+            Assert.Equal(MessageTypes.QueueReserve, messageType);
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU32(1);
+            writer.WriteString("queue://acme/cats/cat");
+            writer.WriteU64(555);
+            writer.WriteU64(777);
+            writer.WriteU32(5);
+            writer.WriteBytes("job-1"u8);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var items = await queue.ReserveAsync("queue://*/cats/*", 30);
+
+        // Assert
+        var item = Assert.Single(items);
+        Assert.Equal("queue://acme/cats/cat", item.Route);
+        Assert.Equal("job-1", System.Text.Encoding.UTF8.GetString(item.Body.Span));
+    }
+
+    [Fact]
+    public async Task ShouldRejectWildcardRouteGivenQueueReserveResponseWhenQueueOperationRuns()
+    {
+        // Arrange
+        using var queue = new QueueClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU32(1);
+            writer.WriteString("queue://*/cats/*");
+            writer.WriteU64(555);
+            writer.WriteU64(777);
+            writer.WriteU32(0);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var result = () => queue.ReserveAsync("queue://*/cats/*", 30);
+
+        // Assert
+        await Assert.ThrowsAsync<QueueException>(result);
+    }
+
+    [Fact]
+    public async Task ShouldSendOneBlockingReserveGivenWaitSecondsWhenQueueOperationRuns()
+    {
+        // Arrange
+        var reserveCallCount = 0;
+        using var queue = new QueueClient((messageType, payload, _) =>
+        {
+            Assert.Equal(MessageTypes.QueueReserve, messageType);
+            reserveCallCount++;
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU32(0);
+
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var items = await queue.ReserveAsync("queue://prod/app/tasks", 30, waitSeconds: 1);
+
+        // Assert
+        Assert.Equal(1, reserveCallCount);
+        Assert.Empty(items);
+    }
+
+    [Fact]
+    public async Task ShouldSurfaceBrokerRejectionWithoutPollingDowngradeGivenWaitSecondsWhenQueueOperationRuns()
+    {
+        // Arrange
+        var reserveCallCount = 0;
+        using var queue = new QueueClient((_, _, _) =>
+        {
+            reserveCallCount++;
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(1);
+            writer.WriteU32(4008);
+            writer.WriteString("Trailing data after RESERVE request");
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var result = () => queue.ReserveAsync("queue://prod/app/tasks", 30, waitSeconds: 1);
+
+        // Assert
+        var error = await Assert.ThrowsAsync<QueueException>(result);
+        Assert.Equal("RESERVE_FAILED", error.Code);
+        Assert.Equal((uint)4008, error.DomainCode);
+        Assert.Equal(1, reserveCallCount);
+    }
+
+    [Fact]
+    public async Task ShouldInvokeQueueHandlerGivenNotificationWhenSubscribing()
+    {
+        // Arrange
+        Action<byte[]>? notifyHandler = null;
+        ushort seenMessageType = 0;
+        byte[]? seenPayload = null;
+        QueueAvailabilityEvent? received = null;
+        CancellationToken seenCancellationToken = default;
+        var receivedTcs = new TaskCompletionSource<QueueAvailabilityEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        using var queue = new QueueClient(
+            (messageType, payload, _) =>
+            {
+                seenMessageType = messageType;
+                seenPayload = payload;
+
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                writer.WriteU8(1);
+                writer.WriteU64(555);
+                return Task.FromResult(writer.Build());
+            },
+            (messageType, handler) =>
+            {
+                Assert.Equal(MessageTypes.QueueNotify, messageType);
+                notifyHandler = handler;
+                return new TestRegistration();
+            });
+
+        // Act
+        var subscription = await queue.SubscribeAsync("queue://prod/app/*", (evt, cancellationToken) =>
+        {
+            received = evt;
+            seenCancellationToken = cancellationToken;
+            receivedTcs.TrySetResult(evt);
+            return ValueTask.CompletedTask;
+        });
+        const ulong subscriptionId = 555;
+
+        await Task.Delay(25);
+        Assert.NotNull(notifyHandler);
+        using var notification = new BinaryBufferWriter();
+        notification.WriteU64(subscriptionId);
+        notification.WriteString("queue://prod/app/tasks");
+        notification.WriteU32(3);
+        notification.WriteBytes("new"u8);
+        notifyHandler!(notification.Build());
+
+        var evt = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Assert
+        Assert.NotNull(evt);
+        Assert.Equal(MessageTypes.QueueSubscribe, seenMessageType);
+        Assert.NotNull(seenPayload);
+        Assert.Equal("queue://prod/app/tasks", evt!.Route);
+        Assert.Equal("new", System.Text.Encoding.UTF8.GetString(evt.Payload.Span));
+        Assert.Same(received, evt);
+        Assert.NotEqual(default, seenCancellationToken);
+        Assert.False(seenCancellationToken.IsCancellationRequested);
+
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal("queue://prod/app/*", reader.ReadString());
+
+        await subscription.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ShouldEncodeTokensGivenReservedItemWhenExtendingAndCompleting()
+    {
+        // Arrange
+        var calls = new List<(ushort MessageType, byte[] Payload)>();
+        using var queue = new QueueClient((messageType, payload, _) =>
+        {
+            calls.Add((messageType, payload));
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            if (messageType == MessageTypes.QueueReserve)
+            {
+                writer.WriteU32(2);
+                writer.WriteU64(555);
+                writer.WriteU64(777);
+                writer.WriteU32(5);
+                writer.WriteBytes("job-1"u8);
+                writer.WriteU64(556);
+                writer.WriteU64(778);
+                writer.WriteU32(5);
+                writer.WriteBytes("job-2"u8);
+            }
+
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var reserved = await queue.ReserveAsync("queue://prod/app/tasks", 30);
+        Assert.Equal(2, reserved.Length);
+        await reserved[0].ExtendAsync(45);
+        await reserved[0].CompleteAsync();
+        await reserved[1].CompleteWithTokenAsync(999);
+
+        // Assert
+        Assert.Equal(4, calls.Count);
+        Assert.Equal(MessageTypes.QueueReserve, calls[0].MessageType);
+        Assert.Equal(MessageTypes.QueueExtend, calls[1].MessageType);
+        Assert.Equal(MessageTypes.QueueComplete, calls[2].MessageType);
+        Assert.Equal(MessageTypes.QueueComplete, calls[3].MessageType);
+
+        var extendReader = new BinaryBufferReader(calls[1].Payload);
+        Assert.Equal("queue://prod/app/tasks", extendReader.ReadString());
+        Assert.Equal((ulong)555, extendReader.ReadU64());
+        Assert.Equal((ulong)777, extendReader.ReadU64());
+        Assert.Equal((ulong)45, extendReader.ReadU64());
+
+        var completeReader = new BinaryBufferReader(calls[2].Payload);
+        Assert.Equal("queue://prod/app/tasks", completeReader.ReadString());
+        Assert.Equal((ulong)555, completeReader.ReadU64());
+        Assert.Equal((ulong)777, completeReader.ReadU64());
+
+        var completeWithTokenReader = new BinaryBufferReader(calls[3].Payload);
+        Assert.Equal("queue://prod/app/tasks", completeWithTokenReader.ReadString());
+        Assert.Equal((ulong)556, completeWithTokenReader.ReadU64());
+        Assert.Equal((ulong)999, completeWithTokenReader.ReadU64());
+    }
+
+    [Fact]
+    public async Task ShouldMarkReservedItemAsClosedAfterDisconnectGivenQueueClientWhenOperationRuns()
+    {
+        // Arrange
+        Action? onDisconnect = null;
+        var unsubscribeCount = 0;
+
+        using var queue = new QueueClient(
+            (messageType, payload, _) =>
+            {
+                using var writer = new BinaryBufferWriter();
+                writer.WriteU8(0);
+                writer.WriteU32(1);
+                writer.WriteU64(555);
+                writer.WriteU64(777);
+                writer.WriteU32(5);
+                writer.WriteBytes("job-1"u8);
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
+            },
+            registerNotificationHandler: null,
+            registerOnDisconnect: disconnect =>
+            {
+                onDisconnect = disconnect;
+                return new TestRegistration(() => unsubscribeCount++);
+            });
+
+        var items = await queue.ReserveAsync("queue://prod/app/tasks", 30);
+        var item = Assert.Single(items);
+
+        // Act
+        onDisconnect?.Invoke();
+
+        var ex = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(10));
+
+        // Assert
+        Assert.Equal("ITEM_CLOSED", ex.Code);
+        Assert.Equal("Queue item is no longer valid after disconnect", ex.Message);
+        Assert.Equal(1, unsubscribeCount);
+    }
+
+    [Fact]
+    public async Task ShouldMarkReservedItemAsClosedAfterReconnectGivenQueueClientWhenOperationRuns()
+    {
+        // Arrange
+        await using var firstTransport = new TestQueuedTransport();
+        await using var secondTransport = new TestQueuedTransport();
+        var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        firstTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 1)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 2)
+            {
+                using var reserveWriter = new BinaryBufferWriter();
+                reserveWriter.WriteU8(0);
+                reserveWriter.WriteU32(1);
+                reserveWriter.WriteU64(555);
+                reserveWriter.WriteU64(777);
+                reserveWriter.WriteU32(5);
+                reserveWriter.WriteBytes("job-1"u8);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueReserve, reserveWriter.WrittenSpan));
+            }
+        };
+
+        secondTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount != 1)
+            {
+                return;
+            }
+
+            using var authProbeWriter = new BinaryBufferWriter();
+            authProbeWriter.WriteU8(0);
+            secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            reconnected.TrySetResult();
+        };
+
+        var transportFactoryCalls = 0;
+        Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
+        await using var connection = new FitzConnection(
+            new ClientConfig(
+                new Uri("ws://localhost:4190/ws"),
+                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            transportFactory);
+        using var queue = new QueueClient(connection);
+
+        await connection.ConnectAsync();
+
+        // Act
+        var items = await queue.ReserveAsync("queue://prod/app/tasks", 30);
+
+        // Assert
+        var item = Assert.Single(items);
+
+        firstTransport.QueueClosed();
+        await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        var ex = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(10));
+
+        Assert.Equal("ITEM_CLOSED", ex.Code);
+        Assert.Equal("Queue item is no longer valid after disconnect", ex.Message);
+
+        await connection.CloseAsync();
+    }
+
+    [Fact]
+    public async Task ShouldRestoreQueueSubscriptionAfterReconnectGivenQueueClientWhenOperationRuns()
+    {
+        // Arrange
+        await using var firstTransport = new TestQueuedTransport();
+        await using var secondTransport = new TestQueuedTransport();
+        var firstNotification = new TaskCompletionSource<QueueAvailabilityEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondNotification = new TaskCompletionSource<QueueAvailabilityEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var notificationCount = 0;
+
+        firstTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 1)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 2)
+            {
+                using var subscribeWriter = new BinaryBufferWriter();
+                subscribeWriter.WriteU8(0);
+                subscribeWriter.WriteU8(1);
+                subscribeWriter.WriteU64(555);
+                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueSubscribe, subscribeWriter.WrittenSpan));
+            }
+        };
+
+        secondTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 1)
+            {
+                using var authProbeWriter = new BinaryBufferWriter();
+                authProbeWriter.WriteU8(0);
+                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            }
+            else if (sentFrameCount == 2)
+            {
+                using var subscribeWriter = new BinaryBufferWriter();
+                subscribeWriter.WriteU8(0);
+                subscribeWriter.WriteU8(1);
+                subscribeWriter.WriteU64(777);
+                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueSubscribe, subscribeWriter.WrittenSpan));
+
+                _ = Task.Run(async () =>
+                {
+                    await Task.Delay(50);
+                    using var notification = new BinaryBufferWriter();
+                    notification.WriteU64(777);
+                    notification.WriteString("queue://prod/app/tasks");
+                    notification.WriteU32(8);
+                    notification.WriteBytes("restored"u8);
+                    secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueNotify, notification.WrittenSpan));
+                });
+            }
+        };
+
+        var transportFactoryCalls = 0;
+        Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
+        await using var connection = new FitzConnection(
+            new ClientConfig(
+                new Uri("ws://localhost:4190/ws"),
+                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            transportFactory);
+        using var queue = new QueueClient(connection);
+
+        await connection.ConnectAsync();
+        var subscription = await queue.SubscribeAsync("queue://prod/app/*", (evt, _) =>
+        {
+            var seen = Interlocked.Increment(ref notificationCount);
+            if (seen == 1)
+            {
+                firstNotification.TrySetResult(evt);
+            }
+            else if (seen == 2)
+            {
+                secondNotification.TrySetResult(evt);
+            }
+
+            return ValueTask.CompletedTask;
+        });
+
+        using (var notification = new BinaryBufferWriter())
+        {
+            notification.WriteU64(555);
+            notification.WriteString("queue://prod/app/tasks");
+            notification.WriteU32(7);
+            notification.WriteBytes("initial"u8);
+            firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueNotify, notification.WrittenSpan));
+        }
+
+        // Act
+        var initialEvent = await firstNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Assert
+        Assert.Equal("initial", System.Text.Encoding.UTF8.GetString(initialEvent.Payload.Span));
+
+        firstTransport.QueueClosed();
+
+        var restoredEvent = await secondNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal("queue://prod/app/tasks", restoredEvent.Route);
+        Assert.Equal("restored", System.Text.Encoding.UTF8.GetString(restoredEvent.Payload.Span));
+
+        await connection.CloseAsync();
+    }
+}

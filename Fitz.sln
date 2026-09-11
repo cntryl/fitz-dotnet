@@ -3,15 +3,25 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
 VisualStudioVersion = 18.5.11716.220 stable
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Core", "src\Core\Core.csproj", "{A0FF5C20-F869-4E04-8EC5-EE7F915C02A8}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.Core", "src\Fitz.Core\Fitz.Core.csproj", "{A0FF5C20-F869-4E04-8EC5-EE7F915C02A8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Abstractions", "src\Abstractions\Abstractions.csproj", "{57583BF4-EF97-4F66-9B0A-2377527BA0F6}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.Abstractions", "src\Fitz.Abstractions\Fitz.Abstractions.csproj", "{57583BF4-EF97-4F66-9B0A-2377527BA0F6}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "DependencyInjection", "src\DependencyInjection\DependencyInjection.csproj", "{19393717-D49B-4FFA-A01B-E1601B38DA83}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.DependencyInjection", "src\Fitz.DependencyInjection\Fitz.DependencyInjection.csproj", "{19393717-D49B-4FFA-A01B-E1601B38DA83}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Core.Tests", "tests\Core\Core.Tests.csproj", "{951263FC-1941-4378-8439-C4B2A542E88F}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.Core.Tests", "test\Fitz.Core.Tests\Fitz.Core.Tests.csproj", "{951263FC-1941-4378-8439-C4B2A542E88F}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Benchmarks", "tests\Benchmarks\Benchmarks.csproj", "{5DA8E889-98CF-29ED-F1F6-EA6647177338}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.Benchmarks", "bench\Fitz.Benchmarks\Fitz.Benchmarks.csproj", "{5DA8E889-98CF-29ED-F1F6-EA6647177338}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.Analyzers", "src\Fitz.Analyzers\Fitz.Analyzers.csproj", "{F7C025EC-4127-4201-A524-51D07D7CE4A5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.CodeFixes", "src\Fitz.CodeFixes\Fitz.CodeFixes.csproj", "{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "test", "test", "{0C88DD14-F956-CE84-757C-A364CCF449FC}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.Analyzers.Tests", "test\Fitz.Analyzers.Tests\Fitz.Analyzers.Tests.csproj", "{AD1EE284-D123-4249-949B-94A9FC5B91E1}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -83,8 +93,49 @@ Global
 		{5DA8E889-98CF-29ED-F1F6-EA6647177338}.Release|x64.Build.0 = Release|Any CPU
 		{5DA8E889-98CF-29ED-F1F6-EA6647177338}.Release|x86.ActiveCfg = Release|Any CPU
 		{5DA8E889-98CF-29ED-F1F6-EA6647177338}.Release|x86.Build.0 = Release|Any CPU
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5}.Debug|x64.Build.0 = Debug|Any CPU
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5}.Debug|x86.Build.0 = Debug|Any CPU
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5}.Release|x64.ActiveCfg = Release|Any CPU
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5}.Release|x64.Build.0 = Release|Any CPU
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5}.Release|x86.ActiveCfg = Release|Any CPU
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5}.Release|x86.Build.0 = Release|Any CPU
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}.Debug|x64.Build.0 = Debug|Any CPU
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}.Debug|x86.Build.0 = Debug|Any CPU
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}.Release|x64.ActiveCfg = Release|Any CPU
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}.Release|x64.Build.0 = Release|Any CPU
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}.Release|x86.ActiveCfg = Release|Any CPU
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B}.Release|x86.Build.0 = Release|Any CPU
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1}.Debug|x64.Build.0 = Debug|Any CPU
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1}.Debug|x86.Build.0 = Debug|Any CPU
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1}.Release|x64.ActiveCfg = Release|Any CPU
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1}.Release|x64.Build.0 = Release|Any CPU
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1}.Release|x86.ActiveCfg = Release|Any CPU
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{F7C025EC-4127-4201-A524-51D07D7CE4A5} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{2539654E-F0D5-4BEA-ABC0-F66AB91AD23B} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{AD1EE284-D123-4249-949B-94A9FC5B91E1} = {0C88DD14-F956-CE84-757C-A364CCF449FC}
 	EndGlobalSection
 EndGlobal

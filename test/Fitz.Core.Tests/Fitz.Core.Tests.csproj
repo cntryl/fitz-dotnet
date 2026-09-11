@@ -1,0 +1,34 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Cntryl.Fitz.Core.Tests</AssemblyName>
+    <RootNamespace>Cntryl.Fitz.Core.Tests</RootNamespace>
+    <Description>Unit and integration tests for Fitz .NET client.</Description>
+    <IsPackable>false</IsPackable>
+    <!-- xUnit requires public test classes, permits descriptive underscores, and manages their async context. -->
+    <NoWarn>$(NoWarn);CA1515;CA1707;CA2007</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Cntryl.Conventions.Testing.Analyzers" Version="1.0.0" />
+    <PackageReference Include="Cntryl.Conventions.Testing.CodeFixes" Version="1.0.0" />
+    <PackageReference Include="coverlet.collector" Version="10.0.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" />
+    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Fitz.Core\Fitz.Core.csproj" />
+    <ProjectReference Include="..\..\src\Fitz.Abstractions\Fitz.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Fitz.DependencyInjection\Fitz.DependencyInjection.csproj" />
+  </ItemGroup>
+
+</Project>

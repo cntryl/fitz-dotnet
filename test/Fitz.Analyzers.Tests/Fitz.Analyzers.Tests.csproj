@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Cntryl.Fitz.Analyzers.Tests</AssemblyName>
+    <RootNamespace>Cntryl.Fitz.Analyzers.Tests</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <NoWarn>$(NoWarn);CA1515;CA1707;CA2007</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Cntryl.Conventions.Testing.Analyzers" Version="1.0.0" />
+    <PackageReference Include="Cntryl.Conventions.Testing.CodeFixes" Version="1.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.10.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.9.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Fitz.Abstractions/Fitz.Abstractions.csproj" />
+    <ProjectReference Include="../../src/Fitz.Analyzers/Fitz.Analyzers.csproj" />
+    <ProjectReference Include="../../src/Fitz.CodeFixes/Fitz.CodeFixes.csproj" />
+    <ProjectReference Include="../../src/Fitz.Core/Fitz.Core.csproj" />
+  </ItemGroup>
+
+</Project>

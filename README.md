@@ -39,18 +39,29 @@ await tx.PutAsync("user-1"u8.ToArray(), """{"name":"Alice"}"""u8.ToArray());
 await tx.CommitAsync();
 ```
 
+Generic Host consumers can register the same client through DI. The hosted
+lifecycle connects during host startup and closes asynchronously during host
+shutdown; consumers outside Generic Host can continue to call `ConnectAsync`
+or `ConnectWhenReadyAsync` explicitly.
+
+```csharp
+services.AddFitzClient(new ClientConfig(
+    new Uri("ws://127.0.0.1:4190/ws"),
+    TokenProvider: _ => ValueTask.FromResult("your-jwt-token")));
+```
+
 Runtime defaults now match the TS client truth surface:
 
 - transport defaults to `auto`
 - reconnect is enabled
 - retry is enabled
-- heartbeat is enabled
-- async handler timeout defaults to the client timeout
+- transport-native keepalive is enabled
+- async handlers have no deadline unless `AsyncHandlerOptions.Timeout` is configured
 - request queue size defaults to `1024`
 
-KV commit attempts are terminal even when the broker rejects the commit or the
-response is interrupted. Disposing such a transaction does not send a rollback
-for the completed server-side transaction identifier.
+KV commit, stream finalization, queue completion, and lease release become
+terminal only after a successful response. A definite broker rejection leaves
+the handle retryable; disposal remains bounded, best-effort cleanup.
 
 ## Subscription registrations
 
@@ -78,22 +89,36 @@ exposes the concrete matched route, including `StreamRecord.Route` for event
 records. Route-less reserve/read responses are not supported. If any item
 contains an invalid concrete route, the entire response fails closed; the
 client never returns a partial reservation or read batch.
+Reserved queue items are async-disposable; dispose any item that will not be
+completed so its connection-lifetime registration is released.
 
 Queue `waitSeconds` uses the broker-native RESERVE wait field. A broker that
 rejects that field fails the request directly; the client does not downgrade
 to polling.
+
+The current queue wire does not include an attempt count, so
+`QueueItem.Attempt` is `QueueItem.AttemptUnavailable` (`0`). Queue delays are
+accepted only in whole-second `delayMs` values instead of being silently rounded.
+
+`Stream.ReadAsync` follows validated continuation cursors until `HasMore` is
+false. Use `ReadPageAsync` when the caller needs explicit page boundaries.
 
 Subscriptions use `await client.Notice.SubscribeAsync(pattern)` (and the
 equivalent domain method) and return typed handles implementing both
 `IAsyncEnumerable<TNotification>` and `IAsyncDisposable`. Each local handle has
 a bounded buffer; a slow consumer terminates with
 `SubscriptionBackpressureException` without terminating sibling handles.
+The capacity is configured by `AsyncHandlerOptions.SubscriptionBufferCapacity`
+(default `256`), and a handle rejects concurrent enumeration explicitly.
 
 Callback delivery uses an independent bounded queue configured with
 `AsyncHandlerOptions.QueueCapacity` (default `1024`). Every subscription handle
 exposes `Completion`: normal unsubscribe completes it, while callback queue
 overflow faults it with `AsyncHandlerOverflowException`, terminates the local
 registration, and is surfaced by async enumeration as the same typed failure.
+Callbacks have no default deadline; configure `AsyncHandlerOptions.Timeout`
+explicitly when the application wants slow callbacks to be cancelled.
+An unsubscribe rejected by the broker remains retryable.
 RPC worker saturation continues to use broker-visible protocol backpressure.
 
 Schedule backend unavailability and broker saturation use the distinct coded
@@ -116,14 +141,14 @@ Fast local checks:
 ```bash
 dotnet restore Fitz.sln
 dotnet build Fitz.sln -c Release --no-restore
-dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter "FullyQualifiedName!~Integration"
+dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter "FullyQualifiedName!~Integration"
 ```
 
 Broker-backed integration and conformance run:
 
 ```bash
 docker compose up -d
-dotnet test tests/Core/Core.Tests.csproj -c Release --no-build
+dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build
 docker compose down --volumes
 ```
 
@@ -134,7 +159,7 @@ docker compose up -d
 CONFORMANCE_TRANSPORT=websocket \
 CONFORMANCE_AUTH_MODE=anonymous \
 CONFORMANCE_OUTPUT=artifacts/conformance-results.json \
-dotnet test tests/Core/Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~Conformance
+dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~Conformance
 docker compose down --volumes
 ```
 
@@ -169,9 +194,10 @@ The conformance artifact uses the shared schema:
 for `ValueTask` callbacks. Set `LeaseExecutionOptions.WaitForAvailability` to retry typed
 contention. Callback code must honor its cancellation token promptly. Low-level handles
 remain available, serialize fencing-token rotation, and close on uncertain renewal.
+Low-level `ILease` handles expose their current read-only `FencingToken`.
 The callback token is canceled immediately when the client observes a disconnect or other
-lease-ownership loss; `WithLeaseAsync` still awaits callback settlement before composing lifecycle
-and cancellation-hook failures, and it never sends a stale release after ownership is uncertain.
+lease-ownership loss. Caller cancellation remains `OperationCanceledException`, and a cleanup
+failure never replaces the callback or lease-loss exception already leaving the scope.
 
 Authority-aware callbacks also receive the immutable admission fence from the successful
 `ACQUIRE` response:
@@ -194,7 +220,7 @@ broker token. Existing one-argument callbacks remain supported.
 
 ## Repository Layout
 
-- `src/Core/Core.csproj`: core SDK package and client runtime
-- `src/Abstractions/Abstractions.csproj`: shared interfaces and contracts
-- `src/DependencyInjection/DependencyInjection.csproj`: DI registration extensions
-- `tests/Core/Core.Tests.csproj`: unit, integration, and shared-suite conformance coverage
+- `src/Fitz.Core/Fitz.Core.csproj`: core SDK package and client runtime
+- `src/Fitz.Abstractions/Fitz.Abstractions.csproj`: shared interfaces and contracts
+- `src/Fitz.DependencyInjection/Fitz.DependencyInjection.csproj`: DI registration extensions
+- `test/Fitz.Core.Tests/Fitz.Core.Tests.csproj`: unit, integration, and shared-suite conformance coverage
