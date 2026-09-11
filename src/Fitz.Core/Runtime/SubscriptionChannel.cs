@@ -41,9 +41,9 @@ sealed class SubscriptionChannel<T>
     /// Gets the async enumerable for consuming notifications.
     /// </summary>
     internal async IAsyncEnumerable<T> GetEnumerableAsync(
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
-        while (await _channel.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+        while (await _channel.Reader.WaitToReadAsync(ct).ConfigureAwait(false))
         {
             while (_channel.Reader.TryRead(out var notification))
             {
@@ -52,9 +52,9 @@ sealed class SubscriptionChannel<T>
         }
     }
 
-    internal async ValueTask<SubscriptionReadResult<T>> ReadAsync(CancellationToken cancellationToken = default)
+    internal async ValueTask<SubscriptionReadResult<T>> ReadAsync(CancellationToken ct = default)
     {
-        while (await _channel.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+        while (await _channel.Reader.WaitToReadAsync(ct).ConfigureAwait(false))
         {
             if (_channel.Reader.TryRead(out var notification))
             {

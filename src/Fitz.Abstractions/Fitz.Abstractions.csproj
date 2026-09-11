@@ -3,6 +3,8 @@
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <IsAotCompatible>true</IsAotCompatible>
+    <!-- Ship IntelliSense docs; a missing public doc comment fails the build. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>Cntryl.Fitz.Abstractions</PackageId>
     <AssemblyName>Cntryl.Fitz.Abstractions</AssemblyName>
     <RootNamespace>Cntryl.Fitz.Abstractions</RootNamespace>

@@ -40,12 +40,12 @@ public sealed class ManagedLeaseLifecycleTests
         var callbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var callbackSettled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        async ValueTask RunCallback(CancellationToken cancellationToken)
+        async ValueTask RunCallback(CancellationToken ct)
         {
             callbackStarted.TrySetResult();
             try
             {
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             }
             finally
             {
@@ -57,7 +57,7 @@ public sealed class ManagedLeaseLifecycleTests
             ? leaseClient.WithLeaseAsync(
                 "lease://prod/app/lock",
                 300,
-                (_, cancellationToken) => RunCallback(cancellationToken),
+                (_, ct) => RunCallback(ct),
                 ct: parentCancellation.Token)
             : leaseClient.WithLeaseAsync(
                 "lease://prod/app/lock",
@@ -124,18 +124,18 @@ public sealed class ManagedLeaseLifecycleTests
         var callbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var callbackSettled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        async ValueTask RunCallback(CancellationToken cancellationToken)
+        async ValueTask RunCallback(CancellationToken ct)
         {
             callbackStarted.TrySetResult();
             try
             {
-                while (!cancellationToken.IsCancellationRequested)
+                while (!ct.IsCancellationRequested)
                 {
                     Thread.SpinWait(64);
                 }
 
                 await Task.Yield();
-                cancellationToken.ThrowIfCancellationRequested();
+                ct.ThrowIfCancellationRequested();
             }
             finally
             {
@@ -150,7 +150,7 @@ public sealed class ManagedLeaseLifecycleTests
                 await leaseClient.WithLeaseAsync(
                     "lease://prod/app/lock",
                     300,
-                    (_, cancellationToken) => RunCallback(cancellationToken),
+                    (_, ct) => RunCallback(ct),
                     ct: parentCancellation.Token);
             }
             else
@@ -260,9 +260,9 @@ public sealed class ManagedLeaseLifecycleTests
         var pending = leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
             1,
-            async (_, cancellationToken) =>
+            async (_, ct) =>
             {
-                using var registration = cancellationToken.Register(() =>
+                using var registration = ct.Register(() =>
                 {
                     callbackCancellationObserved.TrySetResult();
                     throw cancellationHookFailure;

@@ -3,8 +3,22 @@ using Cntryl.Fitz.Abstractions;
 
 namespace Cntryl.Fitz.Errors;
 
+/// <summary>
+/// Classifies whether a failed operation may be retried.
+/// </summary>
+/// <remarks>
+/// Retryability is about the error, not about safety. A retryable classification still
+/// requires the operation itself to be safe to repeat: KV commit, stream commit, queue
+/// completion, and lease release become terminal only after broker success, and a definite
+/// rejection leaves the handle retryable.
+/// </remarks>
 public static class Retryability
 {
+    /// <summary>
+    /// Whether an operation that failed with this error may be retried.
+    /// </summary>
+    /// <param name="error">The failure to classify. <see langword="null"/> is not retryable.</param>
+    /// <returns><see langword="true"/> when a retry is worthwhile.</returns>
     public static bool IsRetryable(Exception? error)
     {
         return error switch

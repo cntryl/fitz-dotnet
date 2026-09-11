@@ -30,7 +30,7 @@ public sealed class LoopbackTransport : ITransport
 
     public Uri Url { get; } = new("ws://loopback/ws");
 
-    public Task ConnectAsync(CancellationToken cancellationToken = default)
+    public Task ConnectAsync(CancellationToken ct = default)
     {
         if (_correlationEnabled)
         {
@@ -45,7 +45,7 @@ public sealed class LoopbackTransport : ITransport
         return Task.CompletedTask;
     }
 
-    public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+    public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
         var span = data.Span;
         var offset = 0;
@@ -118,15 +118,15 @@ public sealed class LoopbackTransport : ITransport
         _inbound.Writer.TryWrite(response);
     }
 
-    public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+    public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
     {
-        var frame = await _inbound.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        var frame = await _inbound.Reader.ReadAsync(ct).ConfigureAwait(false);
         var rented = ArrayPool<byte>.Shared.Rent(frame.Length);
         frame.CopyTo(rented, 0);
         return PooledFrame.FromRentedBuffer(rented, frame.Length);
     }
 
-    public Task CloseAsync(CancellationToken cancellationToken = default)
+    public Task CloseAsync(CancellationToken ct = default)
     {
         _inbound.Writer.TryComplete();
         return Task.CompletedTask;

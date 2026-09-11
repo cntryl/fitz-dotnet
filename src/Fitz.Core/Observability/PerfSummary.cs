@@ -6,16 +6,27 @@ namespace Cntryl.Fitz.Observability;
 /// </summary>
 public sealed class PerfSummary
 {
+    /// <summary>Name of the measured scenario.</summary>
     public string TestName { get; set; } = string.Empty;
+    /// <summary>Wall-clock duration of the run, in milliseconds.</summary>
     public long ElapsedMilliseconds { get; set; }
+    /// <summary>Median latency, in microseconds.</summary>
     public long P50Microseconds { get; set; }
+    /// <summary>99th percentile latency, in microseconds.</summary>
     public long P99Microseconds { get; set; }
+    /// <summary>99.9th percentile latency, in microseconds.</summary>
     public long P999Microseconds { get; set; }
+    /// <summary>Largest latency, in microseconds.</summary>
     public long MaxMicroseconds { get; set; }
+    /// <summary>Operations completed during the run.</summary>
     public long OperationCount { get; set; }
+    /// <summary>Throughput achieved during the run.</summary>
     public double OperationsPerSecond { get; set; }
+    /// <summary>Outcome against the supplied targets: <c>PASS</c>, <c>WARN</c>, or <c>FAIL</c>.</summary>
     public string Status { get; set; } = "PASS"; // PASS, WARN, FAIL
 
+    /// <summary>Formats the summary for diagnostics.</summary>
+    /// <returns>A human-readable summary.</returns>
     public override string ToString()
     {
         return $"""
@@ -27,6 +38,13 @@ public sealed class PerfSummary
             """;
     }
 
+    /// <summary>Builds a summary from a latency histogram and a throughput meter.</summary>
+    /// <param name="testName">Name of the measured scenario.</param>
+    /// <param name="histogram">Recorded latencies.</param>
+    /// <param name="meter">Recorded throughput.</param>
+    /// <param name="p99Target">Optional 99th percentile target, in microseconds.</param>
+    /// <param name="throughtputTarget">Optional throughput target, in operations per second.</param>
+    /// <returns>The populated summary, with <see cref="Status"/> set against the targets.</returns>
     public static PerfSummary FromHistogram(
         string testName,
         LatencyHistogram histogram,

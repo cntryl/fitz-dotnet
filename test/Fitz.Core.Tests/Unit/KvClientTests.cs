@@ -22,14 +22,14 @@ public sealed class KvClientTests
         async ValueTask<ReadOnlyMemory<byte>> RequestAsync(
             ushort messageType,
             ReadOnlyMemory<byte> payload,
-            CancellationToken cancellationToken)
+            CancellationToken ct)
         {
             _ = messageType;
             _ = payload;
             if (Interlocked.Increment(ref requestCount) == 1)
             {
                 firstStarted.TrySetResult();
-                await releaseFirst.Task.WaitAsync(cancellationToken);
+                await releaseFirst.Task.WaitAsync(ct);
             }
 
             return new byte[] { 0 };
@@ -634,6 +634,46 @@ public sealed class KvClientTests
         Assert.Equal("Transaction is no longer valid after disconnect", ex.Message);
 
         await connection.CloseAsync();
+    }
+
+    [Fact]
+    public async Task ShouldRejectUndefinedModeGivenOutOfRangeEnumWhenBeginCalled()
+    {
+        // Arrange
+        var transportCalls = 0;
+        using var kv = new KvClient((_, _, _) =>
+        {
+            transportCalls++;
+            return Task.FromResult(Array.Empty<byte>());
+        });
+
+        // Act
+        var error = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => kv.BeginAsync("kv://prod/app/data", KvDurability.Sync, (KvMode)99));
+
+        // Assert
+        Assert.Equal("mode", error.ParamName);
+        Assert.Equal(0, transportCalls);
+    }
+
+    [Fact]
+    public async Task ShouldRejectUndefinedDurabilityGivenOutOfRangeEnumWhenBeginCalled()
+    {
+        // Arrange
+        var transportCalls = 0;
+        using var kv = new KvClient((_, _, _) =>
+        {
+            transportCalls++;
+            return Task.FromResult(Array.Empty<byte>());
+        });
+
+        // Act
+        var error = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => kv.BeginAsync("kv://prod/app/data", (KvDurability)99));
+
+        // Assert
+        Assert.Equal("durability", error.ParamName);
+        Assert.Equal(0, transportCalls);
     }
 
     sealed class TestRegistration : IDisposable

@@ -34,6 +34,11 @@ public sealed class Multiplexer : IDisposable
     bool _notificationRestoreActive;
     bool _disposed;
 
+    /// <summary>Creates a multiplexer.</summary>
+    /// <param name="onDispatchError">Invoked when dispatching a notification throws.</param>
+    /// <param name="onSessionDesynchronized">
+    /// Invoked when a response cannot be correlated, indicating the session lost sync.
+    /// </param>
     public Multiplexer(
         Action<Exception>? onDispatchError = null,
         Action<Exception>? onSessionDesynchronized = null)
@@ -334,7 +339,7 @@ public sealed class Multiplexer : IDisposable
         TimeSpan timeout,
         Func<ReadOnlyMemory<byte>, bool>? responseMatcher = null,
         ulong correlationId = 0,
-        CancellationToken cancellationToken = default)
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(send);
 
@@ -352,13 +357,13 @@ public sealed class Multiplexer : IDisposable
             // cancel a wait that never happens.
             if (!lane.Wait(0, CancellationToken.None))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                laneWaitCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, GetLaneWaitToken());
+                ct.ThrowIfCancellationRequested();
+                laneWaitCts = CancellationTokenSource.CreateLinkedTokenSource(ct, GetLaneWaitToken());
                 try
                 {
                     await lane.WaitAsync(laneWaitCts.Token).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     throw;
                 }
@@ -370,7 +375,7 @@ public sealed class Multiplexer : IDisposable
         }
 
         var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var request = new PendingRequest(this, messageType, timeout, tcs, responseMatcher, cancellationToken)
+        var request = new PendingRequest(this, messageType, timeout, tcs, responseMatcher, ct)
         {
             CorrelationId = correlationId,
         };
@@ -407,15 +412,15 @@ public sealed class Multiplexer : IDisposable
             }
 
             using var timeoutCts = timeout == Timeout.InfiniteTimeSpan ? null : new CancellationTokenSource(timeout);
-            using var cancellationRegistration = cancellationToken.CanBeCanceled
-                ? cancellationToken.Register(static state => ((PendingRequest)state!).Cancel(), request)
+            using var cancellationRegistration = ct.CanBeCanceled
+                ? ct.Register(static state => ((PendingRequest)state!).Cancel(), request)
                 : default;
             using var timeoutRegistration = timeoutCts?.Token.Register(static state => ((PendingRequest)state!).Timeout(), request) ?? default;
 
             try
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                await send(frameData, cancellationToken).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+                await send(frameData, ct).ConfigureAwait(false);
             }
             catch
             {
@@ -461,6 +466,7 @@ public sealed class Multiplexer : IDisposable
         }
     }
 
+    /// <summary>Fails every pending request and releases dispatch resources.</summary>
     public void Dispose()
     {
         SetDisconnected();
@@ -477,10 +483,10 @@ public sealed class Multiplexer : IDisposable
         }
     }
 
-    internal async Task CompleteNotificationDispatchAsync(TimeSpan timeout, CancellationToken cancellationToken)
+    internal async Task CompleteNotificationDispatchAsync(TimeSpan timeout, CancellationToken ct)
     {
         _notificationQueue.Writer.TryComplete();
-        await _notificationPump.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+        await _notificationPump.WaitAsync(timeout, ct).ConfigureAwait(false);
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Notification callbacks are isolated from the receive loop and reported through the configured diagnostic sink.")]
@@ -709,12 +715,12 @@ public sealed class Multiplexer : IDisposable
             TimeSpan timeout,
             TaskCompletionSource<byte[]> promise,
             Func<ReadOnlyMemory<byte>, bool>? responseMatcher,
-            CancellationToken cancellationToken)
+            CancellationToken ct)
         {
             _owner = owner;
             _messageType = messageType;
             _timeout = timeout;
-            _cancellationToken = cancellationToken;
+            _cancellationToken = ct;
             _responseMatcher = responseMatcher;
             Promise = promise;
         }

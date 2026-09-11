@@ -59,7 +59,7 @@ public sealed class FitzCodeFixProvider : CodeFixProvider
         context.RegisterCodeFix(
             CodeAction.Create(
                 $"Use '{scheme}://' scheme",
-                cancellationToken => ReplaceLiteralAsync(context.Document, root, literal, corrected, cancellationToken),
+                ct => ReplaceLiteralAsync(context.Document, root, literal, corrected, ct),
                 $"FitzAddressScheme:{scheme}"),
             diagnostic);
     }
@@ -77,7 +77,7 @@ public sealed class FitzCodeFixProvider : CodeFixProvider
         context.RegisterCodeFix(
             CodeAction.Create(
                 $"Retain and dispose the {preferredName}",
-                cancellationToken => ReplaceStatementAsync(context.Document, root, statement, awaitExpression, preferredName, cancellationToken),
+                ct => ReplaceStatementAsync(context.Document, root, statement, awaitExpression, preferredName, ct),
                 "FitzRetainHandle"),
             diagnostic);
     }
@@ -87,9 +87,9 @@ public sealed class FitzCodeFixProvider : CodeFixProvider
         SyntaxNode root,
         LiteralExpressionSyntax literal,
         string corrected,
-        CancellationToken cancellationToken)
+        CancellationToken ct)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        ct.ThrowIfCancellationRequested();
         var replacement = SyntaxFactory.LiteralExpression(
             SyntaxKind.StringLiteralExpression,
             SyntaxFactory.Literal(corrected)).WithTriviaFrom(literal);
@@ -102,9 +102,9 @@ public sealed class FitzCodeFixProvider : CodeFixProvider
         ExpressionStatementSyntax statement,
         AwaitExpressionSyntax awaitExpression,
         string preferredName,
-        CancellationToken cancellationToken)
+        CancellationToken ct)
     {
-        var semanticModel = await document.GetSemanticModelAsync(cancellationToken).ConfigureAwait(false);
+        var semanticModel = await document.GetSemanticModelAsync(ct).ConfigureAwait(false);
         var name = preferredName;
         var suffix = 2;
         while (semanticModel?.LookupSymbols(statement.SpanStart, name: name).Length > 0)

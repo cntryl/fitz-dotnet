@@ -8,9 +8,37 @@
 - `Cntryl.Fitz.Abstractions`: public interfaces and shared contracts
 - `Cntryl.Fitz.DependencyInjection`: DI registration helpers
 
-All three packages support trimming and Native AOT. They enable the .NET AOT
-compatibility analyzers, and CI publishes and executes a Native AOT application
-against the packed NuGet artifacts.
+`Cntryl.Fitz.Analyzers` and `Cntryl.Fitz.CodeFixes` are build-time Roslyn
+components and never ship into a consumer's application.
+
+Every public type and member is documented, and the XML documentation ships in
+each package, so IntelliSense works without consulting this file.
+
+## Trimming and Native AOT
+
+The three runtime packages use no reflection on any code path — no `GetType()`,
+no `Enum.IsDefined`, no container type activation — declare no
+`DynamicallyAccessedMembers`/`RequiresUnreferencedCode`/`RequiresDynamicCode`
+contracts, and suppress no trim or AOT warning. They are trim-safe and
+Native-AOT-safe with no consumer-side configuration.
+
+Enforcement is mechanical, not aspirational:
+
+- every package sets `IsAotCompatible=true`, enabling the trim, AOT, and
+  single-file analyzers, and warnings are errors repo-wide
+- the `package` CI job publishes and runs a Native AOT executable against the
+  freshly packed artifacts with **all three assemblies rooted**, so ILC analyzes
+  every shipped method rather than only what the sample reaches, reports each
+  finding individually, and fails the build on any of them
+
+Rooting the whole assembly is the part that matters. Analyzers reason one method
+at a time and miss cases that whole-program analysis catches — that gap hid an
+`IL2091` in `0.1.3` until this audit. Details, reproduction steps, and the rules
+for keeping it true: [docs/aot-and-reflection.md](docs/aot-and-reflection.md).
+
+Supplying your own transport through `ClientConfig.TransportFactory`? Override
+`ITransport.TransportName` with a constant to label it in telemetry; it defaults
+to `"custom"` rather than inspecting the runtime type.
 
 ## Install
 
@@ -144,6 +172,21 @@ dotnet build Fitz.sln -c Release --no-restore
 dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter "FullyQualifiedName!~Integration"
 ```
 
+Verify the packed packages publish and run as a Native AOT executable with every
+shipped assembly rooted (substitute your own runtime identifier):
+
+```bash
+dotnet pack Fitz.sln -c Release --output artifacts/packages
+rm -rf artifacts/consumer-package-cache
+dotnet publish test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj \
+  -c Release -r linux-x64 -p:PublishAot=true --output artifacts/native-aot
+artifacts/native-aot/Fitz.PackageConsumer
+```
+
+Clearing `artifacts/consumer-package-cache` is required, not hygiene:
+`PackageVersion` is fixed across rebuilds, so a copy left from an earlier pack
+would shadow the packages just built and verify stale bits.
+
 Broker-backed integration and conformance run:
 
 ```bash
@@ -183,6 +226,9 @@ The conformance artifact uses the shared schema:
 ## Documentation
 
 - [docs/README.md](docs/README.md)
+- [CHANGELOG.md](CHANGELOG.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+- [docs/aot-and-reflection.md](docs/aot-and-reflection.md)
 - [CLIENT_SPEC.md](CLIENT_SPEC.md)
 - [CLIENT_ACCEPTANCE_CRITERIA.md](CLIENT_ACCEPTANCE_CRITERIA.md)
 - [docs/spec-parity-gap-matrix.md](docs/spec-parity-gap-matrix.md)
@@ -206,9 +252,9 @@ Authority-aware callbacks also receive the immutable admission fence from the su
 await client.Lease.WithLeaseAsync(
     "lease://example/jobs/leader",
     30,
-    async (authority, cancellationToken) =>
+    async (authority, ct) =>
     {
-        await RunLeaderAsync(authority.FencingToken, cancellationToken);
+        await RunLeaderAsync(authority.FencingToken, ct);
     });
 ```
 

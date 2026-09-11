@@ -2,6 +2,13 @@ using System.Buffers;
 
 namespace Cntryl.Fitz.Transport;
 
+/// <summary>
+/// A received frame backed by a pooled buffer.
+/// </summary>
+/// <remarks>
+/// Dispose returns the buffer to the pool. <see cref="Memory"/> is invalid after disposal,
+/// so copy anything you need to outlive the frame.
+/// </remarks>
 public sealed class PooledFrame : IDisposable
 {
     byte[]? _buffer;
@@ -14,10 +21,13 @@ public sealed class PooledFrame : IDisposable
         _isClosed = isClosed;
     }
 
+    /// <summary>Number of valid bytes in <see cref="Memory"/>.</summary>
     public int Length { get; }
 
+    /// <summary>Whether this frame signals that the peer closed the connection.</summary>
     public bool IsClosed => _isClosed;
 
+    /// <summary>The frame bytes. Valid only until the frame is disposed.</summary>
     public ReadOnlyMemory<byte> Memory
     {
         get
@@ -27,10 +37,16 @@ public sealed class PooledFrame : IDisposable
         }
     }
 
+    /// <summary>A frame with no bytes that does not signal closure.</summary>
     public static PooledFrame Empty => new(Array.Empty<byte>(), 0, isClosed: false);
 
+    /// <summary>A frame signalling that the peer closed the connection.</summary>
     public static PooledFrame Closed => new(Array.Empty<byte>(), 0, isClosed: true);
 
+    /// <summary>Wraps a buffer already rented from the shared pool.</summary>
+    /// <param name="buffer">Rented buffer. Ownership transfers to the returned frame.</param>
+    /// <param name="length">Number of valid bytes in the buffer.</param>
+    /// <returns>A frame that returns the buffer to the pool when disposed.</returns>
     public static PooledFrame FromRentedBuffer(byte[] buffer, int length)
     {
         ArgumentNullException.ThrowIfNull(buffer);
@@ -43,6 +59,7 @@ public sealed class PooledFrame : IDisposable
         return new PooledFrame(buffer, length, isClosed: false);
     }
 
+    /// <summary>Returns the pooled buffer. Safe to call more than once.</summary>
     public void Dispose()
     {
         var buffer = Interlocked.Exchange(ref _buffer, null);

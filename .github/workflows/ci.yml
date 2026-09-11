@@ -71,6 +71,15 @@ jobs:
           dotnet restore Fitz.PackageConsumer.csproj
           dotnet build Fitz.PackageConsumer.csproj -c Release --no-restore
 
+      # PackageVersion is fixed across rebuilds and NuGet keys its extracted cache on id
+      # and version alone, so a copy left from an earlier pack would shadow the packages
+      # just built. The consumer restores into its own folder (RestorePackagesPath) to make
+      # clearing it safe and cheap.
+      - name: Clear consumer package cache
+        run: rm -rf artifacts/consumer-package-cache
+
+      # Roots every shipped assembly, so ILC analyzes all of them rather than only what the
+      # consumer's Main reaches. Configured in Fitz.PackageConsumer.csproj.
       - name: Publish Native AOT consumer from packed packages
         run: dotnet publish test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj -c Release -r linux-x64 -p:PublishAot=true --output artifacts/native-aot
 

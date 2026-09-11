@@ -49,21 +49,21 @@ if (!rpcErrorCodes.SequenceEqual(Enumerable.Range(6001, 13).Select(static code =
 static async Task CompilePreviewApiAsync(
     INoticeClient notice,
     IScheduleClient schedule,
-    CancellationToken cancellationToken)
+    CancellationToken ct)
 {
     var subscription = await notice.SubscribeAsync(
         "notice://example/app/*",
-        cancellationToken).ConfigureAwait(false);
+        ct).ConfigureAwait(false);
     await using var configuredSubscription = ((IAsyncDisposable)subscription).ConfigureAwait(false);
     await foreach (var notification in subscription
-        .WithCancellation(cancellationToken)
+        .WithCancellation(ct)
         .ConfigureAwait(false))
     {
         Console.WriteLine(notification.Route);
         break;
     }
 
-    var result = await schedule.ListAsync(ct: cancellationToken).ConfigureAwait(false);
+    var result = await schedule.ListAsync(ct: ct).ConfigureAwait(false);
     Console.WriteLine($"{result.Entries.Count}/{result.TotalCount}");
 }
 
@@ -72,12 +72,12 @@ GC.KeepAlive(previewApi);
 
 static async Task CompileStreamSelectorsAsync(
     IStreamClient stream,
-    CancellationToken cancellationToken)
+    CancellationToken ct)
 {
     await foreach (var record in stream.ReadAsync(
         "stream://example/app/*",
         0,
-        ct: cancellationToken).ConfigureAwait(false))
+        ct: ct).ConfigureAwait(false))
     {
         Console.WriteLine(record.Route);
     }
@@ -85,7 +85,7 @@ static async Task CompileStreamSelectorsAsync(
     var page = await stream.ReadPageAsync(
         "stream://**",
         0,
-        ct: cancellationToken).ConfigureAwait(false);
+        ct: ct).ConfigureAwait(false);
     Console.WriteLine(page.Items.Count);
 }
 
@@ -94,7 +94,7 @@ GC.KeepAlive(streamSelectors);
 
 static async Task<ulong> CompileManagedLeaseAuthorityAsync(
     ILeaseClient lease,
-    CancellationToken cancellationToken)
+    CancellationToken ct)
 {
     var fencingToken = await lease.WithLeaseAsync(
         "lease://example/app/leader",
@@ -105,13 +105,13 @@ static async Task<ulong> CompileManagedLeaseAuthorityAsync(
             var exactFencingToken = authority.FencingToken;
             return ValueTask.FromResult(exactFencingToken);
         },
-        ct: cancellationToken).ConfigureAwait(false);
+        ct: ct).ConfigureAwait(false);
 
     await lease.WithLeaseAsync(
         "lease://example/app/legacy",
         30,
         static _ => ValueTask.CompletedTask,
-        ct: cancellationToken).ConfigureAwait(false);
+        ct: ct).ConfigureAwait(false);
     return fencingToken;
 }
 

@@ -35,10 +35,10 @@ public sealed class SharpEdgeBufferTests
         var allowRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         byte[]? observed = null;
 
-        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send = async (_, payload, cancellationToken) =>
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send = async (_, payload, ct) =>
         {
             sendStarted.TrySetResult();
-            await allowRead.Task.WaitAsync(cancellationToken);
+            await allowRead.Task.WaitAsync(ct);
             observed = payload.ToArray();
         };
         using var client = new NoticeClient(send);
@@ -71,10 +71,10 @@ public sealed class SharpEdgeBufferTests
         var allowRead = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         byte[]? observed = null;
 
-        await using var session = new StreamSession(async (_, payload, cancellationToken) =>
+        await using var session = new StreamSession(async (_, payload, ct) =>
         {
             requestStarted.TrySetResult();
-            await allowRead.Task.WaitAsync(cancellationToken);
+            await allowRead.Task.WaitAsync(ct);
             observed = payload.ToArray();
             return commit
                 ? new ReadOnlyMemory<byte>([0, 0, 0, 0, 0])

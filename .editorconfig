@@ -145,3 +145,8 @@ indent_size = 2
 
 [*.md]
 trim_trailing_whitespace = false
+
+# The BCL names IAsyncEnumerable<T>.GetAsyncEnumerator's token parameter
+# "cancellationToken"; Fitz consistently uses "ct" on every API.
+[src/Fitz.Abstractions/Runtime/SubscriptionHandle.cs]
+dotnet_diagnostic.CA1725.severity = none

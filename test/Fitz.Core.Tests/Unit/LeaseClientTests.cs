@@ -661,10 +661,10 @@ public sealed class LeaseClientTests
             });
 
         // Act
-        var subscription = await leaseClient.SubscribeAsync("lease://prod/app/lock", (evt, cancellationToken) =>
+        var subscription = await leaseClient.SubscribeAsync("lease://prod/app/lock", (evt, ct) =>
         {
             received = evt;
-            seenCancellationToken = cancellationToken;
+            seenCancellationToken = ct;
             receivedTcs.TrySetResult(evt);
             return ValueTask.CompletedTask;
         });

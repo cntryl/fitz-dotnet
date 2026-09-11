@@ -138,11 +138,11 @@ static class IntegrationFixture
         return Path.GetFullPath(Path.Combine(GetRepositoryRoot(), "compose.yml"));
     }
 
-    internal static async Task RestartBrokerForModeAsync(string transport, string authMode, CancellationToken cancellationToken = default)
+    internal static async Task RestartBrokerForModeAsync(string transport, string authMode, CancellationToken ct = default)
     {
         var serviceName = GetBrokerServiceName(authMode);
-        await RunProcessAsync("docker", $"compose -f \"{GetBrokerComposePath()}\" restart {serviceName}", cancellationToken);
-        await WaitForBrokerReadyAsync(transport, authMode, TimeSpan.FromSeconds(30), cancellationToken);
+        await RunProcessAsync("docker", $"compose -f \"{GetBrokerComposePath()}\" restart {serviceName}", ct);
+        await WaitForBrokerReadyAsync(transport, authMode, TimeSpan.FromSeconds(30), ct);
     }
 
     internal static string GetOutputPath()
@@ -358,14 +358,14 @@ static class IntegrationFixture
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The reconnect probe retries every client failure until its bounded deadline.")]
-    static async Task WaitForBrokerReadyAsync(string transport, string authMode, TimeSpan timeout, CancellationToken cancellationToken)
+    static async Task WaitForBrokerReadyAsync(string transport, string authMode, TimeSpan timeout, CancellationToken ct)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         Exception? lastError = null;
 
         while (DateTimeOffset.UtcNow < deadline)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
 
             try
             {
@@ -379,20 +379,20 @@ static class IntegrationFixture
                         Timeout: TimeSpan.FromSeconds(2),
                         Backoff: TimeSpan.FromMilliseconds(100),
                         MaxBackoff: TimeSpan.FromMilliseconds(250)),
-                    cancellationToken);
+                    ct);
                 return;
             }
             catch (Exception ex)
             {
                 lastError = ex;
-                await Task.Delay(250, cancellationToken);
+                await Task.Delay(250, ct);
             }
         }
 
         throw new TimeoutException($"Broker '{GetBrokerServiceName(authMode)}' did not become ready within {timeout.TotalSeconds:F0}s. Last error: {lastError?.Message}");
     }
 
-    static async Task RunProcessAsync(string fileName, string arguments, CancellationToken cancellationToken)
+    static async Task RunProcessAsync(string fileName, string arguments, CancellationToken ct)
     {
         using var process = new Process
         {
@@ -411,10 +411,10 @@ static class IntegrationFixture
             throw new InvalidOperationException($"Failed to start process '{fileName} {arguments}'.");
         }
 
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
+        var stderrTask = process.StandardError.ReadToEndAsync(ct);
 
-        await process.WaitForExitAsync(cancellationToken);
+        await process.WaitForExitAsync(ct);
 
         var stdout = await stdoutTask;
         var stderr = await stderrTask;

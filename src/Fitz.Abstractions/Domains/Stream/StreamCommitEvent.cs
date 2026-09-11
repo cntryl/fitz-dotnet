@@ -13,7 +13,12 @@ public sealed record StreamCommitEvent(string Route, ulong CommitOffset)
 /// <summary>Describes how a stream commit offset was obtained from broker metadata.</summary>
 public enum StreamCommitOffsetStatus
 {
+    /// <summary>The metadata carried a valid commit offset.</summary>
     Present,
+
+    /// <summary>The metadata carried no commit offset.</summary>
     Absent,
+
+    /// <summary>The metadata carried a commit offset that could not be parsed.</summary>
     Malformed,
 }

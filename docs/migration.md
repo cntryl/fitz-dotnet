@@ -1,7 +1,7 @@
 # Unreleased API migration
 
 - KV callers must pass durability explicitly before the optional mode:
-  `BeginAsync(route, KvDurability.Async, KvMode.ReadWrite, cancellationToken)`.
+  `BeginAsync(route, KvDurability.Async, KvMode.ReadWrite, ct)`.
 - Call `CloseAsync` for explicit idempotent shutdown. `DisposeAsync` delegates to it.
 - `ILease` is now `IAsyncDisposable`; use `await using` so a live lease is released once.
 - RPC worker callbacks now return `ValueTask`; return `ValueTask.CompletedTask` for synchronous completion.
@@ -10,7 +10,7 @@
 - Queue notifications expose the broker-defined length-prefixed `Payload`; the invented ready/delayed/inflight counters were removed.
 - Stream records expose `GlobalOffset` for global selectors, and BEGIN/APPEND accept only their canonical response layouts.
 - Lease queries expose `PendingWaiters`; queued acquisition follows the broker deferred-acquisition flow.
-- Managed lease callbacks can accept `(LeaseAuthority authority, CancellationToken cancellationToken)` to receive the immutable admission fencing token; existing cancellation-only callbacks remain source compatible.
+- Managed lease callbacks can accept `(LeaseAuthority authority, CancellationToken ct)` to receive the immutable admission fencing token; existing cancellation-only callbacks remain source compatible.
 - Stream global continuation reuses the returned fingerprint and captured-watermark pair.
 - Frame parsing is strict; callers should use `FrameCodec.DecodeStrict` and handle trailing or truncated data as protocol errors.
 

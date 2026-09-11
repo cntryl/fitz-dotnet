@@ -24,7 +24,8 @@ static class StreamWireHelpers
         writer.WriteU32((uint)filter.Clauses.Count);
         foreach (var clause in filter.Clauses)
         {
-            if (!Enum.IsDefined(clause.Kind))
+            if (clause.Kind is not StreamFilterClauseKind.Equals and not StreamFilterClauseKind.NotEquals
+                and not StreamFilterClauseKind.StartsWith and not StreamFilterClauseKind.AnyOf)
             {
                 throw new ArgumentOutOfRangeException(nameof(filter), clause.Kind, "Unknown stream filter clause kind");
             }

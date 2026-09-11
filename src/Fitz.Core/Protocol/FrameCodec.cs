@@ -3,12 +3,19 @@ using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz.Protocol;
 
+/// <summary>
+/// Encodes and decodes Fitz wire frames.
+/// </summary>
 public static class FrameCodec
 {
+    /// <summary>Size in bytes of a frame header: a 16-bit opcode plus a length prefix.</summary>
     public const int MaxHeaderSize = 5;
 
     const byte ExtendedMessageTypeMarker = 0xFF;
 
+    /// <summary>Largest encoded size for a payload of the given length.</summary>
+    /// <param name="payloadLength">Payload length in bytes.</param>
+    /// <returns>The encoded frame size, header included.</returns>
     public static int MaxEncodedSize(int payloadLength)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(payloadLength);
@@ -16,6 +23,11 @@ public static class FrameCodec
         return checked(MaxHeaderSize + payloadLength);
     }
 
+    /// <summary>Encodes a frame into a caller-supplied buffer, without allocating.</summary>
+    /// <param name="messageType">Opcode from <see cref="MessageTypes"/>.</param>
+    /// <param name="payload">Payload to encode.</param>
+    /// <param name="destination">Buffer to write into; at least <see cref="MaxEncodedSize"/> bytes.</param>
+    /// <returns>Number of bytes written.</returns>
     public static int EncodeInto(ushort messageType, ReadOnlySpan<byte> payload, Span<byte> destination)
     {
         if (payload.Length > ushort.MaxValue)
@@ -48,6 +60,11 @@ public static class FrameCodec
         return required;
     }
 
+    /// <summary>Encodes a frame into a new array.</summary>
+    /// <param name="messageType">Opcode from <see cref="MessageTypes"/>.</param>
+    /// <param name="payload">Payload to encode.</param>
+    /// <returns>The encoded frame.</returns>
+    /// <remarks>Prefer <see cref="EncodeInto"/> on hot paths; this allocates.</remarks>
     public static byte[] Encode(ushort messageType, ReadOnlySpan<byte> payload)
     {
         if (payload.Length > ushort.MaxValue)
@@ -121,6 +138,12 @@ public static class FrameCodec
         return correlationId;
     }
 
+    /// <summary>Decodes a frame, rejecting anything malformed.</summary>
+    /// <param name="frameBytes">The encoded frame.</param>
+    /// <returns>The decoded frame.</returns>
+    /// <exception cref="Errors.ProtocolException">
+    /// The frame is truncated, over-long, or its length prefix disagrees with its content.
+    /// </exception>
     public static Frame DecodeStrict(ReadOnlyMemory<byte> frameBytes)
     {
         var span = frameBytes.Span;

@@ -28,10 +28,10 @@ public sealed class ManagedLeaseAuthorityTests
         var result = await leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
             30,
-            (authority, cancellationToken) =>
+            (authority, ct) =>
             {
                 observed = authority;
-                Assert.False(cancellationToken.IsCancellationRequested);
+                Assert.False(ct.IsCancellationRequested);
                 return ValueTask.FromResult("completed");
             });
 
@@ -115,9 +115,9 @@ public sealed class ManagedLeaseAuthorityTests
         var error = await Assert.ThrowsAsync<LeaseException>(() => leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
             1,
-            async (authority, cancellationToken) =>
+            async (authority, ct) =>
             {
-                await renewalCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
+                await renewalCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2), ct);
                 return authority;
             }));
 
@@ -241,15 +241,15 @@ public sealed class ManagedLeaseAuthorityTests
         var result = await leaseClient.WithLeaseAsync(
             "lease://prod/app/generic",
             30,
-            cancellationToken => ValueTask.FromResult(!cancellationToken.IsCancellationRequested));
+            ct => ValueTask.FromResult(!ct.IsCancellationRequested));
 
         // Act
         await leaseClient.WithLeaseAsync(
             "lease://prod/app/non-generic",
             30,
-            cancellationToken =>
+            ct =>
             {
-                nonGenericInvoked = !cancellationToken.IsCancellationRequested;
+                nonGenericInvoked = !ct.IsCancellationRequested;
                 return ValueTask.CompletedTask;
             });
 

@@ -7,7 +7,25 @@
     <Nullable>enable</Nullable>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NoWarn>$(NoWarn);CA2007</NoWarn>
+    <!-- Report every trim/AOT finding individually and fail on it, rather than emitting a
+         single per-assembly summary warning that a passing publish would hide. -->
+    <TrimmerSingleWarn>false</TrimmerSingleWarn>
+    <ILLinkTreatWarningsAsErrors>true</ILLinkTreatWarningsAsErrors>
+    <!-- PackageVersion is intentionally fixed across rebuilds, and NuGet keys its extracted
+         cache on package id and version alone. Restoring into a dedicated folder keeps a
+         stale copy in the shared global cache from shadowing freshly packed artifacts, and
+         makes the folder cheap to clear; scripts/verify-package-aot.sh clears it per run. -->
+    <RestorePackagesPath>$(MSBuildThisFileDirectory)../../artifacts/consumer-package-cache</RestorePackagesPath>
   </PropertyGroup>
+
+  <!-- The Native AOT publish is this repo's whole-program reflection proof. Rooting each
+       shipped assembly makes ILC analyze every method, including paths this sample never
+       calls; without it the analysis only covers what Main happens to reach. -->
+  <ItemGroup Condition="'$(PublishAot)' == 'true'">
+    <TrimmerRootAssembly Include="Cntryl.Fitz" />
+    <TrimmerRootAssembly Include="Cntryl.Fitz.Abstractions" />
+    <TrimmerRootAssembly Include="Cntryl.Fitz.DependencyInjection" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Cntryl.Fitz" Version="0.1.3" />

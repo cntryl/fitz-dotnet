@@ -53,7 +53,7 @@ public class MultiplexerHotPathBenchmarks : IDisposable
                 await Task.Delay(10, token).ConfigureAwait(false);
             },
             TimeSpan.FromSeconds(5),
-            cancellationToken: cts.Token
+            ct: cts.Token
         );
 
         var second = _mux.RequestAsync(

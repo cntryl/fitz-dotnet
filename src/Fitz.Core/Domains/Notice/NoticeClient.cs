@@ -9,6 +9,13 @@ using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Notice;
 
+/// <summary>
+/// The default <see cref="INoticeClient"/>: notice publish and subscribe.
+/// </summary>
+/// <remarks>
+/// Obtained from <see cref="Client"/> rather than constructed directly. The public
+/// constructors exist for testing against a transport delegate.
+/// </remarks>
 public sealed class NoticeClient : INoticeClient, IDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
@@ -38,6 +45,9 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
 
+    /// <summary>
+    /// Creates a domain client over a request delegate, for testing without a broker.
+    /// </summary>
     public NoticeClient(
         Func<ushort, byte[], CancellationToken, Task> send,
         Func<ushort, byte[], CancellationToken, Task<byte[]>>? request = null,
@@ -66,6 +76,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
     }
 
+    /// <inheritdoc />
     public async Task PublishAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -81,6 +92,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         await _send(MessageTypes.NoticePublish, writer.WrittenMemory, ct).ConfigureAwait(false);
     }
 
+    /// <inheritdoc />
     public async Task<NoticeSubscription> SubscribeAsync(string pattern, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -168,7 +180,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
     {
         return new NoticeSubscription(
             pattern,
-            cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken),
+            ct => UnsubscribeAsync(pattern, handleId, ct),
             completion);
     }
 
@@ -326,12 +338,12 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         }
     }
 
-    async ValueTask HandleReconnect(CancellationToken cancellationToken) => await RestoreSubscriptionsAsync(cancellationToken).ConfigureAwait(false);
+    async ValueTask HandleReconnect(CancellationToken ct) => await RestoreSubscriptionsAsync(ct).ConfigureAwait(false);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
-    async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
+    async ValueTask RestoreSubscriptionsAsync(CancellationToken ct)
     {
-        await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             List<(string Pattern, NoticeSubscriptionState Subscription)> snapshot;
@@ -356,7 +368,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
             {
                 foreach (var entry in snapshot)
                 {
-                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
+                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, ct).ConfigureAwait(false);
                     restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
                     restoredPatternsById[subscriptionId] = entry.Pattern;
                 }
@@ -400,6 +412,7 @@ public sealed class NoticeClient : INoticeClient, IDisposable
         }
     }
 
+    /// <summary>Releases local resources and ends any registrations this client owns.</summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

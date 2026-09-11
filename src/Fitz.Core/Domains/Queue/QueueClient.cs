@@ -9,6 +9,13 @@ using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Queue;
 
+/// <summary>
+/// The default <see cref="IQueueClient"/>: queue enqueue, reserve, and availability subscriptions.
+/// </summary>
+/// <remarks>
+/// Obtained from <see cref="Client"/> rather than constructed directly. The public
+/// constructors exist for testing against a transport delegate.
+/// </remarks>
 public sealed class QueueClient : IQueueClient, IDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
@@ -38,6 +45,9 @@ public sealed class QueueClient : IQueueClient, IDisposable
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
 
+    /// <summary>
+    /// Creates a domain client over a request delegate, for testing without a broker.
+    /// </summary>
     public QueueClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
@@ -62,6 +72,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
     }
 
+    /// <inheritdoc />
     public async Task<ulong> EnqueueAsync(
         string route,
         ReadOnlyMemory<byte> body,
@@ -115,6 +126,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         return result;
     }
 
+    /// <inheritdoc />
     public async Task<IQueueReservedItem[]> ReserveAsync(
         string route,
         ulong leaseSeconds,
@@ -213,6 +225,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         return items;
     }
 
+    /// <inheritdoc />
     public async Task<QueueSubscription> SubscribeAsync(
         string pattern,
         CancellationToken ct = default)
@@ -306,7 +319,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
     {
         return new QueueSubscription(
             pattern,
-            cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken),
+            ct => UnsubscribeAsync(pattern, handleId, ct),
             completion);
     }
 
@@ -472,12 +485,12 @@ public sealed class QueueClient : IQueueClient, IDisposable
         }
     }
 
-    async ValueTask HandleReconnect(CancellationToken cancellationToken) => await RestoreSubscriptionsAsync(cancellationToken).ConfigureAwait(false);
+    async ValueTask HandleReconnect(CancellationToken ct) => await RestoreSubscriptionsAsync(ct).ConfigureAwait(false);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
-    async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
+    async ValueTask RestoreSubscriptionsAsync(CancellationToken ct)
     {
-        await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             List<(string Pattern, QueueSubscriptionState Subscription)> snapshot;
@@ -502,7 +515,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
             {
                 foreach (var entry in snapshot)
                 {
-                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
+                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, ct).ConfigureAwait(false);
                     restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
                     restoredPatternsById[subscriptionId] = entry.Pattern;
                 }
@@ -546,6 +559,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         }
     }
 
+    /// <summary>Releases local resources and ends any registrations this client owns.</summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

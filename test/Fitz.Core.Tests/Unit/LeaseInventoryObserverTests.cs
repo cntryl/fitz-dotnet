@@ -31,7 +31,7 @@ public sealed class LeaseInventoryObserverTests
     {
         // Arrange
         using var leaseClient = new LeaseClient(
-            async (messageType, _, cancellationToken) =>
+            async (messageType, _, ct) =>
             {
                 if (messageType == MessageTypes.LeaseSubscribe)
                 {
@@ -41,7 +41,7 @@ public sealed class LeaseInventoryObserverTests
                     return response.Build();
                 }
 
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
                 return ReadOnlyMemory<byte>.Empty;
             },
             registerNotificationHandler: (_, _) => new TestRegistration());

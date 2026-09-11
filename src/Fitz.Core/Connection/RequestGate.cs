@@ -18,9 +18,9 @@ sealed class RequestGate
         _maxQueueSize = Math.Max(0, maxQueueSize);
     }
 
-    internal ValueTask<Releaser> AcquireAsync(CancellationToken cancellationToken)
+    internal ValueTask<Releaser> AcquireAsync(CancellationToken ct)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        ct.ThrowIfCancellationRequested();
 
         lock (_gate)
         {
@@ -41,7 +41,7 @@ sealed class RequestGate
                 throw new RequestQueueFullException();
             }
 
-            var waiter = new RequestWaiter(this, cancellationToken);
+            var waiter = new RequestWaiter(this, ct);
             _waiters.Enqueue(waiter);
             return new ValueTask<Releaser>(waiter.Task);
         }
@@ -115,11 +115,11 @@ sealed class RequestGate
         readonly TaskCompletionSource<Releaser> _tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
         bool _completed;
 
-        internal RequestWaiter(RequestGate owner, CancellationToken cancellationToken)
+        internal RequestWaiter(RequestGate owner, CancellationToken ct)
         {
-            if (cancellationToken.CanBeCanceled)
+            if (ct.CanBeCanceled)
             {
-                _registration = cancellationToken.Register(static state =>
+                _registration = ct.Register(static state =>
                 {
                     ((RequestWaiter)state!).Cancel();
                 }, this);

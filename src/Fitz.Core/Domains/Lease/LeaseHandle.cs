@@ -5,6 +5,13 @@ using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Domains.Lease;
 
+/// <summary>
+/// The default <see cref="ILease"/>. Obtained from <see cref="LeaseClient.AcquireAsync"/>.
+/// </summary>
+/// <remarks>
+/// Fencing-token rotation is serialized, and the handle closes itself when a renewal outcome
+/// is uncertain rather than assuming continued ownership.
+/// </remarks>
 public sealed class LeaseHandle : ILease
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
@@ -36,8 +43,10 @@ public sealed class LeaseHandle : ILease
         }
     }
 
+    /// <inheritdoc />
     public string Route { get; }
 
+    /// <inheritdoc />
     public ulong FencingToken { get; private set; }
 
     internal Task ConnectionLost => _connectionLost.Task;
@@ -46,6 +55,7 @@ public sealed class LeaseHandle : ILease
 
     internal void Invalidate() => MarkClosed();
 
+    /// <inheritdoc />
     public async Task ExtendAsync(ulong ttlSecs, CancellationToken ct = default)
     {
         ArgumentOutOfRangeException.ThrowIfZero(ttlSecs, nameof(ttlSecs));
@@ -61,6 +71,7 @@ public sealed class LeaseHandle : ILease
         }
     }
 
+    /// <inheritdoc />
     public async Task ReleaseAsync(CancellationToken ct = default)
     {
         await _operationGate.WaitAsync(ct).ConfigureAwait(false);
@@ -86,6 +97,8 @@ public sealed class LeaseHandle : ILease
         }
     }
 
+    /// <summary>Releases the lease on a best-effort, bounded basis.</summary>
+    /// <returns>A task that completes once cleanup finishes.</returns>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Lease disposal is bounded best-effort cleanup and must not replace an exception leaving an await-using scope.")]
     public async ValueTask DisposeAsync()
     {

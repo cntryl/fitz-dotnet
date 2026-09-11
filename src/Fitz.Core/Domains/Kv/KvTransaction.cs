@@ -5,6 +5,13 @@ using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Domains.Kv;
 
+/// <summary>
+/// The default <see cref="IKvTransaction"/>. Obtained from <see cref="KvClient.BeginAsync"/>.
+/// </summary>
+/// <remarks>
+/// Operations on one transaction are serialized. Commit becomes terminal only after broker
+/// success; a definite rejection leaves the transaction retryable.
+/// </remarks>
 public sealed class KvTransaction : IKvTransaction
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
@@ -41,6 +48,7 @@ public sealed class KvTransaction : IKvTransaction
         }
     }
 
+    /// <inheritdoc />
     public async Task<KvGetResult> GetAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
     {
         ThrowIfClosed();
@@ -103,18 +111,21 @@ public sealed class KvTransaction : IKvTransaction
         return new KvGetResult(true, value);
     }
 
+    /// <inheritdoc />
     public Task PutAsync(ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value, CancellationToken ct = default)
     {
         ThrowIfClosed();
         return WriteAsync(MessageTypes.KvPut, key, value, "PUT", ct);
     }
 
+    /// <inheritdoc />
     public Task InsertAsync(ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value, CancellationToken ct = default)
     {
         ThrowIfClosed();
         return WriteAsync(MessageTypes.KvInsert, key, value, "INSERT", ct);
     }
 
+    /// <inheritdoc />
     public Task DeleteAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
     {
         ThrowIfClosed();
@@ -126,6 +137,7 @@ public sealed class KvTransaction : IKvTransaction
         return ExpectStatusAsync(MessageTypes.KvDelete, writer, "DELETE", ct);
     }
 
+    /// <inheritdoc />
     public Task DeleteRangeAsync(ReadOnlyMemory<byte> startKey, ReadOnlyMemory<byte> endKey, CancellationToken ct = default)
     {
         ThrowIfClosed();
@@ -139,6 +151,7 @@ public sealed class KvTransaction : IKvTransaction
         return ExpectStatusAsync(MessageTypes.KvDeleteRange, writer, "DELETE_RANGE", ct);
     }
 
+    /// <inheritdoc />
     public async Task<KvScanResult> ScanAsync(KvScanQuery query, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(query);
@@ -218,12 +231,14 @@ public sealed class KvTransaction : IKvTransaction
         return new KvScanResult(pairs, hasMoreByte == 1);
     }
 
+    /// <inheritdoc />
     public Task CommitAsync(CancellationToken ct = default)
     {
         ThrowIfClosed();
         return FinalizeAsync(MessageTypes.KvCommit, "COMMIT", ct);
     }
 
+    /// <inheritdoc />
     public Task RollbackAsync(CancellationToken ct = default)
     {
         if (Volatile.Read(ref _closed) != 0)
@@ -234,6 +249,8 @@ public sealed class KvTransaction : IKvTransaction
         return FinalizeAsync(MessageTypes.KvRollback, "ROLLBACK", ct);
     }
 
+    /// <summary>Rolls the transaction back if it has not been committed.</summary>
+    /// <returns>A task that completes once cleanup finishes.</returns>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Transaction disposal is bounded best-effort cleanup and must not replace an exception leaving an await-using scope.")]
     public async ValueTask DisposeAsync()
     {
@@ -335,18 +352,18 @@ public sealed class KvTransaction : IKvTransaction
         RetryOperation operation,
         ushort messageType,
         ReadOnlyMemory<byte> payload,
-        CancellationToken cancellationToken)
+        CancellationToken ct)
     {
-        await _operationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _operationGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             ThrowIfClosed();
             if (_retryRequest is null)
             {
-                return await _request(messageType, payload, cancellationToken).ConfigureAwait(false);
+                return await _request(messageType, payload, ct).ConfigureAwait(false);
             }
 
-            return await _retryRequest(operation, messageType, payload, cancellationToken).ConfigureAwait(false);
+            return await _retryRequest(operation, messageType, payload, ct).ConfigureAwait(false);
         }
         finally
         {

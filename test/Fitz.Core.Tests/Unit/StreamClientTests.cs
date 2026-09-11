@@ -901,10 +901,10 @@ public sealed class StreamClientTests
             });
 
         // Act
-        var subscription = await stream.SubscribeAsync("stream://prod/*/*", (evt, cancellationToken) =>
+        var subscription = await stream.SubscribeAsync("stream://prod/*/*", (evt, ct) =>
         {
             received = evt;
-            seenCancellationToken = cancellationToken;
+            seenCancellationToken = ct;
             receivedTcs.TrySetResult(evt);
             return ValueTask.CompletedTask;
         });

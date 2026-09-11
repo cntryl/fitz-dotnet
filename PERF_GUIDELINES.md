@@ -4,44 +4,50 @@ This document establishes mandatory patterns and targets for high-performance as
 
 ## Objectives
 
-- **Hotpath latency:** <10 microseconds for request-response roundtrip
-- **Throughput:** 25–50% improvement vs .NET 9 baseline
-- **Allocations:** <40% of the eager-allocation baseline for streaming workloads
-- **Concurrency:** Safe at 5,000+ concurrent RPC streams with <2 μs correlation lookup
+- **Hotpath latency:** <10 microseconds for request-response roundtrip; <5 microseconds
+  for multiplexer dispatch
+- **Allocations:** bounded and pooled on streaming paths — no per-frame `new byte[]`
+- **Concurrency:** safe at 5,000+ concurrent RPC streams with <2 μs correlation lookup
+
+Targets are validated by the BenchmarkDotNet suite in `bench/Fitz.Benchmarks`, which is
+the only source of performance numbers for this repo. Do not quote a figure here that a
+benchmark in that project does not produce.
 
 ## Mandatory Patterns
 
-### 1. ValueTask for Single-Response Hot Paths
+### 1. Task for Public Operations, ValueTask for Internal Hot Paths
 
-Use `ValueTask<T>` instead of `Task<T>` for operations that commonly complete synchronously (single response expected).
+**Public one-shot operations return `Task`/`Task<T>`.** Every one of them reaches the
+broker, so none completes synchronously and `ValueTask` would buy nothing while costing
+consumers the awkward single-await rule. `ValueTask` is used only where it pays:
+disposal, callback and provider contracts, and internal request plumbing that genuinely
+can complete synchronously.
 
-**Scope:**
-- KV `.GetAsync()`, `.BeginAsync()`
-- Lease `.QueryAsync()`, `.AcquireAsync()`
-- RPC unary `.RequestAsync()` (if ever implemented without streaming)
-- Schedule `.CreateAsync()`, `.CancelAsync()`
+**Scope:** internal transport and dispatch paths — `ITransport.ReceiveAsync`, the
+internal `request` delegates threaded through every domain client, and
+`AsyncHandlerDispatch`.
 
-**Rationale:** .NET 10 escape analysis eliminates allocation when result is already available; avoids Task heap allocation for fast paths.
+**Rationale:** `ValueTask` is an optimization for methods that usually complete without
+suspending. A network round-trip never does. Using it on the public surface would
+transfer a correctness hazard — no double-await, no blocking `.Result` — to consumers in
+exchange for nothing.
 
-**Example:**
+**Example:** the internal seam is `ValueTask`, the public method is `Task`.
+
 ```csharp
-public ValueTask<Memory<byte>> GetAsync(
-    string key,
+// Internal: can complete synchronously from a pooled buffer.
+internal Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
+
+// Public: always a round trip.
+public async Task<IKvTransaction> BeginAsync(
+    string route,
+    KvDurability durability,
+    KvMode mode = KvMode.ReadWrite,
     CancellationToken ct = default)
-{
-    // Fast path: cached or synchronous local result
-    if (TryGetCached(key, out var result))
-        return new ValueTask<Memory<byte>>(result);
-
-    // Slow path: allocate Task-based ValueTask for async wait
-    return new ValueTask<Memory<byte>>(GetAsyncCore(key, ct));
-}
-
-private async Task<Memory<byte>> GetAsyncCore(string key, CancellationToken ct)
-{
-    // Standard async logic
-}
 ```
+
+This reverses earlier guidance that mandated `ValueTask` on public one-shot operations.
+The public surface is `Task`; see the preview migration note in the README.
 
 ### 2. Channels<T> for High-Concurrency Queues (No Locks)
 
@@ -332,6 +338,37 @@ public sealed class PartitionedRpcCorrelations
 }
 ```
 
+### 10. Zero Runtime Reflection
+
+The shipped packages resolve nothing through runtime metadata. Reflection costs
+startup time, defeats trimming, and is the usual reason a library is only
+"AOT-compatible" rather than AOT-clean.
+
+**Scope:** all of `Fitz.Core`, `Fitz.Abstractions`, and `Fitz.DependencyInjection`.
+
+| Instead of | Use |
+|---|---|
+| `Enum.IsDefined(value)` | `value is not A and not B` |
+| `$"{enumValue}"` / `enumValue.ToString()` | a `switch` mapping each member to `nameof` |
+| `obj.GetType().Name` for diagnostics | a constant-returning member on the abstraction (`ITransport.TransportName`) |
+| `services.AddSingleton<T>()` | `services.AddSingleton(static sp => new T(...))` |
+| reflection-based `JsonSerializer` | source-generated `JsonSerializerContext` |
+
+**Rationale:** the first two keep enum name tables alive and allocate through a
+metadata lookup on paths that should be a compare. The DI overloads have the
+container select and invoke constructors reflectively on every startup. None of
+these buy anything the explicit form does not.
+
+**Also watch generic flow.** Passing an unannotated `T` into a BCL generic that
+annotates its type parameter — `Lazy<T>` and `ActivatorUtilities` are the ones hit
+here — propagates a reflection contract even when no reflection occurs. Prefer
+deleting the contract over annotating it with `DynamicallyAccessedMembers`.
+
+**Verification:** the in-build analyzers are necessary but not sufficient; they
+reason one method at a time. The authoritative check is the whole-program ILC
+analysis in the `package` CI job, which roots every shipped assembly. See
+[docs/aot-and-reflection.md](docs/aot-and-reflection.md).
+
 ## Latency Targets (Validation Checkpoints)
 
 | Operation | Target | Rationale |
@@ -347,11 +384,22 @@ public sealed class PartitionedRpcCorrelations
 
 ## Allocation Budget
 
-| Phase | Per-Request (encode→dispatch) | Per-Subscription | Per-Streaming Record |
-|-------|------------------------------|-------------------|----------------------|
-| Baseline (.NET 9) | ~500 bytes | ~200 bytes (overhead) | ~100 bytes (List<T> grow) |
-| Target (.NET 10) | <150 bytes | <50 bytes (Channel ref only) | <10 bytes (Channel struct) |
-| Savings | 70% reduction | 75% reduction | 90% reduction |
+There is no measured pre-.NET-10 baseline for this client, so this section records what
+has actually been measured and what is still aspirational. Do not add a row without a
+benchmark behind it.
+
+**Measured.** `MultiplexerHotPathBenchmarks.RequestDispatchRoundTrip`: 2.098 μs mean,
+1.03 KB allocated per dispatch round trip. Latency is comfortably inside the 5 μs
+dispatch target; allocation is not yet at a per-request budget worth publishing.
+
+**Aspirational, not yet validated.** Per-subscription steady-state overhead limited to
+the channel reference, and per-streaming-record delivery that does not allocate beyond
+the pooled frame. Both need a dedicated benchmark before either becomes a target anyone
+is held to.
+
+The binding rules are the pooling and bounds requirements in the patterns above —
+no per-frame `new byte[]`, pooled buffers returned on every path, bounded queues — not a
+byte count no measurement supports.
 
 ## Benchmarking Integration
 
@@ -376,10 +424,12 @@ Every phase includes explicit perf validation:
 
 ## CI Integration
 
-- Perf benchmarks run in release mode only
-- Baselines autogenerated on first run; regression detection on subsequent runs
-- BenchmarkDotNet results committed to bench_results/ for historical tracking
-- Allocations [profiled periodically](./PERF_BENCHMARKS.md) via dotTrace
+- Perf benchmarks run in Release mode only, via `dotnet run -c Release --project bench/Fitz.Benchmarks`
+- BenchmarkDotNet writes to the gitignored `BenchmarkDotNet.Artifacts/`; results are not
+  committed, so quote a number only alongside the run that produced it
+- Benchmarks are not currently part of an automated CI gate. Performance claims belong in
+  a pull request description or [the evidence ledger](docs/sharp-edges-evidence-ledger.md),
+  with the measurement attached
 
 ## Code Review Checklist
 
@@ -388,10 +438,11 @@ Before merging async/critical-path code, verify:
 - [ ] No `new byte[]` allocations in hot paths (use ArrayPool)
 - [ ] ConfigureAwait(false) on all awaits
 - [ ] Single try/finally structure (no complex control flow)
-- [ ] ValueTask used for single-response paths
+- [ ] `Task` on public operations; `ValueTask` only on internal paths that can complete synchronously
 - [ ] IAsyncEnumerable used (not List<T> return)
 - [ ] Callback closures stack-allocatable (simple capture)
 - [ ] Partitioned vs global correlation storage justified
+- [ ] No runtime reflection: no `Enum.IsDefined`, enum `ToString`, `GetType()`, or DI type activation
 - [ ] Benchmark measurement added/updated
 - [ ] Target latency validated locally (release mode)
 
@@ -405,6 +456,7 @@ Before merging async/critical-path code, verify:
 
 ---
 
-**Last Updated:** 2026-03-17  
+**Last Updated:** 2026-09-11
 **Target Framework:** .NET 10.0  
-**Expected Perf Gain:** 25–50% throughput, 15–35% latency reduction, 3–10× allocation savings
+**Status:** the patterns above are binding; the numeric targets are validated only where
+a benchmark in `bench/Fitz.Benchmarks` produces the figure.

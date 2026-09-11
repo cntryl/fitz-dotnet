@@ -4,6 +4,46 @@ using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz;
 
+/// <summary>
+/// The complete configuration for a <see cref="Client"/>.
+/// </summary>
+/// <param name="Url">
+/// Broker endpoint. The scheme selects the transport when <paramref name="Transport"/> is
+/// <see cref="ClientTransport.Auto"/>. Must be absolute.
+/// </param>
+/// <param name="Transport">Transport override. Defaults to selecting from the URL scheme.</param>
+/// <param name="Timeout">Per-request deadline. Defaults to 30 seconds.</param>
+/// <param name="AuthSettleDelay">
+/// Compatibility window the client waits after sending credentials. The protocol has no
+/// positive authentication acknowledgement, so a rejection arriving within this window is
+/// treated as authoritative.
+/// </param>
+/// <param name="TokenProvider">
+/// Supplies a bearer token per connection attempt. Invoked again on every reconnect, so it
+/// can return a freshly minted token.
+/// </param>
+/// <param name="Reconnect">Automatic reconnection behavior. Enabled by default.</param>
+/// <param name="Retry">Automatic per-request retry behavior. Enabled by default.</param>
+/// <param name="Heartbeat">Transport keepalive behavior. Enabled by default.</param>
+/// <param name="WebSocket">WebSocket-specific settings, such as upgrade headers.</param>
+/// <param name="Observability">Logging, tracing, metrics, and lifecycle hooks.</param>
+/// <param name="AsyncHandlers">Bounds on callback dispatch and subscription buffering.</param>
+/// <param name="MaxFrameSize">
+/// Largest transport frame accepted or produced. The Fitz payload length is 16-bit, and a
+/// correlated frame includes its label, so this is bounded by the protocol.
+/// </param>
+/// <param name="MaxInFlightRequests">Maximum requests awaiting a response at once.</param>
+/// <param name="MaxRequestQueueSize">
+/// Depth of the pending-request queue. Exceeding it raises <c>RequestQueueFullException</c>.
+/// </param>
+/// <param name="TransportFactory">
+/// Supplies a custom <see cref="ITransport"/> instead of the built-in ones. Override
+/// <see cref="ITransport.TransportName"/> to label it in telemetry.
+/// </param>
+/// <remarks>
+/// This record is validated centrally before any connection work starts, so invalid
+/// configuration fails fast rather than at first use.
+/// </remarks>
 public sealed record ClientConfig(
     Uri Url,
     ClientTransport Transport = ClientTransport.Auto,
@@ -27,11 +67,17 @@ public sealed record ClientConfig(
     static readonly HeartbeatOptions DefaultHeartbeat = new();
     static readonly AsyncHandlerOptions DefaultAsyncHandlers = new();
 
+    /// <summary>The transport actually used, with <see cref="ClientTransport.Auto"/> resolved against the URL scheme.</summary>
     public ClientTransport ResolvedTransportKind => ResolveTransportKind(Url, Transport);
+    /// <summary>Reconnection settings, falling back to a shared default instance.</summary>
     public ReconnectOptions ResolvedReconnect => Reconnect ?? DefaultReconnect;
+    /// <summary>Retry settings, falling back to a shared default instance.</summary>
     public RetryOptions ResolvedRetry => Retry ?? DefaultRetry;
+    /// <summary>Keepalive settings, falling back to a shared default instance.</summary>
     public HeartbeatOptions ResolvedHeartbeat => Heartbeat ?? DefaultHeartbeat;
+    /// <summary>Callback dispatch settings, falling back to a shared default instance.</summary>
     public AsyncHandlerOptions ResolvedAsyncHandlers => AsyncHandlers ?? DefaultAsyncHandlers;
+    /// <summary>The effective pending-request queue depth.</summary>
     public int ResolvedMaxRequestQueueSize => MaxRequestQueueSize;
 
     internal void Validate()
@@ -41,7 +87,7 @@ public sealed record ClientConfig(
         {
             throw new ArgumentException("The Fitz URL must be absolute.", nameof(Url));
         }
-        if (!Enum.IsDefined(Transport))
+        if (Transport is not ClientTransport.Auto and not ClientTransport.WebSocket and not ClientTransport.Tcp)
         {
             throw new ArgumentOutOfRangeException(nameof(Transport), Transport, "Unknown client transport.");
         }

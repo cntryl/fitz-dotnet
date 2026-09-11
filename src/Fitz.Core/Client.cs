@@ -23,6 +23,14 @@ using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz;
 
+/// <summary>
+/// The default <see cref="IClient"/>: owns one broker connection and every domain API.
+/// </summary>
+/// <remarks>
+/// Safe for concurrent use. Domain clients are created on first access and share the
+/// connection. Prefer <c>await using</c>; synchronous <see cref="Dispose"/> starts the
+/// asynchronous close without blocking on it.
+/// </remarks>
 public sealed class Client : IClient, IDisposable
 {
     readonly ClientConfig _config;
@@ -36,6 +44,11 @@ public sealed class Client : IClient, IDisposable
     readonly Lazy<StreamClient> _streamClient;
     int _disposed;
 
+    /// <summary>
+    /// Creates a client. No connection is opened until you call a connect method.
+    /// </summary>
+    /// <param name="config">Configuration for the connection. Validated immediately.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="config"/> is <see langword="null"/>.</exception>
     public Client(ClientConfig config)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
@@ -50,15 +63,18 @@ public sealed class Client : IClient, IDisposable
         _streamClient = new Lazy<StreamClient>(() => new StreamClient(_connection), LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
+    /// <summary>The configuration this client was created with.</summary>
     public ClientConfig Config => _config;
 
-    public Task ConnectAsync(CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public Task ConnectAsync(CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        return _connection.ConnectAsync(cancellationToken);
+        return _connection.ConnectAsync(ct);
     }
 
-    public async Task ConnectWhenReadyAsync(ConnectWhenReadyOptions? options = null, CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public async Task ConnectWhenReadyAsync(ConnectWhenReadyOptions? options = null, CancellationToken ct = default)
     {
         ThrowIfDisposed();
 
@@ -72,7 +88,7 @@ public sealed class Client : IClient, IDisposable
         while (true)
         {
             ThrowIfDisposed();
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             attempts++;
 
             var remaining = deadline - DateTimeOffset.UtcNow;
@@ -82,15 +98,15 @@ public sealed class Client : IClient, IDisposable
             }
 
             using var attemptCts = timeout == System.Threading.Timeout.InfiniteTimeSpan
-                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-                : CreateAttemptCancellationSource(remaining, cancellationToken);
+                ? CancellationTokenSource.CreateLinkedTokenSource(ct)
+                : CreateAttemptCancellationSource(remaining, ct);
 
             try
             {
                 await ConnectAsync(attemptCts.Token).ConfigureAwait(false);
                 return;
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && timeout != System.Threading.Timeout.InfiniteTimeSpan && DateTimeOffset.UtcNow >= deadline)
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested && timeout != System.Threading.Timeout.InfiniteTimeSpan && DateTimeOffset.UtcNow >= deadline)
             {
                 throw new TimeoutException("Timed out waiting for Fitz to become ready.");
             }
@@ -121,7 +137,7 @@ public sealed class Client : IClient, IDisposable
                     : Min(backoff, remainingDelay);
                 if (actualDelay > TimeSpan.Zero)
                 {
-                    await Task.Delay(actualDelay, cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(actualDelay, ct).ConfigureAwait(false);
                 }
 
                 backoff = Min(TimeSpan.FromMilliseconds(backoff.TotalMilliseconds * 2), maxBackoff);
@@ -129,9 +145,10 @@ public sealed class Client : IClient, IDisposable
         }
     }
 
-    public async Task CloseAsync(CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public async Task CloseAsync(CancellationToken ct = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        ct.ThrowIfCancellationRequested();
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
@@ -159,8 +176,14 @@ public sealed class Client : IClient, IDisposable
         }
     }
 
+    /// <summary>Closes the connection and releases everything it owns.</summary>
+    /// <returns>A task that completes once the client is closed.</returns>
     public async ValueTask DisposeAsync() => await CloseAsync().ConfigureAwait(false);
 
+    /// <summary>
+    /// Starts closing the connection without blocking, for containers that dispose
+    /// synchronously. Prefer <see cref="DisposeAsync"/> when you can await it.
+    /// </summary>
     public void Dispose()
     {
         var closeTask = CloseAsync();
@@ -172,28 +195,86 @@ public sealed class Client : IClient, IDisposable
         GC.SuppressFinalize(this);
     }
 
-    public IKvClient Kv => GetDomain(_kvClient);
+    /// <inheritdoc />
+    public IKvClient Kv
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _kvClient.Value;
+        }
+    }
 
-    public ILeaseClient Lease => GetDomain(_leaseClient);
+    /// <inheritdoc />
+    public ILeaseClient Lease
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _leaseClient.Value;
+        }
+    }
 
-    public INoticeClient Notice => GetDomain(_noticeClient);
+    /// <inheritdoc />
+    public INoticeClient Notice
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _noticeClient.Value;
+        }
+    }
 
-    public IQueueClient Queue => GetDomain(_queueClient);
+    /// <inheritdoc />
+    public IQueueClient Queue
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _queueClient.Value;
+        }
+    }
 
-    public IRpcClient Rpc => GetDomain(_rpcClient);
+    /// <inheritdoc />
+    public IRpcClient Rpc
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _rpcClient.Value;
+        }
+    }
 
-    public IScheduleClient Schedule => GetDomain(_scheduleClient);
+    /// <inheritdoc />
+    public IScheduleClient Schedule
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _scheduleClient.Value;
+        }
+    }
 
-    public IStreamClient Stream => GetDomain(_streamClient);
+    /// <inheritdoc />
+    public IStreamClient Stream
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _streamClient.Value;
+        }
+    }
 
+    /// <inheritdoc />
     public bool IsConnected => _connection.State == ConnectionState.Authenticated;
 
+    /// <inheritdoc />
     public ConnectionState State => Volatile.Read(ref _disposed) != 0 ? ConnectionState.Closed : _connection.State;
 
-    static CancellationTokenSource CreateAttemptCancellationSource(TimeSpan remaining, CancellationToken cancellationToken)
+    static CancellationTokenSource CreateAttemptCancellationSource(TimeSpan remaining, CancellationToken ct)
     {
         var timeout = remaining <= TimeSpan.Zero ? TimeSpan.Zero : remaining;
-        var source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var source = CancellationTokenSource.CreateLinkedTokenSource(ct);
         source.CancelAfter(timeout);
         return source;
     }
@@ -219,12 +300,6 @@ public sealed class Client : IClient, IDisposable
         }
 
         return resolved;
-    }
-
-    T GetDomain<T>(Lazy<T> domain)
-    {
-        ThrowIfDisposed();
-        return domain.Value;
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Synchronous DI disposal starts asynchronous cleanup without surfacing an unobserved background exception.")]

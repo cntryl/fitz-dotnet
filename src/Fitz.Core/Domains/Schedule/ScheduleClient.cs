@@ -9,6 +9,13 @@ using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Schedule;
 
+/// <summary>
+/// The default <see cref="IScheduleClient"/>: cron schedules and their firings.
+/// </summary>
+/// <remarks>
+/// Obtained from <see cref="Client"/> rather than constructed directly. The public
+/// constructors exist for testing against a transport delegate.
+/// </remarks>
 public sealed class ScheduleClient : IScheduleClient, IDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
@@ -36,6 +43,9 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
 
+    /// <summary>
+    /// Creates a domain client over a request delegate, for testing without a broker.
+    /// </summary>
     public ScheduleClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
@@ -58,6 +68,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
     }
 
+    /// <inheritdoc />
     public async Task<string?> CreateAsync(string route, string cron, ScheduleDeliveryMode deliveryMode, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -105,6 +116,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         return route;
     }
 
+    /// <inheritdoc />
     public async Task CancelAsync(string route, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -119,6 +131,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         }
     }
 
+    /// <inheritdoc />
     public async Task<ScheduleListPage> ListAsync(ulong? offset = null, ulong? limit = null, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -205,6 +218,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         return new ScheduleListPage(entries.ToArray(), totalCount);
     }
 
+    /// <inheritdoc />
     public async Task<IReadOnlyList<ScheduleEntry>> ListBySelectorAsync(string selector, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -230,6 +244,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         }
     }
 
+    /// <inheritdoc />
     public async Task<ScheduleSubscription> SubscribeAsync(
         string pattern,
         CancellationToken ct = default)
@@ -321,7 +336,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
     {
         return new ScheduleSubscription(
             route,
-            cancellationToken => UnsubscribeAsync(route, handleId, cancellationToken),
+            ct => UnsubscribeAsync(route, handleId, ct),
             completion);
     }
 
@@ -478,7 +493,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         }
     }
 
-    async ValueTask HandleReconnect(CancellationToken cancellationToken) => await RestoreSubscriptionsAsync(cancellationToken).ConfigureAwait(false);
+    async ValueTask HandleReconnect(CancellationToken ct) => await RestoreSubscriptionsAsync(ct).ConfigureAwait(false);
 
     static void ValidateScheduleRoute(string route)
     {
@@ -504,9 +519,9 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
-    async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
+    async ValueTask RestoreSubscriptionsAsync(CancellationToken ct)
     {
-        await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             List<(string Route, ScheduleSubscriptionState Subscription)> snapshot;
@@ -531,7 +546,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
             {
                 foreach (var entry in snapshot)
                 {
-                    var subscriptionId = await SubscribeWireAsync(entry.Route, cancellationToken).ConfigureAwait(false);
+                    var subscriptionId = await SubscribeWireAsync(entry.Route, ct).ConfigureAwait(false);
                     restoredSubscriptions[entry.Route] = entry.Subscription.Clone(subscriptionId);
                     restoredRoutesById[subscriptionId] = entry.Route;
                 }
@@ -575,6 +590,7 @@ public sealed class ScheduleClient : IScheduleClient, IDisposable
         }
     }
 
+    /// <summary>Releases local resources and ends any registrations this client owns.</summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

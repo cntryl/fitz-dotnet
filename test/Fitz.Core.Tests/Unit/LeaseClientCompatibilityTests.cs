@@ -14,15 +14,15 @@ public sealed class LeaseClientCompatibilityTests
         var result = await client.WithLeaseAsync(
             "lease://prod/app/generic",
             30,
-            cancellationToken => ValueTask.FromResult(!cancellationToken.IsCancellationRequested));
+            ct => ValueTask.FromResult(!ct.IsCancellationRequested));
 
         // Act
         await client.WithLeaseAsync(
             "lease://prod/app/non-generic",
             30,
-            cancellationToken =>
+            ct =>
             {
-                nonGenericInvoked = !cancellationToken.IsCancellationRequested;
+                nonGenericInvoked = !ct.IsCancellationRequested;
                 return ValueTask.CompletedTask;
             });
 

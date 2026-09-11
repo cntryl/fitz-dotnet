@@ -242,10 +242,10 @@ public sealed class ScheduleClientTests
             });
 
         // Act
-        var subscription = await schedule.SubscribeAsync("schedule://prod/app/jobs/run", (notification, cancellationToken) =>
+        var subscription = await schedule.SubscribeAsync("schedule://prod/app/jobs/run", (notification, ct) =>
         {
             received = notification;
-            seenCancellationToken = cancellationToken;
+            seenCancellationToken = ct;
             receivedTcs.TrySetResult(notification);
             return ValueTask.CompletedTask;
         });

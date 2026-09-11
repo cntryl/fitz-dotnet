@@ -540,10 +540,10 @@ public sealed class QueueClientTests
             });
 
         // Act
-        var subscription = await queue.SubscribeAsync("queue://prod/app/*", (evt, cancellationToken) =>
+        var subscription = await queue.SubscribeAsync("queue://prod/app/*", (evt, ct) =>
         {
             received = evt;
-            seenCancellationToken = cancellationToken;
+            seenCancellationToken = ct;
             receivedTcs.TrySetResult(evt);
             return ValueTask.CompletedTask;
         });

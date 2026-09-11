@@ -150,7 +150,7 @@ public sealed class MultiplexerCleanupTests
                 await cts.CancelAsync();
             },
             TimeSpan.FromSeconds(5),
-            cancellationToken: cts.Token
+            ct: cts.Token
         );
 
 
@@ -171,7 +171,7 @@ public sealed class MultiplexerCleanupTests
             [0x1],
             static async (_, token) => await Task.Delay(100, token),
             TimeSpan.FromSeconds(5),
-            cancellationToken: cts.Token
+            ct: cts.Token
         );
 
         await Task.Delay(50);
@@ -202,7 +202,7 @@ public sealed class MultiplexerCleanupTests
                 return Task.CompletedTask;
             },
             Timeout.InfiniteTimeSpan,
-            cancellationToken: cancellation.Token);
+            ct: cancellation.Token);
 
         await sent.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
@@ -236,7 +236,7 @@ public sealed class MultiplexerCleanupTests
             [0x1],
             static (_, _) => Task.CompletedTask,
             TimeSpan.FromSeconds(5),
-            cancellationToken: firstCts.Token
+            ct: firstCts.Token
         );
 
         await Task.Delay(10);

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.IO;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
@@ -12,6 +13,13 @@ using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Connection;
 
+/// <summary>
+/// Owns the transport, the authenticated session, reconnection, and request correlation.
+/// </summary>
+/// <remarks>
+/// Internal plumbing behind <see cref="Client"/>; applications use <c>IClient</c> instead.
+/// Active subscriptions and worker registrations are restored after a reconnect.
+/// </remarks>
 public sealed class FitzConnection : IAsyncDisposable
 {
     static readonly TaskCompletionSource<bool> CompletedStateSignal = CreateCompletedStateSignal();
@@ -57,6 +65,9 @@ public sealed class FitzConnection : IAsyncDisposable
     long _capabilityState;
     long _nextCorrelationId;
 
+    /// <summary>Creates a connection that builds its transport on demand.</summary>
+    /// <param name="config">Configuration for the connection.</param>
+    /// <param name="transportFactory">Creates a fresh transport for each connect attempt.</param>
     public FitzConnection(ClientConfig config, Func<ITransport> transportFactory)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
@@ -67,6 +78,7 @@ public sealed class FitzConnection : IAsyncDisposable
         _requestGate = CreateRequestGate();
     }
 
+    /// <summary>The current connection lifecycle state.</summary>
     public ConnectionState State => _state;
 
     /// <summary>
@@ -182,7 +194,7 @@ public sealed class FitzConnection : IAsyncDisposable
     internal async ValueTask<T> ExecuteWithRetryAsync<T>(
         RetryOperation operation,
         Func<CancellationToken, ValueTask<T>> task,
-        CancellationToken cancellationToken = default)
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(operation);
         ArgumentNullException.ThrowIfNull(task);
@@ -190,10 +202,10 @@ public sealed class FitzConnection : IAsyncDisposable
         var retry = _config.ResolvedRetry;
         if (!retry.Enabled || operation.RetryClass == RetryClass.WaitOnly)
         {
-            return await task(cancellationToken).ConfigureAwait(false);
+            return await task(ct).ConfigureAwait(false);
         }
 
-        using var operationDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var operationDeadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         operationDeadline.CancelAfter(Timeout);
         var operationToken = operationDeadline.Token;
 
@@ -203,14 +215,14 @@ public sealed class FitzConnection : IAsyncDisposable
 
         while (true)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             attempts++;
 
             try
             {
                 return await task(operationToken).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 throw;
             }
@@ -226,7 +238,7 @@ public sealed class FitzConnection : IAsyncDisposable
                 {
                     await Task.Delay(retryDelay, operationToken).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     throw;
                 }
@@ -244,9 +256,12 @@ public sealed class FitzConnection : IAsyncDisposable
         }
     }
 
-    public async Task ConnectAsync(CancellationToken cancellationToken = default)
+    /// <summary>Connects and authenticates, restoring registrations on a reconnect.</summary>
+    /// <param name="ct">Cancellation token for the attempt.</param>
+    /// <returns>A task that completes once the session is authenticated.</returns>
+    public async Task ConnectAsync(CancellationToken ct = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        ct.ThrowIfCancellationRequested();
 
         if (_closeRequested || State == ConnectionState.Closed)
         {
@@ -284,16 +299,16 @@ public sealed class FitzConnection : IAsyncDisposable
 
         if (connectTask is not null)
         {
-            await connectTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await connectTask.WaitAsync(ct).ConfigureAwait(false);
             return;
         }
 
-        await WaitUntilReadyAsync(Timeout, cancellationToken).ConfigureAwait(false);
+        await WaitUntilReadyAsync(Timeout, ct).ConfigureAwait(false);
     }
 
-    internal async Task WaitUntilReadyAsync(TimeSpan waitTimeout, CancellationToken cancellationToken = default)
+    internal async Task WaitUntilReadyAsync(TimeSpan waitTimeout, CancellationToken ct = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        ct.ThrowIfCancellationRequested();
 
         var releaseWaiter = TryAcquireReadyWaitSlot();
         var deadline = waitTimeout == System.Threading.Timeout.InfiniteTimeSpan
@@ -304,7 +319,7 @@ public sealed class FitzConnection : IAsyncDisposable
         {
             while (true)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                ct.ThrowIfCancellationRequested();
                 var failure = GetReadyFailure();
                 if (State == ConnectionState.Authenticated)
                 {
@@ -324,7 +339,7 @@ public sealed class FitzConnection : IAsyncDisposable
 
                 if (waitTimeout == System.Threading.Timeout.InfiniteTimeSpan)
                 {
-                    await waitTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    await waitTask.WaitAsync(ct).ConfigureAwait(false);
                     continue;
                 }
 
@@ -334,7 +349,7 @@ public sealed class FitzConnection : IAsyncDisposable
                     throw new ConnectionException("Timed out waiting for connection to become ready");
                 }
 
-                await waitTask.WaitAsync(remaining, cancellationToken).ConfigureAwait(false);
+                await waitTask.WaitAsync(remaining, ct).ConfigureAwait(false);
             }
         }
         finally
@@ -343,12 +358,13 @@ public sealed class FitzConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>Sends a request and awaits its correlated response.</summary>
     public async ValueTask<ReadOnlyMemory<byte>> RequestAsync(
         ushort messageType,
         ReadOnlyMemory<byte> payload,
-        CancellationToken cancellationToken = default)
+        CancellationToken ct = default)
     {
-        await WaitForRequestReadyAsync(cancellationToken).ConfigureAwait(false);
+        await WaitForRequestReadyAsync(ct).ConfigureAwait(false);
 
         // Read the capability once: if the advertisement lands mid-request the decision must stay
         // consistent between the frame we encode and the way we register the request.
@@ -362,7 +378,7 @@ public sealed class FitzConnection : IAsyncDisposable
 
         try
         {
-            using var slot = await AcquireRequestSlotAsync(cancellationToken).ConfigureAwait(false);
+            using var slot = await AcquireRequestSlotAsync(ct).ConfigureAwait(false);
             var transport = requestTransport = EnsureTransport();
 
             // Method group, not a lambda: the signatures match exactly, so this avoids a closure
@@ -373,11 +389,11 @@ public sealed class FitzConnection : IAsyncDisposable
                 transport.SendAsync,
                 Timeout,
                 correlationId: correlationId,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                ct: ct).ConfigureAwait(false);
 
             return response;
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
         }
@@ -407,22 +423,23 @@ public sealed class FitzConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>Sends a frame without awaiting a response.</summary>
     public async ValueTask SendAsync(
         ushort messageType,
         ReadOnlyMemory<byte> payload,
-        CancellationToken cancellationToken = default)
+        CancellationToken ct = default)
     {
-        await WaitForRequestReadyAsync(cancellationToken).ConfigureAwait(false);
+        await WaitForRequestReadyAsync(ct).ConfigureAwait(false);
         var frame = FrameCodec.Encode(messageType, payload.Span);
         ITransport? sendTransport = null;
 
         try
         {
-            using var slot = await AcquireRequestSlotAsync(cancellationToken).ConfigureAwait(false);
+            using var slot = await AcquireRequestSlotAsync(ct).ConfigureAwait(false);
             sendTransport = EnsureTransport();
-            await sendTransport.SendAsync(frame, cancellationToken).ConfigureAwait(false);
+            await sendTransport.SendAsync(frame, ct).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
         }
@@ -433,10 +450,17 @@ public sealed class FitzConnection : IAsyncDisposable
         }
     }
 
+    /// <summary>Routes broker-originated frames of one message type to a handler.</summary>
+    /// <param name="messageType">Opcode from <see cref="Protocol.MessageTypes"/>.</param>
+    /// <param name="handler">Receives each matching frame's payload.</param>
+    /// <returns>A registration that stops delivery when disposed.</returns>
     public IDisposable RegisterNotificationHandler(ushort messageType, Action<byte[]> handler) => _multiplexer.RegisterNotificationHandler(messageType, handler);
 
     internal IDisposable RegisterBorrowedNotificationHandler(ushort messageType, Action<ReadOnlyMemory<byte>> handler) => _multiplexer.RegisterBorrowedNotificationHandler(messageType, handler);
 
+    /// <summary>Registers a listener invoked after each successful reconnect.</summary>
+    /// <param name="listener">Invoked once the session is authenticated again.</param>
+    /// <returns>A registration that stops delivery when disposed.</returns>
     public IDisposable OnReconnect(Func<CancellationToken, ValueTask> listener)
     {
         ArgumentNullException.ThrowIfNull(listener);
@@ -451,6 +475,9 @@ public sealed class FitzConnection : IAsyncDisposable
         return new ReconnectRegistration(this, listenerId);
     }
 
+    /// <summary>Registers a listener invoked when the connection is lost.</summary>
+    /// <param name="listener">Invoked on disconnect.</param>
+    /// <returns>A registration that stops delivery when disposed.</returns>
     public IDisposable OnDisconnect(Action listener)
     {
         ArgumentNullException.ThrowIfNull(listener);
@@ -465,8 +492,11 @@ public sealed class FitzConnection : IAsyncDisposable
         return new DisconnectRegistration(this, listenerId);
     }
 
+    /// <summary>Closes the connection and fails every pending request.</summary>
+    /// <param name="ct">Cancellation token bounding the close.</param>
+    /// <returns>A task that completes once the connection is closed.</returns>
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Connection teardown is best-effort and must complete after transport or receive-loop failures.")]
-    public async Task CloseAsync(CancellationToken cancellationToken = default)
+    public async Task CloseAsync(CancellationToken ct = default)
     {
         _closeRequested = true;
         Task? reconnectTask;
@@ -503,7 +533,7 @@ public sealed class FitzConnection : IAsyncDisposable
         {
             try
             {
-                await transport.CloseAsync(cancellationToken).WaitAsync(Timeout, cancellationToken).ConfigureAwait(false);
+                await transport.CloseAsync(ct).WaitAsync(Timeout, ct).ConfigureAwait(false);
             }
             catch
             {
@@ -514,7 +544,7 @@ public sealed class FitzConnection : IAsyncDisposable
         {
             try
             {
-                await _receiveLoop.WaitAsync(Timeout, cancellationToken).ConfigureAwait(false);
+                await _receiveLoop.WaitAsync(Timeout, ct).ConfigureAwait(false);
             }
             catch
             {
@@ -527,7 +557,7 @@ public sealed class FitzConnection : IAsyncDisposable
         {
             try
             {
-                await reconnectTask.WaitAsync(Timeout, cancellationToken).ConfigureAwait(false);
+                await reconnectTask.WaitAsync(Timeout, ct).ConfigureAwait(false);
             }
             catch
             {
@@ -538,7 +568,7 @@ public sealed class FitzConnection : IAsyncDisposable
         {
             try
             {
-                await connectionLossTask.WaitAsync(Timeout, cancellationToken).ConfigureAwait(false);
+                await connectionLossTask.WaitAsync(Timeout, ct).ConfigureAwait(false);
             }
             catch
             {
@@ -547,7 +577,7 @@ public sealed class FitzConnection : IAsyncDisposable
 
         try
         {
-            await _multiplexer.CompleteNotificationDispatchAsync(Timeout, cancellationToken).ConfigureAwait(false);
+            await _multiplexer.CompleteNotificationDispatchAsync(Timeout, ct).ConfigureAwait(false);
         }
         catch
         {
@@ -555,7 +585,7 @@ public sealed class FitzConnection : IAsyncDisposable
 
         if (transport is not null)
         {
-            await DisposeTransportAsync(transport, cancellationToken).ConfigureAwait(false);
+            await DisposeTransportAsync(transport, ct).ConfigureAwait(false);
         }
 
         try
@@ -567,7 +597,7 @@ public sealed class FitzConnection : IAsyncDisposable
             }
 
             await Task.WhenAll(drainTasks)
-                .WaitAsync(Timeout, cancellationToken)
+                .WaitAsync(Timeout, ct)
                 .ConfigureAwait(false);
         }
         catch
@@ -576,6 +606,8 @@ public sealed class FitzConnection : IAsyncDisposable
         EmitLifecycleEvent("closed");
     }
 
+    /// <summary>Closes the connection and releases transport resources.</summary>
+    /// <returns>A task that completes once cleanup finishes.</returns>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -636,7 +668,7 @@ public sealed class FitzConnection : IAsyncDisposable
         }
     }
 
-    async Task WaitForRequestReadyAsync(CancellationToken cancellationToken)
+    async Task WaitForRequestReadyAsync(CancellationToken ct)
     {
         if (State == ConnectionState.Authenticated ||
             (_restoreRequestDepth.Value > 0 && State == ConnectionState.Reconnecting))
@@ -644,14 +676,14 @@ public sealed class FitzConnection : IAsyncDisposable
             return;
         }
 
-        await WaitUntilReadyAsync(Timeout, cancellationToken).ConfigureAwait(false);
+        await WaitUntilReadyAsync(Timeout, ct).ConfigureAwait(false);
         EnsureAuthenticated();
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Authentication failure handling must normalize and clean up every transport failure.")]
-    async Task OpenAndAuthenticateAsync(bool isReconnect, CancellationToken cancellationToken)
+    async Task OpenAndAuthenticateAsync(bool isReconnect, CancellationToken ct)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        ct.ThrowIfCancellationRequested();
 
         ResetSessionState(isReconnect);
         Interlocked.Exchange(ref _requestGate, CreateRequestGate()).Close();
@@ -669,12 +701,12 @@ public sealed class FitzConnection : IAsyncDisposable
             isReconnect ? "fitz.reconnect" : "fitz.connect",
             ActivityKind.Client);
         activity?.SetTag("server.address", transport.Url.Host);
-        activity?.SetTag("network.transport", transport.GetType().Name);
+        activity?.SetTag("network.transport", transport.TransportName);
         var customSpan = StartCustomSpan(isReconnect ? "fitz.reconnect" : "fitz.connect", transport);
 
         try
         {
-            await transport.ConnectAsync(cancellationToken).ConfigureAwait(false);
+            await transport.ConnectAsync(ct).ConfigureAwait(false);
             SetState(ConnectionState.Connected);
             _multiplexer.BeginSession();
             _frameParser.Reset();
@@ -690,12 +722,12 @@ public sealed class FitzConnection : IAsyncDisposable
             var tokenProvider = _config.TokenProvider;
             var token = tokenProvider is null
                 ? string.Empty
-                : await tokenProvider(cancellationToken).ConfigureAwait(false);
+                : await tokenProvider(ct).ConfigureAwait(false);
             var tokenBytes = Encoding.UTF8.GetBytes(token);
             var connectFrame = FrameCodec.Encode(MessageTypes.Connect, tokenBytes);
             try
             {
-                await transport.SendAsync(connectFrame, cancellationToken).ConfigureAwait(false);
+                await transport.SendAsync(connectFrame, ct).ConfigureAwait(false);
             }
             finally
             {
@@ -703,7 +735,7 @@ public sealed class FitzConnection : IAsyncDisposable
                 CryptographicOperations.ZeroMemory(connectFrame);
             }
 
-            await WaitForAuthSettlementAsync(cancellationToken).ConfigureAwait(false);
+            await WaitForAuthSettlementAsync(ct).ConfigureAwait(false);
             await ThrowIfAttemptFailedAsync(transport).ConfigureAwait(false);
 
             if (isReconnect)
@@ -722,7 +754,7 @@ public sealed class FitzConnection : IAsyncDisposable
 
             if (isReconnect)
             {
-                await RestoreReconnectStateAsync(cancellationToken).ConfigureAwait(false);
+                await RestoreReconnectStateAsync(ct).ConfigureAwait(false);
                 _multiplexer.CompleteNotificationRestore();
             }
 
@@ -776,7 +808,7 @@ public sealed class FitzConnection : IAsyncDisposable
                 await DisposeTransportAsync(detached, CancellationToken.None).ConfigureAwait(false);
             }
 
-            if (ex is OperationCanceledException && cancellationToken.IsCancellationRequested)
+            if (ex is OperationCanceledException && ct.IsCancellationRequested)
             {
                 throw;
             }
@@ -791,7 +823,7 @@ public sealed class FitzConnection : IAsyncDisposable
         }
     }
 
-    async Task WaitForAuthSettlementAsync(CancellationToken cancellationToken)
+    async Task WaitForAuthSettlementAsync(CancellationToken ct)
     {
         var settleDelay = _config.AuthSettleDelay is { } configured && configured >= TimeSpan.Zero
             ? configured
@@ -812,7 +844,7 @@ public sealed class FitzConnection : IAsyncDisposable
             return;
         }
 
-        var delayTask = Task.Delay(settleDelay, cancellationToken);
+        var delayTask = Task.Delay(settleDelay, ct);
         var completed = await Task.WhenAny(_authFailure.Task, delayTask).ConfigureAwait(false);
         if (completed == _authFailure.Task)
         {
@@ -1040,7 +1072,7 @@ public sealed class FitzConnection : IAsyncDisposable
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect retries apply to every connection attempt failure except explicit shutdown or auth rejection.")]
-    async Task ReconnectLoopAsync(CancellationToken cancellationToken)
+    async Task ReconnectLoopAsync(CancellationToken ct)
     {
         var reconnect = _config.ResolvedReconnect;
         var delay = reconnect.Backoff ?? TimeSpan.FromMilliseconds(250);
@@ -1056,16 +1088,16 @@ public sealed class FitzConnection : IAsyncDisposable
 
                 try
                 {
-                    await Task.Delay(AddJitter(delay, maxDelay), cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(AddJitter(delay, maxDelay), ct).ConfigureAwait(false);
                     if (_closeRequested)
                     {
                         return;
                     }
 
-                    await OpenAndAuthenticateAsync(isReconnect: true, cancellationToken).ConfigureAwait(false);
+                    await OpenAndAuthenticateAsync(isReconnect: true, ct).ConfigureAwait(false);
                     return;
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     return;
                 }
@@ -1111,7 +1143,7 @@ public sealed class FitzConnection : IAsyncDisposable
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect listeners are isolated so one consumer cannot prevent the others from restoring.")]
-    async Task RestoreReconnectStateAsync(CancellationToken cancellationToken)
+    async Task RestoreReconnectStateAsync(CancellationToken ct)
     {
         Func<CancellationToken, ValueTask>[] listeners;
         List<Exception>? failures = null;
@@ -1127,9 +1159,9 @@ public sealed class FitzConnection : IAsyncDisposable
             {
                 try
                 {
-                    await listener(cancellationToken).ConfigureAwait(false);
+                    await listener(ct).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     throw;
                 }
@@ -1242,7 +1274,7 @@ public sealed class FitzConnection : IAsyncDisposable
     {
         if (_closeRequested || State != ConnectionState.Authenticated)
         {
-            throw new ConnectionException($"Cannot use connection while state is {State}");
+            throw new ConnectionException($"Cannot use connection while state is {Describe(State)}");
         }
     }
 
@@ -1253,11 +1285,11 @@ public sealed class FitzConnection : IAsyncDisposable
     /// when the gate is uncontended, which is the common case; the queue-full rejection is thrown
     /// synchronously by the gate, so no await is needed to observe it.
     /// </summary>
-    ValueTask<RequestGate.Releaser> AcquireRequestSlotAsync(CancellationToken cancellationToken)
+    ValueTask<RequestGate.Releaser> AcquireRequestSlotAsync(CancellationToken ct)
     {
         try
         {
-            return _requestGate.AcquireAsync(cancellationToken);
+            return _requestGate.AcquireAsync(ct);
         }
         catch (RequestQueueFullException)
         {
@@ -1318,7 +1350,7 @@ public sealed class FitzConnection : IAsyncDisposable
             return null;
         }
 
-        return new ConnectionException($"Cannot use connection while state is {State}");
+        return new ConnectionException($"Cannot use connection while state is {Describe(State)}");
     }
 
     bool CanWaitForReconnect()
@@ -1454,6 +1486,20 @@ public sealed class FitzConnection : IAsyncDisposable
         FitzDiagnostics.RetryExhausted.Add(1);
     }
 
+    // Enum.ToString resolves names through runtime metadata; an explicit map keeps the
+    // enum name tables trimmable.
+    static string Describe(ConnectionState state) => state switch
+    {
+        ConnectionState.Disconnected => nameof(ConnectionState.Disconnected),
+        ConnectionState.Connecting => nameof(ConnectionState.Connecting),
+        ConnectionState.Connected => nameof(ConnectionState.Connected),
+        ConnectionState.Reconnecting => nameof(ConnectionState.Reconnecting),
+        ConnectionState.Authenticating => nameof(ConnectionState.Authenticating),
+        ConnectionState.Authenticated => nameof(ConnectionState.Authenticated),
+        ConnectionState.Closed => nameof(ConnectionState.Closed),
+        _ => ((int)state).ToString(CultureInfo.InvariantCulture),
+    };
+
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Observability callbacks must not alter connection lifecycle behavior.")]
     void EmitLifecycleEvent(string eventName, Exception? exception = null, int? attempt = null)
     {
@@ -1462,7 +1508,7 @@ public sealed class FitzConnection : IAsyncDisposable
             _config.Observability?.OnLifecycleEvent?.Invoke(new FitzLifecycleEvent(
                 eventName,
                 State,
-                _transport?.GetType().Name,
+                _transport?.TransportName,
                 _transport?.Url ?? _config.Url,
                 attempt,
                 exception?.Message));
@@ -1492,7 +1538,7 @@ public sealed class FitzConnection : IAsyncDisposable
             return _config.Observability?.Tracer?.StartSpan(name, new Dictionary<string, object?>
             {
                 ["server.address"] = transport.Url.Host,
-                ["network.transport"] = transport.GetType().Name,
+                ["network.transport"] = transport.TransportName,
             });
         }
         catch
@@ -1622,11 +1668,11 @@ public sealed class FitzConnection : IAsyncDisposable
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Transport disposal is best effort and bounded during lifecycle recovery.")]
-    async Task DisposeTransportAsync(ITransport transport, CancellationToken cancellationToken)
+    async Task DisposeTransportAsync(ITransport transport, CancellationToken ct)
     {
         try
         {
-            await transport.DisposeAsync().AsTask().WaitAsync(Timeout, cancellationToken).ConfigureAwait(false);
+            await transport.DisposeAsync().AsTask().WaitAsync(Timeout, ct).ConfigureAwait(false);
         }
         catch
         {
