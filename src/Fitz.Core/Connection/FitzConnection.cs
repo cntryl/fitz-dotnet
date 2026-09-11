@@ -286,13 +286,12 @@ public sealed class FitzConnection : IAsyncDisposable
             using var slot = await AcquireRequestSlotAsync(cancellationToken).ConfigureAwait(false);
             var transport = requestTransport = EnsureTransport();
 
+            // Method group, not a lambda: the signatures match exactly, so this avoids a closure
+            // and an extra async state machine on every request.
             var response = await _multiplexer.RequestAsync(
                 messageType,
                 frame,
-                async (data, token) =>
-                {
-                    await transport.SendAsync(data, token).ConfigureAwait(false);
-                },
+                transport.SendAsync,
                 Timeout,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -1115,11 +1114,16 @@ public sealed class FitzConnection : IAsyncDisposable
 
     RequestGate CreateRequestGate() => new(Math.Max(1, _config.MaxInFlightRequests), _config.ResolvedMaxRequestQueueSize);
 
-    async Task<RequestGate.Releaser> AcquireRequestSlotAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Acquires an in-flight request slot. Returns a completed <see cref="ValueTask{TResult}"/>
+    /// when the gate is uncontended, which is the common case; the queue-full rejection is thrown
+    /// synchronously by the gate, so no await is needed to observe it.
+    /// </summary>
+    ValueTask<RequestGate.Releaser> AcquireRequestSlotAsync(CancellationToken cancellationToken)
     {
         try
         {
-            return await _requestGate.AcquireAsync(cancellationToken).ConfigureAwait(false);
+            return _requestGate.AcquireAsync(cancellationToken);
         }
         catch (RequestQueueFullException)
         {

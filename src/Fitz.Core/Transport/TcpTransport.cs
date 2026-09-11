@@ -126,7 +126,7 @@ public sealed class TcpTransport : ITransport
         {
             if (frame is not null)
             {
-                ArrayPool<byte>.Shared.Return(frame, clearArray: true);
+                ReturnCleared(frame, frameLength + 4);
             }
             _sendLock.Release();
         }
@@ -177,9 +177,19 @@ public sealed class TcpTransport : ITransport
         {
             if (ownsPayload)
             {
-                ArrayPool<byte>.Shared.Return(payload, clearArray: true);
+                ReturnCleared(payload, frameLength);
             }
         }
+    }
+
+    /// <summary>
+    /// Returns a rented buffer after zeroing only the bytes that were written, so the cost tracks
+    /// the frame size rather than the pool bucket size.
+    /// </summary>
+    static void ReturnCleared(byte[] buffer, int writtenLength)
+    {
+        buffer.AsSpan(0, Math.Min(Math.Max(writtenLength, 0), buffer.Length)).Clear();
+        ArrayPool<byte>.Shared.Return(buffer);
     }
 
     public async Task CloseAsync(CancellationToken cancellationToken = default)

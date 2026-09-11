@@ -15,6 +15,9 @@ public sealed class Multiplexer : IDisposable
     readonly Dictionary<ushort, LinkedList<PendingRequest>> _pending = [];
     readonly Dictionary<ushort, SemaphoreSlim> _requestLanes = [];
     readonly Dictionary<ushort, Dictionary<long, NotificationHandler>> _notificationHandlers = [];
+    // Handler registration is rare and dispatch is per-frame, so the fan-out array is built once
+    // per registration change instead of once per notification.
+    readonly Dictionary<ushort, NotificationHandler[]> _notificationHandlerSnapshots = [];
     readonly Queue<NotificationDispatch> _restoringNotifications = [];
     readonly Action<Exception>? _onDispatchError;
     readonly Action<Exception>? _onSessionDesynchronized;
@@ -198,6 +201,7 @@ public sealed class Multiplexer : IDisposable
             }
 
             registrations[handlerId] = handler;
+            RebuildHandlerSnapshotUnsafe(messageType, registrations);
         }
 
         return new NotificationRegistration(this, messageType, handlerId);
@@ -224,11 +228,7 @@ public sealed class Multiplexer : IDisposable
                 pending = FindPendingRequestByPayload(pendingQueue, payload);
                 if (pending is null)
                 {
-                    if (_notificationHandlers.TryGetValue(messageType, out var registeredHandlers) && registeredHandlers.Count > 0)
-                    {
-                        handlers = new NotificationHandler[registeredHandlers.Count];
-                        registeredHandlers.Values.CopyTo(handlers, 0);
-                    }
+                    _notificationHandlerSnapshots.TryGetValue(messageType, out handlers);
                 }
                 else
                 {
@@ -240,10 +240,9 @@ public sealed class Multiplexer : IDisposable
                 }
             }
 
-            if (pending is null && handlers is null && _notificationHandlers.TryGetValue(messageType, out var registeredHandlersNoPending) && registeredHandlersNoPending.Count > 0)
+            if (pending is null && handlers is null)
             {
-                handlers = new NotificationHandler[registeredHandlersNoPending.Count];
-                registeredHandlersNoPending.Values.CopyTo(handlers, 0);
+                _notificationHandlerSnapshots.TryGetValue(messageType, out handlers);
             }
 
             if (pending is null && handlers is null)
@@ -253,19 +252,15 @@ public sealed class Multiplexer : IDisposable
 
             if (pending is null && handlers is not null && _notificationRestoreActive)
             {
-                var restoringPayload = payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray();
-                foreach (var handler in handlers)
+                if (_restoringNotifications.Count >= 1024)
                 {
-                    if (_restoringNotifications.Count >= 1024)
-                    {
-                        _notificationRestoreFailure ??= new SubscriptionBackpressureException(
-                            "The reconnect notification buffer is full.");
-                        break;
-                    }
-
-                    _restoringNotifications.Enqueue(new NotificationDispatch(handler, restoringPayload));
+                    _notificationRestoreFailure ??= new SubscriptionBackpressureException(
+                        "The reconnect notification buffer is full.");
+                    return;
                 }
 
+                var restoringPayload = payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray();
+                _restoringNotifications.Enqueue(new NotificationDispatch(handlers, restoringPayload));
                 return;
             }
         }
@@ -282,13 +277,10 @@ public sealed class Multiplexer : IDisposable
         }
 
         var ownedPayload = payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray();
-        foreach (var handler in handlers)
+        if (!_notificationQueue.Writer.TryWrite(new NotificationDispatch(handlers, ownedPayload)))
         {
-            if (!_notificationQueue.Writer.TryWrite(new NotificationDispatch(handler, ownedPayload)))
-            {
-                ReportDispatchError(new SubscriptionBackpressureException(
-                    "The multiplexer notification dispatch queue is full."));
-            }
+            ReportDispatchError(new SubscriptionBackpressureException(
+                "The multiplexer notification dispatch queue is full."));
         }
     }
 
@@ -319,18 +311,26 @@ public sealed class Multiplexer : IDisposable
         if (responseMatcher is null)
         {
             lane = GetLane(messageType);
-            laneWaitCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, GetLaneWaitToken());
-            try
+
+            // Fast path: an uncontended lane needs no linked token source. Building one costs an
+            // allocation plus two cancellation registrations on every request, and nothing can
+            // cancel a wait that never happens.
+            if (!lane.Wait(0, CancellationToken.None))
             {
-                await lane.WaitAsync(laneWaitCts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw;
-            }
-            catch (OperationCanceledException)
-            {
-                throw new ConnectionException("Connection closed or reset");
+                cancellationToken.ThrowIfCancellationRequested();
+                laneWaitCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, GetLaneWaitToken());
+                try
+                {
+                    await lane.WaitAsync(laneWaitCts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw new ConnectionException("Connection closed or reset");
+                }
             }
         }
 
@@ -420,6 +420,7 @@ public sealed class Multiplexer : IDisposable
             _laneStateCts.Dispose();
             _requestLanes.Clear();
             _notificationHandlers.Clear();
+            _notificationHandlerSnapshots.Clear();
         }
     }
 
@@ -434,13 +435,17 @@ public sealed class Multiplexer : IDisposable
     {
         await foreach (var notification in _notificationQueue.Reader.ReadAllAsync().ConfigureAwait(false))
         {
-            try
+            foreach (var handler in notification.Handlers)
             {
-                notification.Handler.Invoke(notification.Payload);
-            }
-            catch (Exception exception)
-            {
-                ReportDispatchError(exception);
+                try
+                {
+                    handler.Invoke(notification.Payload);
+                }
+                catch (Exception exception)
+                {
+                    // One failing subscriber must not stop the others on this frame.
+                    ReportDispatchError(exception);
+                }
             }
         }
     }
@@ -573,6 +578,22 @@ public sealed class Multiplexer : IDisposable
         }
     }
 
+    /// <summary>
+    /// Rebuilds the immutable fan-out array for a message type. Callers must hold <see cref="_gate"/>.
+    /// </summary>
+    void RebuildHandlerSnapshotUnsafe(ushort messageType, Dictionary<long, NotificationHandler> registrations)
+    {
+        if (registrations.Count == 0)
+        {
+            _notificationHandlerSnapshots.Remove(messageType);
+            return;
+        }
+
+        var snapshot = new NotificationHandler[registrations.Count];
+        registrations.Values.CopyTo(snapshot, 0);
+        _notificationHandlerSnapshots[messageType] = snapshot;
+    }
+
     void RemoveNotificationHandler(ushort messageType, long handlerId)
     {
         lock (_gate)
@@ -586,6 +607,11 @@ public sealed class Multiplexer : IDisposable
             if (handlers.Count == 0)
             {
                 _notificationHandlers.Remove(messageType);
+                _notificationHandlerSnapshots.Remove(messageType);
+            }
+            else
+            {
+                RebuildHandlerSnapshotUnsafe(messageType, handlers);
             }
         }
     }
@@ -843,7 +869,12 @@ public sealed class Multiplexer : IDisposable
         }
     }
 
-    readonly record struct NotificationDispatch(NotificationHandler Handler, byte[] Payload);
+    /// <summary>
+    /// One received notification frame and the handlers it fans out to. Queuing per frame rather
+    /// than per handler keeps the pump queue's capacity a count of frames, so a burst to many
+    /// subscribers no longer consumes capacity proportional to the subscriber count.
+    /// </summary>
+    readonly record struct NotificationDispatch(NotificationHandler[] Handlers, byte[] Payload);
 
     sealed class NotificationRegistration : IDisposable
     {

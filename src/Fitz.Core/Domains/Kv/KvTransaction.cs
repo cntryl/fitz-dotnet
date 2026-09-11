@@ -49,7 +49,7 @@ public sealed class KvTransaction : IKvTransaction
         writer.WriteBytes(key.Span);
 
         var response = await RequestWithRetryAsync(
-            new RetryOperation("kv", "get", RetryClass.ReplayableRead),
+            RetryOperations.KvGet,
             MessageTypes.KvGet,
             writer.WrittenMemory,
             ct).ConfigureAwait(false);
@@ -180,7 +180,7 @@ public sealed class KvTransaction : IKvTransaction
         writer.WriteU8(query.Reverse ? (byte)1 : (byte)0);
 
         var response = await RequestWithRetryAsync(
-            new RetryOperation("kv", "scan", RetryClass.ReplayableRead),
+            RetryOperations.KvScan,
             MessageTypes.KvScan,
             writer.WrittenMemory,
             ct).ConfigureAwait(false);

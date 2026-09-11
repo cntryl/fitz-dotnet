@@ -188,7 +188,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
             writer.WriteU64(capturedWatermark.Value);
 
         var response = await RequestWithRetryAsync(
-            new RetryOperation("stream", "read", RetryClass.ReplayableRead),
+            RetryOperations.StreamRead,
             MessageTypes.StreamRead,
             writer.WrittenMemory,
             ct).ConfigureAwait(false);
@@ -205,7 +205,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         writer.WriteString(route);
 
         var response = await RequestWithRetryAsync(
-            new RetryOperation("stream", "last", RetryClass.ReplayableRead),
+            RetryOperations.StreamLast,
             MessageTypes.StreamLast,
             writer.WrittenMemory,
             ct).ConfigureAwait(false);
@@ -226,7 +226,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         var response = await RequestWithRetryAsync(
-            new RetryOperation("stream", "metadata", RetryClass.ReplayableRead),
+            RetryOperations.StreamMetadata,
             MessageTypes.StreamGetMetadata,
             writer.WrittenMemory,
             ct).ConfigureAwait(false);

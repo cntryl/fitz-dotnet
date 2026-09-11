@@ -1,192 +1,97 @@
 # Fitz .NET Performance Benchmarks
 
-BenchmarkDotNet-based microbenchmarks for hotpath operations in the Fitz .NET client.
+BenchmarkDotNet microbenchmarks for the Fitz .NET client hot paths.
 
-## Running Benchmarks
+Every benchmark here measures Fitz code. Benchmarks that timed runtime primitives rather than
+this client (an `ArrayPool` vs `new byte[]` comparison, a bare `ConcurrentDictionary` standing in
+for the multiplexer) were removed — they reported healthy numbers for code the client never runs,
+and those numbers were being read as multiplexer results.
 
-**Release mode is mandatory for accurate results:**
+## Running
 
-```bash
-cd fitz-dotnet
-dotnet run --project bench/Fitz.Benchmarks/Fitz.Benchmarks.csproj -c Release
-```
-
-**Run specific benchmark:**
+Release mode is mandatory:
 
 ```bash
-dotnet run -c Release -- --filter Cntryl.Fitz.Benchmarks.FrameCodecBenchmarks.EncodeSmallPayload
+dotnet run --project bench/Fitz.Benchmarks/Fitz.Benchmarks.csproj -c Release -- --filter '*'
 ```
 
-**Compare against baseline (for regression detection):**
+Run one class:
 
 ```bash
-dotnet run -c Release -- --runtimes net10.0 --baseline
+dotnet run --project bench/Fitz.Benchmarks/Fitz.Benchmarks.csproj -c Release -- \
+  --filter '*EndToEndRequestBenchmarks*'
 ```
 
-## Benchmark Categories
+The defaults in this repo's committed reports were once `IterationCount=1, WarmupCount=1`, which is
+not a measurement. Pass at least `--warmupCount 3 --iterationCount 10`, and prefer more for
+anything reported outside a local investigation.
 
-### 1. FrameCodecBenchmarks
+## Classes
 
-Measures TLV frame encoding/decoding latency.
+### EndToEndRequestBenchmarks
 
-- **EncodeSmallPayload** (64B): Target <100 ns
-- **EncodeLargePayload** (1024B): Target <500 ns
-- **DecodeFrame**: Target <200 ns (no allocation)
+The real `FitzConnection` request path over an in-memory transport: encode, request gate,
+multiplexer lane, send, receive loop, frame parse, dispatch, completion.
 
-Run all codec benchmarks:
-```bash
-dotnet run -c Release -- --filter Cntryl.Fitz.Benchmarks.FrameCodecBenchmarks
-```
+`RoundTripMs` adds simulated network latency. At `0` every nanosecond is client-side work; at `1`
+the results show what the per-message-type request lane costs, because `ConcurrentSameMessageType`
+matches `SequentialRequests` exactly while `ConcurrentAcrossMessageTypes` is ~7.8× faster. That
+lane is `MUX-1` in `docs/sharp-edges-evidence-ledger.md` — protocol-deferred, not a local defect.
 
-### 1b. FrameParserBenchmarks
+### HotPathComponentBenchmarks
 
-Measures parser throughput and allocation behavior for single, batched, and split-frame reads.
+Per-component costs used to attribute the end-to-end totals: request encode, the borrowed
+receive-loop parse against the owned-payload public API, pooled frame lifetime, and the per-send
+cancellation plumbing.
 
-- `ParseSingleFrame`
-- `ParseTwoFramesBatch`
-- `ParseSplitFrameAcrossChunks`
+### MultiplexerHotPathBenchmarks
 
-Run parser benchmarks:
-```bash
-dotnet run -c Release -- --filter Cntryl.Fitz.Benchmarks.FrameParserBenchmarks
-```
+Request enqueue, dispatch and completion against the real `Multiplexer`, including the
+cancellation-then-next-dispatch path.
 
-### 2. MultiplexerBenchmarks
+### DispatchScanBenchmarks
 
-Measures request correlation and dispatch performance under varying concurrency levels.
+How one dispatch scales with pending-request depth for a message type. Only correlated requests
+can queue deeper than one, and no production call site supplies a response matcher today, so this
+measures headroom for a future correlated design rather than a cost paid now.
 
-- **CorrelationLookupUncontended**: Target <200 ns single-threaded
-- **CorrelationRegisterUnregister**: Target <1 μs per cycle
-- **DispatchResponse**: Target <5 μs with callback overhead
+### NotificationFanoutBenchmarks
 
-Concurrency levels tested: 10, 100, 1000, 5000
+What the receive loop pays to hand one notification frame to N subscribers. Cost is flat in
+subscriber count: the fan-out array is cached per message type and the pump, not the receive loop,
+invokes the handlers.
 
-Run all multiplexer benchmarks:
-```bash
-dotnet run -c Release -- --filter Cntryl.Fitz.Benchmarks.MultiplexerBenchmarks
-```
+Do not wait on a delivery count in a benchmark here. The pump queue is bounded and written with
+`TryWrite`, so a burst larger than the queue discards the overflow instead of applying
+backpressure, and waiting for every notification deadlocks.
 
-### 2b. MultiplexerHotPathBenchmarks
+### FrameCodecBenchmarks
 
-Measures the real `Multiplexer` hot path from Core instead of synthetic dictionary-only proxies.
+TLV encode and decode across payload sizes, including the extended message-type header.
 
-- `RequestDispatchRoundTrip`: enqueue request, dispatch frame, complete task
-- `CancellationThenNextDispatch`: cancel first inflight request and verify next request still receives response
+### DomainHotPathBenchmarks
 
-Run real multiplexer hot-path benchmarks:
-```bash
-dotnet run -c Release -- --filter Cntryl.Fitz.Benchmarks.MultiplexerHotPathBenchmarks
-```
+Domain clients (KV, queue, lease, notice, schedule) against stub responders, covering request
+serialization and response parsing per domain.
 
-### 3. AllocationBenchmarks
+## Targets
 
-Compares allocation strategies (ArrayPool vs new byte[] vs stackalloc).
+From [PERF_GUIDELINES.md](../../PERF_GUIDELINES.md):
 
-- **ArrayPoolAllocation**: Preferred pattern
-- **NewByteArrayAllocation**: Eager-allocation baseline
-- **StackAllocSpan**: Zero-copy variant
+| Operation | Target | Covered by |
+|-----------|--------|------------|
+| Frame encode | <100 ns | `FrameCodecBenchmarks` |
+| Frame decode | <200 ns | `FrameCodecBenchmarks`, `HotPathComponentBenchmarks` |
+| RPC dispatch per frame | <5 µs | `DispatchScanBenchmarks` |
+| Request-response round trip | <10 µs | `EndToEndRequestBenchmarks` (`RoundTripMs=0`) |
+| Allocation per request | <150 B | `EndToEndRequestBenchmarks` |
 
-Run all allocation benchmarks:
-```bash
-dotnet run -c Release -- --filter Cntryl.Fitz.Benchmarks.AllocationBenchmarks
-```
+The concurrency targets in that document (5,000 concurrent RPC streams, <2 µs correlation lookup
+at that load) are not reachable while `MUX-1` stands, because a request holds its message-type
+lane until its response arrives.
 
-## Interpreting Results
+## Adding a benchmark
 
-### Column Meanings
-
-- **Mean**: Average time per iteration
-- **Median**: 50th percentile
-- **StdDev**: Standard deviation (lower is better; indicates stability)
-- **Allocated**: Heap allocations per operation
-
-### Example Output
-
-```
-| Method                    | Mean       | Median     | StdDev     | Allocated |
-|---------------------------|------------|------------|------------|-----------|
-| EncodeSmallPayload        | 45.23 ns   | 42.15 ns   | 8.67 ns    | 0 B       |
-| DecodFrame                | 128.45 ns  | 125.33 ns  | 12.34 ns   | 0 B       |
-| CorrelationLookupUncontended | 189.12 ns | 187.45 ns  | 5.67 ns    | 0 B       |
-```
-
-### Passing vs Failing Targets
-
-- ✓ **Pass**: Result ≤ target (with +20% tolerance for variance)
-- ✗ **Fail**: Result > target (investigate for regression)
-
-## CI Integration
-
-Benchmarks run automatically on:
-- Every commit to `main` (release mode)
-- Every pull request (comparison mode)
-
-Results are:
-1. Compared against baseline (previous main commit)
-2. Flagged if regression >10%
-3. Stored in `target/bench_summary.md` for trending
-
-## Adding New Benchmarks
-
-1. Create benchmark class inheriting from `[SimpleJob(RuntimeMoniker.Net10)]`
-2. Mark methods with `[Benchmark]`
-3. Add to appropriate category or create new file
-4. Set target latency in docstring (e.g., `/// Target: <100 ns`)
-5. Add run instructions to this README
-
-Example:
-
-```csharp
-[Benchmark]
-public int MyNewBenchmark()
-{
-    // Implementation
-    return result;
-}
-```
-
-## Performance Targets (Phase 0 Baseline)
-
-| Operation | Target | Status |
-|-----------|--------|--------|
-| Frame encode (64B) | <100 ns | TBD (after Phase 1) |
-| Frame decode | <200 ns | TBD (after Phase 1) |
-| Correlation lookup (uncontended) | <200 ns | TBD (after Phase 2) |
-| Correlation lookup @ 5K concurrent | <2 μs | TBD (after Phase 2) |
-| RPC dispatch per frame | <5 μs | TBD (after Phase 4) |
-| Request-response roundtrip | <10 μs | TBD (after Phase 4) |
-
-Status will be updated as implementations complete.
-
-## Troubleshooting
-
-### Benchmark is too slow
-
-1. Ensure **Release** mode (`-c Release`)
-2. Check background processes (may interfere with timing)
-3. Verify `[MemoryDiagnoser]` isn't degrading results significantly (optional to disable)
-4. Run in isolation (single benchmark at a time)
-
-### High StdDev (variance)
-
-- Indicates CPU throttling or system load
-- Run again on a quiet machine
-- Consider increasing `[SimpleJob]` WarmupCount if <0.5 sec warmup
-
-### Allocated bytes show as 0 but expected allocation
-
-- May indicate GC collection during benchmark
-- Rerun to confirm
-- Add `// GC: Allocate on LOH` comment for documentation
-
-## References
-
-- [BenchmarkDotNet Documentation](https://benchmarkdotnet.org/)
-- [.NET Performance Tips](https://github.com/dotnet/performance/wiki/Benchmarking-workflow-using-BenchmarkDotNet)
-- [Fitz Performance Guidelines](../PERF_GUIDELINES.md)
-
----
-
-**Last Updated:** 2026-03-17  
-**Target Framework:** .NET 10.0  
-**Expected Baseline:** Establish in Phase 0; improvements tracked in Phase 1–8
+Measure code in `src/`. If a benchmark would pass with the client's own logic deleted, it belongs
+in a runtime experiment, not here. State the target it defends in a docstring, and add it to the
+class list above.

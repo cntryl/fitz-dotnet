@@ -141,7 +141,7 @@ public sealed class WebSocketTransport : ITransport
                     var nextSize = Math.Min(buffer.Length * 2, _maxFrameSize);
                     var next = ArrayPool<byte>.Shared.Rent(nextSize);
                     buffer.AsSpan(0, length).CopyTo(next);
-                    ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+                    ReturnCleared(buffer, length);
                     buffer = next;
                     remaining = buffer.Length - length;
                 }
@@ -151,7 +151,7 @@ public sealed class WebSocketTransport : ITransport
                 {
                     if (ownsBuffer)
                     {
-                        ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+                        ReturnCleared(buffer, length);
                     }
 
                     return PooledFrame.Closed;
@@ -170,7 +170,7 @@ public sealed class WebSocketTransport : ITransport
                     {
                         if (ownsBuffer)
                         {
-                            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+                            ReturnCleared(buffer, length);
                         }
 
                         return PooledFrame.Empty;
@@ -185,11 +185,22 @@ public sealed class WebSocketTransport : ITransport
         {
             if (ownsBuffer)
             {
-                ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+                ReturnCleared(buffer, length);
             }
 
             throw;
         }
+    }
+
+    /// <summary>
+    /// Returns a rented receive buffer after zeroing only the bytes that were filled. The rent is
+    /// sized for the largest message we might see, so clearing all of it costs far more than the
+    /// frame is worth.
+    /// </summary>
+    static void ReturnCleared(byte[] buffer, int writtenLength)
+    {
+        buffer.AsSpan(0, Math.Min(writtenLength, buffer.Length)).Clear();
+        ArrayPool<byte>.Shared.Return(buffer);
     }
 
     internal static void EnsureBinaryMessage(WebSocketMessageType messageType)

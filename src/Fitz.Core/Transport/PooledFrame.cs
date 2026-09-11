@@ -51,6 +51,9 @@ public sealed class PooledFrame : IDisposable
             return;
         }
 
-        ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+        // Clear only the region that held frame bytes. Zeroing the whole rented array costs
+        // time proportional to the rent size (16 KB is typical) rather than the frame size.
+        buffer.AsSpan(0, Length).Clear();
+        ArrayPool<byte>.Shared.Return(buffer);
     }
 }

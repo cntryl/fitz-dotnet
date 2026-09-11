@@ -18,7 +18,7 @@ sealed class RequestGate
         _maxQueueSize = Math.Max(0, maxQueueSize);
     }
 
-    internal Task<Releaser> AcquireAsync(CancellationToken cancellationToken)
+    internal ValueTask<Releaser> AcquireAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -31,8 +31,9 @@ sealed class RequestGate
 
             if (_activeCount < _maxConcurrency)
             {
+                // Uncontended: complete synchronously rather than allocating a Task per request.
                 _activeCount++;
-                return Task.FromResult(new Releaser(this));
+                return new ValueTask<Releaser>(new Releaser(this));
             }
 
             if (_waiters.Count >= _maxQueueSize)
@@ -42,7 +43,7 @@ sealed class RequestGate
 
             var waiter = new RequestWaiter(this, cancellationToken);
             _waiters.Enqueue(waiter);
-            return waiter.Task;
+            return new ValueTask<Releaser>(waiter.Task);
         }
     }
 

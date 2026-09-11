@@ -6,6 +6,9 @@ on:
   schedule:
     - cron: "0 0 * * *"
 
+env:
+  NuGetPackageSourceCredentials_cntryl: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }}
+
 jobs:
   fast:
     timeout-minutes: 10
@@ -54,7 +57,7 @@ jobs:
         run: dotnet pack Fitz.sln -c Release --no-restore --output artifacts/packages
 
       - name: Smoke restore packed packages
-        run: dotnet restore test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj --source artifacts/packages --source https://api.nuget.org/v3/index.json && dotnet run --project test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj -c Release --no-restore
+        run: dotnet restore test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj && dotnet run --project test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj -c Release --no-restore
 
       - name: Set up minimum supported .NET SDK
         uses: actions/setup-dotnet@v5
@@ -65,11 +68,11 @@ jobs:
         working-directory: test/Fitz.PackageConsumer
         run: |
           dotnet --version
-          dotnet restore Fitz.PackageConsumer.csproj --source ../../artifacts/packages --source https://api.nuget.org/v3/index.json
+          dotnet restore Fitz.PackageConsumer.csproj
           dotnet build Fitz.PackageConsumer.csproj -c Release --no-restore
 
       - name: Publish Native AOT consumer from packed packages
-        run: dotnet publish test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj -c Release -r linux-x64 -p:PublishAot=true --source artifacts/packages --source https://api.nuget.org/v3/index.json --output artifacts/native-aot
+        run: dotnet publish test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj -c Release -r linux-x64 -p:PublishAot=true --output artifacts/native-aot
 
       - name: Run Native AOT consumer
         run: artifacts/native-aot/Fitz.PackageConsumer

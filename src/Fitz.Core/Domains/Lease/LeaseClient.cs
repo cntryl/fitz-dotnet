@@ -519,7 +519,7 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
         var response = _retryRequest is null
             ? await _request(MessageTypes.LeaseQuery, writer.WrittenMemory, ct).ConfigureAwait(false)
             : await _retryRequest(
-                new RetryOperation("lease", "query", RetryClass.ReplayableRead),
+                RetryOperations.LeaseQuery,
                 MessageTypes.LeaseQuery,
                 writer.WrittenMemory,
                 ct).ConfigureAwait(false);

@@ -101,8 +101,18 @@ public sealed class BinaryBufferWriter : IDisposable
         var buffer = Interlocked.Exchange(ref _buffer, null);
         if (buffer is not null)
         {
-            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+            ReturnCleared(buffer, _position);
         }
+    }
+
+    /// <summary>
+    /// Returns a rented buffer after zeroing only the bytes that were written. Payloads can carry
+    /// caller data, so the written region is always cleared; the untouched tail never was.
+    /// </summary>
+    static void ReturnCleared(byte[] buffer, int writtenLength)
+    {
+        buffer.AsSpan(0, Math.Min(writtenLength, buffer.Length)).Clear();
+        ArrayPool<byte>.Shared.Return(buffer);
     }
 
     void EnsureCapacity(int needed)
@@ -119,7 +129,7 @@ public sealed class BinaryBufferWriter : IDisposable
         var newSize = Math.Max(doubled, required);
         var newBuffer = ArrayPool<byte>.Shared.Rent(newSize);
         buffer.AsSpan(0, _position).CopyTo(newBuffer);
-        ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+        ReturnCleared(buffer, _position);
         _buffer = newBuffer;
     }
 
