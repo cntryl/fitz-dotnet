@@ -89,6 +89,11 @@ public sealed class LeaseClient : ILeaseClient, IDisposable
 
     async Task<LeaseHandle> AcquireLeaseAsync(string route, ulong ttlSecs, uint waitSeconds, CancellationToken ct)
     {
+        if (ttlSecs == 0 || ttlSecs > uint.MaxValue / 1000)
+        {
+            throw new LeaseException("ttlSecs must be positive and schedulable", "INVALID_TTL");
+        }
+
         await _acquisitionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {

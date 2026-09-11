@@ -129,6 +129,12 @@ public sealed class FrameParser
         return frames is null ? Array.Empty<Frame>() : frames;
     }
 
+    internal void Reset()
+    {
+        _length = 0;
+        _readOffset = 0;
+    }
+
     void EnsureCapacity(int required)
     {
         if (required > _maxBufferSize)

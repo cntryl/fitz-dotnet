@@ -10,6 +10,26 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class QueueClientTests
 {
     [Theory]
+    [InlineData(0UL, null)]
+    [InlineData(30UL, -1)]
+    public async Task ShouldRejectInvalidLeaseArgumentsGivenReserveWhenBeforeTransport(
+        ulong leaseSeconds,
+        int? waitSeconds)
+    {
+        var requestCalled = false;
+        using var queue = new QueueClient((_, _, _) =>
+        {
+            requestCalled = true;
+            return Task.FromResult(Array.Empty<byte>());
+        });
+
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            queue.ReserveAsync("queue://prod/app/tasks", leaseSeconds, waitSeconds: waitSeconds));
+
+        Assert.False(requestCalled);
+    }
+
+    [Theory]
     [InlineData(0)]
     [InlineData(-5)]
     public async Task ShouldRejectBatchSizeGivenNonpositiveValueWhenReserving(int batchSize)

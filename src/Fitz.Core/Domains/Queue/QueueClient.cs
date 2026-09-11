@@ -126,6 +126,11 @@ public sealed class QueueClient : IQueueClient, IDisposable
         }
 
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1, nameof(batchSize));
+        ArgumentOutOfRangeException.ThrowIfZero(leaseSeconds, nameof(leaseSeconds));
+        if (waitSeconds < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(waitSeconds), "Wait duration cannot be negative.");
+        }
 
         return await ReserveOnceAsync(route, leaseSeconds, batchSize, waitSeconds, ct).ConfigureAwait(false);
     }

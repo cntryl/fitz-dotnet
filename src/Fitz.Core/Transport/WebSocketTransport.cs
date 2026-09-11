@@ -22,6 +22,14 @@ public sealed class WebSocketTransport : ITransport
         HeartbeatOptions? heartbeat = null)
     {
         ArgumentNullException.ThrowIfNull(url);
+        if (!url.IsAbsoluteUri || url.Scheme is not ("ws" or "wss"))
+        {
+            throw new ArgumentException("WebSocket transport requires an absolute ws:// or wss:// URL.", nameof(url));
+        }
+        if (timeout != Timeout.InfiniteTimeSpan && timeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Timeout must be positive or infinite.");
+        }
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxFrameSize);
 
         _uri = url;

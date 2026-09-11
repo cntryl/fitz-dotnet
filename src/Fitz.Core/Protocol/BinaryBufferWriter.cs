@@ -84,8 +84,8 @@ public sealed class BinaryBufferWriter : IDisposable
 
     public byte[] Build()
     {
-        var result = GC.AllocateUninitializedArray<byte>(_position);
         ThrowIfDisposed();
+        var result = GC.AllocateUninitializedArray<byte>(_position);
         _buffer.AsSpan(0, _position).CopyTo(result);
         return result;
     }

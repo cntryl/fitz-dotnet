@@ -9,6 +9,20 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class SharpEdgeBufferTests
 {
     [Fact]
+    public void ShouldThrowBeforeAllocatingGivenDisposedWriterWhenBuilding()
+    {
+        var writer = new BinaryBufferWriter();
+        writer.WriteBytes(new byte[ushort.MaxValue]);
+        writer.Dispose();
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        Assert.Throws<ObjectDisposedException>(writer.Build);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.True(allocated < 8192, $"Disposed Build allocated {allocated} bytes.");
+    }
+
+    [Fact]
     public async Task NoticePublishKeepsPooledPayloadAliveUntilSendCompletes()
     {
         var sendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

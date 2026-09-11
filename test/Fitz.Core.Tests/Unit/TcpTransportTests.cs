@@ -7,6 +7,17 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class TcpTransportTests
 {
+    [Theory]
+    [InlineData(0, 1024)]
+    [InlineData(1000, 0)]
+    public void ShouldRejectInvalidBoundsGivenTcpTransport(int timeoutMilliseconds, int maxFrameSize)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new TcpTransport(
+            new Uri("tcp://localhost:4191"),
+            TimeSpan.FromMilliseconds(timeoutMilliseconds),
+            maxFrameSize));
+    }
+
     [Fact]
     public async Task ShouldSendAndReceiveLengthPrefixedFramesGivenTcpTransport()
     {

@@ -245,6 +245,37 @@ public sealed class ClientTests
         Assert.Equal(ConnectionState.Authenticated, client.State);
     }
 
+    [Fact]
+    public async Task ShouldDiscardPartialFrameGivenReconnectWhenNextSessionResponds()
+    {
+        await using var firstTransport = new QueuedTransport();
+        await using var reconnectTransport = new QueuedTransport();
+        reconnectTransport.AfterSend = sentFrameCount =>
+        {
+            if (sentFrameCount == 2)
+            {
+                reconnectTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, [0, 0, 0, 0, 0, 0]));
+            }
+        };
+        var factoryCalls = 0;
+        await using var client = new Client(new ClientConfig(
+            new Uri("ws://localhost:4190/ws"),
+            Timeout: TimeSpan.FromMilliseconds(250),
+            AuthSettleDelay: TimeSpan.Zero,
+            Reconnect: new ReconnectOptions(true, MaxAttempts: 2, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
+            TransportFactory: _ => factoryCalls++ == 0 ? firstTransport : reconnectTransport));
+
+        await client.ConnectAsync();
+        var staleFrame = FrameCodec.Encode(MessageTypes.LeaseQuery, [0]);
+        firstTransport.QueueIncomingFrame(staleFrame[..2]);
+        firstTransport.QueueClosed();
+        await WaitForConditionAsync(() => client.IsConnected && factoryCalls == 2, TimeSpan.FromSeconds(1));
+
+        var result = await client.Lease.QueryAsync("lease://prod/app/lock");
+
+        Assert.False(result.IsHeld);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

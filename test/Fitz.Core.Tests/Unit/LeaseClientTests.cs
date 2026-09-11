@@ -11,6 +11,23 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class LeaseClientTests
 {
     [Fact]
+    public async Task ShouldRejectZeroTtlGivenAcquireWhenBeforeTransport()
+    {
+        var requestCalled = false;
+        using var leaseClient = new LeaseClient((_, _, _) =>
+        {
+            requestCalled = true;
+            return Task.FromResult(Array.Empty<byte>());
+        });
+
+        var error = await Assert.ThrowsAsync<LeaseException>(() =>
+            leaseClient.AcquireAsync("lease://prod/app/lock", 0));
+
+        Assert.Equal("INVALID_TTL", error.Code);
+        Assert.False(requestCalled);
+    }
+
+    [Fact]
     public async Task ShouldReleaseDisconnectRegistrationGivenCleanupFailureWhenDisposingLease()
     {
         var registrations = 0;

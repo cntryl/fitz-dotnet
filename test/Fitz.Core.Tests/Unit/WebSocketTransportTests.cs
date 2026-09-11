@@ -6,6 +6,16 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class WebSocketTransportTests
 {
+    [Theory]
+    [InlineData("http://localhost:4190/ws", "ws://localhost:4190/ws")]
+    [InlineData("https://localhost/ws", "wss://localhost/ws")]
+    public void ShouldNormalizeHttpSchemeGivenAutomaticWebSocketTransport(string configured, string expected)
+    {
+        var transport = Assert.IsType<WebSocketTransport>(TransportResolver.Resolve(new ClientConfig(new Uri(configured))));
+
+        Assert.Equal(new Uri(expected), transport.Url);
+    }
+
     [Fact]
     public void ShouldConfigureNativeWebsocketPingTimeout()
     {

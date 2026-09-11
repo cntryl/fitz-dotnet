@@ -24,6 +24,15 @@ public sealed class TcpTransport : ITransport
         {
             throw new ArgumentException("TCP transport requires an absolute tcp:// URL.", nameof(url));
         }
+        if (url.Port <= 0)
+        {
+            throw new ArgumentException("TCP transport URL must include a port.", nameof(url));
+        }
+        if (timeout != Timeout.InfiniteTimeSpan && timeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout), "Timeout must be positive or infinite.");
+        }
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxFrameSize);
 
         _uri = url;
         _timeout = timeout;

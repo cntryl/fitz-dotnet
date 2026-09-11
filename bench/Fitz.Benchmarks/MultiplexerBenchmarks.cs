@@ -5,14 +5,14 @@ using BenchmarkDotNet.Jobs;
 namespace Cntryl.Fitz.Benchmarks;
 
 /// <summary>
-/// Benchmarks for request correlation and multiplexing operations.
-/// Target: lookup <2 μs @ 5K concurrent, dispatch <5 μs per frame
+/// Dictionary-operation baselines used to contextualize the real multiplexer benchmarks.
+/// These results are not measurements of the Fitz multiplexer.
 /// </summary>
 [SimpleJob]
 [ThreadingDiagnoser]
 [MemoryDiagnoser]
 [PlainExporter]
-public class MultiplexerBenchmarks
+public class CorrelationDictionaryBaselineBenchmarks
 {
     ConcurrentDictionary<ushort, object> _correlations = null!;
     object[] _handlers = null!;
@@ -64,17 +64,16 @@ public class MultiplexerBenchmarks
     }
 
     /// <summary>
-    /// Benchmark: Dispatch to callback (simulated response handling)
-    /// Target: <5 μs with Channel write overhead
+    /// Baseline dictionary lookup plus object consumption; no dispatch or channel work is included.
     /// </summary>
     [Benchmark]
-    public void DispatchResponse()
+    public int LookupAndConsumeValue()
     {
         var messageType = (ushort)(System.DateTime.UtcNow.Ticks % ConcurrencyLevel);
         if (_correlations.TryGetValue(messageType, out var handler))
         {
-            // Placeholder: simulate callback invocation
-            _ = handler.GetHashCode();
+            return handler.GetHashCode();
         }
+        return 0;
     }
 }

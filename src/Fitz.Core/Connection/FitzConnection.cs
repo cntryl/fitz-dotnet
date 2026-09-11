@@ -595,6 +595,7 @@ public sealed class FitzConnection : IAsyncDisposable
             await transport.ConnectAsync(cancellationToken).ConfigureAwait(false);
             SetState(ConnectionState.Connected);
             _multiplexer.BeginSession();
+            _frameParser.Reset();
             StartReceiveLoop();
 
             SetState(ConnectionState.Authenticating);

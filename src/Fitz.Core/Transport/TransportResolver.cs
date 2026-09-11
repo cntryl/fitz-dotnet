@@ -9,7 +9,7 @@ public static class TransportResolver
         return config.ResolvedTransportKind switch
         {
             ClientTransport.WebSocket => new WebSocketTransport(
-                config.Url,
+                NormalizeWebSocketUrl(config.Url),
                 config.Timeout ?? TimeSpan.FromSeconds(30),
                 config.MaxFrameSize,
                 config.WebSocket,
@@ -21,5 +21,19 @@ public static class TransportResolver
                 config.ResolvedHeartbeat),
             _ => throw new NotSupportedException($"Transport '{config.Transport}' is not supported."),
         };
+    }
+
+    static Uri NormalizeWebSocketUrl(Uri url)
+    {
+        if (url.Scheme is not ("http" or "https"))
+        {
+            return url;
+        }
+
+        var builder = new UriBuilder(url)
+        {
+            Scheme = url.Scheme == "https" ? "wss" : "ws",
+        };
+        return builder.Uri;
     }
 }
