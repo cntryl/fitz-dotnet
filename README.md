@@ -8,8 +8,10 @@
 - `Cntryl.Fitz.Abstractions`: public interfaces and shared contracts
 - `Cntryl.Fitz.DependencyInjection`: DI registration helpers
 
-`Cntryl.Fitz.Analyzers` and `Cntryl.Fitz.CodeFixes` are build-time Roslyn
-components and never ship into a consumer's application.
+`Cntryl.Fitz.Core` also ships the Roslyn analyzers and their code fixes, so installing
+it is all a consumer does to get the compile-time route and lifetime diagnostics. They
+run during your build and contribute nothing at runtime; there is no separate analyzer
+package to reference and nothing to configure.
 
 Every public type and member is documented, and the XML documentation ships in
 each package, so IntelliSense works without consulting this file.
@@ -47,6 +49,9 @@ dotnet add package Cntryl.Fitz.Core
 dotnet add package Cntryl.Fitz.Abstractions
 dotnet add package Cntryl.Fitz.DependencyInjection
 ```
+
+The analyzers arrive with `Cntryl.Fitz.Core`. A discarded lease or an invalid route
+literal becomes a build error, with a code fix offered in the IDE.
 
 ## One namespace
 

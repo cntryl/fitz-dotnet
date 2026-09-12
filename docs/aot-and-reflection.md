@@ -4,8 +4,9 @@ This document is the standing contract for `Cntryl.Fitz`, `Cntryl.Fitz.Abstracti
 and `Cntryl.Fitz.DependencyInjection`. It states what the packages guarantee, how the
 guarantee is enforced mechanically, and what a contributor must not reintroduce.
 
-`Cntryl.Fitz.Analyzers` and `Cntryl.Fitz.CodeFixes` are build-time Roslyn components.
-They never ship into a consumer's application and are outside this contract.
+The Roslyn analyzers and code fixes ship inside `Cntryl.Fitz.Core` as build-time
+components. They run in the compiler, never load into a consumer's application, and are
+outside this contract.
 
 ## The guarantee
 

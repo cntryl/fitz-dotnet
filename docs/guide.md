@@ -26,6 +26,9 @@ dotnet add package Cntryl.Fitz.Abstractions
 dotnet add package Cntryl.Fitz.DependencyInjection   # only if you use IServiceCollection
 ```
 
+`Cntryl.Fitz.Core` carries the Roslyn analyzers and their code fixes, so the route and
+handle-lifetime diagnostics are on as soon as it is installed.
+
 The entire public surface is in one namespace, so one using directive covers everything except
 the DI helpers:
 

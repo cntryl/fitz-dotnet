@@ -24,6 +24,26 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
   `Cntryl.Fitz.Abstractions` and `Cntryl.Fitz.DependencyInjection`, so no `using` directive
   and no type name moves. `RootNamespace` no longer follows the assembly name, which the
   project file now states.
+- **Breaking (package):** `Cntryl.Fitz.Analyzers` and `Cntryl.Fitz.CodeFixes` are no longer
+  published as packages. Both Roslyn components now ship inside `Cntryl.Fitz.Core`, so every
+  consumer gets the route and handle-lifetime diagnostics, and the code fixes for them,
+  simply by installing the client. Previously nothing referenced either package and nothing
+  pulled them in — `Cntryl.Fitz.Core` depended only on `Cntryl.Fitz.Abstractions` — so the
+  diagnostics reached a consumer only if they knew to add package references that no
+  document mentioned. Drop any reference to either package.
+  They remain build-time only: they run in the compiler and load nothing into a consumer's
+  application.
+
+### Fixed
+
+- A consumer following the install instructions now actually gets the analyzers. `README.md`
+  and `docs/guide.md` previously listed only the three runtime packages, and the sole mention
+  of the analyzers said they "never ship into a consumer's application" — true of runtime
+  assets, but it read as nothing-to-do-here while the diagnostics silently reached no one.
+- `test/Fitz.PackageConsumer` proves the delivery rather than assuming it: it references only
+  `Cntryl.Fitz.Core`, with no analyzer reference of its own, so the packaged Roslyn
+  components must load for CI to pass. The code fixes had no packaging coverage at all
+  before this.
 
 ## [1.0.0] - 2026-09-12
 

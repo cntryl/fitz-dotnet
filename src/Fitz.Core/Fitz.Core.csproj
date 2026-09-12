@@ -14,6 +14,33 @@
     </AssemblyAttribute>
   </ItemGroup>
 
+  <!-- Build the Roslyn components first and pack them into this package. Neither is
+       referenced as an assembly, and neither analyses this project's own source. -->
+  <ItemGroup>
+    <ProjectReference Include="../Fitz.Analyzers/Fitz.Analyzers.csproj"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all" />
+    <ProjectReference Include="../Fitz.CodeFixes/Fitz.CodeFixes.csproj"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all" />
+  </ItemGroup>
+
+  <!-- Shipping the analyzers inside the client package is what makes them automatic: a
+       consumer who installs Cntryl.Fitz.Core gets the diagnostics and their fixes without
+       knowing a second package exists. -->
+  <ItemGroup>
+    <!-- The Roslyn components target netstandard2.0, so their output path is not this
+         project's $(OutputPath). -->
+    <None Include="$(MSBuildThisFileDirectory)../Fitz.Analyzers/bin/$(Configuration)/netstandard2.0/Cntryl.Fitz.Analyzers.dll"
+          Pack="true"
+          PackagePath="analyzers/dotnet/cs"
+          Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)../Fitz.CodeFixes/bin/$(Configuration)/netstandard2.0/Cntryl.Fitz.CodeFixes.dll"
+          Pack="true"
+          PackagePath="analyzers/dotnet/cs"
+          Visible="false" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <IsAotCompatible>true</IsAotCompatible>
