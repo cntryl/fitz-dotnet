@@ -369,6 +369,40 @@ public sealed class QueueClientTests
     }
 
     [Fact]
+    public async Task ShouldPreserveLargeWaitGivenReserveWhenWithinWireRange()
+    {
+        // Arrange
+        byte[]? seenPayload = null;
+        using var queue = new QueueClient((_, payload, _) =>
+        {
+            seenPayload = payload;
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU32(0);
+            return Task.FromResult(writer.Build());
+        });
+        var waitSeconds = (ulong)int.MaxValue + 1;
+
+        // Act
+        await queue.ReserveAsync(
+            "queue://prod/app/tasks",
+            TimeSpan.FromSeconds(30),
+            wait: TimeSpan.FromSeconds(waitSeconds));
+
+        // Assert
+        Assert.NotNull(seenPayload);
+        var reader = new BinaryBufferReader(seenPayload!);
+        Assert.Equal("queue://prod/app/tasks", reader.ReadString());
+        Assert.Equal((ulong)30, reader.ReadU64());
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal((uint)1, reader.ReadU32());
+        Assert.Equal((byte)1, reader.ReadU8());
+        Assert.Equal(waitSeconds, reader.ReadU64());
+        Assert.True(reader.IsEof);
+    }
+
+    [Fact]
     public async Task ShouldReturnReservedItemsGivenSuccessResponseWhenReserving()
     {
         // Arrange

@@ -130,7 +130,7 @@ sealed class QueueClient : IQueueClient, IDisposable
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(route);
         var leaseSeconds = WireDuration.ToSeconds(lease, nameof(lease));
-        var waitSeconds = wait is { } configuredWait ? (int?)WireDuration.ToSeconds(configuredWait, nameof(wait)) : null;
+        var waitSeconds = wait is { } configuredWait ? (ulong?)WireDuration.ToSeconds(configuredWait, nameof(wait)) : null;
         if (!RouteValidation.IsRegistrationPattern(route, "queue", 3))
         {
             throw new QueueException($"route '{route}' must be a concrete queue route or a whole-segment wildcard pattern", "INVALID_ROUTE");
@@ -146,7 +146,7 @@ sealed class QueueClient : IQueueClient, IDisposable
         string route,
         ulong leaseSeconds,
         int batchSize,
-        int? waitSeconds,
+        ulong? waitSeconds,
         CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
@@ -161,7 +161,7 @@ sealed class QueueClient : IQueueClient, IDisposable
         if (waitSeconds > 0)
         {
             writer.WriteU8(1);
-            writer.WriteU64((ulong)waitSeconds.Value);
+            writer.WriteU64(waitSeconds.Value);
         }
         else
         {
