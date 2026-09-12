@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Errors;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Represents malformed or unsupported Fitz wire data.

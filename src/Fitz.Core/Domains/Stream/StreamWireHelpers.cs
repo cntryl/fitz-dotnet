@@ -3,8 +3,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Text;
 using System.Text.Json;
-using Cntryl.Fitz.Abstractions.Domains.Stream;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Domains.Stream;
@@ -258,7 +256,7 @@ static class StreamWireHelpers
         };
     }
 
-    internal static StreamFilteredReason? ReadFilteredReason(BinaryBufferReader reader, string operation)
+    internal static StreamFilteredReason ReadFilteredReason(BinaryBufferReader reader, string operation)
     {
         if (reader.IsEof)
         {
@@ -268,7 +266,7 @@ static class StreamWireHelpers
         var tag = reader.ReadU8();
         return tag switch
         {
-            0 => null,
+            0 => StreamFilteredReason.None,
             1 => StreamFilteredReason.ServerFilter,
             2 => StreamFilteredReason.Permission,
             3 => StreamFilteredReason.Projection,

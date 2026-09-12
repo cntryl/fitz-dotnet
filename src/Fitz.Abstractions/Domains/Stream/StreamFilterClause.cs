@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Stream;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// One server-side filter condition applied to a stream read.

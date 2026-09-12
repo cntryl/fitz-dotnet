@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Kv;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Provides entry points for starting KV transactions.

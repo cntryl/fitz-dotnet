@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Stream;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// An open stream append session. Appended records become visible only on commit.

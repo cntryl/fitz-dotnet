@@ -1,6 +1,5 @@
-using Cntryl.Fitz.Runtime;
 
-namespace Cntryl.Fitz.Abstractions.Domains.Stream;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A live subscription to stream commit events matching a route or selector.

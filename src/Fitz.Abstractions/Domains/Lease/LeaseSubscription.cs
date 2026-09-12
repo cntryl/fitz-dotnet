@@ -1,6 +1,5 @@
-using Cntryl.Fitz.Runtime;
 
-namespace Cntryl.Fitz.Abstractions.Domains.Lease;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A live subscription to ownership changes for one exact lease route.

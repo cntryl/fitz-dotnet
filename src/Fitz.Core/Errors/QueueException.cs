@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Errors;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Reports a failed queue operation, carrying the broker's structured error code.

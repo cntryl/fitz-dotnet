@@ -48,6 +48,13 @@ dotnet add package Cntryl.Fitz.Abstractions
 dotnet add package Cntryl.Fitz.DependencyInjection
 ```
 
+## One namespace
+
+The entire public surface lives in the single `Cntryl.Fitz` namespace, across all three
+packages, so a consumer writes one using directive rather than one per domain. The assembly
+and package names keep their `.Abstractions` and `.DependencyInjection` suffixes; only
+`AddFitzClient` sits apart, in `Cntryl.Fitz.DependencyInjection`.
+
 ## Quick Start
 
 ```csharp
@@ -62,7 +69,7 @@ await using var client = new Client(
 
 await client.ConnectWhenReadyAsync();
 
-var tx = await client.Kv.BeginAsync("kv://realm/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+var tx = await client.Kv.BeginAsync("kv://realm/app/users", KvDurability.Async);
 await tx.PutAsync("user-1"u8.ToArray(), """{"name":"Alice"}"""u8.ToArray());
 await tx.CommitAsync();
 ```
@@ -120,13 +127,14 @@ client never returns a partial reservation or read batch.
 Reserved queue items are async-disposable; dispose any item that will not be
 completed so its connection-lifetime registration is released.
 
-Queue `waitSeconds` uses the broker-native RESERVE wait field. A broker that
+The queue `wait` duration uses the broker-native RESERVE wait field. A broker that
 rejects that field fails the request directly; the client does not downgrade
 to polling.
 
 The current queue wire does not include an attempt count, so
-`QueueItem.Attempt` is `QueueItem.AttemptUnavailable` (`0`). Queue delays are
-accepted only in whole-second `delayMs` values instead of being silently rounded.
+`QueueItem.Attempt` is `QueueItem.AttemptUnavailable` (`0`). Every duration in
+the API is a `TimeSpan`, and one finer than the wire can carry is rejected
+rather than silently rounded — see [docs/guide.md](docs/guide.md#durations).
 
 `Stream.ReadAsync` follows validated continuation cursors until `HasMore` is
 false. Use `ReadPageAsync` when the caller needs explicit page boundaries.
@@ -225,6 +233,7 @@ The conformance artifact uses the shared schema:
 
 ## Documentation
 
+- [docs/guide.md](docs/guide.md) — the consumer guide: every domain, with working examples
 - [docs/README.md](docs/README.md) — index of the standing contracts and status documents
 - [CHANGELOG.md](CHANGELOG.md) — release history and every breaking change
 - [CONTRIBUTING.md](CONTRIBUTING.md) — enforced standards, and where the normative client

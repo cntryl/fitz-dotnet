@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Lease;
+namespace Cntryl.Fitz;
 
 /// <summary>One page of a Lease LIST scan.</summary>
 public sealed record LeaseListResult(

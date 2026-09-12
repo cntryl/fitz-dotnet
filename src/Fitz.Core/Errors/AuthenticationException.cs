@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Errors;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Reports that the broker rejected the session credentials. Authoritative and not retried.

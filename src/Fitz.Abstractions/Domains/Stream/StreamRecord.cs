@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Stream;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A single committed stream record and its position at each scope.
@@ -11,7 +11,7 @@ public sealed record StreamRecord
     /// <param name="route">Concrete route the record belongs to.</param>
     /// <param name="offset">Resource-scoped sequence position.</param>
     /// <param name="body">Record payload.</param>
-    public StreamRecord(string route, ulong offset, byte[] body)
+    public StreamRecord(string route, ulong offset, ReadOnlyMemory<byte> body)
         : this(route, offset, null, null, null, body, null, 0)
     {
     }
@@ -27,7 +27,7 @@ public sealed record StreamRecord
     /// <param name="body">Record payload.</param>
     /// <param name="metadata">Opaque metadata stored with the record.</param>
     /// <param name="timestamp">Broker commit timestamp.</param>
-    public StreamRecord(string route, ulong offset, ulong? areaOffset, ulong? realmOffset, ulong? globalOffset, byte[] body, byte[]? metadata, ulong timestamp)
+    public StreamRecord(string route, ulong offset, ulong? areaOffset, ulong? realmOffset, ulong? globalOffset, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte>? metadata, ulong timestamp)
     {
         Route = route;
         Offset = offset;
@@ -58,10 +58,10 @@ public sealed record StreamRecord
     public ulong? GlobalOffset { get; init; }
 
     /// <summary>The record payload. The array is owned by the caller.</summary>
-    public byte[] Body { get; init; }
+    public ReadOnlyMemory<byte> Body { get; init; }
 
     /// <summary>Opaque metadata stored with the record, if any.</summary>
-    public byte[]? Metadata { get; init; }
+    public ReadOnlyMemory<byte>? Metadata { get; init; }
 
     /// <summary>Broker commit timestamp.</summary>
     public ulong Timestamp { get; init; }

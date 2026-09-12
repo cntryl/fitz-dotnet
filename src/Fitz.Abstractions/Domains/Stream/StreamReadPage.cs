@@ -1,6 +1,6 @@
 using System.Collections.Generic;
 
-namespace Cntryl.Fitz.Abstractions.Domains.Stream;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// One page of stream read results and the cursor that continues it.

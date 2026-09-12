@@ -2,14 +2,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Net.Sockets;
 using System.Net.WebSockets;
-using Cntryl.Fitz.Abstractions;
-using Cntryl.Fitz.Abstractions.Domains.Kv;
-using Cntryl.Fitz.Abstractions.Domains.Lease;
-using Cntryl.Fitz.Abstractions.Domains.Notice;
-using Cntryl.Fitz.Abstractions.Domains.Queue;
-using Cntryl.Fitz.Abstractions.Domains.Rpc;
-using Cntryl.Fitz.Abstractions.Domains.Schedule;
-using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Domains.Kv;
 using Cntryl.Fitz.Domains.Lease;
@@ -18,8 +10,6 @@ using Cntryl.Fitz.Domains.Queue;
 using Cntryl.Fitz.Domains.Rpc;
 using Cntryl.Fitz.Domains.Schedule;
 using Cntryl.Fitz.Domains.Stream;
-using Cntryl.Fitz.Errors;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz;
 
@@ -106,9 +96,9 @@ public sealed class Client : IClient, IDisposable
                 await ConnectAsync(attemptCts.Token).ConfigureAwait(false);
                 return;
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested && timeout != System.Threading.Timeout.InfiniteTimeSpan && DateTimeOffset.UtcNow >= deadline)
+            catch (OperationCanceledException cancellation) when (!ct.IsCancellationRequested && timeout != System.Threading.Timeout.InfiniteTimeSpan && DateTimeOffset.UtcNow >= deadline)
             {
-                throw new TimeoutException("Timed out waiting for Fitz to become ready.");
+                throw new TimeoutException("Timed out waiting for Fitz to become ready.", cancellation);
             }
             catch (AuthenticationException)
             {
@@ -118,9 +108,9 @@ public sealed class Client : IClient, IDisposable
             {
                 throw;
             }
-            catch (Exception) when (timeout != System.Threading.Timeout.InfiniteTimeSpan && DateTimeOffset.UtcNow >= deadline)
+            catch (Exception attemptFailure) when (timeout != System.Threading.Timeout.InfiniteTimeSpan && DateTimeOffset.UtcNow >= deadline)
             {
-                throw new TimeoutException("Timed out waiting for Fitz to become ready.");
+                throw new TimeoutException("Timed out waiting for Fitz to become ready.", attemptFailure);
             }
             catch (Exception exception) when (IsStartupReadinessFailure(State) && IsTransientStartupFailure(exception))
             {

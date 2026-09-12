@@ -1,6 +1,4 @@
 using System.Threading;
-using Cntryl.Fitz.Abstractions.Domains.Lease;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Domains.Lease;
@@ -56,9 +54,10 @@ sealed class LeaseHandle : ILease
     internal void Invalidate() => MarkClosed();
 
     /// <inheritdoc />
-    public async Task ExtendAsync(ulong ttlSecs, CancellationToken ct = default)
+    public async Task ExtendAsync(TimeSpan ttl, CancellationToken ct = default)
     {
-        ArgumentOutOfRangeException.ThrowIfZero(ttlSecs, nameof(ttlSecs));
+        var ttlSecs = WireDuration.ToSeconds(ttl, nameof(ttl));
+        ArgumentOutOfRangeException.ThrowIfZero(ttlSecs, nameof(ttl));
         await _operationGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {

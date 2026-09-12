@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Lease;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// One steady-state change applied to a <see cref="ILeaseInventoryObserver"/>'s view.

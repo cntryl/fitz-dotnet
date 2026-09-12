@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Rpc;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// An active RPC worker registration. Dispose to withdraw it.

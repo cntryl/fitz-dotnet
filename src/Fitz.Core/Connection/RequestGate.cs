@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz.Connection;
 

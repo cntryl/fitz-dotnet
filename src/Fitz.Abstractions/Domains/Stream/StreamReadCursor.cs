@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Stream;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Continuation state for a paged stream read.

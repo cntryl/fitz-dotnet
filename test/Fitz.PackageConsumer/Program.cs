@@ -1,10 +1,4 @@
 using Cntryl.Fitz;
-using Cntryl.Fitz.Abstractions;
-using Cntryl.Fitz.Abstractions.Domains.Kv;
-using Cntryl.Fitz.Abstractions.Domains.Lease;
-using Cntryl.Fitz.Abstractions.Domains.Notice;
-using Cntryl.Fitz.Abstractions.Domains.Schedule;
-using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -98,7 +92,7 @@ static async Task<ulong> CompileManagedLeaseAuthorityAsync(
 {
     var fencingToken = await lease.WithLeaseAsync(
         "lease://example/app/leader",
-        30,
+        TimeSpan.FromSeconds(30),
         static (authority, callbackCancellationToken) =>
         {
             callbackCancellationToken.ThrowIfCancellationRequested();
@@ -109,7 +103,7 @@ static async Task<ulong> CompileManagedLeaseAuthorityAsync(
 
     await lease.WithLeaseAsync(
         "lease://example/app/legacy",
-        30,
+        TimeSpan.FromSeconds(30),
         static _ => ValueTask.CompletedTask,
         ct: ct).ConfigureAwait(false);
     return fencingToken;

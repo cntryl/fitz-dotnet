@@ -14,6 +14,65 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ### Changed
 
+- **Breaking (source):** no `ILeaseClient` member throws `NotSupportedException` any more, and
+  the three `public const string` fields that froze those messages as API are gone. Four
+  members were default interface methods that threw, so holding an `ILeaseClient` told you
+  nothing about whether `ListAsync`, `ObserveAsync`, or the authority-aware `WithLeaseAsync`
+  overloads would work. `ListAsync` and `ObserveAsync` are now required. The two
+  authority-aware `WithLeaseAsync` overloads became the required primitives, and the
+  cancellation-only pair now has a real default that delegates to them and discards the fence —
+  so a custom implementation writes two overloads instead of four, and every member works.
+  DIMs that throw are the right tool for adding members to a shipped `0.x` interface; 1.0 is
+  where that debt gets paid rather than frozen.
+- **Breaking (source):** every duration on the public surface is a `TimeSpan`. The API
+  previously mixed three integer types and two units across four naming conventions —
+  `ttlSecs` and `leaseSeconds` (`ulong`), `waitSeconds` (`uint` on `AcquireAsync` but `int?`
+  on `ReserveAsync`), `ExpiresInSecs`, `TtlRemainingSecs`, `LeaseExecutionOptions.WaitSeconds`
+  (`uint`), and `delayMs` (`int?`, milliseconds) — while connection-level options already used
+  `TimeSpan`. Renamed accordingly: `ttlSecs`/`leaseSeconds` to `ttl`/`lease`, `waitSeconds` to
+  `wait`, `delayMs` to `delay`, `WaitSeconds` to `Wait`, `ExpiresInSecs` to `ExpiresIn`, and
+  `TtlRemainingSecs` to `TtlRemaining`.
+  A duration finer than the wire can carry is rejected with `ArgumentOutOfRangeException`
+  rather than rounded; rounding would silently shorten a lease. This also retires the worst
+  edge in the old API, `EnqueueAsync(delayMs)`, which took milliseconds but threw on any value
+  that was not a whole multiple of 1000.
+  The analyzer now evaluates `TimeSpan.Zero` and the `TimeSpan.From*` factories over constants,
+  so these stay compile-time errors instead of becoming runtime ones.
+- **Breaking (source):** `ScheduleDeliveryMode.Single` is renamed `Once`. `Single` reads as the
+  `System.Single` alias in C#; the wire value is unchanged. This diverges from the name the
+  other Fitz clients use, deliberately, because it is the correct name in this language.
+- **Breaking (behaviour):** `StreamFilteredReason` gains `None = 0`, and a filtered read item
+  whose wire reason is 0 now decodes to `None` rather than `null`. Previously "filtered, but
+  the broker named no reason" and "not a filtered entry at all" were both `null` and could not
+  be told apart. A null `StreamReadItem.Reason` now means only the latter.
+- Every assembly-level suppression is gone, and `GlobalSuppressions.cs` with them. Each was
+  removed by fixing what it hid rather than by relocating it: the `byte[]` properties, the
+  `byte`-backed enums, and the two enum-shape findings above. `.editorconfig` now states that
+  namespaces deliberately do not mirror folders, which also retired two `NoWarn` entries.
+
+### Added
+
+- [docs/guide.md](docs/guide.md), a consumer guide covering install and connect, routes,
+  cancellation, errors and retry, subscriptions, reconnect semantics, all seven domains,
+  dependency injection, and observability. Every code sample in it is compiled against the
+  packed packages rather than written by hand.
+- **Breaking (source):** the entire public surface moved into the single `Cntryl.Fitz`
+  namespace. `Cntryl.Fitz.Abstractions`, every `Cntryl.Fitz.Abstractions.Domains.*`, and the
+  public halves of `Cntryl.Fitz.Errors`, `Cntryl.Fitz.Transport`, `Cntryl.Fitz.Observability`
+  and `Cntryl.Fitz.Runtime` are gone as namespaces; assembly and package names are unchanged,
+  as is `Cntryl.Fitz.DependencyInjection`. Replace the per-domain using directives with
+  `using Cntryl.Fitz;` — `test/Fitz.PackageConsumer` went from eight to two. No type was
+  renamed, and all 101 public type names were confirmed collision-free before the move.
+- **Breaking (source):** `StreamRecord.Body`, `StreamRecord.Metadata`, and
+  `ScheduleEntry.Payload` are `ReadOnlyMemory<byte>` instead of `byte[]`, matching `KvPair`
+  and `KvGetResult` and no longer handing callers a mutable reference to record state. Call
+  `.Span` or `.ToArray()` at the use site.
+- **Breaking (source):** `KvMode`, `KvDurability`, and `ScheduleDeliveryMode` no longer
+  declare `byte` storage. The wire encoding is unchanged — those paths already cast
+  explicitly — but the public contract no longer states a storage size it does not owe.
+- `ConnectWhenReadyAsync` now attaches the failure that caused a startup timeout as the
+  `TimeoutException`'s inner exception instead of discarding it, and the two connection-loss
+  log events that swallow their exception now carry full detail rather than only `Message`.
 - **Breaking (source):** the connection, protocol, and measurement internals are no longer
   public. `FitzConnection`, `Multiplexer`, `FrameCodec`, `FrameParser`, `Frame`,
   `MessageTypes`, `ServerCapabilities`, `BinaryBufferReader`, `BinaryBufferWriter`,

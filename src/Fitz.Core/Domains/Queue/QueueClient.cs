@@ -1,9 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
-using Cntryl.Fitz.Abstractions.Domains.Queue;
 using Cntryl.Fitz.Connection;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
 
@@ -76,7 +74,7 @@ sealed class QueueClient : IQueueClient, IDisposable
     public async Task<ulong> EnqueueAsync(
         string route,
         ReadOnlyMemory<byte> body,
-        int? delayMs = null,
+        TimeSpan? delay = null,
         CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -90,16 +88,11 @@ sealed class QueueClient : IQueueClient, IDisposable
         writer.WriteU32((uint)body.Length);
         writer.WriteBytes(body.Span);
 
-        if (delayMs is { } configuredDelay && (configuredDelay < 0 || configuredDelay % 1000 != 0))
-        {
-            throw new ArgumentOutOfRangeException(nameof(delayMs),
-                "The current Fitz wire protocol represents queue delay in whole seconds.");
-        }
-        var delaySeconds = delayMs > 0 ? delayMs.Value / 1000 : 0;
+        var delaySeconds = delay is { } configuredDelay ? WireDuration.ToSeconds(configuredDelay, nameof(delay)) : 0;
         writer.WriteU8((byte)(delaySeconds > 0 ? 1 : 0));
         if (delaySeconds > 0)
         {
-            writer.WriteU64((ulong)delaySeconds);
+            writer.WriteU64(delaySeconds);
         }
 
         var response = await _request(MessageTypes.QueueEnqueue, writer.WrittenMemory, ct).ConfigureAwait(false);
@@ -129,24 +122,22 @@ sealed class QueueClient : IQueueClient, IDisposable
     /// <inheritdoc />
     public async Task<IQueueReservedItem[]> ReserveAsync(
         string route,
-        ulong leaseSeconds,
+        TimeSpan lease,
         int batchSize = 1,
-        int? waitSeconds = null,
+        TimeSpan? wait = null,
         CancellationToken ct = default)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(route);
+        var leaseSeconds = WireDuration.ToSeconds(lease, nameof(lease));
+        var waitSeconds = wait is { } configuredWait ? (int?)WireDuration.ToSeconds(configuredWait, nameof(wait)) : null;
         if (!RouteValidation.IsRegistrationPattern(route, "queue", 3))
         {
             throw new QueueException($"route '{route}' must be a concrete queue route or a whole-segment wildcard pattern", "INVALID_ROUTE");
         }
 
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1, nameof(batchSize));
-        ArgumentOutOfRangeException.ThrowIfZero(leaseSeconds, nameof(leaseSeconds));
-        if (waitSeconds < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(waitSeconds), "Wait duration cannot be negative.");
-        }
+        ArgumentOutOfRangeException.ThrowIfZero(leaseSeconds, nameof(lease));
 
         return await ReserveOnceAsync(route, leaseSeconds, batchSize, waitSeconds, ct).ConfigureAwait(false);
     }

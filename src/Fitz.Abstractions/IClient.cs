@@ -1,13 +1,6 @@
 using Cntryl.Fitz;
-using Cntryl.Fitz.Abstractions.Domains.Kv;
-using Cntryl.Fitz.Abstractions.Domains.Lease;
-using Cntryl.Fitz.Abstractions.Domains.Notice;
-using Cntryl.Fitz.Abstractions.Domains.Queue;
-using Cntryl.Fitz.Abstractions.Domains.Rpc;
-using Cntryl.Fitz.Abstractions.Domains.Schedule;
-using Cntryl.Fitz.Abstractions.Domains.Stream;
 
-namespace Cntryl.Fitz.Abstractions;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A connection to a Fitz broker and the entry point to every domain API.

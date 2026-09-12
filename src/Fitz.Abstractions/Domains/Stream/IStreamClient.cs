@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Stream;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Appends to and reads from append-only streams.

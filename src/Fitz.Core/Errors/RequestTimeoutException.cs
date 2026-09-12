@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Errors;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Reports that a request exceeded its deadline before the broker answered. Retryable.

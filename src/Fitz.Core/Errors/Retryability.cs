@@ -1,7 +1,6 @@
 using System.IO;
-using Cntryl.Fitz.Abstractions;
 
-namespace Cntryl.Fitz.Errors;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Classifies whether a failed operation may be retried.

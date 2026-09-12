@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Notice;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Notice message received from a published route.

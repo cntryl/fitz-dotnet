@@ -1,4 +1,3 @@
-using Cntryl.Fitz.Abstractions;
 using Cntryl.Fitz.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;

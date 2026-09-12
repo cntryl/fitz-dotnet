@@ -3,7 +3,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Observability;
 
 namespace Cntryl.Fitz.Core.Tests.Integration;

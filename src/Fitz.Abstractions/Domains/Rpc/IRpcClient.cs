@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Rpc;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Invokes RPC routes and registers workers that serve them.

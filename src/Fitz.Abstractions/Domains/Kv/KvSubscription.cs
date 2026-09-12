@@ -1,6 +1,5 @@
-using Cntryl.Fitz.Runtime;
 
-namespace Cntryl.Fitz.Abstractions.Domains.Kv;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A live subscription to key-change notifications for a KV route or pattern.

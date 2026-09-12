@@ -1,9 +1,7 @@
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
-using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Connection;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
 
@@ -73,7 +71,7 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
     {
         ThrowIfDisposed();
         ValidateScheduleRoute(route);
-        if (deliveryMode is not ScheduleDeliveryMode.Broadcast and not ScheduleDeliveryMode.Single)
+        if (deliveryMode is not ScheduleDeliveryMode.Broadcast and not ScheduleDeliveryMode.Once)
         {
             throw new ArgumentOutOfRangeException(nameof(deliveryMode), deliveryMode, "Unknown schedule delivery mode");
         }
@@ -201,7 +199,7 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
             var cron = reader.ReadString();
             var deliveryModeValue = reader.ReadU8();
             var deliveryMode = (ScheduleDeliveryMode)deliveryModeValue;
-            if (deliveryMode is not ScheduleDeliveryMode.Broadcast and not ScheduleDeliveryMode.Single)
+            if (deliveryMode is not ScheduleDeliveryMode.Broadcast and not ScheduleDeliveryMode.Once)
             {
                 throw new ScheduleException($"LIST response has invalid delivery mode {deliveryModeValue}", "LIST_INVALID_RESPONSE");
             }

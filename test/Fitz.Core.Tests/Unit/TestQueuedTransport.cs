@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Threading.Channels;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 

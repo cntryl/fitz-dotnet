@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Schedule;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// One page of registered schedules.

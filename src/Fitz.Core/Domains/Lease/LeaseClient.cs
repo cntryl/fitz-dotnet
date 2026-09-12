@@ -4,9 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 using System.Threading.Channels;
-using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Connection;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
 
@@ -98,10 +96,14 @@ sealed class LeaseClient : ILeaseClient, IDisposable
     }
 
     /// <inheritdoc />
-    public async Task<ILease> AcquireAsync(string route, ulong ttlSecs, uint waitSeconds = 0, CancellationToken ct = default)
+    public async Task<ILease> AcquireAsync(string route, TimeSpan ttl, TimeSpan wait = default, CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        return await AcquireLeaseAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
+        return await AcquireLeaseAsync(
+            route,
+            WireDuration.ToSeconds(ttl, nameof(ttl)),
+            WireDuration.ToSecondsUInt32(wait, nameof(wait)),
+            ct).ConfigureAwait(false);
     }
 
     async Task<LeaseHandle> AcquireLeaseAsync(string route, ulong ttlSecs, uint waitSeconds, CancellationToken ct)
@@ -292,7 +294,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
     [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "The await-using declaration must retain the strongly typed lease handle for renewal operations.")]
     public async Task<T> WithLeaseAsync<T>(
         string route,
-        ulong ttlSecs,
+        TimeSpan ttl,
         Func<CancellationToken, ValueTask<T>> callback,
         LeaseExecutionOptions? options = null,
         CancellationToken ct = default)
@@ -301,7 +303,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         ArgumentNullException.ThrowIfNull(callback);
         return await WithLeaseAsync(
             route,
-            ttlSecs,
+            ttl,
             (_, ct) => callback(ct),
             options,
             ct).ConfigureAwait(false);
@@ -314,7 +316,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The renewal deadline is a using declaration and is disposed on every success and failure path.")]
     public async Task<T> WithLeaseAsync<T>(
         string route,
-        ulong ttlSecs,
+        TimeSpan ttl,
         Func<LeaseAuthority, CancellationToken, ValueTask<T>> callback,
         LeaseExecutionOptions? options = null,
         CancellationToken ct = default)
@@ -322,12 +324,15 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(callback);
         ct.ThrowIfCancellationRequested();
+        var ttlSecs = WireDuration.ToSeconds(ttl, nameof(ttl));
         if (ttlSecs == 0 || ttlSecs > uint.MaxValue / 1000)
         {
-            throw new LeaseException("ttlSecs must be positive and schedulable", "INVALID_TTL");
+            throw new LeaseException("ttl must be positive and schedulable", "INVALID_TTL");
         }
 
-        var waitSeconds = options?.WaitForAvailability == true ? options.WaitSeconds : 0;
+        var waitSeconds = options?.WaitForAvailability == true
+            ? WireDuration.ToSecondsUInt32(options.Wait, nameof(LeaseExecutionOptions.Wait))
+            : 0;
         await using var lease = await AcquireLeaseAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
         var authority = new LeaseAuthority(lease.FencingToken);
 
@@ -378,7 +383,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
                     TimeSpan.FromSeconds(5),
                     Min(Max(renewalInterval, TimeSpan.FromSeconds(2)), remainingLeaseTime));
                 renewalDeadline.CancelAfter(renewalBudget);
-                await lease.ExtendAsync(ttlSecs, renewalDeadline.Token).ConfigureAwait(false);
+                await lease.ExtendAsync(ttl, renewalDeadline.Token).ConfigureAwait(false);
                 if (lease.FencingTokenChanged.IsCompleted)
                 {
                     lease.Invalidate();
@@ -484,7 +489,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
     /// <inheritdoc />
     public async Task WithLeaseAsync(
         string route,
-        ulong ttlSecs,
+        TimeSpan ttl,
         Func<CancellationToken, ValueTask> callback,
         LeaseExecutionOptions? options = null,
         CancellationToken ct = default)
@@ -493,7 +498,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         ArgumentNullException.ThrowIfNull(callback);
         await WithLeaseAsync(
             route,
-            ttlSecs,
+            ttl,
             (_, ct) => callback(ct),
             options,
             ct).ConfigureAwait(false);
@@ -502,7 +507,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
     /// <inheritdoc />
     public async Task WithLeaseAsync(
         string route,
-        ulong ttlSecs,
+        TimeSpan ttl,
         Func<LeaseAuthority, CancellationToken, ValueTask> callback,
         LeaseExecutionOptions? options = null,
         CancellationToken ct = default)
@@ -511,7 +516,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         ArgumentNullException.ThrowIfNull(callback);
         await WithLeaseAsync(
             route,
-            ttlSecs,
+            ttl,
             async (authority, ct) =>
             {
                 await callback(authority, ct).ConfigureAwait(false);
@@ -572,7 +577,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
             throw new LeaseException("QUERY response has trailing bytes", "QUERY_INVALID_RESPONSE");
         }
 
-        return new LeaseInfo(true, owner, ttlRemaining, heldPendingWaiters);
+        return new LeaseInfo(true, owner, ttlRemaining is { } remaining ? WireDuration.FromSeconds(remaining) : null, heldPendingWaiters);
     }
 
     /// <inheritdoc />
@@ -624,7 +629,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
             var acquiredAt = reader.ReadString();
             var expiresInSecs = reader.ReadU64();
             var renewals = reader.ReadU32();
-            items.Add(new LeaseListItem(route, ownerId, holderIncarnation, acquiredAt, expiresInSecs, renewals));
+            items.Add(new LeaseListItem(route, ownerId, holderIncarnation, acquiredAt, WireDuration.FromSeconds(expiresInSecs), renewals));
         }
 
         if (reader.RemainingBytes < 1)

@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Lease;
+namespace Cntryl.Fitz;
 
 /// <summary>Tuning knobs for <see cref="ILeaseClient.ObserveAsync"/>.</summary>
 public sealed record LeaseObserveOptions

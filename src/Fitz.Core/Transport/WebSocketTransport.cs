@@ -1,8 +1,7 @@
 using System.Buffers;
 using System.Net.WebSockets;
-using Cntryl.Fitz.Errors;
 
-namespace Cntryl.Fitz.Transport;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Connects to a Fitz broker over WebSocket, using native PING/PONG for keepalive.

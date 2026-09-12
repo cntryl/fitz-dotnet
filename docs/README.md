@@ -1,5 +1,11 @@
 # fitz-dotnet documentation
 
+Start here if you are using the client in an application:
+
+- [guide.md](guide.md) — install, connect, routes, errors and retry, subscriptions, reconnect,
+  all seven domains, dependency injection, and observability. Every code sample in it is
+  compiled against the packed packages.
+
 Standing contracts — these define rules that current and future work must keep true:
 
 - [aot-and-reflection.md](aot-and-reflection.md) — the trimming and Native AOT guarantee,

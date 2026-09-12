@@ -36,7 +36,9 @@ csharp_style_var_elsewhere = true
 csharp_prefer_braces = false
 csharp_prefer_simple_using_statement = true
 csharp_style_namespace_declarations = file_scoped
-dotnet_style_namespace_match_folder = true
+# The public surface is one flat namespace, Cntryl.Fitz, so that a consumer needs a single
+# using directive. Folders still group source by concern and deliberately do not mirror it.
+dotnet_style_namespace_match_folder = false
 csharp_style_implicit_object_creation_when_type_is_apparent = true
 dotnet_style_prefer_is_null_check_over_reference_equality_method = true
 

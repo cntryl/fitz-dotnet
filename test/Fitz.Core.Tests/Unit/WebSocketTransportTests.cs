@@ -1,6 +1,4 @@
 using System.Net.WebSockets;
-using Cntryl.Fitz.Errors;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 

@@ -5,11 +5,9 @@ using System.IO;
 using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Observability;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Connection;
 
@@ -997,6 +995,7 @@ sealed class FitzConnection : IAsyncDisposable
             Log(FitzLogLevel.Warn, "fitz.connection.loss_cleanup_failed", new Dictionary<string, object?>
             {
                 ["error"] = cleanupError.Message,
+                ["error_detail"] = cleanupError.ToString(),
             });
         }
     }
@@ -1170,6 +1169,7 @@ sealed class FitzConnection : IAsyncDisposable
                     Log(FitzLogLevel.Warn, "fitz.connection.reconnect_listener_failed", new Dictionary<string, object?>
                     {
                         ["error"] = exception.Message,
+                        ["error_detail"] = exception.ToString(),
                     });
                     failures ??= [];
                     failures.Add(exception);

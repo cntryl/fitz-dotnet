@@ -1,6 +1,6 @@
 using System.Globalization;
 
-namespace Cntryl.Fitz.Transport;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Creates the built-in transport matching a configuration.

@@ -2,10 +2,8 @@ using System.Buffers;
 using System.Threading.Channels;
 using Cntryl.Fitz;
 using Cntryl.Fitz.Connection;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Observability;
 using Cntryl.Fitz.Protocol;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -978,7 +976,7 @@ public sealed class ClientTests
         // Act
         var request = client.Kv.BeginAsync(
             "kv://prod/app/users",
-            Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            Cntryl.Fitz.KvDurability.Async);
 
 
         // Assert
@@ -1020,7 +1018,7 @@ public sealed class ClientTests
 
         // Assert
         var ex = await Assert.ThrowsAsync<RequestTimeoutException>(() =>
-            client.Kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async));
+            client.Kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async));
 
         Assert.Contains("Request timeout", ex.Message, StringComparison.OrdinalIgnoreCase);
         await WaitForConditionAsync(() => !client.IsConnected, TimeSpan.FromSeconds(1));

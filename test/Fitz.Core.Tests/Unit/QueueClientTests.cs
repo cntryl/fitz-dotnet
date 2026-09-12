@@ -1,9 +1,6 @@
-using Cntryl.Fitz.Abstractions.Domains.Queue;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Domains.Queue;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -44,7 +41,7 @@ public sealed class QueueClientTests
 
 
         // Assert
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => item.ExtendAsync(0));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => item.ExtendAsync(TimeSpan.FromSeconds(0)));
 
         Assert.False(requestCalled);
     }
@@ -86,10 +83,10 @@ public sealed class QueueClientTests
     }
 
     [Theory]
-    [InlineData(0UL, null)]
-    [InlineData(30UL, -1)]
+    [InlineData(0, null)]
+    [InlineData(30, -1)]
     public async Task ShouldRejectInvalidLeaseArgumentsGivenReserveWhenBeforeTransport(
-        ulong leaseSeconds,
+        int leaseSeconds,
         int? waitSeconds)
     {
         // Arrange
@@ -105,7 +102,10 @@ public sealed class QueueClientTests
 
         // Assert
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-            queue.ReserveAsync("queue://prod/app/tasks", leaseSeconds, waitSeconds: waitSeconds));
+            queue.ReserveAsync(
+                "queue://prod/app/tasks",
+                TimeSpan.FromSeconds(leaseSeconds),
+                wait: waitSeconds is { } configuredWait ? TimeSpan.FromSeconds(configuredWait) : null));
 
         Assert.False(requestCalled);
     }
@@ -128,7 +128,7 @@ public sealed class QueueClientTests
 
         // Assert
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-            queue.ReserveAsync("queue://prod/app/tasks", 30, batchSize));
+            queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30), batchSize));
 
         Assert.False(requestCalled);
     }
@@ -160,13 +160,13 @@ public sealed class QueueClientTests
 
 
         // Assert
-        var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", 30));
+        var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30)));
         Assert.Equal(1, registrations);
 
         await item.DisposeAsync();
 
         Assert.Equal(0, registrations);
-        var error = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(10));
+        var error = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(TimeSpan.FromSeconds(10)));
         Assert.Equal("ITEM_CLOSED", error.Code);
     }
 
@@ -185,7 +185,7 @@ public sealed class QueueClientTests
         });
 
         var exception = await Assert.ThrowsAsync<QueueException>(() =>
-            queue.ReserveAsync("queue://prod/app/tasks", 30));
+            queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30)));
 
         Assert.Equal("RESERVE_INVALID_RESPONSE", exception.Code);
     }
@@ -222,7 +222,7 @@ public sealed class QueueClientTests
         });
 
         // Assert
-        var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", 30));
+        var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30)));
 
         await Assert.ThrowsAsync<QueueException>(() => item.CompleteAsync());
         await item.CompleteAsync();
@@ -255,7 +255,7 @@ public sealed class QueueClientTests
             }
             return Task.FromResult(writer.Build());
         });
-        var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", 30));
+        var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30)));
 
         // Act
         var act = () => item.CompleteAsync();
@@ -334,7 +334,7 @@ public sealed class QueueClientTests
             return Task.FromResult(writer.Build());
         });
 
-        await queue.EnqueueAsync("queue://prod/app/tasks", "job-1"u8.ToArray(), delayMs: 2_000);
+        await queue.EnqueueAsync("queue://prod/app/tasks", "job-1"u8.ToArray(), delay: TimeSpan.FromSeconds(2));
 
 
         // Act
@@ -362,7 +362,7 @@ public sealed class QueueClientTests
 
         // Act
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
-            queue.EnqueueAsync("queue://prod/app/tasks", "job-1"u8.ToArray(), delayMs: 1));
+            queue.EnqueueAsync("queue://prod/app/tasks", "job-1"u8.ToArray(), delay: TimeSpan.FromMilliseconds(1)));
 
         // Assert
         Assert.Null(seenPayload);
@@ -389,7 +389,7 @@ public sealed class QueueClientTests
         });
 
         // Act
-        var items = await queue.ReserveAsync("queue://prod/app/tasks", 30, batchSize: 2, waitSeconds: 10);
+        var items = await queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30), batchSize: 2, wait: TimeSpan.FromSeconds(10));
 
         // Assert
         Assert.NotNull(seenPayload);
@@ -428,7 +428,7 @@ public sealed class QueueClientTests
         });
 
         // Act
-        var items = await queue.ReserveAsync("queue://*/cats/*", 30);
+        var items = await queue.ReserveAsync("queue://*/cats/*", TimeSpan.FromSeconds(30));
 
         // Assert
         var item = Assert.Single(items);
@@ -453,7 +453,7 @@ public sealed class QueueClientTests
         });
 
         // Act
-        var result = () => queue.ReserveAsync("queue://*/cats/*", 30);
+        var result = () => queue.ReserveAsync("queue://*/cats/*", TimeSpan.FromSeconds(30));
 
         // Assert
         await Assert.ThrowsAsync<QueueException>(result);
@@ -477,7 +477,7 @@ public sealed class QueueClientTests
         });
 
         // Act
-        var items = await queue.ReserveAsync("queue://prod/app/tasks", 30, waitSeconds: 1);
+        var items = await queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(1));
 
         // Assert
         Assert.Equal(1, reserveCallCount);
@@ -500,7 +500,7 @@ public sealed class QueueClientTests
         });
 
         // Act
-        var result = () => queue.ReserveAsync("queue://prod/app/tasks", 30, waitSeconds: 1);
+        var result = () => queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(1));
 
         // Assert
         var error = await Assert.ThrowsAsync<QueueException>(result);
@@ -604,9 +604,9 @@ public sealed class QueueClientTests
         });
 
         // Act
-        var reserved = await queue.ReserveAsync("queue://prod/app/tasks", 30);
+        var reserved = await queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30));
         Assert.Equal(2, reserved.Length);
-        await reserved[0].ExtendAsync(45);
+        await reserved[0].ExtendAsync(TimeSpan.FromSeconds(45));
         await reserved[0].CompleteAsync();
         await reserved[1].CompleteWithTokenAsync(999);
 
@@ -660,13 +660,13 @@ public sealed class QueueClientTests
                 return new TestRegistration(() => unsubscribeCount++);
             });
 
-        var items = await queue.ReserveAsync("queue://prod/app/tasks", 30);
+        var items = await queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30));
         var item = Assert.Single(items);
 
         // Act
         onDisconnect?.Invoke();
 
-        var ex = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(10));
+        var ex = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(TimeSpan.FromSeconds(10)));
 
         // Assert
         Assert.Equal("ITEM_CLOSED", ex.Code);
@@ -728,7 +728,7 @@ public sealed class QueueClientTests
         await connection.ConnectAsync();
 
         // Act
-        var items = await queue.ReserveAsync("queue://prod/app/tasks", 30);
+        var items = await queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30));
 
         // Assert
         var item = Assert.Single(items);
@@ -736,7 +736,7 @@ public sealed class QueueClientTests
         firstTransport.QueueClosed();
         await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
-        var ex = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(10));
+        var ex = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(TimeSpan.FromSeconds(10)));
 
         Assert.Equal("ITEM_CLOSED", ex.Code);
         Assert.Equal("Queue item is no longer valid after disconnect", ex.Message);

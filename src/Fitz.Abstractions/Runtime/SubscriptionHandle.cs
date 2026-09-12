@@ -1,6 +1,6 @@
 using System.Runtime.CompilerServices;
 
-namespace Cntryl.Fitz.Runtime;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Base class for subscription handles: owns the pattern, the completion signal, and

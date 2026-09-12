@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Queue;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Enqueues work and reserves it for processing.
@@ -10,7 +10,7 @@ public interface IQueueClient
     /// </summary>
     /// <param name="route">Concrete <c>queue://</c> route to enqueue on.</param>
     /// <param name="body">Opaque message payload.</param>
-    /// <param name="delayMs">
+    /// <param name="delay">
     /// Delivery delay. Accepted only in whole seconds; a value that is not a whole number of
     /// seconds is rejected rather than silently rounded.
     /// </param>
@@ -19,7 +19,7 @@ public interface IQueueClient
     Task<ulong> EnqueueAsync(
         string route,
         ReadOnlyMemory<byte> body,
-        int? delayMs = null,
+        TimeSpan? delay = null,
         CancellationToken ct = default
     );
 
@@ -29,9 +29,9 @@ public interface IQueueClient
     /// <param name="route">
     /// An exact route or whole-segment pattern capable of matching three segments.
     /// </param>
-    /// <param name="leaseSeconds">Visibility timeout for each reserved message.</param>
+    /// <param name="lease">Visibility timeout for each reserved message. Must be a whole number of seconds.</param>
     /// <param name="batchSize">Maximum messages to reserve.</param>
-    /// <param name="waitSeconds">
+    /// <param name="wait">
     /// How long to wait for a message when the queue is empty, using the broker-native
     /// RESERVE wait field. A broker that rejects the field fails the request; the client
     /// does not fall back to polling.
@@ -44,9 +44,9 @@ public interface IQueueClient
     /// </returns>
     Task<IQueueReservedItem[]> ReserveAsync(
         string route,
-        ulong leaseSeconds,
+        TimeSpan lease,
         int batchSize = 1,
-        int? waitSeconds = null,
+        TimeSpan? wait = null,
         CancellationToken ct = default
     );
 
@@ -91,10 +91,10 @@ public interface IQueueReservedItem : IAsyncDisposable
     /// <summary>
     /// Extends this message's visibility timeout.
     /// </summary>
-    /// <param name="leaseSeconds">Additional seconds to hold the reservation.</param>
+    /// <param name="lease">Additional time to hold the reservation. Must be a whole number of seconds.</param>
     /// <param name="ct">Cancellation token for the extend request.</param>
     /// <returns>A task that completes once the broker accepts the extension.</returns>
-    Task ExtendAsync(ulong leaseSeconds, CancellationToken ct = default);
+    Task ExtendAsync(TimeSpan lease, CancellationToken ct = default);
 
     /// <summary>
     /// Acknowledges the message, removing it from the queue permanently.

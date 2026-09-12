@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Authoritative broker domain error codes exposed by client APIs.

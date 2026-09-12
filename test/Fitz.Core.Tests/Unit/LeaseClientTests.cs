@@ -1,10 +1,6 @@
-using Cntryl.Fitz.Abstractions;
-using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Domains.Lease;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -42,7 +38,7 @@ public sealed class LeaseClientTests
 
 
         // Assert
-        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => lease.ExtendAsync(0));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => lease.ExtendAsync(TimeSpan.FromSeconds(0)));
 
         Assert.False(requestCalled);
     }
@@ -86,7 +82,7 @@ public sealed class LeaseClientTests
 
         // Assert
         var error = await Assert.ThrowsAsync<LeaseException>(() =>
-            leaseClient.AcquireAsync("lease://prod/app/lock", 0));
+            leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(0)));
 
         Assert.Equal("INVALID_TTL", error.Code);
         Assert.False(requestCalled);
@@ -114,7 +110,7 @@ public sealed class LeaseClientTests
 
         // Assert
         Assert.Equal(0, registrations);
-        var error = await Assert.ThrowsAsync<LeaseException>(() => lease.ExtendAsync(30));
+        var error = await Assert.ThrowsAsync<LeaseException>(() => lease.ExtendAsync(TimeSpan.FromSeconds(30)));
         Assert.Equal("CLOSED", error.Code);
     }
 
@@ -135,7 +131,7 @@ public sealed class LeaseClientTests
 
 
         // Act
-        await lease.ExtendAsync(30);
+        await lease.ExtendAsync(TimeSpan.FromSeconds(30));
 
 
         // Assert
@@ -172,7 +168,7 @@ public sealed class LeaseClientTests
         });
 
         // Act
-        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
 
 
         // Assert
@@ -198,7 +194,7 @@ public sealed class LeaseClientTests
         });
 
         // Act
-        var act = () => leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+        var act = () => leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
 
         // Assert
         var error = await Assert.ThrowsAsync<LeaseException>(act);
@@ -230,14 +226,14 @@ public sealed class LeaseClientTests
             return Task.FromResult(new byte[] { 0 });
         });
 
-        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
         using var cancellation = new CancellationTokenSource();
 
         // Act
         await cancellation.CancelAsync();
 
         // Assert
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => lease.ExtendAsync(60, cancellation.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => lease.ExtendAsync(TimeSpan.FromSeconds(60), cancellation.Token));
         await lease.DisposeAsync();
 
         Assert.Equal(1, releaseCalls);
@@ -266,7 +262,7 @@ public sealed class LeaseClientTests
                 return new TestRegistration();
             });
 
-        var pending = leaseClient.AcquireAsync("lease://prod/app/lock", 30, waitSeconds: 5);
+        var pending = leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(5));
         await Task.Yield();
         using var acquired = new BinaryBufferWriter();
         acquired.WriteU8(0);
@@ -298,7 +294,7 @@ public sealed class LeaseClientTests
                 return new TestRegistration();
             });
 
-        var pending = leaseClient.AcquireAsync("lease://prod/app/lock", 30, waitSeconds: 5);
+        var pending = leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(5));
         await Task.Yield();
         using var acquired = new BinaryBufferWriter();
         acquired.WriteU8(0);
@@ -342,8 +338,8 @@ public sealed class LeaseClientTests
                 return new TestRegistration();
             });
 
-        var first = leaseClient.AcquireAsync("lease://prod/app/first", 30, waitSeconds: 5);
-        var second = leaseClient.AcquireAsync("lease://prod/app/second", 30);
+        var first = leaseClient.AcquireAsync("lease://prod/app/first", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(5));
+        var second = leaseClient.AcquireAsync("lease://prod/app/second", TimeSpan.FromSeconds(30));
         await Task.Yield();
         Assert.Equal(1, Volatile.Read(ref acquireCalls));
 
@@ -385,9 +381,9 @@ public sealed class LeaseClientTests
 
         // Assert
         await Assert.ThrowsAsync<RequestTimeoutException>(() =>
-            leaseClient.AcquireAsync("lease://prod/app/first", 30, waitSeconds: 1));
+            leaseClient.AcquireAsync("lease://prod/app/first", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(1)));
 
-        var second = leaseClient.AcquireAsync("lease://prod/app/second", 30, waitSeconds: 5);
+        var second = leaseClient.AcquireAsync("lease://prod/app/second", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(5));
         using var lateGrant = new BinaryBufferWriter();
         lateGrant.WriteU8(0);
         lateGrant.WriteU8(0);
@@ -418,7 +414,7 @@ public sealed class LeaseClientTests
         });
 
         // Act
-        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30, waitSeconds: 5);
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(5));
 
         // Assert
         Assert.Equal(MessageTypes.LeaseAcquire, seenMessageType);
@@ -459,7 +455,7 @@ public sealed class LeaseClientTests
         // Assert
         Assert.True(info.IsHeld);
         Assert.Equal("worker-1", info.Owner);
-        Assert.Equal((ulong)18, info.TtlRemainingSecs);
+        Assert.Equal(TimeSpan.FromSeconds(18), info.TtlRemaining);
     }
 
     [Fact]
@@ -485,7 +481,7 @@ public sealed class LeaseClientTests
         // Assert
         Assert.True(info.IsHeld);
         Assert.Equal("worker-1", info.Owner);
-        Assert.Equal((ulong)18, info.TtlRemainingSecs);
+        Assert.Equal(TimeSpan.FromSeconds(18), info.TtlRemaining);
         Assert.Equal((uint)3, info.PendingWaiters);
     }
 
@@ -514,10 +510,10 @@ public sealed class LeaseClientTests
             return Task.FromResult(writer.Build());
         });
 
-        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
 
         // Act
-        await lease.ExtendAsync(45);
+        await lease.ExtendAsync(TimeSpan.FromSeconds(45));
 
         // Assert
         Assert.Equal(2, calls.Count);
@@ -552,7 +548,7 @@ public sealed class LeaseClientTests
             return Task.FromResult(writer.Build());
         });
 
-        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
 
         // Act
         await lease.ReleaseAsync();
@@ -589,7 +585,7 @@ public sealed class LeaseClientTests
 
             return Task.FromResult(writer.Build());
         });
-        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
 
         // Act
         await lease.DisposeAsync();
@@ -622,7 +618,7 @@ public sealed class LeaseClientTests
 
             return Task.FromResult(writer.Build());
         });
-        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
 
         // Act
         await lease.DisposeAsync();
@@ -725,11 +721,11 @@ public sealed class LeaseClientTests
         using var leaseClient = new LeaseClient(connection);
 
         await connection.ConnectAsync();
-        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
 
         await connection.CloseAsync();
 
-        var ex = await Assert.ThrowsAsync<LeaseException>(() => lease.ExtendAsync(60));
+        var ex = await Assert.ThrowsAsync<LeaseException>(() => lease.ExtendAsync(TimeSpan.FromSeconds(60)));
 
         // Assert
         Assert.Equal("CLOSED", ex.Code);
@@ -785,7 +781,7 @@ public sealed class LeaseClientTests
         using var leaseClient = new LeaseClient(connection);
 
         await connection.ConnectAsync();
-        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+        var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
 
         firstTransport.QueueClosed();
 
@@ -794,7 +790,7 @@ public sealed class LeaseClientTests
 
 
         // Assert
-        var ex = await Assert.ThrowsAsync<LeaseException>(() => lease.ExtendAsync(60));
+        var ex = await Assert.ThrowsAsync<LeaseException>(() => lease.ExtendAsync(TimeSpan.FromSeconds(60)));
 
         Assert.Equal("CLOSED", ex.Code);
         Assert.Equal("Lease handle is no longer valid after disconnect", ex.Message);

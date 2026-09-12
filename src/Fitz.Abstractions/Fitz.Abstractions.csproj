@@ -12,8 +12,6 @@
     <Authors>Cntryl</Authors>
     <RepositoryUrl>https://github.com/cntryl/fitz-dotnet</RepositoryUrl>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
-    <!-- Public namespaces intentionally omit the assembly's Abstractions segment. -->
-    <NoWarn>$(NoWarn);IDE0130</NoWarn>
   </PropertyGroup>
 
 </Project>

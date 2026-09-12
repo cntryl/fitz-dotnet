@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Lease;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A held lease. Dispose to release it; disposal is best-effort and bounded.
@@ -19,10 +19,10 @@ public interface ILease : IAsyncDisposable
     /// <summary>
     /// Extends the lease before it expires.
     /// </summary>
-    /// <param name="ttlSecs">New time-to-live in seconds, measured from broker acceptance.</param>
+    /// <param name="ttl">New time-to-live, measured from broker acceptance. Must be a whole number of seconds.</param>
     /// <param name="ct">Cancellation token for the renewal.</param>
     /// <returns>A task that completes once the broker accepts the renewal.</returns>
-    Task ExtendAsync(ulong ttlSecs, CancellationToken ct = default);
+    Task ExtendAsync(TimeSpan ttl, CancellationToken ct = default);
 
     /// <summary>
     /// Releases the lease so another owner may claim it.

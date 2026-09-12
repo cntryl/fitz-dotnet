@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Errors;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Base class for every exception raised by the Fitz client.

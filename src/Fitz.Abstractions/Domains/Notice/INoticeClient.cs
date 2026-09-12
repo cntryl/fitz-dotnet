@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Notice;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Publishes and subscribes to notices: fire-and-forget messages delivered to every

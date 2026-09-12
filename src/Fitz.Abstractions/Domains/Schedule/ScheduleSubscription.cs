@@ -1,6 +1,5 @@
-using Cntryl.Fitz.Runtime;
 
-namespace Cntryl.Fitz.Abstractions.Domains.Schedule;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A live subscription to schedule firings matching a pattern.

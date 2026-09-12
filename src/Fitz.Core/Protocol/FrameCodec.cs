@@ -1,5 +1,4 @@
 using System.Buffers.Binary;
-using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz.Protocol;
 
@@ -141,7 +140,7 @@ static class FrameCodec
     /// <summary>Decodes a frame, rejecting anything malformed.</summary>
     /// <param name="frameBytes">The encoded frame.</param>
     /// <returns>The decoded frame.</returns>
-    /// <exception cref="Errors.ProtocolException">
+    /// <exception cref="ProtocolException">
     /// The frame is truncated, over-long, or its length prefix disagrees with its content.
     /// </exception>
     public static Frame DecodeStrict(ReadOnlyMemory<byte> frameBytes)

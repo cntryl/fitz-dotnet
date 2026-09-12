@@ -1,7 +1,5 @@
 using BenchmarkDotNet.Attributes;
 using BenchmarkDotNet.Jobs;
-using Cntryl.Fitz.Abstractions.Domains.Lease;
-using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Domains.Kv;
 using Cntryl.Fitz.Domains.Lease;
 using Cntryl.Fitz.Domains.Notice;
@@ -47,7 +45,7 @@ public class DomainHotPathBenchmarks : IDisposable
     [Benchmark]
     public async Task KvBeginGet()
     {
-        var tx = await _kv.BeginAsync("kv://bench/hotpath/resource", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async).ConfigureAwait(false);
+        var tx = await _kv.BeginAsync("kv://bench/hotpath/resource", Cntryl.Fitz.KvDurability.Async).ConfigureAwait(false);
         _ = await tx.GetAsync(Payload).ConfigureAwait(false);
     }
 
@@ -55,7 +53,7 @@ public class DomainHotPathBenchmarks : IDisposable
     public async Task<ulong> QueueEnqueue() => await _queue.EnqueueAsync("queue://bench/hotpath/resource", Payload).ConfigureAwait(false);
 
     [Benchmark]
-    public async Task<ILease> LeaseAcquire() => await _lease.AcquireAsync("lease://bench/hotpath/resource", 30).ConfigureAwait(false);
+    public async Task<ILease> LeaseAcquire() => await _lease.AcquireAsync("lease://bench/hotpath/resource", TimeSpan.FromSeconds(30)).ConfigureAwait(false);
 
     [Benchmark]
     public async Task NoticePublish() => await _notice.PublishAsync("notice://bench/hotpath/resource", Payload).ConfigureAwait(false);

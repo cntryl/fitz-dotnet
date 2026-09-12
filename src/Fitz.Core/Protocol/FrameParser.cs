@@ -1,5 +1,4 @@
 using System.Buffers.Binary;
-using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz.Protocol;
 

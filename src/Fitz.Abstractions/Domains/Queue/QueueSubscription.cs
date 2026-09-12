@@ -1,6 +1,5 @@
-using Cntryl.Fitz.Runtime;
 
-namespace Cntryl.Fitz.Abstractions.Domains.Queue;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A live subscription to queue availability events, including ready, delayed, and inflight counts.

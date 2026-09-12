@@ -1,6 +1,6 @@
 using Cntryl.Fitz;
 
-namespace Cntryl.Fitz.Observability;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Severity of a client log record.
@@ -121,7 +121,7 @@ public interface IFitzMeter
 /// </param>
 /// <param name="State">Connection state when the event was emitted.</param>
 /// <param name="Transport">
-/// The transport's <see cref="Transport.ITransport.TransportName"/>, or <see langword="null"/>
+/// The transport's <see cref="ITransport.TransportName"/>, or <see langword="null"/>
 /// when no transport exists yet.
 /// </param>
 /// <param name="Url">Endpoint involved, falling back to the configured URL.</param>

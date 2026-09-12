@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Queue;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Queue notification received for a subscribed route pattern. Payload contents are broker-defined.

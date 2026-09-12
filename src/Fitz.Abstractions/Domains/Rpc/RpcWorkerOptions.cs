@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Rpc;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Options for an RPC worker registration.

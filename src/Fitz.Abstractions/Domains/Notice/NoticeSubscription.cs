@@ -1,6 +1,5 @@
-using Cntryl.Fitz.Runtime;
 
-namespace Cntryl.Fitz.Abstractions.Domains.Notice;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A live subscription to notices matching a route or pattern.

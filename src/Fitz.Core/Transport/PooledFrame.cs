@@ -1,6 +1,6 @@
 using System.Buffers;
 
-namespace Cntryl.Fitz.Transport;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A received frame backed by a pooled buffer.

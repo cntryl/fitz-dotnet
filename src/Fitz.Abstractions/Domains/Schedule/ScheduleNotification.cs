@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Schedule;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A single schedule firing delivered to a subscriber.

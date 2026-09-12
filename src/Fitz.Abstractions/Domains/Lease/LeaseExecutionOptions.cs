@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Lease;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Controls how <c>ILeaseClient.WithLeaseAsync</c> behaves when a lease is already held.
@@ -12,7 +12,7 @@ public sealed class LeaseExecutionOptions
     public bool WaitForAvailability { get; init; }
 
     /// <summary>
-    /// How long to wait when <see cref="WaitForAvailability"/> is enabled, in seconds.
+    /// How long to wait when <see cref="WaitForAvailability"/> is enabled.
     /// </summary>
-    public uint WaitSeconds { get; init; } = 30;
+    public TimeSpan Wait { get; init; } = TimeSpan.FromSeconds(30);
 }

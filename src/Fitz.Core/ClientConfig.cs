@@ -1,6 +1,5 @@
 using Cntryl.Fitz.Observability;
 using Cntryl.Fitz.Protocol;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz;
 

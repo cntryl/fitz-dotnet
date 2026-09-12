@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Errors;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Reports that the client-side request queue reached <c>ClientConfig.MaxRequestQueueSize</c>.

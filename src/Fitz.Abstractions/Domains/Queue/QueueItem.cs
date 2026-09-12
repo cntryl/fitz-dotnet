@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Queue;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Base class for a reserved queue message.
@@ -41,10 +41,10 @@ public abstract class QueueItem : IQueueReservedItem
     /// <summary>
     /// Extends this message's visibility timeout.
     /// </summary>
-    /// <param name="leaseSeconds">Additional seconds to hold the reservation.</param>
+    /// <param name="lease">Additional seconds to hold the reservation.</param>
     /// <param name="ct">Cancellation token for the extend request.</param>
     /// <returns>A task that completes once the broker accepts the extension.</returns>
-    public abstract Task ExtendAsync(ulong leaseSeconds, CancellationToken ct = default);
+    public abstract Task ExtendAsync(TimeSpan lease, CancellationToken ct = default);
 
     /// <summary>
     /// Acknowledges the message, removing it from the queue permanently.

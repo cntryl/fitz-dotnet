@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Transport;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A byte-framed connection to a Fitz broker.

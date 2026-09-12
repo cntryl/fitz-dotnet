@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Lease;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Acquires distributed leases and observes their ownership.
@@ -11,44 +11,23 @@ namespace Cntryl.Fitz.Abstractions.Domains.Lease;
 public interface ILeaseClient
 {
     /// <summary>
-    /// Message for the <see cref="NotSupportedException"/> thrown by implementations that do
-    /// not support authority-aware callbacks.
-    /// </summary>
-    const string AuthorityCallbacksNotSupportedMessage =
-        "This ILeaseClient implementation does not support managed lease authority callbacks.";
-
-    /// <summary>
-    /// Message for the <see cref="NotSupportedException"/> thrown by implementations that do
-    /// not support <see cref="ListAsync"/>.
-    /// </summary>
-    const string ListNotSupportedMessage =
-        "This ILeaseClient implementation does not support LIST.";
-
-    /// <summary>
-    /// Message for the <see cref="NotSupportedException"/> thrown by implementations that do
-    /// not support <see cref="ObserveAsync"/>.
-    /// </summary>
-    const string ObserveNotSupportedMessage =
-        "This ILeaseClient implementation does not support ObserveAsync.";
-
-    /// <summary>
     /// Claims a lease and returns a handle you are responsible for renewing and releasing.
     /// </summary>
     /// <param name="route">Exact <c>lease://realm/area/resource</c> route. Patterns are not accepted.</param>
-    /// <param name="ttlSecs">Initial time-to-live in seconds.</param>
-    /// <param name="waitSeconds">
+    /// <param name="ttl">Initial time-to-live. Must be a whole number of seconds.</param>
+    /// <param name="wait">
     /// How long to wait for a contended lease before failing. Zero fails immediately.
     /// </param>
     /// <param name="ct">Cancellation token for the acquisition.</param>
     /// <returns>A handle holding the lease.</returns>
-    Task<ILease> AcquireAsync(string route, ulong ttlSecs, uint waitSeconds = 0, CancellationToken ct = default);
+    Task<ILease> AcquireAsync(string route, TimeSpan ttl, TimeSpan wait = default, CancellationToken ct = default);
 
     /// <summary>
     /// Runs a callback while holding a lease, returning its result.
     /// </summary>
     /// <typeparam name="T">Result type produced by the callback.</typeparam>
     /// <param name="route">Exact lease route to hold.</param>
-    /// <param name="ttlSecs">Lease time-to-live in seconds; renewal is automatic.</param>
+    /// <param name="ttl">Lease time-to-live; renewal is automatic. Must be a whole number of seconds.</param>
     /// <param name="callback">
     /// Work to run under the lease. Its token is cancelled as soon as ownership is lost, and
     /// the callback must honor it promptly.
@@ -56,81 +35,83 @@ public interface ILeaseClient
     /// <param name="options">Contention behavior. Defaults to failing fast on a held lease.</param>
     /// <param name="ct">Cancellation token for the whole scope.</param>
     /// <returns>The callback's result.</returns>
+    /// <remarks>
+    /// Defaults to the authority-aware overload, discarding the fence. Implement only that
+    /// overload; this one needs no implementation of its own.
+    /// </remarks>
     Task<T> WithLeaseAsync<T>(
         string route,
-        ulong ttlSecs,
+        TimeSpan ttl,
         Func<CancellationToken, ValueTask<T>> callback,
         LeaseExecutionOptions? options = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        return WithLeaseAsync(route, ttl, (_, callbackToken) => callback(callbackToken), options, ct);
+    }
 
     /// <summary>
     /// Runs an authority-aware callback while holding a lease, returning its result.
     /// </summary>
     /// <typeparam name="T">Result type produced by the callback.</typeparam>
     /// <param name="route">Exact lease route to hold.</param>
-    /// <param name="ttlSecs">Lease time-to-live in seconds; renewal is automatic.</param>
+    /// <param name="ttl">Lease time-to-live; renewal is automatic. Must be a whole number of seconds.</param>
     /// <param name="callback">
     /// Work to run under the lease, receiving the admission fence from the successful acquire.
     /// </param>
     /// <param name="options">Contention behavior. Defaults to failing fast on a held lease.</param>
     /// <param name="ct">Cancellation token for the whole scope.</param>
     /// <returns>The callback's result.</returns>
-    /// <exception cref="NotSupportedException">
-    /// The implementation does not support authority-aware callbacks.
-    /// </exception>
     Task<T> WithLeaseAsync<T>(
         string route,
-        ulong ttlSecs,
+        TimeSpan ttl,
         Func<LeaseAuthority, CancellationToken, ValueTask<T>> callback,
         LeaseExecutionOptions? options = null,
-        CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(callback);
-        throw new NotSupportedException(AuthorityCallbacksNotSupportedMessage);
-    }
+        CancellationToken ct = default);
 
     /// <summary>
     /// Runs a callback while holding a lease.
     /// </summary>
     /// <param name="route">Exact lease route to hold.</param>
-    /// <param name="ttlSecs">Lease time-to-live in seconds; renewal is automatic.</param>
+    /// <param name="ttl">Lease time-to-live; renewal is automatic. Must be a whole number of seconds.</param>
     /// <param name="callback">
     /// Work to run under the lease. Its token is cancelled as soon as ownership is lost.
     /// </param>
     /// <param name="options">Contention behavior. Defaults to failing fast on a held lease.</param>
     /// <param name="ct">Cancellation token for the whole scope.</param>
     /// <returns>A task that completes when the callback finishes and the lease is released.</returns>
+    /// <remarks>
+    /// Defaults to the authority-aware overload, discarding the fence. Implement only that
+    /// overload; this one needs no implementation of its own.
+    /// </remarks>
     Task WithLeaseAsync(
         string route,
-        ulong ttlSecs,
+        TimeSpan ttl,
         Func<CancellationToken, ValueTask> callback,
         LeaseExecutionOptions? options = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        return WithLeaseAsync(route, ttl, (_, callbackToken) => callback(callbackToken), options, ct);
+    }
 
     /// <summary>
     /// Runs an authority-aware callback while holding a lease.
     /// </summary>
     /// <param name="route">Exact lease route to hold.</param>
-    /// <param name="ttlSecs">Lease time-to-live in seconds; renewal is automatic.</param>
+    /// <param name="ttl">Lease time-to-live; renewal is automatic. Must be a whole number of seconds.</param>
     /// <param name="callback">
     /// Work to run under the lease, receiving the admission fence from the successful acquire.
     /// </param>
     /// <param name="options">Contention behavior. Defaults to failing fast on a held lease.</param>
     /// <param name="ct">Cancellation token for the whole scope.</param>
     /// <returns>A task that completes when the callback finishes and the lease is released.</returns>
-    /// <exception cref="NotSupportedException">
-    /// The implementation does not support authority-aware callbacks.
-    /// </exception>
     Task WithLeaseAsync(
         string route,
-        ulong ttlSecs,
+        TimeSpan ttl,
         Func<LeaseAuthority, CancellationToken, ValueTask> callback,
         LeaseExecutionOptions? options = null,
-        CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(callback);
-        throw new NotSupportedException(AuthorityCallbacksNotSupportedMessage);
-    }
+        CancellationToken ct = default);
 
     /// <summary>
     /// Reads the current holder and expiry of a lease without claiming it.
@@ -163,12 +144,11 @@ public interface ILeaseClient
     /// <param name="limit">Maximum entries to return. Defaults to the broker's page size.</param>
     /// <param name="ct">Cancellation token for the list request.</param>
     /// <returns>The page of entries and the cursor for the next page, if any.</returns>
-    /// <exception cref="NotSupportedException">The implementation does not support listing.</exception>
     Task<LeaseListResult> ListAsync(
         string pattern,
         LeaseListCursor? cursor = null,
         int? limit = null,
-        CancellationToken ct = default) => throw new NotSupportedException(ListNotSupportedMessage);
+        CancellationToken ct = default);
 
     /// <summary>
     /// Starts a race-safe, high-level observer over every lease matching <paramref name="pattern"/>.
@@ -178,9 +158,8 @@ public interface ILeaseClient
     /// <param name="options">Observer options, including reconciliation behavior.</param>
     /// <param name="ct">Cancellation token for the bootstrap.</param>
     /// <returns>An observer that converges on the current inventory and streams updates.</returns>
-    /// <exception cref="NotSupportedException">The implementation does not support observation.</exception>
     Task<ILeaseInventoryObserver> ObserveAsync(
         string pattern,
         LeaseObserveOptions? options = null,
-        CancellationToken ct = default) => throw new NotSupportedException(ObserveNotSupportedMessage);
+        CancellationToken ct = default);
 }

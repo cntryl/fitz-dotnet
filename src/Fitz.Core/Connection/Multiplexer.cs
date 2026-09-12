@@ -1,7 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 using Cntryl.Fitz;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Connection;

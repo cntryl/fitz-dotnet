@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Schedule;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Registers cron schedules and subscribes to their firings.

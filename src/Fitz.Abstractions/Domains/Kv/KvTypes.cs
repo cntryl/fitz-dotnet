@@ -1,9 +1,9 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Kv;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Transaction mode for KV begin operations.
 /// </summary>
-public enum KvMode : byte
+public enum KvMode
 {
     /// <summary>
     /// Read-only transaction mode.
@@ -19,7 +19,7 @@ public enum KvMode : byte
 /// <summary>
 /// Durability mode for committed KV writes.
 /// </summary>
-public enum KvDurability : byte
+public enum KvDurability
 {
     /// <summary>
     /// Buffered/async durability.

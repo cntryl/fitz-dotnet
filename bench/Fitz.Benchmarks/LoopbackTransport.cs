@@ -1,7 +1,6 @@
 using System.Buffers;
 using System.Threading.Channels;
 using Cntryl.Fitz.Protocol;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Benchmarks;
 

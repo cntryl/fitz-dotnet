@@ -2,9 +2,8 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Net.Sockets;
-using Cntryl.Fitz.Errors;
 
-namespace Cntryl.Fitz.Transport;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Connects to a Fitz broker over raw TCP, with socket keepalive when configured.

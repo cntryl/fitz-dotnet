@@ -1,5 +1,4 @@
 using Cntryl.Fitz.Connection;
-using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 

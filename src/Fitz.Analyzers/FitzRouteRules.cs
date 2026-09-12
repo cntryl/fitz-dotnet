@@ -14,13 +14,13 @@ static class FitzRouteRules
         internal ApiSymbols(Compilation compilation)
         {
             var clients = ImmutableArray.CreateBuilder<ClientSymbol>();
-            AddClient(clients, compilation, "Cntryl.Fitz.Abstractions.Domains.Kv.IKvClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Abstractions.Domains.Queue.IQueueClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Abstractions.Domains.Lease.ILeaseClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Abstractions.Domains.Notice.INoticeClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Abstractions.Domains.Rpc.IRpcClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Abstractions.Domains.Schedule.IScheduleClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Abstractions.Domains.Stream.IStreamClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.IKvClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.IQueueClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.ILeaseClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.INoticeClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.IRpcClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.IScheduleClient");
+            AddClient(clients, compilation, "Cntryl.Fitz.IStreamClient");
             AddClient(clients, compilation, "Cntryl.Fitz.Domains.Kv.KvClient", "IKvClient");
             AddClient(clients, compilation, "Cntryl.Fitz.Domains.Queue.QueueClient", "IQueueClient");
             AddClient(clients, compilation, "Cntryl.Fitz.Domains.Lease.LeaseClient", "ILeaseClient");
@@ -31,11 +31,11 @@ static class FitzRouteRules
             _clients = clients.ToImmutable();
 
             var lifecycleHandles = ImmutableArray.CreateBuilder<INamedTypeSymbol>();
-            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.Abstractions.Domains.Kv.IKvTransaction");
-            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.Abstractions.Domains.Lease.ILease");
-            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.Abstractions.Domains.Lease.ILeaseInventoryObserver");
-            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.Abstractions.Domains.Rpc.RpcWorkerRegistration");
-            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.Abstractions.Domains.Stream.IStreamSession");
+            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.IKvTransaction");
+            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.ILease");
+            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.ILeaseInventoryObserver");
+            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.RpcWorkerRegistration");
+            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.IStreamSession");
             _lifecycleHandles = lifecycleHandles.ToImmutable();
             _subscriptionHandle = compilation.GetTypeByMetadataName("Cntryl.Fitz.Runtime.SubscriptionHandle");
         }

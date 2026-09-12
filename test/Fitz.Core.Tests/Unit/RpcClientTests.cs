@@ -1,7 +1,5 @@
 using System.Runtime.CompilerServices;
-using Cntryl.Fitz.Abstractions.Domains.Rpc;
 using Cntryl.Fitz.Domains.Rpc;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
