@@ -17,7 +17,8 @@ public sealed class WireDurationTests
 
         // Assert
         Assert.Equal((ulong)seconds, encoded);
-        Assert.Equal(value, WireDuration.FromSeconds(encoded));
+        Assert.True(WireDuration.TryFromSeconds(encoded, out var roundTripped));
+        Assert.Equal(value, roundTripped);
     }
 
     // The wire carries whole seconds, and rounding would hand back a shorter hold than the
@@ -53,42 +54,31 @@ public sealed class WireDurationTests
     }
 
     [Fact]
-    public void ShouldRejectNegativeDurationGivenDurationWhenEncodedAsMilliseconds()
+    public void ShouldDecodeWholeSecondsGivenWireValueWhenWithinTimeSpanRange()
     {
         // Arrange
-        var value = TimeSpan.FromMilliseconds(-1);
+        const ulong seconds = 90;
 
         // Act
-        var error = Assert.Throws<ArgumentOutOfRangeException>(() => WireDuration.ToMilliseconds(value, "delay"));
+        var decoded = WireDuration.TryFromSeconds(seconds, out var value);
 
         // Assert
-        Assert.Equal("delay", error.ParamName);
+        Assert.True(decoded);
+        Assert.Equal(TimeSpan.FromSeconds(90), value);
     }
 
     [Fact]
-    public void ShouldAcceptSubSecondPrecisionGivenDurationWhenEncodedAsMilliseconds()
+    public void ShouldReportFailureGivenWireValueWhenBeyondTimeSpanRange()
     {
         // Arrange
-        var value = TimeSpan.FromMilliseconds(1_500);
+        const ulong seconds = ulong.MaxValue;
 
         // Act
-        var encoded = WireDuration.ToMilliseconds(value, "delay");
+        var decoded = WireDuration.TryFromSeconds(seconds, out var value);
 
         // Assert
-        Assert.Equal(1_500, encoded);
-    }
-
-    [Fact]
-    public void ShouldRejectSubMillisecondPrecisionGivenDurationWhenEncodedAsMilliseconds()
-    {
-        // Arrange
-        var value = TimeSpan.FromTicks(TimeSpan.TicksPerMillisecond + 1);
-
-        // Act
-        var error = Assert.Throws<ArgumentOutOfRangeException>(() => WireDuration.ToMilliseconds(value, "delay"));
-
-        // Assert
-        Assert.Equal("delay", error.ParamName);
+        Assert.False(decoded);
+        Assert.Equal(TimeSpan.Zero, value);
     }
 
     [Fact]

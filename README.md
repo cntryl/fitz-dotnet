@@ -263,7 +263,7 @@ Authority-aware callbacks also receive the immutable admission fence from the su
 ```csharp
 await client.Lease.WithLeaseAsync(
     "lease://example/jobs/leader",
-    30,
+    TimeSpan.FromSeconds(30),
     async (authority, ct) =>
     {
         await RunLeaderAsync(authority.FencingToken, ct);

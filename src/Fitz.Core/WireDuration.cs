@@ -5,13 +5,16 @@ namespace Cntryl.Fitz;
 /// </summary>
 /// <remarks>
 /// The public API speaks <see cref="TimeSpan"/> because that is what a .NET caller expects; the
-/// protocol speaks whole seconds, or milliseconds for queue delays. Precision the wire cannot
-/// represent is rejected rather than rounded away: silently turning a 1500 ms lease into one
-/// second would produce a shorter hold than the caller asked for, which is exactly the kind of
-/// difference that only shows up under contention.
+/// protocol speaks whole seconds. Precision the wire cannot represent is rejected rather than
+/// rounded away: silently turning a 1500 ms lease into one second would produce a shorter hold
+/// than the caller asked for, which is exactly the kind of difference that only shows up under
+/// contention.
 /// </remarks>
 static class WireDuration
 {
+    /// <summary>Largest whole second count <see cref="TimeSpan"/> can represent.</summary>
+    const ulong MaxWholeSeconds = (ulong)(long.MaxValue / TimeSpan.TicksPerSecond);
+
     internal static ulong ToSeconds(TimeSpan value, string paramName)
     {
         ThrowIfNegative(value, paramName);
@@ -40,26 +43,23 @@ static class WireDuration
         return (uint)seconds;
     }
 
-    internal static int ToMilliseconds(TimeSpan value, string paramName)
+    /// <summary>
+    /// Converts a duration read off the wire, reporting rather than throwing when the value
+    /// is too large for <see cref="TimeSpan"/>. A malformed response is the caller's to
+    /// report with its own domain error code, not ours to surface as an
+    /// <see cref="OverflowException"/> from inside a decode loop.
+    /// </summary>
+    internal static bool TryFromSeconds(ulong seconds, out TimeSpan value)
     {
-        ThrowIfNegative(value, paramName);
-
-        var milliseconds = value.TotalMilliseconds;
-        if (milliseconds != Math.Floor(milliseconds))
+        if (seconds > MaxWholeSeconds)
         {
-            throw new ArgumentOutOfRangeException(
-                paramName, value, "Duration must be a whole number of milliseconds; the Fitz wire carries no finer unit.");
+            value = default;
+            return false;
         }
 
-        if (milliseconds > int.MaxValue)
-        {
-            throw new ArgumentOutOfRangeException(paramName, value, "Duration exceeds the Fitz wire range.");
-        }
-
-        return (int)milliseconds;
+        value = TimeSpan.FromSeconds(seconds);
+        return true;
     }
-
-    internal static TimeSpan FromSeconds(ulong seconds) => TimeSpan.FromSeconds(seconds);
 
     static void ThrowIfNegative(TimeSpan value, string paramName)
     {

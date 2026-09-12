@@ -53,13 +53,6 @@ because the pinned `AssemblyVersion` makes the public surface permanent once thi
   removed by fixing what it hid rather than by relocating it: the `byte[]` properties, the
   `byte`-backed enums, and the two enum-shape findings above. `.editorconfig` now states that
   namespaces deliberately do not mirror folders, which also retired two `NoWarn` entries.
-
-### Added
-
-- [docs/guide.md](docs/guide.md), a consumer guide covering install and connect, routes,
-  cancellation, errors and retry, subscriptions, reconnect semantics, all seven domains,
-  dependency injection, and observability. Its samples were compiled against the `1.0.0`
-  packages when written rather than written by hand, though no CI job keeps them compiling.
 - **Breaking (source):** the entire public surface moved into the single `Cntryl.Fitz`
   namespace. `Cntryl.Fitz.Abstractions`, every `Cntryl.Fitz.Abstractions.Domains.*`, and the
   public halves of `Cntryl.Fitz.Errors`, `Cntryl.Fitz.Transport`, `Cntryl.Fitz.Observability`
@@ -74,9 +67,6 @@ because the pinned `AssemblyVersion` makes the public surface permanent once thi
 - **Breaking (source):** `KvMode`, `KvDurability`, and `ScheduleDeliveryMode` no longer
   declare `byte` storage. The wire encoding is unchanged — those paths already cast
   explicitly — but the public contract no longer states a storage size it does not owe.
-- `ConnectWhenReadyAsync` now attaches the failure that caused a startup timeout as the
-  `TimeoutException`'s inner exception instead of discarding it, and the two connection-loss
-  log events that swallow their exception now carry full detail rather than only `Message`.
 - **Breaking (source):** the connection, protocol, and measurement internals are no longer
   public. `FitzConnection`, `Multiplexer`, `FrameCodec`, `FrameParser`, `Frame`,
   `MessageTypes`, `ServerCapabilities`, `BinaryBufferReader`, `BinaryBufferWriter`,
@@ -87,31 +77,43 @@ because the pinned `AssemblyVersion` makes the public surface permanent once thi
   interfaces, which are unchanged. This shrinks the exported surface of `Cntryl.Fitz` from
   57 types to 35 and is the last practical moment to do it: `AssemblyVersion` is pinned at
   `1.0.0.0`, so anything left public here is public permanently.
-  The transport extension point is untouched and stays public: `ITransport`, `PooledFrame`,
-  `TransportResolver`, `TcpTransport`, and `WebSocketTransport`.
-
-### Added
-
-- `FitzLimits.MinFrameSize` and `FitzLimits.MaxFrameSize` publish the protocol bounds that
-  `ClientConfig.MaxFrameSize` is validated against, so a caller can check a configured frame
-  size before `Validate` runs. They replace the reachability that internalizing `FrameCodec`
-  removed; `ClientConfig` now states its default and its validation in the same terms.
+  The transport extension point stays public in full: `ITransport`, `PooledFrame`,
+  `TransportResolver`, `TcpTransport`, and `WebSocketTransport`. Its members move namespace
+  and rename their cancellation parameter with the rest of the surface, and `ITransport`
+  gains one default interface member; see `TransportName` below.
 - **Breaking (source):** the cancellation parameter is now named `ct` across the entire
   public surface. The domain clients already used `ct`; `IClient.ConnectAsync`,
   `ConnectWhenReadyAsync`, and `CloseAsync` used `cancellationToken` and have been
   renamed to match. Positional calls are unaffected; callers passing it by name on those
   three methods must update `cancellationToken: token` to `ct: token`. `ct` is the
   project's standard — see CONTRIBUTING.md.
+- `AddFitzClient` registers every service through an explicit factory instead of the
+  container's type-based activation, removing constructor reflection from startup.
+
+### Added
+
+- [docs/guide.md](docs/guide.md), a consumer guide covering install and connect, routes,
+  cancellation, errors and retry, subscriptions, reconnect semantics, all seven domains,
+  dependency injection, and observability. Its samples were compiled against the `1.0.0`
+  packages when written rather than written by hand, though no CI job keeps them compiling.
+- `FitzLimits.MinFrameSize` and `FitzLimits.MaxFrameSize` publish the protocol bounds that
+  `ClientConfig.MaxFrameSize` is validated against, so a caller can check a configured frame
+  size before `Validate` runs. They replace the reachability that internalizing `FrameCodec`
+  removed; `ClientConfig` now states its default and its validation in the same terms.
 - Transports now report a diagnostic label through the new `ITransport.TransportName`.
   The built-in transports return `"WebSocketTransport"` and `"TcpTransport"` as before;
   a caller-supplied transport that does not override the property now reports `"custom"`
   instead of its runtime type name. Added as a default interface member, so existing
   `ITransport` implementations continue to compile unchanged.
-- `AddFitzClient` registers every service through an explicit factory instead of the
-  container's type-based activation, removing constructor reflection from startup.
+- XML documentation for the entire public API of all three runtime packages, shipped in
+  the NuGet packages so consumers get IntelliSense. `GenerateDocumentationFile` is on and
+  warnings are errors, so a missing doc comment now fails the build.
 
 ### Fixed
 
+- `ConnectWhenReadyAsync` now attaches the failure that caused a startup timeout as the
+  `TimeoutException`'s inner exception instead of discarding it, and the two connection-loss
+  log events that swallow their exception now carry full detail rather than only `Message`.
 - Removed a latent trimming/Native AOT defect present in `0.1.3`: the internal
   `Client.GetDomain<T>(Lazy<T>)` helper propagated `Lazy<T>`'s
   `PublicParameterlessConstructor` requirement onto an unannotated type parameter
@@ -124,12 +126,6 @@ because the pinned `AssemblyVersion` makes the public surface permanent once thi
 - All remaining runtime reflection from the shipped packages: `Enum.IsDefined`, enum
   `ToString`/interpolation, and `GetType()`. See
   [docs/aot-and-reflection.md](docs/aot-and-reflection.md) for the standing contract.
-
-### Added
-
-- XML documentation for the entire public API of all three runtime packages, shipped in
-  the NuGet packages so consumers get IntelliSense. `GenerateDocumentationFile` is on and
-  warnings are errors, so a missing doc comment now fails the build.
 
 ### Documentation
 

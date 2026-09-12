@@ -577,7 +577,12 @@ sealed class LeaseClient : ILeaseClient, IDisposable
             throw new LeaseException("QUERY response has trailing bytes", "QUERY_INVALID_RESPONSE");
         }
 
-        return new LeaseInfo(true, owner, ttlRemaining is { } remaining ? WireDuration.FromSeconds(remaining) : null, heldPendingWaiters);
+        if (!WireDuration.TryFromSeconds(ttlRemaining, out var remaining))
+        {
+            throw new LeaseException("QUERY response ttl_remaining is out of range", "QUERY_INVALID_RESPONSE");
+        }
+
+        return new LeaseInfo(true, owner, remaining, heldPendingWaiters);
     }
 
     /// <inheritdoc />
@@ -629,7 +634,12 @@ sealed class LeaseClient : ILeaseClient, IDisposable
             var acquiredAt = reader.ReadString();
             var expiresInSecs = reader.ReadU64();
             var renewals = reader.ReadU32();
-            items.Add(new LeaseListItem(route, ownerId, holderIncarnation, acquiredAt, WireDuration.FromSeconds(expiresInSecs), renewals));
+            if (!WireDuration.TryFromSeconds(expiresInSecs, out var expiresIn))
+            {
+                throw new LeaseException("LIST response expires_in_secs is out of range", "LIST_INVALID_RESPONSE");
+            }
+
+            items.Add(new LeaseListItem(route, ownerId, holderIncarnation, acquiredAt, expiresIn, renewals));
         }
 
         if (reader.RemainingBytes < 1)

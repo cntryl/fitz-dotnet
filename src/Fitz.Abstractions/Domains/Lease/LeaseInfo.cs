@@ -5,7 +5,7 @@ namespace Cntryl.Fitz;
 /// </summary>
 /// <param name="IsHeld">Whether the lease was held when the broker answered.</param>
 /// <param name="Owner">Identifier of the current holder, when the broker discloses one.</param>
-/// <param name="TtlRemaining">Seconds remaining before the current hold expires.</param>
+/// <param name="TtlRemaining">Time remaining before the current hold expires.</param>
 /// <param name="PendingWaiters">Number of sessions waiting to acquire the lease.</param>
 /// <remarks>
 /// This is a snapshot, not a reservation. Ownership can change immediately after the query

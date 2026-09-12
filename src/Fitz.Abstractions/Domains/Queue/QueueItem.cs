@@ -41,7 +41,7 @@ public abstract class QueueItem : IQueueReservedItem
     /// <summary>
     /// Extends this message's visibility timeout.
     /// </summary>
-    /// <param name="lease">Additional seconds to hold the reservation.</param>
+    /// <param name="lease">Additional time to hold the reservation. Must be a whole number of seconds.</param>
     /// <param name="ct">Cancellation token for the extend request.</param>
     /// <returns>A task that completes once the broker accepts the extension.</returns>
     public abstract Task ExtendAsync(TimeSpan lease, CancellationToken ct = default);
