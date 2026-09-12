@@ -4,7 +4,15 @@ using System.Text;
 
 namespace Cntryl.Fitz.Protocol;
 
-public sealed class BinaryBufferWriter : IDisposable
+/// <summary>
+/// Sequential writer for Fitz wire payloads, backed by a pooled buffer that grows as needed.
+/// </summary>
+/// <remarks>
+/// Dispose returns the buffer to the pool. <see cref="WrittenSpan"/> and
+/// <see cref="WrittenMemory"/> are invalid afterwards; use <see cref="Build"/> for a copy
+/// that outlives the writer. Not thread-safe.
+/// </remarks>
+sealed class BinaryBufferWriter : IDisposable
 {
     const int InitialCapacity = 128;
 
@@ -12,18 +20,23 @@ public sealed class BinaryBufferWriter : IDisposable
     int _position;
     bool _disposed;
 
+    /// <summary>Creates a writer over a pooled buffer.</summary>
     public BinaryBufferWriter()
     {
         _buffer = ArrayPool<byte>.Shared.Rent(InitialCapacity);
         _position = 0;
     }
 
+    /// <summary>Writes one byte.</summary>
+    /// <param name="value">Value to write.</param>
     public void WriteU8(byte value)
     {
         EnsureCapacity(1);
         _buffer![_position++] = value;
     }
 
+    /// <summary>Writes a big-endian 32-bit unsigned integer.</summary>
+    /// <param name="value">Value to write.</param>
     public void WriteU32(uint value)
     {
         EnsureCapacity(4);
@@ -31,6 +44,8 @@ public sealed class BinaryBufferWriter : IDisposable
         _position += 4;
     }
 
+    /// <summary>Writes a big-endian 64-bit unsigned integer.</summary>
+    /// <param name="value">Value to write.</param>
     public void WriteU64(ulong value)
     {
         EnsureCapacity(8);
@@ -38,6 +53,8 @@ public sealed class BinaryBufferWriter : IDisposable
         _position += 8;
     }
 
+    /// <summary>Writes raw bytes with no length prefix.</summary>
+    /// <param name="bytes">Bytes to write.</param>
     public void WriteBytes(ReadOnlySpan<byte> bytes)
     {
         EnsureCapacity(bytes.Length);
@@ -45,6 +62,8 @@ public sealed class BinaryBufferWriter : IDisposable
         _position += bytes.Length;
     }
 
+    /// <summary>Writes a length-prefixed UTF-8 string.</summary>
+    /// <param name="value">String to write.</param>
     public void WriteString(string value)
     {
         var byteCount = Encoding.UTF8.GetByteCount(value);
@@ -55,6 +74,7 @@ public sealed class BinaryBufferWriter : IDisposable
         _position += byteCount;
     }
 
+    /// <summary>Number of bytes written so far.</summary>
     public int WrittenCount
     {
         get
@@ -64,6 +84,7 @@ public sealed class BinaryBufferWriter : IDisposable
         }
     }
 
+    /// <summary>The bytes written so far. Invalid after disposal.</summary>
     public ReadOnlySpan<byte> WrittenSpan
     {
         get
@@ -73,6 +94,7 @@ public sealed class BinaryBufferWriter : IDisposable
         }
     }
 
+    /// <summary>The bytes written so far. Invalid after disposal.</summary>
     public ReadOnlyMemory<byte> WrittenMemory
     {
         get
@@ -82,6 +104,8 @@ public sealed class BinaryBufferWriter : IDisposable
         }
     }
 
+    /// <summary>Copies the written bytes into a new array that outlives the writer.</summary>
+    /// <returns>A copy of the payload.</returns>
     public byte[] Build()
     {
         ThrowIfDisposed();
@@ -90,6 +114,7 @@ public sealed class BinaryBufferWriter : IDisposable
         return result;
     }
 
+    /// <summary>Returns the pooled buffer. Safe to call more than once.</summary>
     public void Dispose()
     {
         if (_disposed)

@@ -1,9 +1,11 @@
 using System.Buffers;
 using System.Net.WebSockets;
-using Cntryl.Fitz.Errors;
 
-namespace Cntryl.Fitz.Transport;
+namespace Cntryl.Fitz;
 
+/// <summary>
+/// Connects to a Fitz broker over WebSocket, using native PING/PONG for keepalive.
+/// </summary>
 public sealed class WebSocketTransport : ITransport
 {
     readonly Uri _uri;
@@ -14,6 +16,7 @@ public sealed class WebSocketTransport : ITransport
     readonly SemaphoreSlim _sendLock = new(1, 1);
     ClientWebSocket? _socket;
 
+    /// <summary>Creates a WebSocket transport.</summary>
     public WebSocketTransport(
         Uri url,
         TimeSpan timeout,
@@ -39,9 +42,14 @@ public sealed class WebSocketTransport : ITransport
         _heartbeat = heartbeat ?? new HeartbeatOptions();
     }
 
+    /// <inheritdoc />
+    public string TransportName => nameof(WebSocketTransport);
+
+    /// <inheritdoc />
     public Uri Url => _uri;
 
-    public async Task ConnectAsync(CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public async Task ConnectAsync(CancellationToken ct = default)
     {
         if (_socket is { State: WebSocketState.Open })
         {
@@ -62,14 +70,14 @@ public sealed class WebSocketTransport : ITransport
             }
         }
 
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(_timeout);
         try
         {
             await socket.ConnectAsync(_uri, timeoutCts.Token).ConfigureAwait(false);
             Interlocked.Exchange(ref _socket, socket)?.Dispose();
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             socket.Dispose();
             throw;
@@ -86,24 +94,25 @@ public sealed class WebSocketTransport : ITransport
         }
     }
 
-    public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
         if (data.Length > _maxFrameSize)
         {
             throw new ProtocolException($"WebSocket frame length exceeds max frame size {_maxFrameSize}.");
         }
 
-        await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             var socket = EnsureSocket();
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(_timeout);
             try
             {
                 await socket.SendAsync(data, WebSocketMessageType.Binary, endOfMessage: true, timeoutCts.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 throw;
             }
@@ -118,7 +127,8 @@ public sealed class WebSocketTransport : ITransport
         }
     }
 
-    public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
     {
         var socket = EnsureSocket();
 
@@ -146,7 +156,7 @@ public sealed class WebSocketTransport : ITransport
                     remaining = buffer.Length - length;
                 }
 
-                var result = await socket.ReceiveAsync(buffer.AsMemory(length, remaining), cancellationToken).ConfigureAwait(false);
+                var result = await socket.ReceiveAsync(buffer.AsMemory(length, remaining), ct).ConfigureAwait(false);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
                     if (ownsBuffer)
@@ -219,9 +229,10 @@ public sealed class WebSocketTransport : ITransport
         options.KeepAliveTimeout = heartbeat.Timeout ?? TimeSpan.FromSeconds(30);
     }
 
-    public async Task CloseAsync(CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public async Task CloseAsync(CancellationToken ct = default)
     {
-        await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             var socket = Interlocked.Exchange(ref _socket, null);
@@ -235,7 +246,7 @@ public sealed class WebSocketTransport : ITransport
             {
                 if (socket.State == WebSocketState.Open)
                 {
-                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "client closing", cancellationToken).ConfigureAwait(false);
+                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "client closing", ct).ConfigureAwait(false);
                 }
             }
             finally
@@ -249,6 +260,8 @@ public sealed class WebSocketTransport : ITransport
         }
     }
 
+    /// <summary>Closes the connection and releases transport resources.</summary>
+    /// <returns>A task that completes once cleanup finishes.</returns>
     public async ValueTask DisposeAsync()
     {
         await CloseAsync().ConfigureAwait(false);

@@ -1,7 +1,6 @@
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 

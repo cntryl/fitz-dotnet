@@ -11,7 +11,7 @@
 
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
     <!-- Assembly identity stays fixed permanently; release only by advancing PackageVersion. -->
-    <PackageVersion>0.1.3</PackageVersion>
+    <PackageVersion>1.0.0</PackageVersion>
     <Version>$(PackageVersion)</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <InformationalVersion>$(PackageVersion)</InformationalVersion>
@@ -26,7 +26,7 @@
     <DebugType>portable</DebugType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>fitz distributed-systems kv queue rpc lease notice stream schedule</PackageTags>
-    <PackageReleaseNotes>Harden pooled-buffer ownership, malformed-frame handling, reconnect and request correlation, bounded subscription delivery, retryable cleanup, stream pagination, hosted DI lifecycle, and RPC response dispatch while preserving wire compatibility and fixed assembly identity.</PackageReleaseNotes>
+    <PackageReleaseNotes>First stable release. The public surface is now committed: one Cntryl.Fitz namespace, TimeSpan for every duration, and internals kept internal. Breaking changes from 0.1.x are listed in CHANGELOG.md.</PackageReleaseNotes>
     <PackageOutputPath>$(MSBuildThisFileDirectory)artifacts\packages</PackageOutputPath>
   </PropertyGroup>
 

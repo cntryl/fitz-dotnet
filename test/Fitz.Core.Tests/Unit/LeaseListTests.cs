@@ -1,7 +1,4 @@
-using Cntryl.Fitz.Abstractions;
-using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Domains.Lease;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -123,7 +120,7 @@ public sealed class LeaseListTests
         Assert.Equal("worker-1", result.Items[0].OwnerId);
         Assert.Equal((ulong)11, result.Items[0].HolderIncarnation);
         Assert.Equal("2026-08-29T00:00:00Z", result.Items[0].AcquiredAt);
-        Assert.Equal((ulong)30, result.Items[0].ExpiresInSecs);
+        Assert.Equal(TimeSpan.FromSeconds(30), result.Items[0].ExpiresIn);
         Assert.Equal((uint)2, result.Items[0].Renewals);
 
         Assert.Equal("lease://acme/renderers/b", result.Items[1].Route);

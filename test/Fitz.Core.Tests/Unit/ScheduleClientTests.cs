@@ -1,7 +1,4 @@
-using Cntryl.Fitz.Abstractions;
-using Cntryl.Fitz.Abstractions.Domains.Schedule;
 using Cntryl.Fitz.Domains.Schedule;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -47,7 +44,7 @@ public sealed class ScheduleClientTests
         var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.CreateAsync(
             "schedule://prod/app/jobs/run",
             "*/5 * * * *",
-            ScheduleDeliveryMode.Single,
+            ScheduleDeliveryMode.Once,
             ReadOnlyMemory<byte>.Empty));
 
         Assert.Equal("CREATE_INVALID_RESPONSE", error.Code);
@@ -119,7 +116,7 @@ public sealed class ScheduleClientTests
         });
 
         var error = await Assert.ThrowsAsync<ScheduleException>(async () =>
-            await schedule.CreateAsync("schedule://prod/app/jobs/run", "*/5 * * * *", ScheduleDeliveryMode.Single, ReadOnlyMemory<byte>.Empty));
+            await schedule.CreateAsync("schedule://prod/app/jobs/run", "*/5 * * * *", ScheduleDeliveryMode.Once, ReadOnlyMemory<byte>.Empty));
 
         Assert.Null(error.DomainCode);
         Assert.Contains("invalid delivery mode", error.Message, StringComparison.Ordinal);
@@ -170,7 +167,7 @@ public sealed class ScheduleClientTests
         });
 
         // Act
-        var id = await schedule.CreateAsync("schedule://prod/app/jobs/run", "*/5 * * * *", ScheduleDeliveryMode.Single, "job"u8.ToArray());
+        var id = await schedule.CreateAsync("schedule://prod/app/jobs/run", "*/5 * * * *", ScheduleDeliveryMode.Once, "job"u8.ToArray());
 
         // Assert
         Assert.Equal("sched-123", id);
@@ -242,10 +239,10 @@ public sealed class ScheduleClientTests
             });
 
         // Act
-        var subscription = await schedule.SubscribeAsync("schedule://prod/app/jobs/run", (notification, cancellationToken) =>
+        var subscription = await schedule.SubscribeAsync("schedule://prod/app/jobs/run", (notification, ct) =>
         {
             received = notification;
-            seenCancellationToken = cancellationToken;
+            seenCancellationToken = ct;
             receivedTcs.TrySetResult(notification);
             return ValueTask.CompletedTask;
         });
@@ -294,7 +291,7 @@ public sealed class ScheduleClientTests
             writer.WriteU8(1);
             writer.WriteString("schedule://prod/app/jobs/run");
             writer.WriteString("*/5 * * * *");
-            writer.WriteU8((byte)ScheduleDeliveryMode.Single);
+            writer.WriteU8((byte)ScheduleDeliveryMode.Once);
             writer.WriteU32(3);
             writer.WriteBytes("job"u8);
             writer.WriteU8(0);
@@ -310,13 +307,41 @@ public sealed class ScheduleClientTests
         Assert.Null(page.Entries[0].Id);
         Assert.Equal("schedule://prod/app/jobs/run", page.Entries[0].Route);
         Assert.Equal("*/5 * * * *", page.Entries[0].Cron);
-        Assert.Equal(ScheduleDeliveryMode.Single, page.Entries[0].DeliveryMode);
-        Assert.Equal("job", System.Text.Encoding.UTF8.GetString(page.Entries[0].Payload));
+        Assert.Equal(ScheduleDeliveryMode.Once, page.Entries[0].DeliveryMode);
+        Assert.Equal("job", System.Text.Encoding.UTF8.GetString(page.Entries[0].Payload.Span));
 
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal((byte)1, reader.ReadU8());
         Assert.Equal((ulong)0, reader.ReadU64());
         Assert.Equal((byte)1, reader.ReadU8());
         Assert.Equal((ulong)25, reader.ReadU64());
+    }
+
+    [Fact]
+    public async Task ShouldRejectInvalidDeliveryModeGivenMalformedListResponseWhenScheduleOperationRuns()
+    {
+        // Arrange
+        using var schedule = new ScheduleClient((messageType, _, _) =>
+        {
+            Assert.Equal(MessageTypes.ScheduleListPage, messageType);
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU64(1);
+            writer.WriteU8(1);
+            writer.WriteString("schedule://prod/app/jobs/run");
+            writer.WriteString("*/5 * * * *");
+            writer.WriteU8(2);
+            writer.WriteU32(0);
+            writer.WriteU8(0);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.ListAsync());
+
+        // Assert
+        Assert.Equal("LIST_INVALID_RESPONSE", error.Code);
+        Assert.Contains("invalid delivery mode 2", error.Message, StringComparison.Ordinal);
     }
 }

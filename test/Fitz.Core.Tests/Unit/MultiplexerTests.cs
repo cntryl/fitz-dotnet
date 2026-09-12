@@ -1,5 +1,4 @@
 using Cntryl.Fitz.Connection;
-using Cntryl.Fitz.Errors;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -117,7 +116,7 @@ public sealed class MultiplexerTests
             [0x1],
             static (_, _) => Task.CompletedTask,
             TimeSpan.FromSeconds(1),
-            cancellationToken: cts.Token
+            ct: cts.Token
         );
 
         // Assert
@@ -231,7 +230,7 @@ public sealed class MultiplexerTests
                 await Task.Delay(100, token);
             },
             TimeSpan.FromSeconds(5),
-            cancellationToken: firstCts.Token
+            ct: firstCts.Token
         );
 
         var second = mux.RequestAsync(

@@ -4,13 +4,15 @@ namespace Cntryl.Fitz.Observability;
 /// Simple timer for measuring latency of operations.
 /// Returns results in microseconds for easy comparison against perf targets.
 /// </summary>
-public sealed class PerfTimer : IDisposable
+sealed class PerfTimer : IDisposable
 {
     readonly long _startTicks;
     readonly LatencyHistogram? _histogram;
     long _elapsedTicks;
     bool _disposed;
 
+    /// <summary>Starts timing.</summary>
+    /// <param name="histogram">Optional histogram that receives the elapsed time on disposal.</param>
     public PerfTimer(LatencyHistogram? histogram = null)
     {
         _histogram = histogram;
@@ -29,6 +31,7 @@ public sealed class PerfTimer : IDisposable
         }
     }
 
+    /// <summary>Stops timing and records the result. Safe to call more than once.</summary>
     public void Dispose()
     {
         if (_disposed)

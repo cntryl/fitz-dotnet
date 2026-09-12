@@ -1,11 +1,16 @@
 using System.Threading;
-using Cntryl.Fitz.Abstractions.Domains.Lease;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Domains.Lease;
 
-public sealed class LeaseHandle : ILease
+/// <summary>
+/// The default <see cref="ILease"/>. Obtained from <see cref="LeaseClient.AcquireAsync"/>.
+/// </summary>
+/// <remarks>
+/// Fencing-token rotation is serialized, and the handle closes itself when a renewal outcome
+/// is uncertain rather than assuming continued ownership.
+/// </remarks>
+sealed class LeaseHandle : ILease
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     IDisposable? _disconnectRegistration;
@@ -36,8 +41,10 @@ public sealed class LeaseHandle : ILease
         }
     }
 
+    /// <inheritdoc />
     public string Route { get; }
 
+    /// <inheritdoc />
     public ulong FencingToken { get; private set; }
 
     internal Task ConnectionLost => _connectionLost.Task;
@@ -46,9 +53,11 @@ public sealed class LeaseHandle : ILease
 
     internal void Invalidate() => MarkClosed();
 
-    public async Task ExtendAsync(ulong ttlSecs, CancellationToken ct = default)
+    /// <inheritdoc />
+    public async Task ExtendAsync(TimeSpan ttl, CancellationToken ct = default)
     {
-        ArgumentOutOfRangeException.ThrowIfZero(ttlSecs, nameof(ttlSecs));
+        var ttlSecs = WireDuration.ToSeconds(ttl, nameof(ttl));
+        ArgumentOutOfRangeException.ThrowIfZero(ttlSecs, nameof(ttl));
         await _operationGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -61,6 +70,7 @@ public sealed class LeaseHandle : ILease
         }
     }
 
+    /// <inheritdoc />
     public async Task ReleaseAsync(CancellationToken ct = default)
     {
         await _operationGate.WaitAsync(ct).ConfigureAwait(false);
@@ -86,6 +96,8 @@ public sealed class LeaseHandle : ILease
         }
     }
 
+    /// <summary>Releases the lease on a best-effort, bounded basis.</summary>
+    /// <returns>A task that completes once cleanup finishes.</returns>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Lease disposal is bounded best-effort cleanup and must not replace an exception leaving an await-using scope.")]
     public async ValueTask DisposeAsync()
     {

@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Threading.Channels;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -15,15 +14,15 @@ sealed class TestQueuedTransport : ITransport
 
     public Uri Url { get; } = new("ws://queued");
 
-    public Task ConnectAsync(CancellationToken cancellationToken = default)
+    public Task ConnectAsync(CancellationToken ct = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        ct.ThrowIfCancellationRequested();
         return Task.CompletedTask;
     }
 
-    public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+    public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        ct.ThrowIfCancellationRequested();
         int sentFrameCount;
         lock (_sentFramesGate)
         {
@@ -35,10 +34,10 @@ sealed class TestQueuedTransport : ITransport
         return Task.CompletedTask;
     }
 
-    public ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+    public ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        return _incoming.Reader.ReadAsync(cancellationToken);
+        ct.ThrowIfCancellationRequested();
+        return _incoming.Reader.ReadAsync(ct);
     }
 
     public void QueueIncomingFrame(byte[] frame)
@@ -52,9 +51,9 @@ sealed class TestQueuedTransport : ITransport
 
     public void QueueClosed() => _incoming.Writer.TryWrite(PooledFrame.Closed);
 
-    public Task CloseAsync(CancellationToken cancellationToken = default)
+    public Task CloseAsync(CancellationToken ct = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
+        ct.ThrowIfCancellationRequested();
         _incoming.Writer.TryComplete();
         return Task.CompletedTask;
     }

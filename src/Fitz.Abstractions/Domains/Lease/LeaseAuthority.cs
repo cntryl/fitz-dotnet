@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Lease;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Immutable admission authority captured from the successful lease acquisition.

@@ -1,5 +1,4 @@
 using Cntryl.Fitz.Domains.Lease;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -40,12 +39,12 @@ public sealed class ManagedLeaseLifecycleTests
         var callbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var callbackSettled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        async ValueTask RunCallback(CancellationToken cancellationToken)
+        async ValueTask RunCallback(CancellationToken ct)
         {
             callbackStarted.TrySetResult();
             try
             {
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             }
             finally
             {
@@ -56,12 +55,12 @@ public sealed class ManagedLeaseLifecycleTests
         var pending = authorityAware
             ? leaseClient.WithLeaseAsync(
                 "lease://prod/app/lock",
-                300,
-                (_, cancellationToken) => RunCallback(cancellationToken),
+                TimeSpan.FromSeconds(300),
+                (_, ct) => RunCallback(ct),
                 ct: parentCancellation.Token)
             : leaseClient.WithLeaseAsync(
                 "lease://prod/app/lock",
-                300,
+                TimeSpan.FromSeconds(300),
                 RunCallback,
                 ct: parentCancellation.Token);
 
@@ -124,18 +123,18 @@ public sealed class ManagedLeaseLifecycleTests
         var callbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var callbackSettled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        async ValueTask RunCallback(CancellationToken cancellationToken)
+        async ValueTask RunCallback(CancellationToken ct)
         {
             callbackStarted.TrySetResult();
             try
             {
-                while (!cancellationToken.IsCancellationRequested)
+                while (!ct.IsCancellationRequested)
                 {
                     Thread.SpinWait(64);
                 }
 
                 await Task.Yield();
-                cancellationToken.ThrowIfCancellationRequested();
+                ct.ThrowIfCancellationRequested();
             }
             finally
             {
@@ -149,15 +148,15 @@ public sealed class ManagedLeaseLifecycleTests
             {
                 await leaseClient.WithLeaseAsync(
                     "lease://prod/app/lock",
-                    300,
-                    (_, cancellationToken) => RunCallback(cancellationToken),
+                    TimeSpan.FromSeconds(300),
+                    (_, ct) => RunCallback(ct),
                     ct: parentCancellation.Token);
             }
             else
             {
                 await leaseClient.WithLeaseAsync(
                     "lease://prod/app/lock",
-                    300,
+                    TimeSpan.FromSeconds(300),
                     RunCallback,
                     ct: parentCancellation.Token);
             }
@@ -219,7 +218,7 @@ public sealed class ManagedLeaseLifecycleTests
 
 
         // Act
-        await using var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", 30);
+        await using var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
 
 
         // Assert
@@ -259,10 +258,10 @@ public sealed class ManagedLeaseLifecycleTests
 
         var pending = leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
-            1,
-            async (_, cancellationToken) =>
+            TimeSpan.FromSeconds(1),
+            async (_, ct) =>
             {
-                using var registration = cancellationToken.Register(() =>
+                using var registration = ct.Register(() =>
                 {
                     callbackCancellationObserved.TrySetResult();
                     throw cancellationHookFailure;

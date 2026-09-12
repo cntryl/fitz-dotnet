@@ -1,7 +1,13 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Schedule;
+namespace Cntryl.Fitz;
 
-public enum ScheduleDeliveryMode : byte
+/// <summary>
+/// How each firing of a schedule is delivered to its subscribers.
+/// </summary>
+public enum ScheduleDeliveryMode
 {
+    /// <summary>Deliver every firing to every current subscriber.</summary>
     Broadcast = 0,
-    Single = 1,
+
+    /// <summary>Deliver each firing to exactly one subscriber.</summary>
+    Once = 1,
 }

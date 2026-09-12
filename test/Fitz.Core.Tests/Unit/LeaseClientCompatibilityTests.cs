@@ -1,31 +1,33 @@
-using Cntryl.Fitz.Abstractions.Domains.Lease;
-
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
+/// <summary>
+/// A custom <see cref="ILeaseClient"/> implements only the authority-aware
+/// <c>WithLeaseAsync</c> overloads; the cancellation-only pair is supplied by the interface
+/// and must behave identically, discarding the fence.
+/// </summary>
 public sealed class LeaseClientCompatibilityTests
 {
     [Fact]
-    public async Task ShouldPreserveOneArgumentCallbacksGivenLegacyClientWhenManagedLeaseRuns()
+    public async Task ShouldSupplyOneArgumentCallbacksGivenMinimalClientWhenManagedLeaseRuns()
     {
         // Arrange
-        ILeaseClient client = new LegacyLeaseClient();
+        ILeaseClient client = new MinimalLeaseClient();
         var nonGenericInvoked = false;
 
         var result = await client.WithLeaseAsync(
             "lease://prod/app/generic",
-            30,
-            cancellationToken => ValueTask.FromResult(!cancellationToken.IsCancellationRequested));
+            TimeSpan.FromSeconds(30),
+            ct => ValueTask.FromResult(!ct.IsCancellationRequested));
 
         // Act
         await client.WithLeaseAsync(
             "lease://prod/app/non-generic",
-            30,
-            cancellationToken =>
+            TimeSpan.FromSeconds(30),
+            ct =>
             {
-                nonGenericInvoked = !cancellationToken.IsCancellationRequested;
+                nonGenericInvoked = !ct.IsCancellationRequested;
                 return ValueTask.CompletedTask;
             });
-
 
         // Assert
         Assert.True(result);
@@ -33,52 +35,75 @@ public sealed class LeaseClientCompatibilityTests
     }
 
     [Fact]
-    public async Task ShouldFailClearlyGivenAuthorityCallbackOnLegacyCustomClientWhenManagedLeaseRuns()
+    public async Task ShouldReachAuthorityCallbacksGivenMinimalClientWhenManagedLeaseRuns()
     {
         // Arrange
+        ILeaseClient client = new MinimalLeaseClient();
+
         // Act
-        // Assert
-        ILeaseClient client = new LegacyLeaseClient();
-
-        var generic = await Assert.ThrowsAsync<NotSupportedException>(() => client.WithLeaseAsync(
+        var fencingToken = await client.WithLeaseAsync(
             "lease://prod/app/generic",
-            30,
-            static (authority, _) => ValueTask.FromResult(authority.FencingToken)));
-        var nonGeneric = await Assert.ThrowsAsync<NotSupportedException>(() => client.WithLeaseAsync(
-            "lease://prod/app/non-generic",
-            30,
-            static (_, _) => ValueTask.CompletedTask));
+            TimeSpan.FromSeconds(30),
+            static (authority, _) => ValueTask.FromResult(authority.FencingToken));
 
-        Assert.Equal(ILeaseClient.AuthorityCallbacksNotSupportedMessage, generic.Message);
-        Assert.Equal(ILeaseClient.AuthorityCallbacksNotSupportedMessage, nonGeneric.Message);
+        // Assert
+        Assert.Equal(MinimalLeaseClient.FencingToken, fencingToken);
     }
 
-    sealed class LegacyLeaseClient : ILeaseClient
+    [Fact]
+    public async Task ShouldRejectNullCallbackGivenSuppliedOverloadWhenManagedLeaseRuns()
     {
+        // Arrange
+        ILeaseClient client = new MinimalLeaseClient();
+
+        // Act
+        // Assert
+        await Assert.ThrowsAsync<ArgumentNullException>(() => client.WithLeaseAsync(
+            "lease://prod/app/generic",
+            TimeSpan.FromSeconds(30),
+            (Func<CancellationToken, ValueTask>)null!));
+    }
+
+    sealed class MinimalLeaseClient : ILeaseClient
+    {
+        internal const ulong FencingToken = 42;
+
         public Task<ILease> AcquireAsync(
             string route,
-            ulong ttlSecs,
-            uint waitSeconds = 0,
+            TimeSpan ttl,
+            TimeSpan wait = default,
             CancellationToken ct = default) => Task.FromException<ILease>(new NotSupportedException());
 
         public async Task<T> WithLeaseAsync<T>(
             string route,
-            ulong ttlSecs,
-            Func<CancellationToken, ValueTask<T>> callback,
+            TimeSpan ttl,
+            Func<LeaseAuthority, CancellationToken, ValueTask<T>> callback,
             LeaseExecutionOptions? options = null,
-            CancellationToken ct = default) => await callback(ct);
+            CancellationToken ct = default) => await callback(new LeaseAuthority(FencingToken), ct);
 
         public async Task WithLeaseAsync(
             string route,
-            ulong ttlSecs,
-            Func<CancellationToken, ValueTask> callback,
+            TimeSpan ttl,
+            Func<LeaseAuthority, CancellationToken, ValueTask> callback,
             LeaseExecutionOptions? options = null,
-            CancellationToken ct = default) => await callback(ct);
+            CancellationToken ct = default) => await callback(new LeaseAuthority(FencingToken), ct);
 
-        public Task<LeaseInfo> QueryAsync(string route, CancellationToken ct = default) => Task.FromException<LeaseInfo>(new NotSupportedException());
+        public Task<LeaseInfo> QueryAsync(string route, CancellationToken ct = default) =>
+            Task.FromException<LeaseInfo>(new NotSupportedException());
 
         public Task<LeaseSubscription> SubscribeAsync(
             string route,
             CancellationToken ct = default) => Task.FromException<LeaseSubscription>(new NotSupportedException());
+
+        public Task<LeaseListResult> ListAsync(
+            string pattern,
+            LeaseListCursor? cursor = null,
+            int? limit = null,
+            CancellationToken ct = default) => Task.FromException<LeaseListResult>(new NotSupportedException());
+
+        public Task<ILeaseInventoryObserver> ObserveAsync(
+            string pattern,
+            LeaseObserveOptions? options = null,
+            CancellationToken ct = default) => Task.FromException<ILeaseInventoryObserver>(new NotSupportedException());
     }
 }

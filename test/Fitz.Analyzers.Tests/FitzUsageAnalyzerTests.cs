@@ -1,5 +1,4 @@
 using System.Collections.Immutable;
-using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Analyzers;
 using Cntryl.Fitz.CodeFixes;
 using Cntryl.Fitz.Domains.Lease;
@@ -14,9 +13,9 @@ namespace Cntryl.Fitz.Analyzers.Tests;
 public sealed class FitzUsageAnalyzerTests
 {
     [Theory]
-    [InlineData("await client.AcquireAsync(\"queue://realm/area/name\", 30);", FitzDiagnostics.InvalidRouteId)]
+    [InlineData("await client.AcquireAsync(\"queue://realm/area/name\", TimeSpan.FromSeconds(30));", FitzDiagnostics.InvalidRouteId)]
     [InlineData("await client.ListAsync(\"lease://realm/bad*value/name\");", FitzDiagnostics.InvalidPatternId)]
-    [InlineData("await client.AcquireAsync(\"lease://realm/area/name\", 0);", FitzDiagnostics.InvalidArgumentId)]
+    [InlineData("await client.AcquireAsync(\"lease://realm/area/name\", TimeSpan.FromSeconds(0));", FitzDiagnostics.InvalidArgumentId)]
     [InlineData("_ = await client.ListAsync(\"lease://realm/area/*\", limit: 0);", FitzDiagnostics.InvalidArgumentId)]
     public async Task ShouldReportInvalidConstantUsageGivenAnalyzerInputWhenAnalyzing(string operation, string expectedId)
     {
@@ -35,7 +34,7 @@ public sealed class FitzUsageAnalyzerTests
         // Act
         // Assert
         var diagnostics = await GetDiagnosticsAsync(LeaseSource(
-            "await client.AcquireAsync(\"lease://realm/area/name\", 30);"));
+            "await client.AcquireAsync(\"lease://realm/area/name\", TimeSpan.FromSeconds(30));"));
 
         Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.DiscardedHandleId);
     }
@@ -47,12 +46,12 @@ public sealed class FitzUsageAnalyzerTests
         // Act
         // Assert
         var diagnostics = await GetDiagnosticsAsync("""
-            using Cntryl.Fitz.Abstractions.Domains.Lease;
+            using Cntryl.Fitz;
             class Consumer
             {
                 static async Task Run(ILeaseClient client, string route)
                 {
-                    await using var lease = await client.AcquireAsync(route, 30);
+                    await using var lease = await client.AcquireAsync(route, TimeSpan.FromSeconds(30));
                 }
             }
             """);
@@ -72,10 +71,10 @@ public sealed class FitzUsageAnalyzerTests
             {
                 static async Task Run(LeaseClient client)
                 {
-                    await using var lease = await client.AcquireAsync("queue://realm/area/name", 0);
+                    await using var lease = await client.AcquireAsync("queue://realm/area/name", TimeSpan.FromSeconds(0));
                 }
             }
-            """);
+            """, FirstPartyAssembly);
 
         Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.InvalidRouteId);
         Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.InvalidArgumentId);
@@ -88,7 +87,7 @@ public sealed class FitzUsageAnalyzerTests
         // Act
         // Assert
         var diagnostics = await GetDiagnosticsAsync("""
-            using Cntryl.Fitz.Abstractions.Domains.Stream;
+            using Cntryl.Fitz;
             class Consumer
             {
                 static async Task Run(IStreamClient client)
@@ -108,7 +107,7 @@ public sealed class FitzUsageAnalyzerTests
         // Act
         // Assert
         var diagnostics = await GetDiagnosticsAsync("""
-            using Cntryl.Fitz.Abstractions.Domains.Stream;
+            using Cntryl.Fitz;
             class Consumer
             {
                 static async Task Run(IStreamClient client)
@@ -146,7 +145,7 @@ public sealed class FitzUsageAnalyzerTests
         // Act
         // Assert
         var diagnostics = await GetDiagnosticsAsync("""
-            using Cntryl.Fitz.Abstractions.Domains.Queue;
+            using Cntryl.Fitz;
             class Consumer
             {
                 static async Task Run(IQueueClient client)
@@ -154,7 +153,7 @@ public sealed class FitzUsageAnalyzerTests
                     _ = await client.EnqueueAsync(
                         "queue://realm/area/name",
                         ReadOnlyMemory<byte>.Empty,
-                        delayMs: 1);
+                        delay: TimeSpan.FromMilliseconds(1));
                 }
             }
             """);
@@ -188,7 +187,7 @@ public sealed class FitzUsageAnalyzerTests
         // Act
         // Assert
         var fixedSource = await ApplyFirstFixAsync(
-            LeaseSource("await using var lease = await client.AcquireAsync(\"queue://realm/area/name\", 30);"),
+            LeaseSource("await using var lease = await client.AcquireAsync(\"queue://realm/area/name\", TimeSpan.FromSeconds(30));"),
             FitzDiagnostics.InvalidRouteId);
 
         Assert.Contains("\"lease://realm/area/name\"", fixedSource, StringComparison.Ordinal);
@@ -201,7 +200,7 @@ public sealed class FitzUsageAnalyzerTests
         // Act
         // Assert
         var diagnostics = await GetDiagnosticsAsync(LeaseSource(
-            "await using var lease = await client.AcquireAsync(\"lease://realm/bad*value/name\", 30);"));
+            "await using var lease = await client.AcquireAsync(\"lease://realm/bad*value/name\", TimeSpan.FromSeconds(30));"));
 
         var diagnostic = Assert.Single(diagnostics.Where(item => item.Id == FitzDiagnostics.InvalidRouteId));
         Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
@@ -212,7 +211,7 @@ public sealed class FitzUsageAnalyzerTests
     {
         // Arrange
         using var workspace = CreateWorkspace(
-            LeaseSource("await using var lease = await client.AcquireAsync(\"queue://realm\", 30);"),
+            LeaseSource("await using var lease = await client.AcquireAsync(\"queue://realm\", TimeSpan.FromSeconds(30));"),
             out var document);
 
         // Act
@@ -241,14 +240,14 @@ public sealed class FitzUsageAnalyzerTests
         // Act
         // Assert
         var fixedSource = await ApplyFirstFixAsync(
-            LeaseSource("await client.AcquireAsync(\"lease://realm/area/name\", 30);"),
+            LeaseSource("await client.AcquireAsync(\"lease://realm/area/name\", TimeSpan.FromSeconds(30));"),
             FitzDiagnostics.DiscardedHandleId);
 
         Assert.Contains("await using var lease = await client.AcquireAsync", fixedSource, StringComparison.Ordinal);
     }
 
     static string LeaseSource(string operation) => $$"""
-        using Cntryl.Fitz.Abstractions.Domains.Lease;
+        using Cntryl.Fitz;
         class Consumer
         {
             static async Task Run(ILeaseClient client)
@@ -258,9 +257,9 @@ public sealed class FitzUsageAnalyzerTests
         }
         """;
 
-    static async Task<ImmutableArray<Diagnostic>> GetDiagnosticsAsync(string source)
+    static async Task<ImmutableArray<Diagnostic>> GetDiagnosticsAsync(string source, string assemblyName = ConsumerAssembly)
     {
-        using var workspace = CreateWorkspace(source, out var document);
+        using var workspace = CreateWorkspace(source, out var document, assemblyName);
         var compilation = await document.Project.GetCompilationAsync();
         Assert.NotNull(compilation);
         Assert.DoesNotContain(compilation.GetDiagnostics(), diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
@@ -290,10 +289,16 @@ public sealed class FitzUsageAnalyzerTests
         return (await changed.GetTextAsync()).ToString();
     }
 
-    static AdhocWorkspace CreateWorkspace(string source, out Document document)
+    // Most tests compile as an ordinary consumer that sees only the public surface. The
+    // concrete-client test compiles under the InternalsVisibleTo name instead, because the
+    // concrete domain clients are internal and only first-party code can invoke them.
+    const string ConsumerAssembly = "Consumer";
+    const string FirstPartyAssembly = "Cntryl.Fitz.Core.Tests";
+
+    static AdhocWorkspace CreateWorkspace(string source, out Document document, string assemblyName = ConsumerAssembly)
     {
         var workspace = new AdhocWorkspace();
-        var project = workspace.AddProject("Consumer", LanguageNames.CSharp)
+        var project = workspace.AddProject(assemblyName, LanguageNames.CSharp)
             .WithCompilationOptions(new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
                 .WithUsings("System", "System.Threading", "System.Threading.Tasks"))
             .WithParseOptions(new CSharpParseOptions(LanguageVersion.Preview))
@@ -314,6 +319,6 @@ public sealed class FitzUsageAnalyzerTests
         }
 
         yield return MetadataReference.CreateFromFile(typeof(ILeaseClient).Assembly.Location);
-        yield return MetadataReference.CreateFromFile(typeof(LeaseClient).Assembly.Location);
+        yield return MetadataReference.CreateFromFile(typeof(Client).Assembly.Location);
     }
 }

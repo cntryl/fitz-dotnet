@@ -1,6 +1,4 @@
-using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Domains.Lease;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -27,11 +25,11 @@ public sealed class ManagedLeaseAuthorityTests
         // Assert
         var result = await leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
-            30,
-            (authority, cancellationToken) =>
+            TimeSpan.FromSeconds(30),
+            (authority, ct) =>
             {
                 observed = authority;
-                Assert.False(cancellationToken.IsCancellationRequested);
+                Assert.False(ct.IsCancellationRequested);
                 return ValueTask.FromResult("completed");
             });
 
@@ -62,13 +60,13 @@ public sealed class ManagedLeaseAuthorityTests
 
         var pending = leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
-            30,
+            TimeSpan.FromSeconds(30),
             (authority, _) =>
             {
                 observed = authority;
                 return ValueTask.CompletedTask;
             },
-            new LeaseExecutionOptions { WaitForAvailability = true, WaitSeconds = 5 });
+            new LeaseExecutionOptions { WaitForAvailability = true, Wait = TimeSpan.FromSeconds(5) });
         await Task.Yield();
 
         Assert.NotNull(acquireHandler);
@@ -114,10 +112,10 @@ public sealed class ManagedLeaseAuthorityTests
 
         var error = await Assert.ThrowsAsync<LeaseException>(() => leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
-            1,
-            async (authority, cancellationToken) =>
+            TimeSpan.FromSeconds(1),
+            async (authority, ct) =>
             {
-                await renewalCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2), cancellationToken);
+                await renewalCompleted.Task.WaitAsync(TimeSpan.FromSeconds(2), ct);
                 return authority;
             }));
 
@@ -139,7 +137,7 @@ public sealed class ManagedLeaseAuthorityTests
         // Act
         var act = () => leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
-            30,
+            TimeSpan.FromSeconds(30),
             (_, _) =>
             {
                 callbackInvoked = true;
@@ -170,13 +168,13 @@ public sealed class ManagedLeaseAuthorityTests
 
         var pending = leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
-            30,
+            TimeSpan.FromSeconds(30),
             (_, _) =>
             {
                 callbackInvoked = true;
                 return ValueTask.CompletedTask;
             },
-            new LeaseExecutionOptions { WaitForAvailability = true, WaitSeconds = 1 });
+            new LeaseExecutionOptions { WaitForAvailability = true, Wait = TimeSpan.FromSeconds(1) });
 
         // Act
         await Task.Yield();
@@ -205,13 +203,13 @@ public sealed class ManagedLeaseAuthorityTests
 
         var pending = leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
-            30,
+            TimeSpan.FromSeconds(30),
             (_, _) =>
             {
                 callbackInvoked = true;
                 return ValueTask.CompletedTask;
             },
-            new LeaseExecutionOptions { WaitForAvailability = true, WaitSeconds = 5 },
+            new LeaseExecutionOptions { WaitForAvailability = true, Wait = TimeSpan.FromSeconds(5) },
             cancellation.Token);
         await Task.Yield();
 
@@ -240,16 +238,16 @@ public sealed class ManagedLeaseAuthorityTests
 
         var result = await leaseClient.WithLeaseAsync(
             "lease://prod/app/generic",
-            30,
-            cancellationToken => ValueTask.FromResult(!cancellationToken.IsCancellationRequested));
+            TimeSpan.FromSeconds(30),
+            ct => ValueTask.FromResult(!ct.IsCancellationRequested));
 
         // Act
         await leaseClient.WithLeaseAsync(
             "lease://prod/app/non-generic",
-            30,
-            cancellationToken =>
+            TimeSpan.FromSeconds(30),
+            ct =>
             {
-                nonGenericInvoked = !cancellationToken.IsCancellationRequested;
+                nonGenericInvoked = !ct.IsCancellationRequested;
                 return ValueTask.CompletedTask;
             });
 

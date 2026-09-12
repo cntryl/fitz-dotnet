@@ -5,7 +5,7 @@ namespace Cntryl.Fitz.Observability;
 /// <summary>
 /// Measures throughput (operations per second) over a time window.
 /// </summary>
-public sealed class ThroughputMeter
+sealed class ThroughputMeter
 {
     readonly Stopwatch _stopwatch = Stopwatch.StartNew();
     long _operationCount;
@@ -63,8 +63,10 @@ public sealed class ThroughputMeter
         }
     }
 
+    /// <summary>Time elapsed since the meter started or was last reset.</summary>
     public TimeSpan Elapsed => _stopwatch.Elapsed;
 
+    /// <summary>Clears the operation count and restarts the clock.</summary>
     public void Reset()
     {
         lock (_lock)
@@ -74,5 +76,7 @@ public sealed class ThroughputMeter
         }
     }
 
+    /// <summary>Formats the counts and rate for diagnostics.</summary>
+    /// <returns>A human-readable summary.</returns>
     public override string ToString() => $"ThroughputMeter(ops={TotalOperations}, ops/sec={OperationsPerSecond:F2}, elapsed={Elapsed.TotalSeconds:F2}s)";
 }

@@ -4,7 +4,7 @@ namespace Cntryl.Fitz.Observability;
 /// Captures latency metrics in microseconds.
 /// Used for validating perf targets during integration tests.
 /// </summary>
-public sealed class LatencyHistogram
+sealed class LatencyHistogram
 {
     readonly List<long> _samples = [];
     readonly object _lock = new();
@@ -41,11 +41,16 @@ public sealed class LatencyHistogram
         }
     }
 
+    /// <summary>Median recorded latency, in microseconds.</summary>
     public long P50 => GetPercentile(0.50);
+    /// <summary>95th percentile latency, in microseconds.</summary>
     public long P95 => GetPercentile(0.95);
+    /// <summary>99th percentile latency, in microseconds.</summary>
     public long P99 => GetPercentile(0.99);
+    /// <summary>99.9th percentile latency, in microseconds.</summary>
     public long P999 => GetPercentile(0.999);
 
+    /// <summary>Arithmetic mean latency, in microseconds.</summary>
     public long Mean
     {
         get
@@ -57,6 +62,7 @@ public sealed class LatencyHistogram
         }
     }
 
+    /// <summary>Largest recorded latency, in microseconds.</summary>
     public long Max
     {
         get
@@ -68,6 +74,7 @@ public sealed class LatencyHistogram
         }
     }
 
+    /// <summary>Number of samples recorded.</summary>
     public int Count
     {
         get
@@ -79,6 +86,7 @@ public sealed class LatencyHistogram
         }
     }
 
+    /// <summary>Discards every recorded sample.</summary>
     public void Reset()
     {
         lock (_lock)
@@ -87,5 +95,7 @@ public sealed class LatencyHistogram
         }
     }
 
+    /// <summary>Formats the count and key percentiles for diagnostics.</summary>
+    /// <returns>A human-readable summary.</returns>
     public override string ToString() => $"LatencyHistogram(count={Count}, p50={P50}μs, p99={P99}μs, p999={P999}μs, max={Max}μs)";
 }

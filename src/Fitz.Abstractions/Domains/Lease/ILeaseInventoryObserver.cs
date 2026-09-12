@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Lease;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// A race-safe, high-level view over every lease matching a patterned selector.

@@ -1,7 +1,5 @@
 using System.Collections.Concurrent;
-using Cntryl.Fitz.Abstractions.Domains.Lease;
 using Cntryl.Fitz.Domains.Lease;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -31,7 +29,7 @@ public sealed class LeaseInventoryObserverTests
     {
         // Arrange
         using var leaseClient = new LeaseClient(
-            async (messageType, _, cancellationToken) =>
+            async (messageType, _, ct) =>
             {
                 if (messageType == MessageTypes.LeaseSubscribe)
                 {
@@ -41,7 +39,7 @@ public sealed class LeaseInventoryObserverTests
                     return response.Build();
                 }
 
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
                 return ReadOnlyMemory<byte>.Empty;
             },
             registerNotificationHandler: (_, _) => new TestRegistration());
@@ -454,8 +452,9 @@ public sealed class LeaseInventoryObserverTests
         string owner = "worker-1",
         ulong incarnation = 1,
         string acquiredAt = "2026-08-29T00:00:00Z",
-        ulong expiresInSecs = 30,
-        uint renewals = 0) => new(route, owner, incarnation, acquiredAt, expiresInSecs, renewals);
+        TimeSpan? expiresIn = null,
+        uint renewals = 0) =>
+        new(route, owner, incarnation, acquiredAt, expiresIn ?? TimeSpan.FromSeconds(30), renewals);
 
     static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null)
     {
@@ -542,7 +541,7 @@ public sealed class LeaseInventoryObserverTests
                     writer.WriteString(item.OwnerId);
                     writer.WriteU64(item.HolderIncarnation);
                     writer.WriteString(item.AcquiredAt);
-                    writer.WriteU64(item.ExpiresInSecs);
+                    writer.WriteU64((ulong)item.ExpiresIn.TotalSeconds);
                     writer.WriteU32(item.Renewals);
                 }
 

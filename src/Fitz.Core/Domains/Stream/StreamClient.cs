@@ -1,15 +1,20 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
-using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Connection;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Stream;
 
-public sealed class StreamClient : IStreamClient, IDisposable
+/// <summary>
+/// The default <see cref="IStreamClient"/>: stream append sessions, reads, and commit subscriptions.
+/// </summary>
+/// <remarks>
+/// Obtained from <see cref="Client"/> rather than constructed directly. The public
+/// constructors exist for testing against a transport delegate.
+/// </remarks>
+sealed class StreamClient : IStreamClient, IDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
@@ -34,16 +39,19 @@ public sealed class StreamClient : IStreamClient, IDisposable
             connection.RegisterBorrowedNotificationHandler,
             connection.OnDisconnect,
             (handler, rejected) => connection.TryDispatchAsyncHandler("stream", handler, rejected),
-            (operation, messageType, payload, cancellationToken) =>
+            (operation, messageType, payload, ct) =>
                 connection.ExecuteWithRetryAsync(
                     operation,
                     innerToken => connection.RequestAsync(messageType, payload, innerToken),
-                    cancellationToken),
+                    ct),
             connection.SubscriptionBufferCapacity)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
 
+    /// <summary>
+    /// Creates a domain client over a request delegate, for testing without a broker.
+    /// </summary>
     public StreamClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
@@ -70,6 +78,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
     }
 
+    /// <inheritdoc />
     public async Task<IStreamSession> BeginAsync(string route, ReadOnlyMemory<byte>? ingestMetadata = null, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -92,6 +101,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         return new StreamSession(_request, StreamWireHelpers.ReadBeginSessionId(response), _registerOnDisconnect);
     }
 
+    /// <inheritdoc />
     public async IAsyncEnumerable<StreamRecord> ReadAsync(
         string route,
         ulong startOffset,
@@ -150,6 +160,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         }
     }
 
+    /// <inheritdoc />
     public async Task<StreamReadPage> ReadPageAsync(
         string route,
         ulong startOffset,
@@ -196,6 +207,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         return data.IsEmpty ? new StreamReadPage(Array.Empty<StreamReadItem>(), new StreamReadCursor(0, null, null, null, null, null, false)) : StreamWireHelpers.ReadReadPage(data, "READ", route);
     }
 
+    /// <inheritdoc />
     public async Task<StreamRecord?> PeekAsync(string route, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -218,6 +230,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         return StreamWireHelpers.ReadRoutedRecord(data, "LAST");
     }
 
+    /// <inheritdoc />
     public async Task<StreamMetadata> MetadataAsync(string route, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -266,6 +279,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         return new StreamMetadata(firstOffset, lastOffset, recordCount);
     }
 
+    /// <inheritdoc />
     public async Task<StreamSubscription> SubscribeAsync(
         string pattern,
         CancellationToken ct = default)
@@ -365,7 +379,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
     {
         return new StreamSubscription(
             pattern,
-            cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken),
+            ct => UnsubscribeAsync(pattern, handleId, ct),
             completion);
     }
 
@@ -499,7 +513,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
         }
     }
 
-    async ValueTask HandleReconnect(CancellationToken cancellationToken) => await RestoreSubscriptionsAsync(cancellationToken).ConfigureAwait(false);
+    async ValueTask HandleReconnect(CancellationToken ct) => await RestoreSubscriptionsAsync(ct).ConfigureAwait(false);
 
     static void ValidateExactStreamRoute(string route)
     {
@@ -534,9 +548,9 @@ public sealed class StreamClient : IStreamClient, IDisposable
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
-    async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
+    async ValueTask RestoreSubscriptionsAsync(CancellationToken ct)
     {
-        await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             List<(string Pattern, StreamSubscriptionState Subscription)> snapshot;
@@ -561,7 +575,7 @@ public sealed class StreamClient : IStreamClient, IDisposable
             {
                 foreach (var entry in snapshot)
                 {
-                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
+                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, ct).ConfigureAwait(false);
                     restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
                     restoredPatternsById[subscriptionId] = entry.Pattern;
                 }
@@ -609,16 +623,17 @@ public sealed class StreamClient : IStreamClient, IDisposable
         RetryOperation operation,
         ushort messageType,
         ReadOnlyMemory<byte> payload,
-        CancellationToken cancellationToken)
+        CancellationToken ct)
     {
         if (_retryRequest is null)
         {
-            return _request(messageType, payload, cancellationToken);
+            return _request(messageType, payload, ct);
         }
 
-        return _retryRequest(operation, messageType, payload, cancellationToken);
+        return _retryRequest(operation, messageType, payload, ct);
     }
 
+    /// <summary>Releases local resources and ends any registrations this client owns.</summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

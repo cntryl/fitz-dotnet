@@ -2,10 +2,8 @@ using System.Buffers;
 using System.Threading.Channels;
 using Cntryl.Fitz;
 using Cntryl.Fitz.Connection;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Observability;
 using Cntryl.Fitz.Protocol;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -129,7 +127,40 @@ public sealed class ClientTests
         // Assert
         var config = new ClientConfig(new Uri("ws://localhost:4190/ws"));
 
-        Assert.Equal(FrameCodec.MaxTransportFrameSize, config.MaxFrameSize);
+        Assert.Equal(FitzLimits.MaxFrameSize, config.MaxFrameSize);
+    }
+
+    // FitzLimits is the supported way to read bounds the internal codec defines. If the two
+    // ever drift, a caller that pre-validates against the published constants would pass its
+    // own check and then be rejected by Validate, so pin them to the enforced boundaries.
+    [Theory]
+    [InlineData(FitzLimits.MinFrameSize)]
+    [InlineData(FitzLimits.MaxFrameSize)]
+    public void ShouldAcceptBoundaryFrameSizeGivenPublishedLimitWhenConfigValidated(int frameSize)
+    {
+        // Arrange
+        var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), MaxFrameSize: frameSize);
+
+        // Act
+        var exception = Record.Exception(config.Validate);
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Theory]
+    [InlineData(FitzLimits.MinFrameSize - 1)]
+    [InlineData(FitzLimits.MaxFrameSize + 1)]
+    public void ShouldRejectOutOfRangeFrameSizeGivenPublishedLimitWhenConfigValidated(int frameSize)
+    {
+        // Arrange
+        var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), MaxFrameSize: frameSize);
+
+        // Act
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(config.Validate);
+
+        // Assert
+        Assert.Equal(nameof(ClientConfig.MaxFrameSize), exception.ParamName);
     }
 
     [Fact]
@@ -746,10 +777,10 @@ public sealed class ClientTests
                 AuthSettleDelay: TimeSpan.Zero,
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 2, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero)),
             () => factoryCalls++ == 0 ? firstTransport : reconnectTransport);
-        using var registration = connection.OnReconnect(async cancellationToken =>
+        using var registration = connection.OnReconnect(async ct =>
         {
             restoreStarted.TrySetResult();
-            await releaseRestore.Task.WaitAsync(cancellationToken);
+            await releaseRestore.Task.WaitAsync(ct);
         });
 
         await connection.ConnectAsync();
@@ -821,7 +852,7 @@ public sealed class ClientTests
         // Act
         var operation = connection.ExecuteWithRetryAsync(
             new RetryOperation("kv", "get", RetryClass.ReplayableRead),
-            cancellationToken => connection.RequestAsync(88, ReadOnlyMemory<byte>.Empty, cancellationToken)).AsTask();
+            ct => connection.RequestAsync(88, ReadOnlyMemory<byte>.Empty, ct)).AsTask();
 
 
         // Assert
@@ -853,10 +884,10 @@ public sealed class ClientTests
 
 
         // Assert
-        Assert.True(connection.TryDispatchAsyncHandler("notice", async cancellationToken =>
+        Assert.True(connection.TryDispatchAsyncHandler("notice", async ct =>
         {
             noticeStarted.TrySetResult();
-            await releaseNotice.Task.WaitAsync(cancellationToken);
+            await releaseNotice.Task.WaitAsync(ct);
         }));
         await noticeStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
@@ -888,10 +919,10 @@ public sealed class ClientTests
 
 
         // Assert
-        Assert.True(connection.TryDispatchAsyncHandler("notice", async cancellationToken =>
+        Assert.True(connection.TryDispatchAsyncHandler("notice", async ct =>
         {
             await Task.Delay(75, CancellationToken.None);
-            completed.TrySetResult(cancellationToken.IsCancellationRequested);
+            completed.TrySetResult(ct.IsCancellationRequested);
         }));
 
         Assert.False(await completed.Task.WaitAsync(TimeSpan.FromSeconds(1)));
@@ -945,7 +976,7 @@ public sealed class ClientTests
         // Act
         var request = client.Kv.BeginAsync(
             "kv://prod/app/users",
-            Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+            Cntryl.Fitz.KvDurability.Async);
 
 
         // Assert
@@ -987,7 +1018,7 @@ public sealed class ClientTests
 
         // Assert
         var ex = await Assert.ThrowsAsync<RequestTimeoutException>(() =>
-            client.Kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async));
+            client.Kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async));
 
         Assert.Contains("Request timeout", ex.Message, StringComparison.OrdinalIgnoreCase);
         await WaitForConditionAsync(() => !client.IsConnected, TimeSpan.FromSeconds(1));
@@ -1193,28 +1224,28 @@ public sealed class ClientTests
 
         public Uri Url { get; } = new("ws://fake");
 
-        public Task ConnectAsync(CancellationToken cancellationToken = default)
+        public Task ConnectAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
 
-        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             SentFrames.Add(data.ToArray());
             return Task.CompletedTask;
         }
 
-        public ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+        public ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            return _receive(cancellationToken);
+            ct.ThrowIfCancellationRequested();
+            return _receive(ct);
         }
 
-        public Task CloseAsync(CancellationToken cancellationToken = default)
+        public Task CloseAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
 
@@ -1232,27 +1263,27 @@ public sealed class ClientTests
 
         public Uri Url { get; } = new("ws://failing");
 
-        public Task ConnectAsync(CancellationToken cancellationToken = default)
+        public Task ConnectAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             return Task.FromException(_exception);
         }
 
-        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
 
-        public ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+        public ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             return new ValueTask<PooledFrame>(PooledFrame.Closed);
         }
 
-        public Task CloseAsync(CancellationToken cancellationToken = default)
+        public Task CloseAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
 
@@ -1263,27 +1294,27 @@ public sealed class ClientTests
     {
         public Uri Url { get; } = new("ws://idle");
 
-        public Task ConnectAsync(CancellationToken cancellationToken = default)
+        public Task ConnectAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
 
-        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
 
-        public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+        public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
         {
-            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken);
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, ct);
             return PooledFrame.Closed;
         }
 
-        public Task CloseAsync(CancellationToken cancellationToken = default)
+        public Task CloseAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
 
@@ -1303,35 +1334,35 @@ public sealed class ClientTests
 
         public bool CancellationObserved { get; private set; }
 
-        public async Task ConnectAsync(CancellationToken cancellationToken = default)
+        public async Task ConnectAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             try
             {
-                await _connectSignal.WaitAsync(cancellationToken);
+                await _connectSignal.WaitAsync(ct);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 CancellationObserved = true;
                 throw;
             }
         }
 
-        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
 
-        public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+        public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
         {
-            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, cancellationToken);
+            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, ct);
             return PooledFrame.Closed;
         }
 
-        public Task CloseAsync(CancellationToken cancellationToken = default)
+        public Task CloseAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
 
@@ -1348,15 +1379,15 @@ public sealed class ClientTests
 
         public Uri Url { get; } = new("ws://queued");
 
-        public Task ConnectAsync(CancellationToken cancellationToken = default)
+        public Task ConnectAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             return Task.CompletedTask;
         }
 
-        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             int sentFrameCount;
             lock (_sentFramesGate)
             {
@@ -1369,10 +1400,10 @@ public sealed class ClientTests
             return Task.CompletedTask;
         }
 
-        public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+        public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            return await _incoming.Reader.ReadAsync(cancellationToken);
+            ct.ThrowIfCancellationRequested();
+            return await _incoming.Reader.ReadAsync(ct);
         }
 
         public void QueueIncomingFrame(byte[] frame)
@@ -1386,9 +1417,9 @@ public sealed class ClientTests
 
         public void QueueClosed() => _incoming.Writer.TryWrite(PooledFrame.Closed);
 
-        public Task CloseAsync(CancellationToken cancellationToken = default)
+        public Task CloseAsync(CancellationToken ct = default)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            ct.ThrowIfCancellationRequested();
             _incoming.Writer.TryComplete();
             return Task.CompletedTask;
         }
@@ -1398,6 +1429,43 @@ public sealed class ClientTests
             _incoming.Writer.TryComplete();
             return ValueTask.CompletedTask;
         }
+    }
+
+    [Fact]
+    public async Task ShouldReportCallerSuppliedTransportNameGivenCustomTransportWhenLifecycleEventEmitted()
+    {
+        // Arrange
+        await using var transport = CreateConfirmingTransport();
+        var transportNames = new List<string?>();
+        await using var client = new Client(new ClientConfig(
+            new Uri("ws://localhost:4190/ws"),
+            AuthSettleDelay: TimeSpan.Zero,
+            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt => transportNames.Add(evt.Transport)),
+            TransportFactory: _ => transport));
+
+        // Act
+        await client.ConnectAsync();
+
+        // Assert
+        // The interface default names a caller-supplied transport without inspecting its
+        // runtime type; QueuedTransport does not override TransportName.
+        Assert.Contains("custom", transportNames, StringComparer.Ordinal);
+        Assert.DoesNotContain(nameof(QueuedTransport), transportNames, StringComparer.Ordinal);
+    }
+
+    [Fact]
+    public async Task ShouldReportConstantTransportNamesGivenBuiltInTransportsWhenTelemetryReads()
+    {
+        // Arrange
+        var url = new Uri("ws://localhost:4190/ws");
+
+        // Act
+        await using ITransport webSocket = new WebSocketTransport(url, TimeSpan.FromSeconds(1), FrameCodec.MaxTransportFrameSize, null, new HeartbeatOptions());
+        await using ITransport tcp = new TcpTransport(new Uri("tcp://localhost:4191"), TimeSpan.FromSeconds(1), FrameCodec.MaxTransportFrameSize, new HeartbeatOptions());
+
+        // Assert
+        Assert.Equal("WebSocketTransport", webSocket.TransportName);
+        Assert.Equal("TcpTransport", tcp.TransportName);
     }
 
     static QueuedTransport CreateConfirmingTransport()

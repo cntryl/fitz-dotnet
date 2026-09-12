@@ -1,11 +1,12 @@
 using System.Threading;
-using Cntryl.Fitz.Abstractions.Domains.Stream;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Domains.Stream;
 
-public sealed class StreamSession : IStreamSession
+/// <summary>
+/// The default <see cref="IStreamSession"/>. Obtained from <see cref="StreamClient"/>.
+/// </summary>
+sealed class StreamSession : IStreamSession
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly ulong _sessionId;
@@ -33,6 +34,7 @@ public sealed class StreamSession : IStreamSession
         }
     }
 
+    /// <inheritdoc />
     public async Task<ulong?> AppendAsync(ulong expectedOffset, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte>? metadata = null, string? discriminator = null, CancellationToken ct = default)
     {
         ThrowIfClosed();
@@ -80,6 +82,7 @@ public sealed class StreamSession : IStreamSession
         return committedOffset;
     }
 
+    /// <inheritdoc />
     public async Task CommitAsync(CancellationToken ct = default)
     {
         await _finalizationGate.WaitAsync(ct).ConfigureAwait(false);
@@ -97,6 +100,7 @@ public sealed class StreamSession : IStreamSession
         }
     }
 
+    /// <inheritdoc />
     public async Task RollbackAsync(CancellationToken ct = default)
     {
         await _finalizationGate.WaitAsync(ct).ConfigureAwait(false);
@@ -117,6 +121,8 @@ public sealed class StreamSession : IStreamSession
         }
     }
 
+    /// <summary>Rolls the session back if it has not been committed.</summary>
+    /// <returns>A task that completes once cleanup finishes.</returns>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Stream-session disposal is bounded best-effort cleanup and must not replace an exception leaving an await-using scope.")]
     public async ValueTask DisposeAsync()
     {

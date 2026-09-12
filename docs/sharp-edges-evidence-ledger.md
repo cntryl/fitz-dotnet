@@ -97,7 +97,7 @@ Statuses have these meanings:
 | PKG-6 | confirmed | Constant-route analyzer diagnostics are warnings by default and remain opt-in build errors through standard analyzer configuration. Runtime validation still covers dynamic routes. Analyzer rules resolve the actual Fitz interface symbols, accept stream read selectors, and are built against the minimum supported Roslyn 5.0 API surface. |
 | PKG-7 | confirmed | Resolved default option objects are cached rather than allocated on every access. |
 | PKG-8 | intentionally accepted | Default interface members remain for binary/source compatibility; replacing them with abstract members would break existing consumers. |
-| PKG-9 | intentionally accepted | Package metadata includes descriptions, author, license, repository, symbols where applicable, deterministic debug metadata, and SourceLink. XML documentation files are not currently generated or shipped; enabling them cleanly requires completing the public API documentation surface rather than suppressing missing-comment diagnostics. |
+| PKG-9 | confirmed | Package metadata includes descriptions, author, license, repository, symbols where applicable, deterministic debug metadata, and SourceLink. XML documentation is now generated and shipped for all three runtime packages: the public API surface was documented in full rather than suppressing missing-comment diagnostics, and `GenerateDocumentationFile` with warnings-as-errors keeps it complete. |
 | PKG-10 | intentionally accepted | Public option records retain record equality and delegate-bearing shape for compatibility. Central constructor validation now rejects invalid configuration before connection work starts. |
 
 ## Phase 3: performance and resource bounds
@@ -106,14 +106,19 @@ Performance findings from the audit are represented above at `MUX-4`, `MUX-7`, `
 
 ## Verification record
 
+These are the results of the audit run that produced this ledger, not current counts. Test
+totals and package versions have moved since; the standing claims are the dispositions above,
+which the current suite still covers. Current numbers live in CI.
+
 - `dotnet build Fitz.sln -c Release --no-restore`: passed with zero warnings and zero errors.
 - Release validation passed 369 non-integration core tests and 14 analyzer tests.
 - The 30 broker-backed integration tests passed over WebSocket and again over TCP, including forced broker restart and same-client recovery.
 - `dotnet format Fitz.sln --no-restore --verify-no-changes --severity warn`: passed; new behavioral tests use the `ShouldXGivenYWhenZ` convention.
 - `dotnet pack Fitz.sln -c Release --no-restore --output artifacts/packages`: passed for all packable projects. Runtime packages include symbols and SourceLink; Roslyn-only packages explicitly skip empty symbol packages.
 - A clean NuGet-cache restore and execution of `Fitz.PackageConsumer` passed from the packed `0.1.3` artifacts and verified all three runtime assembly versions are `1.0.0.0`; an exact packed-consumer Native AOT publish and executable run also passed.
+  That publish analyzed only the code the sample reached. A later whole-program audit rooted every shipped assembly and found an `IL2091` reflection contract that this run could not have surfaced; the publish now roots all three assemblies and treats trim/AOT warnings as errors. See [aot-and-reflection.md](aot-and-reflection.md).
 - The packed analyzer loaded and compiled valid stream-selector usage with SDK `10.0.109` / Roslyn 5.0 without CS9057.
-- Benchmark discovery found 24 benchmark methods. `MultiplexerHotPathBenchmarks.RequestDispatchRoundTrip` completed at a 2.098 microsecond mean with 1.03 KB allocated, below the documented 5 microsecond dispatch target.
+- Benchmark discovery ran at the time of this audit and recorded `MultiplexerHotPathBenchmarks.RequestDispatchRoundTrip` at a 2.098 microsecond mean with 1.03 KB allocated. A 2026-09-12 re-run reproduced the allocation (1.02 KB) but not the latency, measuring 85.9 microseconds with a 48.4 microsecond standard deviation. The dispatch-latency target is therefore not currently evidenced; see [../PERF_GUIDELINES.md](../PERF_GUIDELINES.md). The method count originally stated here (24) was already stale and has been dropped rather than re-pinned.
 
 ## Protocol follow-up requirements
 

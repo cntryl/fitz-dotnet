@@ -1,15 +1,20 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
-using Cntryl.Fitz.Abstractions.Domains.Queue;
 using Cntryl.Fitz.Connection;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Queue;
 
-public sealed class QueueClient : IQueueClient, IDisposable
+/// <summary>
+/// The default <see cref="IQueueClient"/>: queue enqueue, reserve, and availability subscriptions.
+/// </summary>
+/// <remarks>
+/// Obtained from <see cref="Client"/> rather than constructed directly. The public
+/// constructors exist for testing against a transport delegate.
+/// </remarks>
+sealed class QueueClient : IQueueClient, IDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
@@ -38,6 +43,9 @@ public sealed class QueueClient : IQueueClient, IDisposable
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
 
+    /// <summary>
+    /// Creates a domain client over a request delegate, for testing without a broker.
+    /// </summary>
     public QueueClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
         Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
@@ -62,10 +70,11 @@ public sealed class QueueClient : IQueueClient, IDisposable
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
     }
 
+    /// <inheritdoc />
     public async Task<ulong> EnqueueAsync(
         string route,
         ReadOnlyMemory<byte> body,
-        int? delayMs = null,
+        TimeSpan? delay = null,
         CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -79,16 +88,11 @@ public sealed class QueueClient : IQueueClient, IDisposable
         writer.WriteU32((uint)body.Length);
         writer.WriteBytes(body.Span);
 
-        if (delayMs is { } configuredDelay && (configuredDelay < 0 || configuredDelay % 1000 != 0))
-        {
-            throw new ArgumentOutOfRangeException(nameof(delayMs),
-                "The current Fitz wire protocol represents queue delay in whole seconds.");
-        }
-        var delaySeconds = delayMs > 0 ? delayMs.Value / 1000 : 0;
+        var delaySeconds = delay is { } configuredDelay ? WireDuration.ToSeconds(configuredDelay, nameof(delay)) : 0;
         writer.WriteU8((byte)(delaySeconds > 0 ? 1 : 0));
         if (delaySeconds > 0)
         {
-            writer.WriteU64((ulong)delaySeconds);
+            writer.WriteU64(delaySeconds);
         }
 
         var response = await _request(MessageTypes.QueueEnqueue, writer.WrittenMemory, ct).ConfigureAwait(false);
@@ -115,26 +119,25 @@ public sealed class QueueClient : IQueueClient, IDisposable
         return result;
     }
 
+    /// <inheritdoc />
     public async Task<IQueueReservedItem[]> ReserveAsync(
         string route,
-        ulong leaseSeconds,
+        TimeSpan lease,
         int batchSize = 1,
-        int? waitSeconds = null,
+        TimeSpan? wait = null,
         CancellationToken ct = default)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(route);
+        var leaseSeconds = WireDuration.ToSeconds(lease, nameof(lease));
+        var waitSeconds = wait is { } configuredWait ? (ulong?)WireDuration.ToSeconds(configuredWait, nameof(wait)) : null;
         if (!RouteValidation.IsRegistrationPattern(route, "queue", 3))
         {
             throw new QueueException($"route '{route}' must be a concrete queue route or a whole-segment wildcard pattern", "INVALID_ROUTE");
         }
 
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1, nameof(batchSize));
-        ArgumentOutOfRangeException.ThrowIfZero(leaseSeconds, nameof(leaseSeconds));
-        if (waitSeconds < 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(waitSeconds), "Wait duration cannot be negative.");
-        }
+        ArgumentOutOfRangeException.ThrowIfZero(leaseSeconds, nameof(lease));
 
         return await ReserveOnceAsync(route, leaseSeconds, batchSize, waitSeconds, ct).ConfigureAwait(false);
     }
@@ -143,7 +146,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         string route,
         ulong leaseSeconds,
         int batchSize,
-        int? waitSeconds,
+        ulong? waitSeconds,
         CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
@@ -158,7 +161,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         if (waitSeconds > 0)
         {
             writer.WriteU8(1);
-            writer.WriteU64((ulong)waitSeconds.Value);
+            writer.WriteU64(waitSeconds.Value);
         }
         else
         {
@@ -213,6 +216,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         return items;
     }
 
+    /// <inheritdoc />
     public async Task<QueueSubscription> SubscribeAsync(
         string pattern,
         CancellationToken ct = default)
@@ -306,7 +310,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
     {
         return new QueueSubscription(
             pattern,
-            cancellationToken => UnsubscribeAsync(pattern, handleId, cancellationToken),
+            ct => UnsubscribeAsync(pattern, handleId, ct),
             completion);
     }
 
@@ -472,12 +476,12 @@ public sealed class QueueClient : IQueueClient, IDisposable
         }
     }
 
-    async ValueTask HandleReconnect(CancellationToken cancellationToken) => await RestoreSubscriptionsAsync(cancellationToken).ConfigureAwait(false);
+    async ValueTask HandleReconnect(CancellationToken ct) => await RestoreSubscriptionsAsync(ct).ConfigureAwait(false);
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
-    async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
+    async ValueTask RestoreSubscriptionsAsync(CancellationToken ct)
     {
-        await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             List<(string Pattern, QueueSubscriptionState Subscription)> snapshot;
@@ -502,7 +506,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
             {
                 foreach (var entry in snapshot)
                 {
-                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, cancellationToken).ConfigureAwait(false);
+                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, ct).ConfigureAwait(false);
                     restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
                     restoredPatternsById[subscriptionId] = entry.Pattern;
                 }
@@ -546,6 +550,7 @@ public sealed class QueueClient : IQueueClient, IDisposable
         }
     }
 
+    /// <summary>Releases local resources and ends any registrations this client owns.</summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

@@ -1,4 +1,3 @@
-using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Domains.Kv;
 using Cntryl.Fitz.Domains.Lease;
 using Cntryl.Fitz.Domains.Notice;
@@ -17,7 +16,7 @@ public sealed class PublicSurfaceTests
     {
         // Arrange
         var transportCalls = 0;
-        Task<byte[]> Request(ushort messageType, byte[] payload, CancellationToken cancellationToken)
+        Task<byte[]> Request(ushort messageType, byte[] payload, CancellationToken ct)
         {
             transportCalls++;
             return Task.FromResult(Array.Empty<byte>());

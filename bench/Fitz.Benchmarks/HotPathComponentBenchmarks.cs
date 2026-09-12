@@ -1,7 +1,6 @@
 using System.Buffers;
 using BenchmarkDotNet.Attributes;
 using Cntryl.Fitz.Protocol;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Benchmarks;
 

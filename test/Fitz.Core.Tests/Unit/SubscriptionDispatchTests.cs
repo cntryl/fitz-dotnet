@@ -29,10 +29,10 @@ public sealed class SubscriptionDispatchTests
                 }
             });
 
-        SubscriptionPump.Start(firstRegistration, async (_, cancellationToken) =>
+        SubscriptionPump.Start(firstRegistration, async (_, ct) =>
         {
             firstStarted.TrySetResult();
-            await releaseFirst.Task.WaitAsync(cancellationToken);
+            await releaseFirst.Task.WaitAsync(ct);
         }, dispatcher.TryDispatch);
         SubscriptionPump.Start(secondRegistration, (_, _) => ValueTask.CompletedTask, dispatcher.TryDispatch);
 
@@ -127,12 +127,12 @@ public sealed class SubscriptionDispatchTests
         var handlerStarted = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
         var handlerCanceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        SubscriptionPump.Start(registration, async (_, cancellationToken) =>
+        SubscriptionPump.Start(registration, async (_, ct) =>
         {
-            handlerStarted.TrySetResult(cancellationToken);
+            handlerStarted.TrySetResult(ct);
             try
             {
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             }
             catch (OperationCanceledException)
             {

@@ -2,10 +2,12 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Net.Sockets;
-using Cntryl.Fitz.Errors;
 
-namespace Cntryl.Fitz.Transport;
+namespace Cntryl.Fitz;
 
+/// <summary>
+/// Connects to a Fitz broker over raw TCP, with socket keepalive when configured.
+/// </summary>
 public sealed class TcpTransport : ITransport
 {
     readonly Uri _uri;
@@ -17,6 +19,11 @@ public sealed class TcpTransport : ITransport
     TcpClient? _client;
     NetworkStream? _stream;
 
+    /// <summary>Creates a TCP transport.</summary>
+    /// <param name="url">Broker endpoint.</param>
+    /// <param name="timeout">Connect timeout.</param>
+    /// <param name="maxFrameSize">Largest frame accepted or produced.</param>
+    /// <param name="heartbeat">Socket keepalive settings, or <see langword="null"/> for defaults.</param>
     public TcpTransport(Uri url, TimeSpan timeout, int maxFrameSize, HeartbeatOptions? heartbeat = null)
     {
         ArgumentNullException.ThrowIfNull(url);
@@ -40,10 +47,15 @@ public sealed class TcpTransport : ITransport
         _heartbeat = heartbeat ?? new HeartbeatOptions();
     }
 
+    /// <inheritdoc />
+    public string TransportName => nameof(TcpTransport);
+
+    /// <inheritdoc />
     public Uri Url => _uri;
 
+    /// <inheritdoc />
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Ownership transfers to the transport only after a successful connection; every failure path disposes the local client.")]
-    public async Task ConnectAsync(CancellationToken cancellationToken = default)
+    public async Task ConnectAsync(CancellationToken ct = default)
     {
         if (_client is { Connected: true })
         {
@@ -56,8 +68,8 @@ public sealed class TcpTransport : ITransport
         };
 
         using var timeoutCts = new CancellationTokenSource(_timeout);
-        using var cancellationRegistration = cancellationToken.CanBeCanceled
-            ? cancellationToken.Register(static state => ((CancellationTokenSource)state!).Cancel(), timeoutCts)
+        using var cancellationRegistration = ct.CanBeCanceled
+            ? ct.Register(static state => ((CancellationTokenSource)state!).Cancel(), timeoutCts)
             : default;
 
         try
@@ -73,7 +85,7 @@ public sealed class TcpTransport : ITransport
             }
             previousClient?.Dispose();
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             client.Dispose();
             throw;
@@ -90,7 +102,8 @@ public sealed class TcpTransport : ITransport
         }
     }
 
-    public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
         var frameLength = data.Length;
         if (frameLength > _maxFrameSize)
@@ -98,7 +111,7 @@ public sealed class TcpTransport : ITransport
             throw new ProtocolException($"TCP frame length {frameLength} exceeds max frame size {_maxFrameSize}.");
         }
 
-        await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
         byte[]? frame = null;
         try
         {
@@ -107,13 +120,13 @@ public sealed class TcpTransport : ITransport
             BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(0, 4), (uint)frameLength);
             data.Span.CopyTo(frame.AsSpan(4, frameLength));
 
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(_timeout);
             try
             {
                 await stream.WriteAsync(frame.AsMemory(0, frameLength + 4), timeoutCts.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 throw;
             }
@@ -132,11 +145,12 @@ public sealed class TcpTransport : ITransport
         }
     }
 
-    public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
     {
         var stream = EnsureStream();
 
-        var headerRead = await ReadExactOrClosedAsync(stream, _receiveHeaderBuffer.AsMemory(), cancellationToken).ConfigureAwait(false);
+        var headerRead = await ReadExactOrClosedAsync(stream, _receiveHeaderBuffer.AsMemory(), ct).ConfigureAwait(false);
         if (headerRead == 0)
         {
             return PooledFrame.Closed;
@@ -163,7 +177,7 @@ public sealed class TcpTransport : ITransport
         var ownsPayload = true;
         try
         {
-            var payloadRead = await ReadExactOrClosedAsync(stream, payload.AsMemory(0, frameLength), cancellationToken).ConfigureAwait(false);
+            var payloadRead = await ReadExactOrClosedAsync(stream, payload.AsMemory(0, frameLength), ct).ConfigureAwait(false);
             if (payloadRead == 0)
             {
                 return PooledFrame.Closed;
@@ -192,9 +206,10 @@ public sealed class TcpTransport : ITransport
         ArrayPool<byte>.Shared.Return(buffer);
     }
 
-    public async Task CloseAsync(CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public async Task CloseAsync(CancellationToken ct = default)
     {
-        await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             var stream = Interlocked.Exchange(ref _stream, null);
@@ -213,18 +228,20 @@ public sealed class TcpTransport : ITransport
         }
     }
 
+    /// <summary>Closes the connection and releases transport resources.</summary>
+    /// <returns>A task that completes once cleanup finishes.</returns>
     public async ValueTask DisposeAsync()
     {
         await CloseAsync().ConfigureAwait(false);
         _sendLock.Dispose();
     }
 
-    static async Task<int> ReadExactOrClosedAsync(NetworkStream stream, Memory<byte> buffer, CancellationToken cancellationToken)
+    static async Task<int> ReadExactOrClosedAsync(NetworkStream stream, Memory<byte> buffer, CancellationToken ct)
     {
         var totalRead = 0;
         while (totalRead < buffer.Length)
         {
-            var bytesRead = await stream.ReadAsync(buffer[totalRead..], cancellationToken).ConfigureAwait(false);
+            var bytesRead = await stream.ReadAsync(buffer[totalRead..], ct).ConfigureAwait(false);
             if (bytesRead == 0)
             {
                 if (totalRead > 0)

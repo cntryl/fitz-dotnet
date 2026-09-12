@@ -1,14 +1,19 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
-using Cntryl.Fitz.Abstractions.Domains.Kv;
 using Cntryl.Fitz.Connection;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Kv;
 
-public sealed class KvClient : IKvClient, IDisposable
+/// <summary>
+/// The default <see cref="IKvClient"/>: KV transactions and key-change subscriptions.
+/// </summary>
+/// <remarks>
+/// Obtained from <see cref="Client"/> rather than constructed directly. The public
+/// constructors exist for testing against a transport delegate.
+/// </remarks>
+sealed class KvClient : IKvClient, IDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<Action, IDisposable>? _registerOnDisconnect;
@@ -31,11 +36,11 @@ public sealed class KvClient : IKvClient, IDisposable
         : this(
             connection.RequestAsync,
             connection.OnDisconnect,
-            (operation, messageType, payload, cancellationToken) =>
+            (operation, messageType, payload, ct) =>
                 connection.ExecuteWithRetryAsync(
                     operation,
                     innerToken => connection.RequestAsync(messageType, payload, innerToken),
-                    cancellationToken),
+                    ct),
             connection.RegisterBorrowedNotificationHandler,
             (handler, rejected) => connection.TryDispatchAsyncHandler("kv", handler, rejected),
             connection.SubscriptionBufferCapacity)
@@ -43,6 +48,9 @@ public sealed class KvClient : IKvClient, IDisposable
         _reconnectRegistration = connection.OnReconnect(RestoreSubscriptionsAsync);
     }
 
+    /// <summary>
+    /// Creates a domain client over a request delegate, for testing without a broker.
+    /// </summary>
     public KvClient(Func<ushort, byte[], CancellationToken, Task<byte[]>> request)
         : this(async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)))
     {
@@ -65,22 +73,23 @@ public sealed class KvClient : IKvClient, IDisposable
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
     }
 
+    /// <inheritdoc />
     public async Task<IKvTransaction> BeginAsync(
         string route,
         KvDurability durability,
         KvMode mode = KvMode.ReadWrite,
-        CancellationToken cancellationToken = default)
+        CancellationToken ct = default)
     {
         ThrowIfDisposed();
         if (!RouteValidation.IsFixedRoute(route, "kv", 3))
         {
             throw new KvException($"route '{route}' must be kv://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
         }
-        if (!Enum.IsDefined(mode))
+        if (mode is not KvMode.ReadOnly and not KvMode.ReadWrite)
         {
             throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown KV transaction mode");
         }
-        if (!Enum.IsDefined(durability))
+        if (durability is not KvDurability.Async and not KvDurability.Sync)
         {
             throw new ArgumentOutOfRangeException(nameof(durability), durability, "Unknown KV durability mode");
         }
@@ -90,7 +99,7 @@ public sealed class KvClient : IKvClient, IDisposable
         writer.WriteU8((byte)mode);
         writer.WriteU8((byte)durability);
 
-        var response = await _request(MessageTypes.KvBegin, writer.WrittenMemory, cancellationToken).ConfigureAwait(false);
+        var response = await _request(MessageTypes.KvBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = KvWireHelpers.ReadSuccess(response, "BEGIN");
 
         if (reader.IsEof || reader.RemainingBytes < 8)
@@ -107,10 +116,11 @@ public sealed class KvClient : IKvClient, IDisposable
         return new KvTransaction(_request, route, txId, _registerOnDisconnect, _retryRequest);
     }
 
+    /// <inheritdoc />
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The returned enumerable handle owns and disposes the callback registration.")]
     public async Task<KvSubscription> SubscribeAsync(
         string pattern,
-        CancellationToken cancellationToken = default)
+        CancellationToken ct = default)
     {
         ThrowIfDisposed();
         var buffer = new AsyncSubscriptionBuffer<KvNotification>(pattern, _subscriptionBufferCapacity);
@@ -118,7 +128,7 @@ public sealed class KvClient : IKvClient, IDisposable
         {
             buffer.Write(notification);
             return ValueTask.CompletedTask;
-        }, cancellationToken).ConfigureAwait(false);
+        }, ct).ConfigureAwait(false);
         buffer.ObserveCompletion(registration.Completion);
         return new KvSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
         {
@@ -130,7 +140,7 @@ public sealed class KvClient : IKvClient, IDisposable
     internal async Task<KvSubscription> SubscribeAsync(
         string pattern,
         Func<KvNotification, CancellationToken, ValueTask> handler,
-        CancellationToken cancellationToken = default)
+        CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handler);
         if (!RouteValidation.IsRegistrationPattern(pattern, "kv", 3))
@@ -146,7 +156,7 @@ public sealed class KvClient : IKvClient, IDisposable
             "kv",
             pattern,
             token => UnsubscribeAsync(pattern, handleId, token));
-        await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             KvSubscriptionState? state;
@@ -156,7 +166,7 @@ public sealed class KvClient : IKvClient, IDisposable
             }
             if (state is null)
             {
-                var subscriptionId = await SubscribeWireAsync(pattern, cancellationToken).ConfigureAwait(false);
+                var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
                 state = new KvSubscriptionState(subscriptionId);
                 lock (_gate)
                 {
@@ -183,19 +193,19 @@ public sealed class KvClient : IKvClient, IDisposable
         }
     }
 
-    async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken cancellationToken)
+    async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
-        var response = await _request(MessageTypes.KvSubscribe, writer.WrittenMemory, cancellationToken).ConfigureAwait(false);
+        var response = await _request(MessageTypes.KvSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         return DecodeSubscriptionResponse(response, "SUBSCRIBE", expectSubscriptionId: true)!.Value;
     }
 
     [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Ownership intentionally remains in the subscription table when the wire unsubscribe fails.")]
-    async ValueTask UnsubscribeAsync(string pattern, long handleId, CancellationToken cancellationToken)
+    async ValueTask UnsubscribeAsync(string pattern, long handleId, CancellationToken ct)
     {
         SubscriptionRegistration<KvNotification>? registration = null;
-        await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             var removedLocally = false;
@@ -221,7 +231,7 @@ public sealed class KvClient : IKvClient, IDisposable
                 return;
             }
 
-            await UnsubscribeWireAsync(pattern, cancellationToken).ConfigureAwait(false);
+            await UnsubscribeWireAsync(pattern, ct).ConfigureAwait(false);
 
             lock (_gate)
             {
@@ -241,11 +251,11 @@ public sealed class KvClient : IKvClient, IDisposable
         registration?.Dispose();
     }
 
-    async Task UnsubscribeWireAsync(string pattern, CancellationToken cancellationToken)
+    async Task UnsubscribeWireAsync(string pattern, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
-        var response = await _request(MessageTypes.KvUnsubscribe, writer.WrittenMemory, cancellationToken).ConfigureAwait(false);
+        var response = await _request(MessageTypes.KvUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         DecodeSubscriptionResponse(response, "UNSUBSCRIBE", expectSubscriptionId: false);
     }
 
@@ -314,9 +324,9 @@ public sealed class KvClient : IKvClient, IDisposable
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
-    async ValueTask RestoreSubscriptionsAsync(CancellationToken cancellationToken)
+    async ValueTask RestoreSubscriptionsAsync(CancellationToken ct)
     {
-        await _subscriptionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             KeyValuePair<string, KvSubscriptionState>[] entries;
@@ -330,7 +340,7 @@ public sealed class KvClient : IKvClient, IDisposable
             {
                 foreach (var entry in entries)
                 {
-                    var subscriptionId = await SubscribeWireAsync(entry.Key, cancellationToken).ConfigureAwait(false);
+                    var subscriptionId = await SubscribeWireAsync(entry.Key, ct).ConfigureAwait(false);
                     restoredSubscriptions[entry.Key] = entry.Value.Clone(subscriptionId);
                     restoredPatternsById[subscriptionId] = entry.Key;
                 }
@@ -368,6 +378,7 @@ public sealed class KvClient : IKvClient, IDisposable
         }
     }
 
+    /// <summary>Releases local resources and ends any registrations this client owns.</summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

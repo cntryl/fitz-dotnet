@@ -51,17 +51,20 @@ public class FrameCodecBenchmarks
     [Benchmark]
     public byte[] EncodeLargeMessage() => FrameCodec.Encode(300, _payload1024!);
 
+    // BenchmarkDotNet requires public benchmark methods, and Frame is internal, so these
+    // return the decoded payload instead. The decode work measured is unchanged: reading
+    // one field off the returned struct neither boxes nor allows dead-code elimination.
     [Benchmark]
-    public Frame DecodeSmallMessage() => FrameCodec.DecodeStrict(_encoded64!);
+    public ReadOnlyMemory<byte> DecodeSmallMessage() => FrameCodec.DecodeStrict(_encoded64!).Payload;
 
     [Benchmark]
-    public Frame DecodeMediumMessage() => FrameCodec.DecodeStrict(_encoded256!);
+    public ReadOnlyMemory<byte> DecodeMediumMessage() => FrameCodec.DecodeStrict(_encoded256!).Payload;
 
     [Benchmark]
-    public Frame DecodeLargeMessage() => FrameCodec.DecodeStrict(_encoded1024!);
+    public ReadOnlyMemory<byte> DecodeLargeMessage() => FrameCodec.DecodeStrict(_encoded1024!).Payload;
 
     [Benchmark]
-    public Frame DecodeXLargeMessage() => FrameCodec.DecodeStrict(_encodedLarge!);
+    public ReadOnlyMemory<byte> DecodeXLargeMessage() => FrameCodec.DecodeStrict(_encodedLarge!).Payload;
 
     [Benchmark]
     public byte[] EncodeExtendedMessageType() => FrameCodec.Encode(500, _payload256!);

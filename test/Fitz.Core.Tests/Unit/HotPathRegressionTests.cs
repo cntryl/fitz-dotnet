@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Runtime.InteropServices;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Protocol;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 

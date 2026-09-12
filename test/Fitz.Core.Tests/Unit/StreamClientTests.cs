@@ -1,9 +1,6 @@
-using Cntryl.Fitz.Abstractions.Domains.Stream;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Domains.Stream;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
-using Cntryl.Fitz.Transport;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -488,13 +485,13 @@ public sealed class StreamClientTests
             {
                 Assert.Equal("stream://prod/app/events", record.Route);
                 Assert.Equal((ulong)4, record.Offset);
-                Assert.Equal("one", System.Text.Encoding.UTF8.GetString(record.Body));
+                Assert.Equal("one", System.Text.Encoding.UTF8.GetString(record.Body.Span));
             },
             record =>
             {
                 Assert.Equal("stream://prod/app/events", record.Route);
                 Assert.Equal((ulong)5, record.Offset);
-                Assert.Equal("two", System.Text.Encoding.UTF8.GetString(record.Body));
+                Assert.Equal("two", System.Text.Encoding.UTF8.GetString(record.Body.Span));
             });
     }
 
@@ -681,7 +678,7 @@ public sealed class StreamClientTests
                 Assert.Equal("stream://prod/app/events", item.Record!.Route);
                 Assert.Equal((ulong)41, item.Record!.Offset);
                 Assert.Equal((ulong)51, item.Record.AreaOffset);
-                Assert.Equal("alpha", System.Text.Encoding.UTF8.GetString(item.Record.Body));
+                Assert.Equal("alpha", System.Text.Encoding.UTF8.GetString(item.Record.Body.Span));
             },
             item =>
             {
@@ -835,7 +832,7 @@ public sealed class StreamClientTests
         Assert.NotNull(record);
         Assert.Equal("stream://prod/app/events", record!.Route);
         Assert.Equal((ulong)42, record!.Offset);
-        Assert.Equal("tail", System.Text.Encoding.UTF8.GetString(record.Body));
+        Assert.Equal("tail", System.Text.Encoding.UTF8.GetString(record.Body.Span));
     }
 
     [Fact]
@@ -901,10 +898,10 @@ public sealed class StreamClientTests
             });
 
         // Act
-        var subscription = await stream.SubscribeAsync("stream://prod/*/*", (evt, cancellationToken) =>
+        var subscription = await stream.SubscribeAsync("stream://prod/*/*", (evt, ct) =>
         {
             received = evt;
-            seenCancellationToken = cancellationToken;
+            seenCancellationToken = ct;
             receivedTcs.TrySetResult(evt);
             return ValueTask.CompletedTask;
         });

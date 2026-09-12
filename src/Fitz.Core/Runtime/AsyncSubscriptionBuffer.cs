@@ -40,6 +40,6 @@ sealed class AsyncSubscriptionBuffer<T>(string pattern, int capacity = Subscript
         }
     }
 
-    internal IAsyncEnumerable<T> ReadAllAsync(CancellationToken cancellationToken = default) =>
-        _channel.Reader.ReadAllAsync(cancellationToken);
+    internal IAsyncEnumerable<T> ReadAllAsync(CancellationToken ct = default) =>
+        _channel.Reader.ReadAllAsync(ct);
 }

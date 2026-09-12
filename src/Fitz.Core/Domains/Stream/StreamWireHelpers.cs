@@ -3,8 +3,6 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Text;
 using System.Text.Json;
-using Cntryl.Fitz.Abstractions.Domains.Stream;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Domains.Stream;
@@ -24,7 +22,8 @@ static class StreamWireHelpers
         writer.WriteU32((uint)filter.Clauses.Count);
         foreach (var clause in filter.Clauses)
         {
-            if (!Enum.IsDefined(clause.Kind))
+            if (clause.Kind is not StreamFilterClauseKind.Equals and not StreamFilterClauseKind.NotEquals
+                and not StreamFilterClauseKind.StartsWith and not StreamFilterClauseKind.AnyOf)
             {
                 throw new ArgumentOutOfRangeException(nameof(filter), clause.Kind, "Unknown stream filter clause kind");
             }
@@ -257,7 +256,7 @@ static class StreamWireHelpers
         };
     }
 
-    internal static StreamFilteredReason? ReadFilteredReason(BinaryBufferReader reader, string operation)
+    internal static StreamFilteredReason ReadFilteredReason(BinaryBufferReader reader, string operation)
     {
         if (reader.IsEof)
         {
@@ -267,7 +266,7 @@ static class StreamWireHelpers
         var tag = reader.ReadU8();
         return tag switch
         {
-            0 => null,
+            0 => StreamFilteredReason.None,
             1 => StreamFilteredReason.ServerFilter,
             2 => StreamFilteredReason.Permission,
             3 => StreamFilteredReason.Projection,

@@ -139,17 +139,35 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
                 continue;
             }
 
-            var constant = GetConstantValue(argument.Value);
-            if (!IsInvalidConstant(invocation.TargetMethod, apiSymbols, argument.Parameter.Name, constant))
+            // Durations are TimeSpan on the public surface, so the literal the caller wrote is
+            // an expression rather than a constant. Evaluate the recognisable TimeSpan factory
+            // calls so these stay compile-time errors instead of runtime ones.
+            object? reported;
+            if (TryGetConstantTimeSpan(argument.Value, out var duration))
             {
-                continue;
+                if (!IsInvalidDuration(argument.Parameter.Name, duration))
+                {
+                    continue;
+                }
+
+                reported = duration;
+            }
+            else
+            {
+                var constant = GetConstantValue(argument.Value);
+                if (!IsInvalidConstant(invocation.TargetMethod, apiSymbols, argument.Parameter.Name, constant))
+                {
+                    continue;
+                }
+
+                reported = constant.Value;
             }
 
             context.ReportDiagnostic(Diagnostic.Create(
                 FitzDiagnostics.InvalidArgument,
                 argument.Syntax.GetLocation(),
                 argument.Parameter.Name,
-                constant.Value));
+                reported));
         }
     }
 
@@ -186,16 +204,138 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
 
         return parameterName switch
         {
-            "ttlSecs" => ToUInt64(constant.Value) is 0 or > uint.MaxValue / 1000,
-            "leaseSeconds" => ToUInt64(constant.Value) == 0,
             "batchSize" => ToInt64(constant.Value) <= 0,
-            "delayMs" => IsInvalidDelay(ToInt64(constant.Value)),
-            "waitSeconds" or "limit" => ToInt64(constant.Value) < 0,
+            "limit" => ToInt64(constant.Value) < 0,
             _ => false,
         };
     }
 
-    static bool IsInvalidDelay(long delayMs) => delayMs < 0 || delayMs % 1000 != 0;
+    /// <summary>
+    /// Whether a duration written as a literal is one the Fitz wire cannot carry.
+    /// </summary>
+    static bool IsInvalidDuration(string parameterName, TimeSpan value) => parameterName switch
+    {
+        "ttl" => value <= TimeSpan.Zero || !IsWholeSeconds(value) || value.TotalSeconds > uint.MaxValue / 1000,
+        "lease" => value <= TimeSpan.Zero || !IsWholeSeconds(value),
+        "delay" or "wait" => value < TimeSpan.Zero || !IsWholeSeconds(value),
+        _ => false,
+    };
+
+    static bool IsWholeSeconds(TimeSpan value) => value.Ticks % TimeSpan.TicksPerSecond == 0;
+
+    /// <summary>
+    /// Evaluates <c>TimeSpan.Zero</c> and the <c>TimeSpan.From*</c> factories over a constant,
+    /// which is how a caller writes a duration literal.
+    /// </summary>
+    static bool TryGetConstantTimeSpan(IOperation operation, out TimeSpan value)
+    {
+        value = default;
+        while (operation is IConversionOperation conversion)
+        {
+            operation = conversion.Operand;
+        }
+
+        if (operation is IFieldReferenceOperation field &&
+            IsTimeSpan(field.Field.ContainingType) &&
+            field.Field.Name == nameof(TimeSpan.Zero))
+        {
+            value = TimeSpan.Zero;
+            return true;
+        }
+
+        if (operation is not IInvocationOperation call ||
+            !call.TargetMethod.IsStatic ||
+            !IsTimeSpan(call.TargetMethod.ContainingType) ||
+            call.Arguments.Length != 1)
+        {
+            return false;
+        }
+
+        var amountConstant = GetConstantValue(call.Arguments[0].Value);
+        if (!amountConstant.HasValue || amountConstant.Value is null || !TryToDouble(amountConstant.Value, out var amount))
+        {
+            return false;
+        }
+
+        try
+        {
+            switch (call.TargetMethod.Name)
+            {
+                case nameof(TimeSpan.FromDays):
+                    value = TimeSpan.FromDays(amount);
+                    return true;
+                case nameof(TimeSpan.FromHours):
+                    value = TimeSpan.FromHours(amount);
+                    return true;
+                case nameof(TimeSpan.FromMinutes):
+                    value = TimeSpan.FromMinutes(amount);
+                    return true;
+                case nameof(TimeSpan.FromSeconds):
+                    value = TimeSpan.FromSeconds(amount);
+                    return true;
+                case nameof(TimeSpan.FromMilliseconds):
+                    value = TimeSpan.FromMilliseconds(amount);
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        catch (OverflowException)
+        {
+            // A literal the caller wrote that TimeSpan itself rejects is not ours to report.
+            return false;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    static bool TryToDouble(object value, out double result)
+    {
+        switch (value)
+        {
+            case sbyte item:
+                result = item;
+                return true;
+            case short item:
+                result = item;
+                return true;
+            case int item:
+                result = item;
+                return true;
+            case long item:
+                result = item;
+                return true;
+            case byte item:
+                result = item;
+                return true;
+            case ushort item:
+                result = item;
+                return true;
+            case uint item:
+                result = item;
+                return true;
+            case ulong item:
+                result = item;
+                return true;
+            case float item:
+                result = item;
+                return true;
+            case double item:
+                result = item;
+                return true;
+            case decimal item:
+                result = (double)item;
+                return true;
+            default:
+                result = 0;
+                return false;
+        }
+    }
+
+    static bool IsTimeSpan(INamedTypeSymbol? type) =>
+        type is { Name: nameof(TimeSpan), ContainingNamespace.Name: nameof(System) };
 
     static ulong ToUInt64(object value) => value switch
     {

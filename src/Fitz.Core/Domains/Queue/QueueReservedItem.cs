@@ -1,6 +1,4 @@
 using System.Threading;
-using Cntryl.Fitz.Abstractions.Domains.Queue;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Domains.Queue;
@@ -37,9 +35,10 @@ sealed class QueueReservedItem : QueueItem
         }
     }
 
-    public override async Task ExtendAsync(ulong leaseSeconds, CancellationToken ct = default)
+    public override async Task ExtendAsync(TimeSpan lease, CancellationToken ct = default)
     {
-        ArgumentOutOfRangeException.ThrowIfZero(leaseSeconds, nameof(leaseSeconds));
+        var leaseSeconds = WireDuration.ToSeconds(lease, nameof(lease));
+        ArgumentOutOfRangeException.ThrowIfZero(leaseSeconds, nameof(lease));
         ThrowIfClosed();
 
         using var writer = new BinaryBufferWriter();

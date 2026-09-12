@@ -1,5 +1,4 @@
 using Cntryl.Fitz.Domains.Stream;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;

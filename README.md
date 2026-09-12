@@ -8,9 +8,37 @@
 - `Cntryl.Fitz.Abstractions`: public interfaces and shared contracts
 - `Cntryl.Fitz.DependencyInjection`: DI registration helpers
 
-All three packages support trimming and Native AOT. They enable the .NET AOT
-compatibility analyzers, and CI publishes and executes a Native AOT application
-against the packed NuGet artifacts.
+`Cntryl.Fitz.Analyzers` and `Cntryl.Fitz.CodeFixes` are build-time Roslyn
+components and never ship into a consumer's application.
+
+Every public type and member is documented, and the XML documentation ships in
+each package, so IntelliSense works without consulting this file.
+
+## Trimming and Native AOT
+
+The three runtime packages use no reflection on any code path — no `GetType()`,
+no `Enum.IsDefined`, no container type activation — declare no
+`DynamicallyAccessedMembers`/`RequiresUnreferencedCode`/`RequiresDynamicCode`
+contracts, and suppress no trim or AOT warning. They are trim-safe and
+Native-AOT-safe with no consumer-side configuration.
+
+Enforcement is mechanical, not aspirational:
+
+- every package sets `IsAotCompatible=true`, enabling the trim, AOT, and
+  single-file analyzers, and warnings are errors repo-wide
+- the `package` CI job publishes and runs a Native AOT executable against the
+  freshly packed artifacts with **all three assemblies rooted**, so ILC analyzes
+  every shipped method rather than only what the sample reaches, reports each
+  finding individually, and fails the build on any of them
+
+Rooting the whole assembly is the part that matters. Analyzers reason one method
+at a time and miss cases that whole-program analysis catches — that gap hid an
+`IL2091` in `0.1.3` until this audit. Details, reproduction steps, and the rules
+for keeping it true: [docs/aot-and-reflection.md](docs/aot-and-reflection.md).
+
+Supplying your own transport through `ClientConfig.TransportFactory`? Override
+`ITransport.TransportName` with a constant to label it in telemetry; it defaults
+to `"custom"` rather than inspecting the runtime type.
 
 ## Install
 
@@ -19,6 +47,13 @@ dotnet add package Cntryl.Fitz
 dotnet add package Cntryl.Fitz.Abstractions
 dotnet add package Cntryl.Fitz.DependencyInjection
 ```
+
+## One namespace
+
+The entire public surface lives in the single `Cntryl.Fitz` namespace, across all three
+packages, so a consumer writes one using directive rather than one per domain. The assembly
+and package names keep their `.Abstractions` and `.DependencyInjection` suffixes; only
+`AddFitzClient` sits apart, in `Cntryl.Fitz.DependencyInjection`.
 
 ## Quick Start
 
@@ -34,7 +69,7 @@ await using var client = new Client(
 
 await client.ConnectWhenReadyAsync();
 
-var tx = await client.Kv.BeginAsync("kv://realm/app/users", Cntryl.Fitz.Abstractions.Domains.Kv.KvDurability.Async);
+var tx = await client.Kv.BeginAsync("kv://realm/app/users", KvDurability.Async);
 await tx.PutAsync("user-1"u8.ToArray(), """{"name":"Alice"}"""u8.ToArray());
 await tx.CommitAsync();
 ```
@@ -92,13 +127,14 @@ client never returns a partial reservation or read batch.
 Reserved queue items are async-disposable; dispose any item that will not be
 completed so its connection-lifetime registration is released.
 
-Queue `waitSeconds` uses the broker-native RESERVE wait field. A broker that
+The queue `wait` duration uses the broker-native RESERVE wait field. A broker that
 rejects that field fails the request directly; the client does not downgrade
 to polling.
 
 The current queue wire does not include an attempt count, so
-`QueueItem.Attempt` is `QueueItem.AttemptUnavailable` (`0`). Queue delays are
-accepted only in whole-second `delayMs` values instead of being silently rounded.
+`QueueItem.Attempt` is `QueueItem.AttemptUnavailable` (`0`). Every duration in
+the API is a `TimeSpan`, and one finer than the wire can carry is rejected
+rather than silently rounded — see [docs/guide.md](docs/guide.md#durations).
 
 `Stream.ReadAsync` follows validated continuation cursors until `HasMore` is
 false. Use `ReadPageAsync` when the caller needs explicit page boundaries.
@@ -126,13 +162,16 @@ error `FitzErrorCodes.ScheduleBackendError` (`7010`). `Retryability` classifies
 it as retryable subject to operation safety; it is not reported as malformed
 cron or parse input.
 
-## Unreleased preview migration
+## Upgrading from 0.1.x
 
-This preview intentionally breaks the earlier callback subscription surface.
-Replace callback arguments with `await foreach` over the returned handle. Public
-one-shot operations now return `Task`/`Task<T>`; `ValueTask` remains only for
-disposal and callback/provider contracts. Schedule listing now uses
-`ListAsync(offset, limit)` and returns entries plus `TotalCount`.
+`1.0.0` is the release that settles the public surface, so it carries the breaking
+changes the pinned `AssemblyVersion` would otherwise have frozen. The largest are the
+single `Cntryl.Fitz` namespace, `TimeSpan` for every duration, and the connection and
+protocol internals becoming `internal`. [CHANGELOG.md](CHANGELOG.md) lists each one with
+the reason; [docs/guide.md](docs/guide.md) documents the resulting API.
+
+From `1.0.0` onward the public surface is a commitment: breaking changes require a major
+release.
 
 ## Local Verification
 
@@ -143,6 +182,21 @@ dotnet restore Fitz.sln
 dotnet build Fitz.sln -c Release --no-restore
 dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter "FullyQualifiedName!~Integration"
 ```
+
+Verify the packed packages publish and run as a Native AOT executable with every
+shipped assembly rooted (substitute your own runtime identifier):
+
+```bash
+dotnet pack Fitz.sln -c Release --output artifacts/packages
+rm -rf artifacts/consumer-package-cache
+dotnet publish test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj \
+  -c Release -r linux-x64 -p:PublishAot=true --output artifacts/native-aot
+artifacts/native-aot/Fitz.PackageConsumer
+```
+
+Clearing `artifacts/consumer-package-cache` is required, not hygiene:
+`PackageVersion` is fixed across rebuilds, so a copy left from an earlier pack
+would shadow the packages just built and verify stale bits.
 
 Broker-backed integration and conformance run:
 
@@ -182,11 +236,15 @@ The conformance artifact uses the shared schema:
 
 ## Documentation
 
-- [docs/README.md](docs/README.md)
-- [CLIENT_SPEC.md](CLIENT_SPEC.md)
-- [CLIENT_ACCEPTANCE_CRITERIA.md](CLIENT_ACCEPTANCE_CRITERIA.md)
-- [docs/spec-parity-gap-matrix.md](docs/spec-parity-gap-matrix.md)
-- [docs/spec-parity-audit.md](docs/spec-parity-audit.md)
+- [docs/guide.md](docs/guide.md) — the consumer guide: every domain, with working examples
+- [docs/README.md](docs/README.md) — index of the standing contracts and status documents
+- [CHANGELOG.md](CHANGELOG.md) — release history and every breaking change
+- [CONTRIBUTING.md](CONTRIBUTING.md) — enforced standards, and where the normative client
+  protocol specification lives (the Fitz server repository, not this one)
+- [docs/aot-and-reflection.md](docs/aot-and-reflection.md) — the trim and AOT guarantee
+- [PERF_GUIDELINES.md](PERF_GUIDELINES.md) — performance patterns and budgets
+- [docs/spec-parity-gap-matrix.md](docs/spec-parity-gap-matrix.md) — capability status
+- [docs/sharp-edges-evidence-ledger.md](docs/sharp-edges-evidence-ledger.md) — audit dispositions
 
 ## Managed leases
 
@@ -205,10 +263,10 @@ Authority-aware callbacks also receive the immutable admission fence from the su
 ```csharp
 await client.Lease.WithLeaseAsync(
     "lease://example/jobs/leader",
-    30,
-    async (authority, cancellationToken) =>
+    TimeSpan.FromSeconds(30),
+    async (authority, ct) =>
     {
-        await RunLeaderAsync(authority.FencingToken, cancellationToken);
+        await RunLeaderAsync(authority.FencingToken, ct);
     });
 ```
 

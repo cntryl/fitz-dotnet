@@ -1,7 +1,4 @@
-using Cntryl.Fitz.Abstractions;
-using Cntryl.Fitz.Abstractions.Domains.Notice;
 using Cntryl.Fitz.Domains.Notice;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
 
@@ -275,10 +272,10 @@ public sealed class NoticeClientTests
             });
 
         // Act
-        var subscription = await notice.SubscribeAsync("notice://prod/app/*", (message, cancellationToken) =>
+        var subscription = await notice.SubscribeAsync("notice://prod/app/*", (message, ct) =>
         {
             received = message;
-            seenCancellationToken = cancellationToken;
+            seenCancellationToken = ct;
             receivedTcs.TrySetResult(message);
             return ValueTask.CompletedTask;
         });
@@ -344,12 +341,12 @@ public sealed class NoticeClientTests
 
         var handlerStarted = new TaskCompletionSource<CancellationToken>(TaskCreationOptions.RunContinuationsAsynchronously);
         var handlerCanceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var subscription = await notice.SubscribeAsync("notice://prod/app/*", async (_, cancellationToken) =>
+        var subscription = await notice.SubscribeAsync("notice://prod/app/*", async (_, ct) =>
         {
-            handlerStarted.TrySetResult(cancellationToken);
+            handlerStarted.TrySetResult(ct);
             try
             {
-                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
             }
             catch (OperationCanceledException)
             {

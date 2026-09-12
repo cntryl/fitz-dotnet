@@ -1,16 +1,20 @@
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
-using Cntryl.Fitz.Abstractions;
-using Cntryl.Fitz.Abstractions.Domains.Rpc;
 using Cntryl.Fitz.Connection;
-using Cntryl.Fitz.Errors;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Rpc;
 
-public sealed class RpcClient : IRpcClient, IDisposable
+/// <summary>
+/// The default <see cref="IRpcClient"/>: RPC calls and worker registrations.
+/// </summary>
+/// <remarks>
+/// Obtained from <see cref="Client"/> rather than constructed directly. The public
+/// constructors exist for testing against a transport delegate.
+/// </remarks>
+sealed class RpcClient : IRpcClient, IDisposable
 {
     const int CorrelationIdLength = 16;
     const byte RpcResponseFlagStreamEnd = 0x01;
@@ -78,6 +82,9 @@ public sealed class RpcClient : IRpcClient, IDisposable
     {
     }
 
+    /// <summary>
+    /// Creates a domain client over a request delegate, for testing without a broker.
+    /// </summary>
     public RpcClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
         Func<ushort, byte[], CancellationToken, Task>? send = null,
@@ -123,6 +130,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
         _responseTimeout = connectionTimeout ?? TimeSpan.FromSeconds(30);
     }
 
+    /// <inheritdoc />
     public IAsyncEnumerable<RpcResponseFrame> CallAsync(
         string route,
         ReadOnlyMemory<byte> body,
@@ -310,6 +318,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
         call.Channel.Complete(exception);
     }
 
+    /// <inheritdoc />
     public async Task<RpcWorkerRegistration> RegisterWorkerAsync(
         string pattern,
         Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask> handler,
@@ -391,7 +400,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "RPC worker callbacks are user code and must not break notification dispatch.")]
-    async Task HandleIncomingRequestAsync(byte[] payload, CancellationToken cancellationToken)
+    async Task HandleIncomingRequestAsync(byte[] payload, CancellationToken ct)
     {
         try
         {
@@ -421,18 +430,18 @@ public sealed class RpcClient : IRpcClient, IDisposable
             }
 
             var writer = new RpcResponseWriter(_send, correlationId);
-            if (!await concurrencyGate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            if (!await concurrencyGate.WaitAsync(0, ct).ConfigureAwait(false))
             {
                 await writer.SendAsync(
                     EncodeTerminalErrorBody(RpcBackpressureErrorCode, "Local RPC worker is overloaded"),
                     isEnd: true,
-                    cancellationToken).ConfigureAwait(false);
+                    ct).ConfigureAwait(false);
                 return;
             }
 
             try
             {
-                await handler(new RpcRequest(route, body), writer, cancellationToken).ConfigureAwait(false);
+                await handler(new RpcRequest(route, body), writer, ct).ConfigureAwait(false);
             }
             finally
             {
@@ -558,7 +567,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored worker before preserving the original failure.")]
-    async ValueTask ResubscribeWorkersAsync(CancellationToken cancellationToken)
+    async ValueTask ResubscribeWorkersAsync(CancellationToken ct)
     {
         KeyValuePair<string, uint>[] snapshot;
         lock (_workerSync)
@@ -568,7 +577,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
         {
             foreach (var entry in snapshot)
             {
-                await SubscribeWorkerAsync(entry.Key, entry.Value, cancellationToken).ConfigureAwait(false);
+                await SubscribeWorkerAsync(entry.Key, entry.Value, ct).ConfigureAwait(false);
                 restoredPatterns.Add(entry.Key);
             }
         }
@@ -751,6 +760,7 @@ public sealed class RpcClient : IRpcClient, IDisposable
         throw new RpcException($"{operation} failed: {message}", MapRpcErrorCode(domainCode), status, domainCode);
     }
 
+    /// <summary>Releases local resources and ends any registrations this client owns.</summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)

@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Lease;
+namespace Cntryl.Fitz;
 
 /// <summary>One lease entry returned by a Lease LIST scan.</summary>
 public sealed record LeaseListItem(
@@ -6,5 +6,5 @@ public sealed record LeaseListItem(
     string OwnerId,
     ulong HolderIncarnation,
     string AcquiredAt,
-    ulong ExpiresInSecs,
+    TimeSpan ExpiresIn,
     uint Renewals);

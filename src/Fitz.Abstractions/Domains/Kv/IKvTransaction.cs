@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz.Abstractions.Domains.Kv;
+namespace Cntryl.Fitz;
 
 /// <summary>
 /// Represents an active KV transaction.
