@@ -388,9 +388,21 @@ There is no measured pre-.NET-10 baseline for this client, so this section recor
 has actually been measured and what is still aspirational. Do not add a row without a
 benchmark behind it.
 
-**Measured.** `MultiplexerHotPathBenchmarks.RequestDispatchRoundTrip`: 2.098 μs mean,
-1.03 KB allocated per dispatch round trip. Latency is comfortably inside the 5 μs
-dispatch target; allocation is not yet at a per-request budget worth publishing.
+**Measured — allocation.** `MultiplexerHotPathBenchmarks.RequestDispatchRoundTrip` allocates
+**1.02 KB** per dispatch round trip (2026-09-12, Apple Silicon, .NET 10.0.11, default job).
+This reproduces an earlier run that recorded 1.03 KB, so the figure is stable across machines.
+It is not yet a per-request budget worth holding anyone to.
+
+**Not established — dispatch latency.** The same run measured **85.9 μs mean, with a 48.4 μs
+standard deviation and a 19% confidence margin over 99 iterations**. An earlier run of this
+benchmark was recorded at 2.098 μs; that figure carries no record of its hardware or job
+configuration and did not reproduce here. Both numbers cannot be right, and the variance means
+this benchmark is not currently a reliable latency instrument on the hardware it was re-run on.
+
+Treat the 5 μs dispatch target in the table above as a **design goal, not a measured result**.
+Nothing in this repository currently demonstrates that the multiplexer meets it. Establishing
+that needs a benchmark whose variance is small enough to support the claim, on hardware whose
+configuration is recorded alongside the number.
 
 **Aspirational, not yet validated.** Per-subscription steady-state overhead limited to
 the channel reference, and per-streaming-record delivery that does not allocate beyond

@@ -106,6 +106,10 @@ Performance findings from the audit are represented above at `MUX-4`, `MUX-7`, `
 
 ## Verification record
 
+These are the results of the audit run that produced this ledger, not current counts. Test
+totals and package versions have moved since; the standing claims are the dispositions above,
+which the current suite still covers. Current numbers live in CI.
+
 - `dotnet build Fitz.sln -c Release --no-restore`: passed with zero warnings and zero errors.
 - Release validation passed 369 non-integration core tests and 14 analyzer tests.
 - The 30 broker-backed integration tests passed over WebSocket and again over TCP, including forced broker restart and same-client recovery.
@@ -114,7 +118,7 @@ Performance findings from the audit are represented above at `MUX-4`, `MUX-7`, `
 - A clean NuGet-cache restore and execution of `Fitz.PackageConsumer` passed from the packed `0.1.3` artifacts and verified all three runtime assembly versions are `1.0.0.0`; an exact packed-consumer Native AOT publish and executable run also passed.
   That publish analyzed only the code the sample reached. A later whole-program audit rooted every shipped assembly and found an `IL2091` reflection contract that this run could not have surfaced; the publish now roots all three assemblies and treats trim/AOT warnings as errors. See [aot-and-reflection.md](aot-and-reflection.md).
 - The packed analyzer loaded and compiled valid stream-selector usage with SDK `10.0.109` / Roslyn 5.0 without CS9057.
-- Benchmark discovery found 24 benchmark methods. `MultiplexerHotPathBenchmarks.RequestDispatchRoundTrip` completed at a 2.098 microsecond mean with 1.03 KB allocated, below the documented 5 microsecond dispatch target.
+- Benchmark discovery ran at the time of this audit and recorded `MultiplexerHotPathBenchmarks.RequestDispatchRoundTrip` at a 2.098 microsecond mean with 1.03 KB allocated. A 2026-09-12 re-run reproduced the allocation (1.02 KB) but not the latency, measuring 85.9 microseconds with a 48.4 microsecond standard deviation. The dispatch-latency target is therefore not currently evidenced; see [../PERF_GUIDELINES.md](../PERF_GUIDELINES.md). The method count originally stated here (24) was already stale and has been dropped rather than re-pinned.
 
 ## Protocol follow-up requirements
 

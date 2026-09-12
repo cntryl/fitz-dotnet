@@ -80,8 +80,9 @@ and never ships into your application.
 
 ## Cancellation and disposal
 
-Every asynchronous method takes a `CancellationToken` named `ct`, always last. Caller
-cancellation surfaces as `OperationCanceledException`, never as a Fitz exception.
+Every asynchronous operation takes a `CancellationToken` named `ct`, always last. The
+exception is `DisposeAsync`, which takes none because `IAsyncDisposable` defines it that way.
+Caller cancellation surfaces as `OperationCanceledException`, never as a Fitz exception.
 
 Handles are `IAsyncDisposable` and must be awaited with `await using`, not `using`:
 
@@ -109,7 +110,7 @@ and friends at compile time, so a bad literal is a build error rather than a run
 
 ## Errors and retry
 
-All client exceptions derive from `FitzException`. The per-domain types — `KvException`,
+Most client exceptions derive from `FitzException`. The per-domain types — `KvException`,
 `QueueException`, `RpcException`, `LeaseException`, `StreamException`, `NoticeException`,
 `ScheduleException` — carry the broker's structured error code, so classify on the code and
 never on message text:
@@ -124,6 +125,12 @@ catch (RpcException ex) when (ex.DomainCode == FitzErrorCodes.RpcTimeout)
 `FitzErrorCodes` lists every code the broker defines. Transport and lifecycle problems surface
 as `ConnectionException`, `AuthenticationException`, `RequestTimeoutException`,
 `RequestQueueFullException`, or `ProtocolException`.
+
+Two exceptions sit outside that hierarchy and derive from `Exception` directly:
+`SubscriptionBackpressureException` and `AsyncHandlerOverflowException`. They are declared in
+`Cntryl.Fitz.Abstractions`, which does not reference the assembly `FitzException` lives in. A
+`catch (FitzException)` will not catch either, so catch them explicitly where you consume a
+subscription.
 
 The client retries internally, and only where retrying is safe: replayable reads are retried
 with jittered exponential backoff under a single deadline shared by all attempts, while
@@ -212,9 +219,12 @@ foreach (var item in items)
 }
 ```
 
-A reserved item not completed within its lease returns to the queue, and `item.Attempt` tells
-you how many times it has been delivered. Call `ExtendAsync` if processing legitimately runs
-long.
+A reserved item not completed within its lease returns to the queue. Call `ExtendAsync` if
+processing legitimately runs long.
+
+`item.Attempt` exists but is not usable today: the current queue wire carries no attempt
+count, so it is always `QueueItem.AttemptUnavailable` (`0`). Do not build redelivery logic on
+it.
 
 ### Notice — fire-and-forget pub/sub
 

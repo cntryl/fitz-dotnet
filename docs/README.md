@@ -3,8 +3,9 @@
 Start here if you are using the client in an application:
 
 - [guide.md](guide.md) — install, connect, routes, errors and retry, subscriptions, reconnect,
-  all seven domains, dependency injection, and observability. Every code sample in it is
-  compiled against the packed packages.
+  all seven domains, dependency injection, and observability. Its samples were compiled against
+  the `1.0.0` packages when written, but nothing in CI keeps them compiling: treat a sample that
+  disagrees with the XML documentation as the sample being stale.
 
 Standing contracts — these define rules that current and future work must keep true:
 

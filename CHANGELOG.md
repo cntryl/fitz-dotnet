@@ -58,8 +58,8 @@ because the pinned `AssemblyVersion` makes the public surface permanent once thi
 
 - [docs/guide.md](docs/guide.md), a consumer guide covering install and connect, routes,
   cancellation, errors and retry, subscriptions, reconnect semantics, all seven domains,
-  dependency injection, and observability. Every code sample in it is compiled against the
-  packed packages rather than written by hand.
+  dependency injection, and observability. Its samples were compiled against the `1.0.0`
+  packages when written rather than written by hand, though no CI job keeps them compiling.
 - **Breaking (source):** the entire public surface moved into the single `Cntryl.Fitz`
   namespace. `Cntryl.Fitz.Abstractions`, every `Cntryl.Fitz.Abstractions.Domains.*`, and the
   public halves of `Cntryl.Fitz.Errors`, `Cntryl.Fitz.Transport`, `Cntryl.Fitz.Observability`
@@ -85,7 +85,7 @@ because the pinned `AssemblyVersion` makes the public surface permanent once thi
   `QueueClient`, `RpcClient`, `ScheduleClient`, `StreamClient`, `StreamSession`) are now
   `internal`. Reach every one of them through `Client` and the `Cntryl.Fitz.Abstractions`
   interfaces, which are unchanged. This shrinks the exported surface of `Cntryl.Fitz` from
-  57 types to 34 and is the last practical moment to do it: `AssemblyVersion` is pinned at
+  57 types to 35 and is the last practical moment to do it: `AssemblyVersion` is pinned at
   `1.0.0.0`, so anything left public here is public permanently.
   The transport extension point is untouched and stays public: `ITransport`, `PooledFrame`,
   `TransportResolver`, `TcpTransport`, and `WebSocketTransport`.
