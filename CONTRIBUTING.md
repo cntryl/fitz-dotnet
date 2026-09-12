@@ -30,8 +30,10 @@ docker compose down --volumes
 
 **Warnings are errors.** `Directory.Build.props` sets `TreatWarningsAsErrors` with
 `AnalysisMode=All` and `EnforceCodeStyleInBuild`. Suppress a diagnostic only with a
-justification that says why the rule does not apply — see `GlobalSuppressions.cs` for the
-expected form. Do not add a blanket `NoWarn`.
+`[SuppressMessage]` attribute on the narrowest declaration it applies to, carrying a
+`Justification` that says why the rule does not hold there — `Client.ObserveSynchronousDisposeAsync`
+and `SubscriptionHandle.DisposeAsync` are the expected form. There is no
+assembly-level suppression file and adding one is not the fix; neither is a blanket `NoWarn`.
 
 **No runtime reflection.** The shipped packages use none, and
 [docs/aot-and-reflection.md](docs/aot-and-reflection.md) is the standing contract: what is

@@ -14,7 +14,8 @@
     <!-- PackageVersion is intentionally fixed across rebuilds, and NuGet keys its extracted
          cache on package id and version alone. Restoring into a dedicated folder keeps a
          stale copy in the shared global cache from shadowing freshly packed artifacts, and
-         makes the folder cheap to clear; scripts/verify-package-aot.sh clears it per run. -->
+         makes the folder cheap to clear. CI clears it in the "Clear consumer package cache"
+         step of .github/workflows/ci.yml, before the Native AOT publish. -->
     <RestorePackagesPath>$(MSBuildThisFileDirectory)../../artifacts/consumer-package-cache</RestorePackagesPath>
   </PropertyGroup>
 
