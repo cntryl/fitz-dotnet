@@ -1,0 +1,17 @@
+version: 2
+
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # This repo's own packages; their version tracks PackageVersion, not the feed.
+      - dependency-name: Cntryl.*
+      # Pinned to the minimum supported .NET 10 SDK that CI builds against.
+      - dependency-name: Microsoft.CodeAnalysis.*
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

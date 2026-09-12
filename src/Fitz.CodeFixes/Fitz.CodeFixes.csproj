@@ -4,6 +4,9 @@
     <TargetFramework>netstandard2.0</TargetFramework>
     <Description>Workspace code fixes for Fitz diagnostics.</Description>
     <IsRoslynComponent>true</IsRoslynComponent>
+    <!-- Ships inside Cntryl.Fitz.Analyzers; a code fix is useless without the analyzer that
+         raises the diagnostic, so it is not a package of its own. -->
+    <IsPackable>false</IsPackable>
     <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
     <IncludeBuildOutput>false</IncludeBuildOutput>
     <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>

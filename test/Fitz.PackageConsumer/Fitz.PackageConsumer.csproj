@@ -23,15 +23,16 @@
        shipped assembly makes ILC analyze every method, including paths this sample never
        calls; without it the analysis only covers what Main happens to reach. -->
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
-    <TrimmerRootAssembly Include="Cntryl.Fitz" />
+    <TrimmerRootAssembly Include="Cntryl.Fitz.Core" />
     <TrimmerRootAssembly Include="Cntryl.Fitz.Abstractions" />
     <TrimmerRootAssembly Include="Cntryl.Fitz.DependencyInjection" />
   </ItemGroup>
 
+  <!-- Deliberately no analyzer reference: Cntryl.Fitz.Core ships the Roslyn components, so
+       this build also proves a plain consumer receives them. -->
   <ItemGroup>
-    <PackageReference Include="Cntryl.Fitz" Version="1.0.0" />
+    <PackageReference Include="Cntryl.Fitz.Core" Version="1.0.0" />
     <PackageReference Include="Cntryl.Fitz.Abstractions" Version="1.0.0" />
-    <PackageReference Include="Cntryl.Fitz.Analyzers" Version="1.0.0" PrivateAssets="all" />
     <PackageReference Include="Cntryl.Fitz.DependencyInjection" Version="1.0.0" />
   </ItemGroup>
 

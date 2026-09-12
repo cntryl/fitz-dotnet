@@ -3,6 +3,12 @@ name: Publish
 on:
   workflow_dispatch:
 
+# Serialize publishes rather than cancelling them: interrupting a run partway through
+# dotnet nuget push would leave some packages pushed and the rest not.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
 permissions:
   contents: read
   packages: write
