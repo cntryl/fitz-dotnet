@@ -70,6 +70,32 @@ public sealed partial class ConformanceSmokeTests
             $"Expected successor fencing token {successorAuthority} to exceed prior token {firstAuthority}.");
     }
 
+    [Fact]
+    public async Task ShouldKeepFencingTokenStableGivenRenewalWhenLeaseIsHeld()
+    {
+        // Arrange
+        // Broker contract: the fencing token identifies an ownership epoch. It must remain
+        // stable across renewals of an already-held lease and advance only when ownership is
+        // newly acquired. A broker that rotates the token on every renewal forces the client's
+        // fail-closed check (LeaseHandle.SendTokenTtlAsync) to treat routine renewal as lost
+        // authority, tearing down every managed lease callback on schedule. Tracked pending a
+        // broker-side fix to lease renewal semantics.
+        var transport = IntegrationFixture.GetConformanceTransport();
+        var authMode = IntegrationFixture.GetConformanceAuthMode();
+        var route = IntegrationFixture.CreateUniqueRoute("lease");
+        await using var client = IntegrationFixture.CreateClientForMode(transport, authMode);
+        await client.ConnectAsync();
+
+        await using var lease = await client.Lease.AcquireAsync(route, TimeSpan.FromSeconds(30));
+        var acquiredToken = lease.FencingToken;
+
+        // Act
+        await lease.ExtendAsync(TimeSpan.FromSeconds(30));
+
+        // Assert
+        Assert.Equal(acquiredToken, lease.FencingToken);
+    }
+
     static async Task<ScenarioResult> RunCs001ConnectSuccess(string transport, string authMode)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
