@@ -3,14 +3,18 @@
 All notable changes to the Fitz .NET client packages are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-This project is in preview (`0.x`). Per [Semantic Versioning](https://semver.org/),
-breaking changes may land in any `0.x` release; each one is called out below.
+This project follows [Semantic Versioning](https://semver.org/). From `1.0.0` onward the
+public surface is a commitment: breaking changes require a major release. The `0.x` entries
+below predate that and broke freely, as a preview may.
 
 **Package version and assembly version are deliberately decoupled.** `PackageVersion`
 advances with every release; `AssemblyVersion` stays pinned at `1.0.0.0` so binding
 never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI run.
 
-## [Unreleased]
+## [1.0.0] - 2026-09-12
+
+First stable release. Everything below is a breaking change from `0.1.3`, gathered here
+because the pinned `AssemblyVersion` makes the public surface permanent once this ships.
 
 ### Changed
 

@@ -162,13 +162,16 @@ error `FitzErrorCodes.ScheduleBackendError` (`7010`). `Retryability` classifies
 it as retryable subject to operation safety; it is not reported as malformed
 cron or parse input.
 
-## Unreleased preview migration
+## Upgrading from 0.1.x
 
-This preview intentionally breaks the earlier callback subscription surface.
-Replace callback arguments with `await foreach` over the returned handle. Public
-one-shot operations now return `Task`/`Task<T>`; `ValueTask` remains only for
-disposal and callback/provider contracts. Schedule listing now uses
-`ListAsync(offset, limit)` and returns entries plus `TotalCount`.
+`1.0.0` is the release that settles the public surface, so it carries the breaking
+changes the pinned `AssemblyVersion` would otherwise have frozen. The largest are the
+single `Cntryl.Fitz` namespace, `TimeSpan` for every duration, and the connection and
+protocol internals becoming `internal`. [CHANGELOG.md](CHANGELOG.md) lists each one with
+the reason; [docs/guide.md](docs/guide.md) documents the resulting API.
+
+From `1.0.0` onward the public surface is a commitment: breaking changes require a major
+release.
 
 ## Local Verification
 

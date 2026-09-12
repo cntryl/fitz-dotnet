@@ -88,7 +88,7 @@ A clean run prints `Generating native code` and emits no `IL` diagnostics.
 **Do not skip the second step.** `test/Fitz.PackageConsumer/NuGet.Config` maps
 `Cntryl.Fitz*` to `artifacts/packages` so the publish consumes the packages just built —
 but `PackageVersion` is intentionally fixed across rebuilds, and NuGet keys its extracted
-cache on package id and version alone. A copy of `0.1.3` left from an earlier pack
+cache on package id and version alone. A copy of that version left from an earlier pack
 therefore shadows the one just produced, and the verification passes against stale bits
 with no indication anything is wrong. This is not hypothetical: it happened during this
 audit.
