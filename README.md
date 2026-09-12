@@ -225,14 +225,14 @@ The conformance artifact uses the shared schema:
 
 ## Documentation
 
-- [docs/README.md](docs/README.md)
-- [CHANGELOG.md](CHANGELOG.md)
-- [CONTRIBUTING.md](CONTRIBUTING.md)
-- [docs/aot-and-reflection.md](docs/aot-and-reflection.md)
-- [CLIENT_SPEC.md](CLIENT_SPEC.md)
-- [CLIENT_ACCEPTANCE_CRITERIA.md](CLIENT_ACCEPTANCE_CRITERIA.md)
-- [docs/spec-parity-gap-matrix.md](docs/spec-parity-gap-matrix.md)
-- [docs/spec-parity-audit.md](docs/spec-parity-audit.md)
+- [docs/README.md](docs/README.md) — index of the standing contracts and status documents
+- [CHANGELOG.md](CHANGELOG.md) — release history and every breaking change
+- [CONTRIBUTING.md](CONTRIBUTING.md) — enforced standards, and where the normative client
+  protocol specification lives (the Fitz server repository, not this one)
+- [docs/aot-and-reflection.md](docs/aot-and-reflection.md) — the trim and AOT guarantee
+- [PERF_GUIDELINES.md](PERF_GUIDELINES.md) — performance patterns and budgets
+- [docs/spec-parity-gap-matrix.md](docs/spec-parity-gap-matrix.md) — capability status
+- [docs/sharp-edges-evidence-ledger.md](docs/sharp-edges-evidence-ledger.md) — audit dispositions
 
 ## Managed leases
 

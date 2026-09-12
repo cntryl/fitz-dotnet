@@ -8,6 +8,10 @@
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
       <_Parameter1>Cntryl.Fitz.Core.Tests</_Parameter1>
     </AssemblyAttribute>
+    <!-- Benchmarks measure internal hot paths directly; neither assembly ships. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Fitz.Benchmarks</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 
   <PropertyGroup>

@@ -75,7 +75,7 @@ public sealed class FitzUsageAnalyzerTests
                     await using var lease = await client.AcquireAsync("queue://realm/area/name", 0);
                 }
             }
-            """);
+            """, FirstPartyAssembly);
 
         Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.InvalidRouteId);
         Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.InvalidArgumentId);
@@ -258,9 +258,9 @@ public sealed class FitzUsageAnalyzerTests
         }
         """;
 
-    static async Task<ImmutableArray<Diagnostic>> GetDiagnosticsAsync(string source)
+    static async Task<ImmutableArray<Diagnostic>> GetDiagnosticsAsync(string source, string assemblyName = ConsumerAssembly)
     {
-        using var workspace = CreateWorkspace(source, out var document);
+        using var workspace = CreateWorkspace(source, out var document, assemblyName);
         var compilation = await document.Project.GetCompilationAsync();
         Assert.NotNull(compilation);
         Assert.DoesNotContain(compilation.GetDiagnostics(), diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
@@ -290,10 +290,16 @@ public sealed class FitzUsageAnalyzerTests
         return (await changed.GetTextAsync()).ToString();
     }
 
-    static AdhocWorkspace CreateWorkspace(string source, out Document document)
+    // Most tests compile as an ordinary consumer that sees only the public surface. The
+    // concrete-client test compiles under the InternalsVisibleTo name instead, because the
+    // concrete domain clients are internal and only first-party code can invoke them.
+    const string ConsumerAssembly = "Consumer";
+    const string FirstPartyAssembly = "Cntryl.Fitz.Core.Tests";
+
+    static AdhocWorkspace CreateWorkspace(string source, out Document document, string assemblyName = ConsumerAssembly)
     {
         var workspace = new AdhocWorkspace();
-        var project = workspace.AddProject("Consumer", LanguageNames.CSharp)
+        var project = workspace.AddProject(assemblyName, LanguageNames.CSharp)
             .WithCompilationOptions(new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
                 .WithUsings("System", "System.Threading", "System.Threading.Tasks"))
             .WithParseOptions(new CSharpParseOptions(LanguageVersion.Preview))
@@ -314,6 +320,6 @@ public sealed class FitzUsageAnalyzerTests
         }
 
         yield return MetadataReference.CreateFromFile(typeof(ILeaseClient).Assembly.Location);
-        yield return MetadataReference.CreateFromFile(typeof(LeaseClient).Assembly.Location);
+        yield return MetadataReference.CreateFromFile(typeof(Client).Assembly.Location);
     }
 }

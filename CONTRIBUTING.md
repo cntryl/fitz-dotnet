@@ -64,6 +64,19 @@ The cross-language conformance suite in
 [conformance/](conformance/cross-language-conformance-suite.yaml) is shared with the other
 Fitz clients. Changes there affect every client and need coordination beyond this repo.
 
+## The normative client specification
+
+The Fitz client protocol specification, acceptance criteria, implementation guide, and
+connection flow are maintained in the Fitz server repository under `docs/clients`, and they
+are normative for this SDK. This repository deliberately keeps no second copy of them: a
+fork would drift, and a stale protocol document is worse than no local one. Consult the
+server repository directly when you need the wire contract.
+
+What this repository owns is evidence that the .NET client satisfies that contract —
+[docs/spec-parity-gap-matrix.md](docs/spec-parity-gap-matrix.md) for capability status and
+[conformance/cross-language-conformance-suite.yaml](conformance/cross-language-conformance-suite.yaml)
+for the shared 17-scenario suite that CI runs against a live broker.
+
 ## Wire compatibility and versioning
 
 `AssemblyVersion` is pinned at `1.0.0.0` permanently so consumer binding never breaks;

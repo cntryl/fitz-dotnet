@@ -5,7 +5,6 @@ Date: 2026-08-02
 Status legend:
 
 - `implemented`: represented in the public surface and backed by current tests or conformance artifacts
-- `historical`: older audit trail retained elsewhere; not current truth
 
 Current status: `fitz-dotnet` is aligned to the shared 17-scenario Fitz client suite and has separately passed the four-client operational parity review. Shared-suite success alone does not establish explicit durability, managed leases, safe retry, reconnect defaults, heartbeat, observability, error ergonomics, or documentation truth; those capabilities require the independent evidence below.
 
@@ -25,4 +24,4 @@ Current status: `fitz-dotnet` is aligned to the shared 17-scenario Fitz client s
 
 ## Open Gaps
 
-None are tracked against the current shared suite. Historical findings remain in [spec-parity-audit.md](spec-parity-audit.md) for context, but they should not be read as current status.
+None are tracked against the current shared suite. The April 2026 audit that preceded the final runtime, conformance, and CI work is closed; its findings are in the git history rather than in a retained document, because a superseded status file is read as current status sooner or later.

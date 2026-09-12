@@ -5,7 +5,7 @@ namespace Cntryl.Fitz.Observability;
 /// <summary>
 /// Measures throughput (operations per second) over a time window.
 /// </summary>
-public sealed class ThroughputMeter
+sealed class ThroughputMeter
 {
     readonly Stopwatch _stopwatch = Stopwatch.StartNew();
     long _operationCount;

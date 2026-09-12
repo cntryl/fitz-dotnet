@@ -20,7 +20,7 @@ namespace Cntryl.Fitz.Connection;
 /// Internal plumbing behind <see cref="Client"/>; applications use <c>IClient</c> instead.
 /// Active subscriptions and worker registrations are restored after a reconnect.
 /// </remarks>
-public sealed class FitzConnection : IAsyncDisposable
+sealed class FitzConnection : IAsyncDisposable
 {
     static readonly TaskCompletionSource<bool> CompletedStateSignal = CreateCompletedStateSignal();
     static readonly CancellationToken ClosedConnectionToken = new(canceled: true);

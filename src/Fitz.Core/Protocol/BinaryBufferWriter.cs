@@ -12,7 +12,7 @@ namespace Cntryl.Fitz.Protocol;
 /// <see cref="WrittenMemory"/> are invalid afterwards; use <see cref="Build"/> for a copy
 /// that outlives the writer. Not thread-safe.
 /// </remarks>
-public sealed class BinaryBufferWriter : IDisposable
+sealed class BinaryBufferWriter : IDisposable
 {
     const int InitialCapacity = 128;
 

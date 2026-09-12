@@ -6,7 +6,7 @@ namespace Cntryl.Fitz.Protocol;
 /// <summary>
 /// Encodes and decodes Fitz wire frames.
 /// </summary>
-public static class FrameCodec
+static class FrameCodec
 {
     /// <summary>Size in bytes of a frame header: a 16-bit opcode plus a length prefix.</summary>
     public const int MaxHeaderSize = 5;

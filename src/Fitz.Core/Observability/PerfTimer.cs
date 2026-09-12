@@ -4,7 +4,7 @@ namespace Cntryl.Fitz.Observability;
 /// Simple timer for measuring latency of operations.
 /// Returns results in microseconds for easy comparison against perf targets.
 /// </summary>
-public sealed class PerfTimer : IDisposable
+sealed class PerfTimer : IDisposable
 {
     readonly long _startTicks;
     readonly LatencyHistogram? _histogram;

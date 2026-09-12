@@ -16,7 +16,7 @@ namespace Cntryl.Fitz.Domains.Notice;
 /// Obtained from <see cref="Client"/> rather than constructed directly. The public
 /// constructors exist for testing against a transport delegate.
 /// </remarks>
-public sealed class NoticeClient : INoticeClient, IDisposable
+sealed class NoticeClient : INoticeClient, IDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _request;

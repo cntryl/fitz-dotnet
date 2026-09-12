@@ -17,7 +17,7 @@ namespace Cntryl.Fitz.Domains.Rpc;
 /// Obtained from <see cref="Client"/> rather than constructed directly. The public
 /// constructors exist for testing against a transport delegate.
 /// </remarks>
-public sealed class RpcClient : IRpcClient, IDisposable
+sealed class RpcClient : IRpcClient, IDisposable
 {
     const int CorrelationIdLength = 16;
     const byte RpcResponseFlagStreamEnd = 0x01;

@@ -5,4 +5,4 @@ namespace Cntryl.Fitz.Protocol;
 /// </summary>
 /// <param name="MessageType">Opcode from <see cref="MessageTypes"/>.</param>
 /// <param name="Payload">Frame payload, excluding the header.</param>
-public readonly record struct Frame(ushort MessageType, ReadOnlyMemory<byte> Payload);
+readonly record struct Frame(ushort MessageType, ReadOnlyMemory<byte> Payload);

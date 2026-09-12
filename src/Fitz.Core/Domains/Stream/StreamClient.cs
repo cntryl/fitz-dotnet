@@ -16,7 +16,7 @@ namespace Cntryl.Fitz.Domains.Stream;
 /// Obtained from <see cref="Client"/> rather than constructed directly. The public
 /// constructors exist for testing against a transport delegate.
 /// </remarks>
-public sealed class StreamClient : IStreamClient, IDisposable
+sealed class StreamClient : IStreamClient, IDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;

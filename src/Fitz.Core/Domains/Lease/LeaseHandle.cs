@@ -12,7 +12,7 @@ namespace Cntryl.Fitz.Domains.Lease;
 /// Fencing-token rotation is serialized, and the handle closes itself when a renewal outcome
 /// is uncertain rather than assuming continued ownership.
 /// </remarks>
-public sealed class LeaseHandle : ILease
+sealed class LeaseHandle : ILease
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     IDisposable? _disconnectRegistration;

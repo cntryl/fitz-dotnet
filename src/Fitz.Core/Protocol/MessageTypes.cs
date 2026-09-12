@@ -9,7 +9,7 @@ namespace Cntryl.Fitz.Protocol;
 /// broker-originated arrive unsolicited and are dispatched to subscription handlers rather
 /// than matched to a pending request.
 /// </remarks>
-public static class MessageTypes
+static class MessageTypes
 {
     /// <summary>
     /// Opens a session and presents credentials when the broker requires authentication.

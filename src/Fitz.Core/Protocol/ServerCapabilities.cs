@@ -8,7 +8,7 @@ namespace Cntryl.Fitz.Protocol;
 /// never an error: the client keeps one in-flight request per message type and sends no
 /// <c>CORRELATE</c> records.
 /// </remarks>
-public readonly record struct ServerCapabilities(ushort ProtocolVersion, uint CapabilityBits)
+readonly record struct ServerCapabilities(ushort ProtocolVersion, uint CapabilityBits)
 {
     /// <summary>Bit 0: the broker accepts <c>CORRELATE</c> and echoes <c>CORRELATED</c>.</summary>
     public const uint CorrelationBit = 1u << 0;

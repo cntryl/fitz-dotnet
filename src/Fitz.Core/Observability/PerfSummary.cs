@@ -4,7 +4,7 @@ namespace Cntryl.Fitz.Observability;
 /// Perf summary report for integration tests.
 /// Aggregates latency, throughput, and allocation data.
 /// </summary>
-public sealed class PerfSummary
+sealed class PerfSummary
 {
     /// <summary>Name of the measured scenario.</summary>
     public string TestName { get; set; } = string.Empty;

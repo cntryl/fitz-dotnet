@@ -12,7 +12,7 @@ namespace Cntryl.Fitz.Domains.Kv;
 /// Operations on one transaction are serialized. Commit becomes terminal only after broker
 /// success; a definite rejection leaves the transaction retryable.
 /// </remarks>
-public sealed class KvTransaction : IKvTransaction
+sealed class KvTransaction : IKvTransaction
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;

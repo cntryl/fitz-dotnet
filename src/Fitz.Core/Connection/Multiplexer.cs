@@ -9,7 +9,7 @@ namespace Cntryl.Fitz.Connection;
 /// <summary>
 /// Routes framed responses and notifications to pending requests and handlers.
 /// </summary>
-public sealed class Multiplexer : IDisposable
+sealed class Multiplexer : IDisposable
 {
     readonly object _gate = new();
     readonly Dictionary<ushort, LinkedList<PendingRequest>> _pending = [];

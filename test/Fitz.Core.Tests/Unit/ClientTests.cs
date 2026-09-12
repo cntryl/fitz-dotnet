@@ -129,7 +129,40 @@ public sealed class ClientTests
         // Assert
         var config = new ClientConfig(new Uri("ws://localhost:4190/ws"));
 
-        Assert.Equal(FrameCodec.MaxTransportFrameSize, config.MaxFrameSize);
+        Assert.Equal(FitzLimits.MaxFrameSize, config.MaxFrameSize);
+    }
+
+    // FitzLimits is the supported way to read bounds the internal codec defines. If the two
+    // ever drift, a caller that pre-validates against the published constants would pass its
+    // own check and then be rejected by Validate, so pin them to the enforced boundaries.
+    [Theory]
+    [InlineData(FitzLimits.MinFrameSize)]
+    [InlineData(FitzLimits.MaxFrameSize)]
+    public void ShouldAcceptBoundaryFrameSizeGivenPublishedLimitWhenConfigValidated(int frameSize)
+    {
+        // Arrange
+        var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), MaxFrameSize: frameSize);
+
+        // Act
+        var exception = Record.Exception(config.Validate);
+
+        // Assert
+        Assert.Null(exception);
+    }
+
+    [Theory]
+    [InlineData(FitzLimits.MinFrameSize - 1)]
+    [InlineData(FitzLimits.MaxFrameSize + 1)]
+    public void ShouldRejectOutOfRangeFrameSizeGivenPublishedLimitWhenConfigValidated(int frameSize)
+    {
+        // Arrange
+        var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), MaxFrameSize: frameSize);
+
+        // Act
+        var exception = Assert.Throws<ArgumentOutOfRangeException>(config.Validate);
+
+        // Assert
+        Assert.Equal(nameof(ClientConfig.MaxFrameSize), exception.ParamName);
     }
 
     [Fact]

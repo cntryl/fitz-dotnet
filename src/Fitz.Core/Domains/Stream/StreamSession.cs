@@ -8,7 +8,7 @@ namespace Cntryl.Fitz.Domains.Stream;
 /// <summary>
 /// The default <see cref="IStreamSession"/>. Obtained from <see cref="StreamClient"/>.
 /// </summary>
-public sealed class StreamSession : IStreamSession
+sealed class StreamSession : IStreamSession
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly ulong _sessionId;

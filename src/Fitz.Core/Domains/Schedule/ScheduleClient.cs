@@ -16,7 +16,7 @@ namespace Cntryl.Fitz.Domains.Schedule;
 /// Obtained from <see cref="Client"/> rather than constructed directly. The public
 /// constructors exist for testing against a transport delegate.
 /// </remarks>
-public sealed class ScheduleClient : IScheduleClient, IDisposable
+sealed class ScheduleClient : IScheduleClient, IDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;

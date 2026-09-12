@@ -14,6 +14,25 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ### Changed
 
+- **Breaking (source):** the connection, protocol, and measurement internals are no longer
+  public. `FitzConnection`, `Multiplexer`, `FrameCodec`, `FrameParser`, `Frame`,
+  `MessageTypes`, `ServerCapabilities`, `BinaryBufferReader`, `BinaryBufferWriter`,
+  `PerfTimer`, `PerfSummary`, `LatencyHistogram`, `ThroughputMeter`, and the concrete
+  domain clients (`KvClient`, `KvTransaction`, `LeaseClient`, `LeaseHandle`, `NoticeClient`,
+  `QueueClient`, `RpcClient`, `ScheduleClient`, `StreamClient`, `StreamSession`) are now
+  `internal`. Reach every one of them through `Client` and the `Cntryl.Fitz.Abstractions`
+  interfaces, which are unchanged. This shrinks the exported surface of `Cntryl.Fitz` from
+  57 types to 34 and is the last practical moment to do it: `AssemblyVersion` is pinned at
+  `1.0.0.0`, so anything left public here is public permanently.
+  The transport extension point is untouched and stays public: `ITransport`, `PooledFrame`,
+  `TransportResolver`, `TcpTransport`, and `WebSocketTransport`.
+
+### Added
+
+- `FitzLimits.MinFrameSize` and `FitzLimits.MaxFrameSize` publish the protocol bounds that
+  `ClientConfig.MaxFrameSize` is validated against, so a caller can check a configured frame
+  size before `Validate` runs. They replace the reachability that internalizing `FrameCodec`
+  removed; `ClientConfig` now states its default and its validation in the same terms.
 - **Breaking (source):** the cancellation parameter is now named `ct` across the entire
   public surface. The domain clients already used `ct`; `IClient.ConnectAsync`,
   `ConnectWhenReadyAsync`, and `CloseAsync` used `cancellationToken` and have been
@@ -85,7 +104,20 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ### Fixed
 
-- Preserved structured error codes across all stream operations.
+- Preserved structured error codes across all stream operations. Stream status 2 decodes as
+  `[u32 BE domain_code][string message]` and surfaces through `StreamException.DomainCode`,
+  including 2001 for `APPEND` and `COMMIT`. Legacy status 1 remains supported and leaves
+  `DomainCode` null. Classify optimistic-concurrency failures on code 2001 and backend
+  failures on 2012, never on message wording. No automatic command retry was introduced, and
+  success and notification layouts are unchanged.
+- Deploy order matters for this one: clients that decode the new envelope must be released
+  ahead of the broker that emits it, and a rollback restores the broker first.
+
+### Changed
+
+- **Breaking (binding):** all three assemblies moved to the permanent `AssemblyVersion`
+  `1.0.0.0`, from `0.1.1.0`. Every later release advances `PackageVersion` alone, and CI
+  asserts the assembly identity of all three packages on every run.
 
 ## [0.1.1]
 
@@ -103,3 +135,26 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 Initial preview release: KV, Queue, RPC, Lease, Notice, Stream, and Schedule domains over
 WebSocket and TCP, with reconnect, retry, bounded subscriptions, observability hooks,
 Roslyn route analyzers, and dependency injection extensions.
+
+The preview settled these source and wire contracts, several of which broke the shapes used
+by pre-release builds:
+
+- KV callers pass durability explicitly, ahead of the optional mode:
+  `BeginAsync(route, KvDurability.Async, KvMode.ReadWrite, ct)`.
+- `CloseAsync` is the explicit idempotent shutdown; `DisposeAsync` delegates to it.
+- `ILease` is `IAsyncDisposable`; use `await using` so a live lease is released once.
+- RPC worker callbacks return `ValueTask`; return `ValueTask.CompletedTask` when synchronous.
+- Schedule enumeration uses `ListAsync(offset, limit)` and returns `ScheduleListPage.Entries`
+  plus `TotalCount` on canonical wire message 702.
+- KV `ScanAsync` returns `KvScanResult`, carrying key/value pairs and `HasMore`.
+- Queue notifications expose the broker-defined length-prefixed `Payload`; the invented
+  ready/delayed/inflight counters were removed.
+- Stream records expose `GlobalOffset` for global selectors, and `BEGIN`/`APPEND` accept only
+  their canonical response layouts.
+- Lease queries expose `PendingWaiters`, and queued acquisition follows the broker's
+  deferred-acquisition flow.
+- Managed lease callbacks may accept `(LeaseAuthority authority, CancellationToken ct)` to
+  receive the immutable admission fencing token; cancellation-only callbacks still compile.
+- Stream global continuation reuses the returned fingerprint and captured-watermark pair.
+- Frame parsing is strict: trailing or truncated data is a protocol error, which callers
+  observe as `ProtocolException`.

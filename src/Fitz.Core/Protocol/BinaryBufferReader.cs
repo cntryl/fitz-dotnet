@@ -11,7 +11,7 @@ namespace Cntryl.Fitz.Protocol;
 /// Every read validates that enough bytes remain and throws rather than returning partial
 /// data, so a malformed payload fails closed. Not thread-safe.
 /// </remarks>
-public sealed class BinaryBufferReader
+sealed class BinaryBufferReader
 {
     readonly ReadOnlyMemory<byte> _data;
     int _offset;

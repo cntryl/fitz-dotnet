@@ -30,7 +30,8 @@ namespace Cntryl.Fitz;
 /// <param name="AsyncHandlers">Bounds on callback dispatch and subscription buffering.</param>
 /// <param name="MaxFrameSize">
 /// Largest transport frame accepted or produced. The Fitz payload length is 16-bit, and a
-/// correlated frame includes its label, so this is bounded by the protocol.
+/// correlated frame includes its label, so this is bounded by the protocol: see
+/// <see cref="FitzLimits.MinFrameSize"/> and <see cref="FitzLimits.MaxFrameSize"/>.
 /// </param>
 /// <param name="MaxInFlightRequests">Maximum requests awaiting a response at once.</param>
 /// <param name="MaxRequestQueueSize">
@@ -56,7 +57,7 @@ public sealed record ClientConfig(
     WebSocketOptions? WebSocket = null,
     FitzObservabilityOptions? Observability = null,
     AsyncHandlerOptions? AsyncHandlers = null,
-    int MaxFrameSize = FrameCodec.MaxTransportFrameSize,
+    int MaxFrameSize = FitzLimits.MaxFrameSize,
     int MaxInFlightRequests = 256,
     int MaxRequestQueueSize = 1024,
     Func<ClientConfig, ITransport>? TransportFactory = null
@@ -98,10 +99,10 @@ public sealed record ClientConfig(
             throw new ArgumentOutOfRangeException(nameof(AuthSettleDelay), "Authentication settlement delay cannot be negative.");
         }
 
-        if (MaxFrameSize is < FrameCodec.MaxHeaderSize or > FrameCodec.MaxTransportFrameSize)
+        if (MaxFrameSize is < FitzLimits.MinFrameSize or > FitzLimits.MaxFrameSize)
         {
             throw new ArgumentOutOfRangeException(nameof(MaxFrameSize),
-                $"MaxFrameSize must be between {FrameCodec.MaxHeaderSize} and {FrameCodec.MaxTransportFrameSize}; the Fitz wire payload length is 16-bit and a correlated transport frame includes its label.");
+                $"MaxFrameSize must be between {FitzLimits.MinFrameSize} and {FitzLimits.MaxFrameSize}; the Fitz wire payload length is 16-bit and a correlated transport frame includes its label.");
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxInFlightRequests);

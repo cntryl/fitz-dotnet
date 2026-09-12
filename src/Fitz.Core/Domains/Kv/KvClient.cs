@@ -15,7 +15,7 @@ namespace Cntryl.Fitz.Domains.Kv;
 /// Obtained from <see cref="Client"/> rather than constructed directly. The public
 /// constructors exist for testing against a transport delegate.
 /// </remarks>
-public sealed class KvClient : IKvClient, IDisposable
+sealed class KvClient : IKvClient, IDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<Action, IDisposable>? _registerOnDisconnect;

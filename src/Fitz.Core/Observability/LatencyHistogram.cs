@@ -4,7 +4,7 @@ namespace Cntryl.Fitz.Observability;
 /// Captures latency metrics in microseconds.
 /// Used for validating perf targets during integration tests.
 /// </summary>
-public sealed class LatencyHistogram
+sealed class LatencyHistogram
 {
     readonly List<long> _samples = [];
     readonly object _lock = new();

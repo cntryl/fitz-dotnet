@@ -6,7 +6,7 @@ namespace Cntryl.Fitz.Protocol;
 /// <summary>
 /// Buffers framed bytes and exposes complete Fitz protocol frames.
 /// </summary>
-public sealed class FrameParser
+sealed class FrameParser
 {
     const int InitialCapacity = 1024;
     const int DefaultMaxBufferSize = FrameCodec.MaxTransportFrameSize;
