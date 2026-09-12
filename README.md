@@ -4,7 +4,7 @@
 
 ## Packages
 
-- `Cntryl.Fitz`: core client API
+- `Cntryl.Fitz.Core`: core client API
 - `Cntryl.Fitz.Abstractions`: public interfaces and shared contracts
 - `Cntryl.Fitz.DependencyInjection`: DI registration helpers
 
@@ -43,7 +43,7 @@ to `"custom"` rather than inspecting the runtime type.
 ## Install
 
 ```bash
-dotnet add package Cntryl.Fitz
+dotnet add package Cntryl.Fitz.Core
 dotnet add package Cntryl.Fitz.Abstractions
 dotnet add package Cntryl.Fitz.DependencyInjection
 ```

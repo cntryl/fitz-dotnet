@@ -1,6 +1,6 @@
 # Using the Fitz .NET client
 
-A task-oriented guide for applications consuming `Cntryl.Fitz`. For the wire protocol itself,
+A task-oriented guide for applications consuming `Cntryl.Fitz.Core`. For the wire protocol itself,
 see the Fitz server repository under `docs/clients`; this document covers only what the .NET
 client asks of you.
 
@@ -21,7 +21,7 @@ client asks of you.
 ## Install and connect
 
 ```bash
-dotnet add package Cntryl.Fitz
+dotnet add package Cntryl.Fitz.Core
 dotnet add package Cntryl.Fitz.Abstractions
 dotnet add package Cntryl.Fitz.DependencyInjection   # only if you use IServiceCollection
 ```

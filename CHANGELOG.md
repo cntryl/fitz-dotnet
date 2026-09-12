@@ -11,6 +11,20 @@ below predate that and broke freely, as a preview may.
 advances with every release; `AssemblyVersion` stays pinned at `1.0.0.0` so binding
 never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI run.
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking (package):** the core package and assembly are renamed `Cntryl.Fitz` to
+  `Cntryl.Fitz.Core`, matching its project folder and the `Cntryl.Fitz.<Area>` shape every
+  sibling package already used. Update the reference to
+  `<PackageReference Include="Cntryl.Fitz.Core" />`; the shipped file becomes
+  `Cntryl.Fitz.Core.dll`.
+  The public namespace is deliberately unchanged and stays `Cntryl.Fitz`, shared with
+  `Cntryl.Fitz.Abstractions` and `Cntryl.Fitz.DependencyInjection`, so no `using` directive
+  and no type name moves. `RootNamespace` no longer follows the assembly name, which the
+  project file now states.
+
 ## [1.0.0] - 2026-09-12
 
 First stable release. Everything below is a breaking change from `0.1.3`, gathered here

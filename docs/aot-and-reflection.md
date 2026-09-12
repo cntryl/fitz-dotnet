@@ -54,7 +54,7 @@ That project configures the proof:
 <ILLinkTreatWarningsAsErrors>true</ILLinkTreatWarningsAsErrors>
 
 <ItemGroup Condition="'$(PublishAot)' == 'true'">
-  <TrimmerRootAssembly Include="Cntryl.Fitz" />
+  <TrimmerRootAssembly Include="Cntryl.Fitz.Core" />
   <TrimmerRootAssembly Include="Cntryl.Fitz.Abstractions" />
   <TrimmerRootAssembly Include="Cntryl.Fitz.DependencyInjection" />
 </ItemGroup>

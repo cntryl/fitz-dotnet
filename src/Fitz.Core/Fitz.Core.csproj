@@ -19,8 +19,10 @@
     <IsAotCompatible>true</IsAotCompatible>
     <!-- Ship IntelliSense docs; a missing public doc comment fails the build. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <PackageId>Cntryl.Fitz</PackageId>
-    <AssemblyName>Cntryl.Fitz</AssemblyName>
+    <PackageId>Cntryl.Fitz.Core</PackageId>
+    <AssemblyName>Cntryl.Fitz.Core</AssemblyName>
+    <!-- The public surface deliberately sits in Cntryl.Fitz, shared with the sibling
+         packages, so the root namespace does not follow the assembly name. -->
     <RootNamespace>Cntryl.Fitz</RootNamespace>
     <Description>Core .NET client library for Fitz.</Description>
     <Authors>Cntryl</Authors>
