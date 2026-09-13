@@ -222,17 +222,27 @@ public sealed class CorrelationTests
     }
 
     [Fact]
-    public void ShouldDropGivenCorrelatedResponseForAbandonedRequestWhenDispatched()
+    public async Task ShouldFallThroughGivenLaterPhaseForCompletedCorrelationWhenDispatched()
     {
-        // Arrange: CS-021's converse. Nobody is waiting on this identifier.
+        // Arrange: one correlation may produce a later domain-defined phase after its request
+        // waiter completed. The connection falls through to normal message-type routing.
         using var mux = new Multiplexer();
         mux.SetConnected();
+        var pushed = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = mux.RegisterNotificationHandler(
+            MessageTypes.LeaseAcquire,
+            payload => pushed.TrySetResult(payload));
 
         // Act
-        var routed = mux.DispatchCorrelated(9999, MessageTypes.KvGet, new byte[] { 0x1 });
+        var routed = mux.DispatchCorrelated(9999, MessageTypes.LeaseAcquire, new byte[] { 0x1 });
+        if (!routed)
+        {
+            mux.Dispatch(MessageTypes.LeaseAcquire, new byte[] { 0x1 });
+        }
 
-        // Assert: dropped, never handed to an unrelated waiter.
+        // Assert
         Assert.False(routed);
+        Assert.Equal([0x1], await pushed.Task.WaitAsync(TimeSpan.FromSeconds(10)));
     }
 
     [Fact]

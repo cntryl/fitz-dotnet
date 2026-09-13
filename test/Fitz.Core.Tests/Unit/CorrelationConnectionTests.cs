@@ -198,6 +198,25 @@ public sealed class CorrelationConnectionTests
     }
 
     [Fact]
+    public async Task ShouldRouteLaterPhaseGivenCorrelationNoLongerPending()
+    {
+        // Arrange
+        await using var transport = new TestQueuedTransport();
+        await using var connection = new FitzConnection(Config(), () => transport);
+        await connection.ConnectAsync();
+        var laterPhase = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = connection.RegisterNotificationHandler(
+            MessageTypes.LeaseAcquire,
+            payload => laterPhase.TrySetResult(payload));
+
+        // Act
+        transport.QueueIncomingFrame(CorrelatedResponseFrame(999, MessageTypes.LeaseAcquire, [0xCA]));
+
+        // Assert
+        Assert.Equal([0xCA], await laterPhase.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
+
+    [Fact]
     public async Task ShouldClearCorrelationGivenNewSessionWhenReconnecting()
     {
         // Arrange: capabilities belong to a session, not to the client.
