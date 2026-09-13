@@ -930,16 +930,17 @@ sealed class FitzConnection : IAsyncDisposable
                     $"Transport frame ended after a CORRELATED record for identifier {correlationId}.");
             }
 
-            if (labelled.MessageType == MessageTypes.Correlated)
+            if (labelled.MessageType is MessageTypes.Correlated or MessageTypes.ServerHello)
             {
-                throw new ProtocolException("A CORRELATED record cannot label another CORRELATED record.");
+                throw new ProtocolException("A CORRELATED record cannot label a control record.");
             }
 
             if (!_multiplexer.DispatchCorrelated(correlationId, labelled.MessageType, labelled.Payload))
             {
-                // The caller already gave up. Dropping is correct: handing this to any other waiter
-                // is exactly the misdelivery correlation exists to prevent.
-                RecordOrphanedCorrelatedResponse(labelled.MessageType);
+                // A domain may emit more than one frame for one correlation (for example a queued
+                // Lease ACQUIRE followed later by its grant). Once the request has completed, route
+                // any later phase normally so a registered push handler can observe it.
+                DispatchFrame(labelled.MessageType, labelled.Payload);
             }
         }
     }
