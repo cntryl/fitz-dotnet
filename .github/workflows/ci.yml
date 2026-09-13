@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_dispatch:
   # Only main, because an open pull request already covers its own branch. An unfiltered
   # push trigger ran every job twice for any branch with a PR: once for push, once for
   # pull_request.
