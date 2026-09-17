@@ -141,6 +141,82 @@ public sealed class KvDirectoryTests
     }
 
     [Fact]
+    public async Task ShouldThrowGivenLimitIsZero()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        await PutAsync(client, ["widgets", Guid.NewGuid()], new Widget(Guid.NewGuid(), "Alpha", 1));
+        var query = new ListQuery(0, null, null, []);
+
+        // Act
+        // Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            Plain.ListAsync(client, Route, ["widgets"], query).AsTask());
+    }
+
+    [Fact]
+    public async Task ShouldThrowGivenLimitIsNegative()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        var query = new ListQuery(-1, null, null, []);
+
+        // Act
+        // Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            Plain.ListAsync(client, Route, ["widgets"], query).AsTask());
+    }
+
+    [Fact]
+    public async Task ShouldPaginateASortedQueryGivenTwoPages()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        await PutAsync(client, ["widgets", Guid.NewGuid()], new Widget(Guid.NewGuid(), "Alpha", 1));
+        await PutAsync(client, ["widgets", Guid.NewGuid()], new Widget(Guid.NewGuid(), "Beta", 2));
+        await PutAsync(client, ["widgets", Guid.NewGuid()], new Widget(Guid.NewGuid(), "Gamma", 3));
+
+        // Act
+        var first = await SearchableSortable.ListAsync(
+            client, Route, ["widgets"], ListQuery.From(1, null, null, "name:asc"));
+        var second = await SearchableSortable.ListAsync(
+            client, Route, ["widgets"], ListQuery.From(1, first.NextCursor, null, "name:asc"));
+        var third = await SearchableSortable.ListAsync(
+            client, Route, ["widgets"], ListQuery.From(1, second.NextCursor, null, "name:asc"));
+
+        // Assert
+        Assert.Equal(["Alpha"], first.Items.Select(w => w.Name));
+        Assert.Equal(["Beta"], second.Items.Select(w => w.Name));
+        Assert.Equal(["Gamma"], third.Items.Select(w => w.Name));
+        Assert.Null(third.NextCursor);
+    }
+
+    [Fact]
+    public async Task ShouldPaginateSearchResultsGivenMatchesSparseAcrossPages()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        await PutAsync(client, ["widgets", Guid.NewGuid()], new Widget(Guid.NewGuid(), "Reviewers", 1));
+        await PutAsync(client, ["widgets", Guid.NewGuid()], new Widget(Guid.NewGuid(), "Administrators", 1));
+        await PutAsync(client, ["widgets", Guid.NewGuid()], new Widget(Guid.NewGuid(), "Reviewing", 1));
+
+        // Act
+        var first = await SearchableSortable.ListAsync(
+            client, Route, ["widgets"], ListQuery.From(1, null, "review", null));
+        var second = await SearchableSortable.ListAsync(
+            client, Route, ["widgets"], ListQuery.From(1, first.NextCursor, "review", null));
+
+        // Assert
+        Assert.Single(first.Items);
+        Assert.NotNull(first.NextCursor);
+        Assert.Single(second.Items);
+        Assert.Null(second.NextCursor);
+        Assert.Equal(
+            ["Reviewers", "Reviewing"],
+            first.Items.Concat(second.Items).Select(w => w.Name).Order());
+    }
+
+    [Fact]
     public async Task ShouldFilterBySearchGivenAMatchingSubstring()
     {
         // Arrange

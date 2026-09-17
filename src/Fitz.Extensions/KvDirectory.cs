@@ -109,9 +109,17 @@ public sealed class KvDirectory<T>
     /// <param name="query">The normalized list query.</param>
     /// <param name="ct">A token that can cancel the operation.</param>
     /// <returns>The matching page.</returns>
+    /// <remarks>
+    /// A sorted query (<see cref="ListQuery.Sort"/> non-empty) loads and sorts the entire
+    /// <paramref name="prefix"/> range into memory on every call, regardless of
+    /// <see cref="ListQuery.Limit"/> — the KV model has no server-side sort to page against. An
+    /// unsorted query streams and stops once it has enough matches. See also the cursor
+    /// consistency remarks on <see cref="Page{T}"/>.
+    /// </remarks>
     /// <exception cref="InvalidOperationException">
     /// <paramref name="query"/> requests search or sort this directory was not configured for.
     /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="query"/>'s <see cref="ListQuery.Limit"/> is less than 1.</exception>
     [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task",
         Justification = "The await-using declaration must retain the strongly typed transaction for ListAsync.")]
     public async ValueTask<Page<T>> ListAsync(
@@ -124,6 +132,7 @@ public sealed class KvDirectory<T>
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(prefix);
         ArgumentNullException.ThrowIfNull(query);
+        ArgumentOutOfRangeException.ThrowIfLessThan(query.Limit, 1, $"{nameof(query)}.{nameof(query.Limit)}");
         if (query.Search is not null && _searchText is null)
         {
             throw new InvalidOperationException(
