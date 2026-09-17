@@ -1,4 +1,7 @@
+using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Cntryl.Keys;
@@ -6,260 +9,410 @@ using Cntryl.Keys;
 namespace Cntryl.Fitz.Extensions;
 
 /// <summary>
-/// A paginated, sortable, searchable KV-backed directory of composite-keyed values, built on
-/// <see cref="LexKey"/> range encoding and <see cref="KvTransactionExtensions.ScanAllAsync"/>.
+/// A bounded, index-backed KV directory. Primary records have stable keys; independently versioned
+/// covering indexes provide ordered queries without materializing or sorting the directory.
 /// </summary>
-/// <remarks>
-/// <see cref="LexKey"/> is encode-only: nothing here recovers a field from a key's bytes. Any
-/// field a caller needs back at read time — including the identifier a key was built from —
-/// must round-trip through <typeparamref name="T"/>'s serialized value, not the key.
-/// </remarks>
-/// <typeparam name="T">The stored value type.</typeparam>
-public sealed class KvDirectory<T>
+/// <typeparam name="T">Stored entity type.</typeparam>
+/// <typeparam name="TKey">Strongly typed entity identity.</typeparam>
+public sealed class KvDirectory<T, TKey>
 {
+    const byte CursorVersion = 1;
+    const int FingerprintLength = 16;
+    readonly string _name;
     readonly JsonTypeInfo<T> _valueTypeInfo;
-    readonly Func<T, string>? _searchText;
-    readonly IReadOnlyDictionary<string, SortKeySelector<T>> _sortFields;
+    readonly Func<T, TKey> _identity;
+    readonly Func<TKey, LexKeyPart[]> _identityKey;
+    readonly KvDirectoryIndex<T>[] _indexes;
+    readonly KvDirectoryOptions _options;
 
-    /// <summary>Creates a directory over <typeparamref name="T"/>.</summary>
-    /// <param name="valueTypeInfo">The source-generated contract used to serialize and deserialize stored values.</param>
-    /// <param name="searchText">
-    /// Extracts the text a <see cref="ListQuery.Search"/> filter matches against, or
-    /// <see langword="null"/> if this directory does not support search.
-    /// </param>
-    /// <param name="sortFields">
-    /// The <see cref="SortField.Field"/> names this directory can sort by, or <see langword="null"/>
-    /// if it does not support sort.
-    /// </param>
+    /// <summary>Creates an immutable directory schema.</summary>
     public KvDirectory(
+        string name,
         JsonTypeInfo<T> valueTypeInfo,
-        Func<T, string>? searchText = null,
-        IReadOnlyDictionary<string, SortKeySelector<T>>? sortFields = null)
+        Func<T, TKey> identity,
+        Func<TKey, LexKeyPart[]> identityKey,
+        IReadOnlyList<KvDirectoryIndex<T>> indexes,
+        KvDirectoryOptions? options = null)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(valueTypeInfo);
+        ArgumentNullException.ThrowIfNull(identity);
+        ArgumentNullException.ThrowIfNull(identityKey);
+        ArgumentNullException.ThrowIfNull(indexes);
+        _options = options ?? new KvDirectoryOptions();
+        if (_options.MaximumPageSize <= 0 || _options.MaximumPageSize == int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(options), "MaximumPageSize must be between 1 and Int32.MaxValue - 1.");
+        if (_options.DefaultPageSize <= 0 || _options.DefaultPageSize > _options.MaximumPageSize)
+            throw new ArgumentOutOfRangeException(nameof(options), "DefaultPageSize must be within MaximumPageSize.");
+        if (_options.MaximumCursorBytes < CursorVersion + FingerprintLength + sizeof(int))
+            throw new ArgumentOutOfRangeException(nameof(options), "MaximumCursorBytes is too small.");
+        if (_options.MaximumSerializedValueBytes <= 0)
+            throw new ArgumentOutOfRangeException(nameof(options), "MaximumSerializedValueBytes must be positive.");
+        if (_options.MaximumIndexGenerations < 0 || indexes.Count > _options.MaximumIndexGenerations)
+            throw new ArgumentOutOfRangeException(nameof(indexes), "The schema exceeds MaximumIndexGenerations.");
+        if (indexes.Any(static index => index is null))
+            throw new ArgumentException("An index cannot be null.", nameof(indexes));
+        var duplicate = indexes.GroupBy(static index => (index.Name, index.Generation))
+            .FirstOrDefault(static group => group.Count() > 1);
+        if (duplicate is not null)
+            throw new ArgumentException(
+                $"Index '{duplicate.Key.Name}' generation {duplicate.Key.Generation} is duplicated.", nameof(indexes));
+        _name = name;
         _valueTypeInfo = valueTypeInfo;
-        _searchText = searchText;
-        _sortFields = sortFields ?? new Dictionary<string, SortKeySelector<T>>(StringComparer.OrdinalIgnoreCase);
+        _identity = identity;
+        _identityKey = identityKey;
+        _indexes = [.. indexes];
     }
 
-    /// <summary>Stores one value, replacing any value already at <paramref name="key"/>.</summary>
-    /// <param name="transaction">An open, writable transaction — typically a Portia projector's own transaction.</param>
-    /// <param name="key">The exact composite key, e.g. <c>["team", teamId]</c>.</param>
-    /// <param name="value">The value to store.</param>
-    /// <param name="ct">A token that can cancel the operation.</param>
-    public async ValueTask PutAsync(
+    /// <summary>Inserts a new primary record and every configured index generation without reading first.</summary>
+    public async ValueTask InsertAsync(IKvTransaction transaction, T value, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(value);
+        var bytes = Serialize(value);
+        await transaction.InsertAsync(PrimaryKey(_identity(value)), bytes, ct).ConfigureAwait(false);
+        await PutIndexesAsync(transaction, value, bytes, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Replaces a known previous value without reading, maintaining every configured index.</summary>
+    public async ValueTask ReplaceAsync(
         IKvTransaction transaction,
-        LexKeyPart[] key,
-        T value,
+        T previous,
+        T current,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(transaction);
-        ArgumentNullException.ThrowIfNull(key);
-        var encodedKey = LexKey.EncodeComposite(key).AsMemory();
-        var encodedValue = JsonSerializer.SerializeToUtf8Bytes(value, _valueTypeInfo);
-        await transaction.PutAsync(encodedKey, encodedValue, ct).ConfigureAwait(false);
-    }
-
-    /// <summary>Removes the value at <paramref name="key"/>, if any.</summary>
-    /// <param name="transaction">An open, writable transaction — typically a Portia projector's own transaction.</param>
-    /// <param name="key">The exact composite key, e.g. <c>["team", teamId]</c>.</param>
-    /// <param name="ct">A token that can cancel the operation.</param>
-    public async ValueTask DeleteAsync(IKvTransaction transaction, LexKeyPart[] key, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(transaction);
-        ArgumentNullException.ThrowIfNull(key);
-        var encodedKey = LexKey.EncodeComposite(key).AsMemory();
-        await transaction.DeleteAsync(encodedKey, ct).ConfigureAwait(false);
-    }
-
-    /// <summary>Reads one value by its exact key, independent of any projector's workload scope.</summary>
-    /// <param name="client">The KV client to read through.</param>
-    /// <param name="route">The exact KV route.</param>
-    /// <param name="key">The exact composite key, e.g. <c>["team", teamId]</c>.</param>
-    /// <param name="ct">A token that can cancel the operation.</param>
-    /// <returns>The stored value, or <see langword="default"/> when no value exists at <paramref name="key"/>.</returns>
-    [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task",
-        Justification = "The await-using declaration must retain the strongly typed transaction for GetAsync.")]
-    public async ValueTask<T?> GetAsync(
-        IKvClient client,
-        string route,
-        LexKeyPart[] key,
-        CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(client);
-        ArgumentNullException.ThrowIfNull(key);
-        var encodedKey = LexKey.EncodeComposite(key).AsMemory();
-        await using var transaction = await client.BeginAsync(route, KvDurability.Async, KvMode.ReadOnly, ct)
-            .ConfigureAwait(false);
-        var result = await transaction.GetAsync(encodedKey, ct).ConfigureAwait(false);
-        return result.Found ? Deserialize(result.Value!.Value) : default;
+        ArgumentNullException.ThrowIfNull(previous);
+        ArgumentNullException.ThrowIfNull(current);
+        var previousIdentity = _identity(previous);
+        if (!EqualityComparer<TKey>.Default.Equals(previousIdentity, _identity(current)))
+            throw new ArgumentException("A replacement cannot change the entity identity.", nameof(current));
+        await DeleteIndexesAsync(transaction, previous, ct).ConfigureAwait(false);
+        var bytes = Serialize(current);
+        await transaction.PutAsync(PrimaryKey(previousIdentity), bytes, ct).ConfigureAwait(false);
+        await PutIndexesAsync(transaction, current, bytes, ct).ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Lists every value whose key starts with <paramref name="prefix"/>, paginated, optionally
-    /// filtered and sorted.
+    /// Conveniently inserts or replaces a value. This performs one primary-record read; use
+    /// <see cref="InsertAsync"/> or <see cref="ReplaceAsync"/> when the caller knows the prior state.
     /// </summary>
-    /// <param name="client">The KV client to read through.</param>
-    /// <param name="route">The exact KV route.</param>
-    /// <param name="prefix">
-    /// The composite key prefix to list, e.g. <c>["team-member", teamId]</c> to list one team's
-    /// members. Must be a strict prefix of the full keys written by <see cref="PutAsync"/> — never
-    /// include the item's own identifier.
-    /// </param>
-    /// <param name="query">The normalized list query.</param>
-    /// <param name="ct">A token that can cancel the operation.</param>
-    /// <returns>The matching page.</returns>
-    /// <remarks>
-    /// A sorted query (<see cref="ListQuery.Sort"/> non-empty) loads and sorts the entire
-    /// <paramref name="prefix"/> range into memory on every call, regardless of
-    /// <see cref="ListQuery.Limit"/> — the KV model has no server-side sort to page against. An
-    /// unsorted query streams and stops once it has enough matches. See also the cursor
-    /// consistency remarks on <see cref="Page{T}"/>.
-    /// </remarks>
-    /// <exception cref="InvalidOperationException">
-    /// <paramref name="query"/> requests search or sort this directory was not configured for.
-    /// </exception>
-    /// <exception cref="ArgumentOutOfRangeException"><paramref name="query"/>'s <see cref="ListQuery.Limit"/> is less than 1.</exception>
+    public async ValueTask UpsertAsync(IKvTransaction transaction, T value, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(value);
+        var key = PrimaryKey(_identity(value));
+        var existing = await transaction.GetAsync(key, ct).ConfigureAwait(false);
+        if (existing.Found)
+            await ReplaceAsync(transaction, Deserialize(existing.Value!.Value), value, ct).ConfigureAwait(false);
+        else
+            await InsertAsync(transaction, value, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Deletes a known value and all its configured index rows without reading first.</summary>
+    public async ValueTask DeleteAsync(IKvTransaction transaction, T value, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(value);
+        await DeleteIndexesAsync(transaction, value, ct).ConfigureAwait(false);
+        await transaction.DeleteAsync(PrimaryKey(_identity(value)), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Conveniently deletes by identity, performing one read to discover old index keys.</summary>
+    public async ValueTask DeleteAsync(IKvTransaction transaction, TKey identity, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        var existing = await transaction.GetAsync(PrimaryKey(identity), ct).ConfigureAwait(false);
+        if (existing.Found)
+            await DeleteAsync(transaction, Deserialize(existing.Value!.Value), ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Reads one primary record through a caller-owned transaction.</summary>
+    public async ValueTask<T?> GetAsync(IKvTransaction transaction, TKey identity, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        var result = await transaction.GetAsync(PrimaryKey(identity), ct).ConfigureAwait(false);
+        return result.Found ? Deserialize(result.Value!.Value) : default;
+    }
+
+    /// <summary>Reads one primary record in a short read-only transaction.</summary>
     [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task",
-        Justification = "The await-using declaration must retain the strongly typed transaction for ListAsync.")]
-    public async ValueTask<Page<T>> ListAsync(
+        Justification = "The await-using declaration must retain the transaction type.")]
+    public async ValueTask<T?> GetAsync(
         IKvClient client,
         string route,
-        LexKeyPart[] prefix,
-        ListQuery query,
+        TKey identity,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(client);
-        ArgumentNullException.ThrowIfNull(prefix);
-        ArgumentNullException.ThrowIfNull(query);
-        ArgumentOutOfRangeException.ThrowIfLessThan(query.Limit, 1, $"{nameof(query)}.{nameof(query.Limit)}");
-        if (query.Search is not null && _searchText is null)
-        {
-            throw new InvalidOperationException(
-                "This directory has no search selector configured; construct it with a searchText " +
-                "delegate to support ListQuery.Search.");
-        }
-
-        foreach (var field in query.Sort)
-        {
-            if (!_sortFields.ContainsKey(field.Field))
-            {
-                throw new InvalidOperationException(
-                    $"This directory has no sort selector configured for field '{field.Field}'.");
-            }
-        }
-
-        var rangeStart = LexKey.EncodeFirst(prefix).AsMemory();
-        var rangeEnd = LexKey.EncodeLast(prefix).AsMemory();
         await using var transaction = await client.BeginAsync(route, KvDurability.Async, KvMode.ReadOnly, ct)
             .ConfigureAwait(false);
-
-        return query.Sort.Count == 0
-            ? await ListByKeyOrderAsync(transaction, rangeStart, rangeEnd, query, ct).ConfigureAwait(false)
-            : await ListSortedAsync(transaction, rangeStart, rangeEnd, query, ct).ConfigureAwait(false);
+        return await GetAsync(transaction, identity, ct).ConfigureAwait(false);
     }
 
-    async ValueTask<Page<T>> ListByKeyOrderAsync(
-        IKvTransaction transaction,
-        ReadOnlyMemory<byte> rangeStart,
-        ReadOnlyMemory<byte> rangeEnd,
-        ListQuery query,
-        CancellationToken ct)
+    /// <summary>Executes one bounded keyset query against a configured covering index.</summary>
+    [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task",
+        Justification = "The await-using declaration must retain the transaction type.")]
+    public async ValueTask<Page<T>> QueryAsync(
+        IKvClient client,
+        string route,
+        KvDirectoryQuery<T> query,
+        CancellationToken ct = default)
     {
-        var startKey = DecodeKeyCursor(query.Cursor) ?? rangeStart;
-        // Collect one extra qualifying match beyond the requested limit so "is there a next page"
-        // is answered by an actual match, not just by this page happening to fill exactly.
-        var matches = new List<(T Value, ReadOnlyMemory<byte> Key)>();
-        var scanQuery = new KvScanQuery(startKey, rangeEnd, Limit: (ulong)(query.Limit + 1));
-
-        await foreach (var pair in transaction.ScanAllAsync(scanQuery, ct).ConfigureAwait(false))
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentException.ThrowIfNullOrWhiteSpace(route);
+        ArgumentNullException.ThrowIfNull(query);
+        var index = Resolve(query.Index);
+        var limit = query.Limit ?? _options.DefaultPageSize;
+        ValidateLimit(limit);
+        var prefix = IndexPrefix(index, query.Prefix);
+        var rangeStart = LexKey.EncodeFirst(prefix).AsMemory();
+        var rangeEnd = LexKey.EncodeLast(prefix).AsMemory();
+        var fingerprint = Fingerprint(route, index, query.IsDescending, query.Prefix, "query");
+        var cursorKey = DecodeCursor(query.Cursor, fingerprint);
+        ValidateCursorRange(cursorKey, rangeStart, rangeEnd);
+        var scan = query.IsDescending
+            ? new KvScanQuery(rangeStart, cursorKey ?? rangeEnd, (ulong)(limit + 1), Reverse: true)
+            : new KvScanQuery(cursorKey is null ? rangeStart : After(cursorKey.Value.Span), rangeEnd,
+                (ulong)(limit + 1));
+        await using var transaction = await client.BeginAsync(route, KvDurability.Async, KvMode.ReadOnly, ct)
+            .ConfigureAwait(false);
+        var matches = new List<KvPair>(limit + 1);
+        await foreach (var pair in transaction.ScanAllAsync(scan, ct).ConfigureAwait(false))
         {
-            var value = Deserialize(pair.Value);
-            if (query.Search is not null && !_searchText!(value).Contains(query.Search, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            matches.Add((value, pair.Key));
-            if (matches.Count > query.Limit)
-            {
+            matches.Add(pair);
+            if (matches.Count > limit)
                 break;
-            }
         }
-
-        var hasMore = matches.Count > query.Limit;
-        var items = matches.Take(query.Limit).Select(static match => match.Value).ToArray();
-        var nextCursor = hasMore ? EncodeKeyCursor(NextKeyAfter(matches[query.Limit - 1].Key.Span)) : null;
-        return new Page<T>(items, nextCursor);
+        var hasMore = matches.Count > limit;
+        var returned = matches.Take(limit).ToArray();
+        var items = returned.Select(pair => Deserialize(pair.Value)).ToArray();
+        var next = hasMore ? EncodeCursor(fingerprint, returned[^1].Key) : null;
+        return new Page<T>(items, next);
     }
 
-    async ValueTask<Page<T>> ListSortedAsync(
+    /// <summary>
+    /// Backfills one configured index generation from stable primary records in a committed,
+    /// resumable batch. Deploy the upgraded schema first so ordinary writes dual-write old and new generations.
+    /// </summary>
+    [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task",
+        Justification = "The await-using declaration must retain the transaction type.")]
+    public async ValueTask<KvDirectoryBackfillPage> BackfillAsync(
+        IKvClient client,
+        string route,
+        KvDirectoryIndex<T> index,
+        int limit,
+        string? cursor = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentException.ThrowIfNullOrWhiteSpace(route);
+        ArgumentNullException.ThrowIfNull(index);
+        index = Resolve(index);
+        ValidateLimit(limit);
+        var primaryPrefix = PrimaryPrefix();
+        var rangeStart = LexKey.EncodeFirst(primaryPrefix).AsMemory();
+        var rangeEnd = LexKey.EncodeLast(primaryPrefix).AsMemory();
+        var fingerprint = Fingerprint(route, index, false, [], "backfill");
+        var cursorKey = DecodeCursor(cursor, fingerprint);
+        ValidateCursorRange(cursorKey, rangeStart, rangeEnd);
+        var scan = new KvScanQuery(
+            cursorKey is null ? rangeStart : After(cursorKey.Value.Span), rangeEnd, (ulong)(limit + 1));
+        await using var transaction = await client.BeginAsync(route, KvDurability.Async, KvMode.ReadWrite, ct)
+            .ConfigureAwait(false);
+        var records = new List<KvPair>(limit + 1);
+        await foreach (var pair in transaction.ScanAllAsync(scan, ct).ConfigureAwait(false))
+        {
+            records.Add(pair);
+            if (records.Count > limit)
+                break;
+        }
+        var processed = records.Take(limit).ToArray();
+        foreach (var record in processed)
+        {
+            var value = Deserialize(record.Value);
+            await transaction.PutAsync(IndexKey(index, value), record.Value, ct).ConfigureAwait(false);
+        }
+        await transaction.CommitAsync(ct).ConfigureAwait(false);
+        var next = records.Count > limit ? EncodeCursor(fingerprint, processed[^1].Key) : null;
+        return new KvDirectoryBackfillPage(processed.Length, next);
+    }
+
+    /// <summary>
+    /// Deletes every row for an obsolete index generation in one transactional range mutation.
+    /// Call only after readers and writers have cut over to a newer generation.
+    /// </summary>
+    public ValueTask DeleteIndexGenerationAsync(
         IKvTransaction transaction,
-        ReadOnlyMemory<byte> rangeStart,
-        ReadOnlyMemory<byte> rangeEnd,
-        ListQuery query,
+        KvDirectoryIndex<T> index,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(index);
+        index = Resolve(index);
+        var prefix = IndexPrefix(index, []);
+        return new ValueTask(transaction.DeleteRangeAsync(
+            LexKey.EncodeFirst(prefix).AsMemory(), LexKey.EncodeLast(prefix).AsMemory(), ct));
+    }
+
+    KvDirectoryIndex<T> Resolve(KvDirectoryIndex<T> requested) =>
+        _indexes.FirstOrDefault(index =>
+            string.Equals(index.Name, requested.Name, StringComparison.Ordinal) &&
+            index.Generation == requested.Generation)
+        ?? throw new KvDirectoryQueryException(KvDirectoryQueryError.UnsupportedIndex,
+            $"Index '{requested.Name}' generation {requested.Generation} is not configured.");
+
+    void ValidateLimit(int limit)
+    {
+        if (limit <= 0 || limit > _options.MaximumPageSize)
+            throw new KvDirectoryQueryException(KvDirectoryQueryError.InvalidLimit,
+                $"The limit must be between 1 and {_options.MaximumPageSize}.");
+    }
+
+    async ValueTask PutIndexesAsync(
+        IKvTransaction transaction,
+        T value,
+        ReadOnlyMemory<byte> bytes,
         CancellationToken ct)
     {
-        var all = new List<T>();
-        var scanQuery = new KvScanQuery(rangeStart, rangeEnd);
-        await foreach (var pair in transaction.ScanAllAsync(scanQuery, ct).ConfigureAwait(false))
-        {
-            var value = Deserialize(pair.Value);
-            if (query.Search is null || _searchText!(value).Contains(query.Search, StringComparison.OrdinalIgnoreCase))
-            {
-                all.Add(value);
-            }
-        }
-
-        var ordered = Sort(all, query.Sort);
-        var offset = DecodeOffsetCursor(query.Cursor);
-        var items = ordered.Skip(offset).Take(query.Limit).ToArray();
-        var nextCursor = offset + items.Length < ordered.Count ? EncodeOffsetCursor(offset + items.Length) : null;
-        return new Page<T>(items, nextCursor);
+        foreach (var index in _indexes)
+            await transaction.PutAsync(IndexKey(index, value), bytes, ct).ConfigureAwait(false);
     }
 
-    List<T> Sort(List<T> items, IReadOnlyList<SortField> sort)
+    async ValueTask DeleteIndexesAsync(IKvTransaction transaction, T value, CancellationToken ct)
     {
-        IOrderedEnumerable<T>? ordered = null;
-        foreach (var field in sort)
-        {
-            var selector = _sortFields[field.Field];
-            ordered = ordered is null
-                ? field.Descending ? items.OrderByDescending(v => selector(v)) : items.OrderBy(v => selector(v))
-                : field.Descending ? ordered.ThenByDescending(v => selector(v)) : ordered.ThenBy(v => selector(v));
-        }
+        foreach (var index in _indexes)
+            await transaction.DeleteAsync(IndexKey(index, value), ct).ConfigureAwait(false);
+    }
 
-        return ordered is null ? items : [.. ordered];
+    ReadOnlyMemory<byte> PrimaryKey(TKey identity) =>
+        LexKey.EncodeComposite(Combine(PrimaryPrefix(), IdentityParts(identity))).AsMemory();
+
+    LexKeyPart[] PrimaryPrefix() => [_name, "record"];
+
+    ReadOnlyMemory<byte> IndexKey(KvDirectoryIndex<T> index, T value) =>
+        LexKey.EncodeComposite(Combine(
+            IndexPrefix(index, index.Select(value)), IdentityParts(_identity(value)))).AsMemory();
+
+    LexKeyPart[] IndexPrefix(KvDirectoryIndex<T> index, LexKeyPart[] suffix) =>
+        Combine([_name, "index", index.Name, index.Generation], suffix);
+
+    LexKeyPart[] IdentityParts(TKey identity) =>
+        _identityKey(identity) ?? throw new InvalidOperationException("The identity selector returned a null key.");
+
+    static LexKeyPart[] Combine(LexKeyPart[] first, LexKeyPart[] second)
+    {
+        var result = new LexKeyPart[first.Length + second.Length];
+        first.CopyTo(result, 0);
+        second.CopyTo(result, first.Length);
+        return result;
+    }
+
+    byte[] Serialize(T value)
+    {
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(value, _valueTypeInfo);
+        if (bytes.Length > _options.MaximumSerializedValueBytes)
+            throw new InvalidOperationException(
+                $"The serialized directory value exceeds {_options.MaximumSerializedValueBytes} bytes.");
+        return bytes;
     }
 
     T Deserialize(ReadOnlyMemory<byte> value) =>
         JsonSerializer.Deserialize(value.Span, _valueTypeInfo)
         ?? throw new InvalidOperationException("The stored directory entry could not be deserialized.");
 
-    // A ternary here (`cursor is null ? null : ...`) resolves its common type through
-    // ReadOnlyMemory<byte>'s implicit byte[]? conversion, turning `null` into an empty memory
-    // instead of "no value" — explicit branches avoid that ambiguous inference entirely.
-    static ReadOnlyMemory<byte>? DecodeKeyCursor(string? cursor)
+    byte[] Fingerprint(
+        string route,
+        KvDirectoryIndex<T> index,
+        bool descending,
+        LexKeyPart[] prefix,
+        string purpose)
     {
-        if (cursor is null)
-        {
-            return null;
-        }
-
-        return Convert.FromBase64String(cursor);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Append(hash, purpose);
+        Append(hash, route);
+        Append(hash, _name);
+        Append(hash, index.Name);
+        Span<byte> scalar = stackalloc byte[5];
+        BinaryPrimitives.WriteUInt32BigEndian(scalar, index.Generation);
+        scalar[4] = descending ? (byte)1 : (byte)0;
+        hash.AppendData(scalar);
+        hash.AppendData(LexKey.EncodeComposite(prefix).AsSpan());
+        return hash.GetHashAndReset()[..FingerprintLength];
     }
 
-    static string EncodeKeyCursor(ReadOnlyMemory<byte> key) => Convert.ToBase64String(key.Span);
-
-    static int DecodeOffsetCursor(string? cursor) =>
-        cursor is null ? 0 : int.Parse(cursor, System.Globalization.CultureInfo.InvariantCulture);
-
-    static string EncodeOffsetCursor(int offset) => offset.ToString(System.Globalization.CultureInfo.InvariantCulture);
-
-    static ReadOnlyMemory<byte> NextKeyAfter(ReadOnlySpan<byte> key)
+    static void Append(IncrementalHash hash, string value)
     {
-        var next = new byte[key.Length + 1];
-        key.CopyTo(next);
-        return next;
+        var bytes = Encoding.UTF8.GetBytes(value);
+        Span<byte> length = stackalloc byte[4];
+        BinaryPrimitives.WriteInt32BigEndian(length, bytes.Length);
+        hash.AppendData(length);
+        hash.AppendData(bytes);
+    }
+
+    string EncodeCursor(byte[] fingerprint, ReadOnlyMemory<byte> key)
+    {
+        var payload = new byte[CursorVersion + FingerprintLength + sizeof(int) + key.Length];
+        payload[0] = CursorVersion;
+        fingerprint.CopyTo(payload, 1);
+        BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1 + FingerprintLength), key.Length);
+        key.Span.CopyTo(payload.AsSpan(1 + FingerprintLength + sizeof(int)));
+        if (payload.Length > _options.MaximumCursorBytes)
+            throw new InvalidOperationException("The generated cursor exceeds MaximumCursorBytes.");
+        return Convert.ToBase64String(payload);
+    }
+
+    ReadOnlyMemory<byte>? DecodeCursor(string? cursor, byte[] expectedFingerprint)
+    {
+        if (cursor is null)
+            return null;
+        if (cursor.Length > _options.MaximumCursorBytes * 2L)
+            throw InvalidCursor("The cursor exceeds the configured limit.");
+        try
+        {
+            var payload = Convert.FromBase64String(cursor);
+            if (payload.Length > _options.MaximumCursorBytes ||
+                payload.Length < CursorVersion + FingerprintLength + sizeof(int) ||
+                payload[0] != CursorVersion)
+                throw InvalidCursor("The cursor has an invalid format or version.");
+            var fingerprint = payload.AsSpan(1, FingerprintLength);
+            if (!CryptographicOperations.FixedTimeEquals(fingerprint, expectedFingerprint))
+                throw new KvDirectoryQueryException(KvDirectoryQueryError.CursorMismatch,
+                    "The cursor belongs to a different directory query.");
+            var keyLength = BinaryPrimitives.ReadInt32BigEndian(payload.AsSpan(1 + FingerprintLength));
+            var keyOffset = 1 + FingerprintLength + sizeof(int);
+            if (keyLength <= 0 || keyLength != payload.Length - keyOffset)
+                throw InvalidCursor("The cursor key length is invalid.");
+            return payload.AsMemory(keyOffset, keyLength);
+        }
+        catch (FormatException error)
+        {
+            throw InvalidCursor("The cursor is not valid Base64.", error);
+        }
+        catch (OverflowException error)
+        {
+            throw InvalidCursor("The cursor exceeds the configured limit.", error);
+        }
+    }
+
+    static KvDirectoryQueryException InvalidCursor(string message, Exception? inner = null) =>
+        new(KvDirectoryQueryError.InvalidCursor, message, inner);
+
+    static void ValidateCursorRange(
+        ReadOnlyMemory<byte>? cursorKey,
+        ReadOnlyMemory<byte> rangeStart,
+        ReadOnlyMemory<byte> rangeEnd)
+    {
+        if (cursorKey is not { } key)
+            return;
+        if (key.Span.SequenceCompareTo(rangeStart.Span) < 0 || key.Span.SequenceCompareTo(rangeEnd.Span) >= 0)
+            throw InvalidCursor("The cursor key falls outside the selected index range.");
+    }
+
+    static byte[] After(ReadOnlySpan<byte> key)
+    {
+        var result = new byte[key.Length + 1];
+        key.CopyTo(result);
+        return result;
     }
 }

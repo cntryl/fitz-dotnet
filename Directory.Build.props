@@ -11,7 +11,7 @@
 
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
     <!-- Assembly identity stays fixed permanently; release only by advancing PackageVersion. -->
-    <PackageVersion>1.2.0</PackageVersion>
+    <PackageVersion>1.3.0</PackageVersion>
     <Version>$(PackageVersion)</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <InformationalVersion>$(PackageVersion)</InformationalVersion>
@@ -26,7 +26,7 @@
     <DebugType>portable</DebugType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>fitz distributed-systems kv queue rpc lease notice stream schedule</PackageTags>
-    <PackageReleaseNotes>Adds Cntryl.Fitz.Extensions: a paginated, sortable, searchable KV-backed directory built on Cntryl.LexKey. See CHANGELOG.md.</PackageReleaseNotes>
+    <PackageReleaseNotes>Rebuilds Cntryl.Fitz.Extensions around bounded covering indexes, keyset cursors, explicit write costs, and resumable index generations. See CHANGELOG.md.</PackageReleaseNotes>
     <PackageOutputPath>$(MSBuildThisFileDirectory)artifacts\packages</PackageOutputPath>
   </PropertyGroup>
 
