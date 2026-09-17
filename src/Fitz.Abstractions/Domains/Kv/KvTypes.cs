@@ -59,7 +59,7 @@ public sealed record KvScanResult(IReadOnlyList<KvPair> Pairs, bool HasMore);
 public sealed record KvScanQuery(
     ReadOnlyMemory<byte>? StartKey = null,
     ReadOnlyMemory<byte>? EndKey = null,
-    ulong? Limit = null,
+    uint? Limit = null,
     bool Reverse = false);
 
 /// <summary>A committed KV mutation notification.</summary>

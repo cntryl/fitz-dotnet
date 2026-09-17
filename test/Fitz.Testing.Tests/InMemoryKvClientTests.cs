@@ -257,7 +257,7 @@ public sealed class InMemoryKvClientTests
         Assert.Equal(KvMode.ReadOnly, begin.Mode);
         Assert.Equal("team\0"u8.ToArray(), scan.ScanQuery!.StartKey!.Value.ToArray());
         Assert.Equal([.. "team"u8, 1], scan.ScanQuery.EndKey!.Value.ToArray());
-        Assert.Equal(25UL, scan.ScanQuery.Limit);
+        Assert.Equal(25U, scan.ScanQuery.Limit);
         Assert.True(scan.ScanQuery.Reverse);
     }
 
