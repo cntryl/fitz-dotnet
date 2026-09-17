@@ -1,7 +1,7 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
-VisualStudioVersion = 18.5.11716.220 stable
+VisualStudioVersion = 18.5.11716.220
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.Core", "src\Fitz.Core\Fitz.Core.csproj", "{A0FF5C20-F869-4E04-8EC5-EE7F915C02A8}"
 EndProject
@@ -26,6 +26,10 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.Testing", "src\Fitz.Testing\Fitz.Testing.csproj", "{CB9E79C4-1BBD-4F85-A0BA-32468DD2F0D0}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.Testing.Tests", "test\Fitz.Testing.Tests\Fitz.Testing.Tests.csproj", "{3E7982E2-C9B8-4D93-928D-C8E4A2FBB01B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.Extensions", "src\Fitz.Extensions\Fitz.Extensions.csproj", "{016D5D9E-2172-494E-8249-B06A8FA9BE36}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Fitz.Extensions.Tests", "test\Fitz.Extensions.Tests\Fitz.Extensions.Tests.csproj", "{E44F0E36-9664-4607-B16B-13AA56D5C238}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -157,6 +161,30 @@ Global
 		{3E7982E2-C9B8-4D93-928D-C8E4A2FBB01B}.Release|x64.Build.0 = Release|Any CPU
 		{3E7982E2-C9B8-4D93-928D-C8E4A2FBB01B}.Release|x86.ActiveCfg = Release|Any CPU
 		{3E7982E2-C9B8-4D93-928D-C8E4A2FBB01B}.Release|x86.Build.0 = Release|Any CPU
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36}.Debug|x64.Build.0 = Debug|Any CPU
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36}.Debug|x86.Build.0 = Debug|Any CPU
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36}.Release|Any CPU.Build.0 = Release|Any CPU
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36}.Release|x64.ActiveCfg = Release|Any CPU
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36}.Release|x64.Build.0 = Release|Any CPU
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36}.Release|x86.ActiveCfg = Release|Any CPU
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36}.Release|x86.Build.0 = Release|Any CPU
+		{E44F0E36-9664-4607-B16B-13AA56D5C238}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E44F0E36-9664-4607-B16B-13AA56D5C238}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E44F0E36-9664-4607-B16B-13AA56D5C238}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{E44F0E36-9664-4607-B16B-13AA56D5C238}.Debug|x64.Build.0 = Debug|Any CPU
+		{E44F0E36-9664-4607-B16B-13AA56D5C238}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{E44F0E36-9664-4607-B16B-13AA56D5C238}.Debug|x86.Build.0 = Debug|Any CPU
+		{E44F0E36-9664-4607-B16B-13AA56D5C238}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E44F0E36-9664-4607-B16B-13AA56D5C238}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E44F0E36-9664-4607-B16B-13AA56D5C238}.Release|x64.ActiveCfg = Release|Any CPU
+		{E44F0E36-9664-4607-B16B-13AA56D5C238}.Release|x64.Build.0 = Release|Any CPU
+		{E44F0E36-9664-4607-B16B-13AA56D5C238}.Release|x86.ActiveCfg = Release|Any CPU
+		{E44F0E36-9664-4607-B16B-13AA56D5C238}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -167,5 +195,7 @@ Global
 		{AD1EE284-D123-4249-949B-94A9FC5B91E1} = {0C88DD14-F956-CE84-757C-A364CCF449FC}
 		{CB9E79C4-1BBD-4F85-A0BA-32468DD2F0D0} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{3E7982E2-C9B8-4D93-928D-C8E4A2FBB01B} = {0C88DD14-F956-CE84-757C-A364CCF449FC}
+		{016D5D9E-2172-494E-8249-B06A8FA9BE36} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{E44F0E36-9664-4607-B16B-13AA56D5C238} = {0C88DD14-F956-CE84-757C-A364CCF449FC}
 	EndGlobalSection
 EndGlobal

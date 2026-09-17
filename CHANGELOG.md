@@ -13,6 +13,17 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-17
+
+### Added
+
+- Added the optional `Cntryl.Fitz.Extensions` package. Its `KvDirectory<T>` is a
+  paginated, sortable, searchable KV-backed directory of composite-keyed values, built on
+  `Cntryl.LexKey` range encoding and `IKvTransaction.ScanAllAsync`. Ships alongside the
+  shared `Page<T>`, `ListQuery`, `SortField`, and `SortKeySelector<T>` types so pagination,
+  search, and sort are normalized once, package-owned, instead of re-derived per
+  application.
+
 ## [1.1.0] - 2026-09-17
 
 ### Added
