@@ -7,11 +7,32 @@ This project follows [Semantic Versioning](https://semver.org/). From `1.0.0` on
 public surface is a commitment: breaking changes require a major release. The `0.x` entries
 below predate that and broke freely, as a preview may.
 
+`Cntryl.Fitz.Extensions` remains an explicitly evolving optional package: until its directory
+contract is declared stable, its public surface may change in a synchronized minor release.
+
 **Package version and assembly version are deliberately decoupled.** `PackageVersion`
 advances with every release; `AssemblyVersion` stays pinned at `1.0.0.0` so binding
 never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI run.
 
 ## [Unreleased]
+
+## [1.3.0] - 2026-09-17
+
+### Changed
+
+- **Breaking (`Cntryl.Fitz.Extensions`):** replaced scan/materialize/sort `KvDirectory<T>` with
+  `KvDirectory<T, TKey>`, whose declared covering indexes turn every query into one bounded KV
+  range. Typed fluent queries use forward or reverse keyset pagination with stable identity
+  tie-breaking; opaque cursors are bound to route, directory, index generation, direction, and
+  prefix. Arbitrary substring search, runtime sort parsing, offset cursors, and whole-directory
+  materialization were removed.
+- Directory writes now maintain stable primary records and every configured index generation
+  atomically. `InsertAsync`, `ReplaceAsync(previous, current)`, and `DeleteAsync(previous)` avoid
+  hidden reads; convenience upsert and delete-by-ID document and perform one read. Serialized value,
+  index-generation, page, and cursor resources are bounded.
+- Each index has an independent generation. Upgraded schemas dual-write configured generations,
+  `BackfillAsync` rebuilds a new generation in committed resumable batches, and
+  `DeleteIndexGenerationAsync` removes an obsolete generation after application-controlled cutover.
 
 ## [1.2.0] - 2026-09-17
 

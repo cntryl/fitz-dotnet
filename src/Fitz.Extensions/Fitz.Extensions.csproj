@@ -21,7 +21,7 @@
     <PackageId>Cntryl.Fitz.Extensions</PackageId>
     <AssemblyName>Cntryl.Fitz.Extensions</AssemblyName>
     <RootNamespace>Cntryl.Fitz.Extensions</RootNamespace>
-    <Description>Paginated, sortable, searchable KV-backed directories for Fitz consumers, built on Cntryl.LexKey.</Description>
+    <Description>Bounded, index-backed KV directories with keyset pagination and migration support, built on Cntryl.LexKey.</Description>
   </PropertyGroup>
 
 </Project>

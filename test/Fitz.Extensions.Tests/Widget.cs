@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace Cntryl.Fitz.Extensions.Tests;
 
-sealed record Widget(Guid Id, string Name, int Priority);
+sealed record Widget(Guid Id, string Name, int Priority, string[]? Tags = null);
 
 [JsonSerializable(typeof(Widget))]
 sealed partial class WidgetJsonContext : JsonSerializerContext;

@@ -7,6 +7,7 @@
 - `Cntryl.Fitz.Core`: core client API
 - `Cntryl.Fitz.Abstractions`: public interfaces and shared contracts
 - `Cntryl.Fitz.DependencyInjection`: DI registration helpers
+- `Cntryl.Fitz.Extensions`: optional indexed KV-directory mechanics built on `Cntryl.LexKey`
 - `Cntryl.Fitz.Testing`: deterministic in-memory KV transactions for consumer tests
 
 `Cntryl.Fitz.Core` also ships the Roslyn analyzers and their code fixes, so installing
@@ -30,7 +31,7 @@ Enforcement is mechanical, not aspirational:
 - every package sets `IsAotCompatible=true`, enabling the trim, AOT, and
   single-file analyzers, and warnings are errors repo-wide
 - the `package` CI job publishes and runs a Native AOT executable against the
-  freshly packed artifacts with **all four assemblies rooted**, so ILC analyzes
+  freshly packed artifacts with **all five assemblies rooted**, so ILC analyzes
   every shipped method rather than only what the sample reaches, reports each
   finding individually, and fails the build on any of them
 
@@ -49,6 +50,7 @@ to `"custom"` rather than inspecting the runtime type.
 dotnet add package Cntryl.Fitz.Core
 dotnet add package Cntryl.Fitz.Abstractions
 dotnet add package Cntryl.Fitz.DependencyInjection
+dotnet add package Cntryl.Fitz.Extensions # optional; indexed KV directories
 dotnet add package Cntryl.Fitz.Testing # optional; test projects only
 ```
 
@@ -117,6 +119,35 @@ Production and test transactions can use `ScanAllAsync` to own continuation safe
 either direction; it rejects an impossible empty page whose `HasMore` flag is set. Fitz remains
 key-schema neutral. Use `Cntryl.LexKey` to construct typed keys and range bounds, then pass
 `LexKey.AsMemory()` directly to Fitz without copying.
+
+## Indexed KV directories
+
+`Cntryl.Fitz.Extensions` turns declared query shapes into bounded covering-index scans. The
+application owns which indexes exist and maps external sort or filter input to those handles;
+Fitz owns atomic index maintenance, bounds, keyset continuation, and generation migration.
+
+```csharp
+var byName = new KvDirectoryIndex<Team>(
+    "by_name", generation: 1,
+    static team => [team.Name.ToUpperInvariant()]);
+
+var teams = new KvDirectory<Team, Guid>(
+    "teams",
+    TeamJsonContext.Default.Team,
+    static team => team.Id,
+    static id => [id],
+    [byName]);
+
+await teams.InsertAsync(transaction, team, ct); // no read
+var page = await teams.QueryAsync(client, route,
+    byName.Query().Take(50).After(cursor), ct);
+```
+
+`UpsertAsync` reads the previous primary record so it can remove old index rows. Hot paths that
+already know the previous value use `ReplaceAsync(previous, current)` instead. To add an index
+generation, deploy a schema containing both generations (ordinary writes then dual-write), backfill
+the new generation in bounded batches, switch application reads, deploy a schema that no longer
+writes the old generation, and finally delete the old range.
 
 Runtime defaults now match the TS client truth surface:
 
