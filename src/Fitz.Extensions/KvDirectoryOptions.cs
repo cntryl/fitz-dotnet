@@ -17,4 +17,7 @@ public sealed record KvDirectoryOptions
 
     /// <summary>Gets the largest number of simultaneously maintained index generations.</summary>
     public int MaximumIndexGenerations { get; init; } = 32;
+
+    /// <summary>Gets the largest number of rows one index generation may produce for one entity.</summary>
+    public int MaximumIndexEntriesPerEntity { get; init; } = 128;
 }

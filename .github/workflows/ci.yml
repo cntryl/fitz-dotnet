@@ -52,6 +52,9 @@ jobs:
       - name: Run testing-package tests
         run: dotnet test test/Fitz.Testing.Tests/Fitz.Testing.Tests.csproj -c Release --no-build
 
+      - name: Run extensions tests
+        run: dotnet test test/Fitz.Extensions.Tests/Fitz.Extensions.Tests.csproj -c Release --no-build
+
   package:
     timeout-minutes: 10
     runs-on: ubuntu-latest

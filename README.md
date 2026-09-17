@@ -146,7 +146,8 @@ var page = await teams.QueryAsync(client, route,
 `UpsertAsync` reads the previous primary record so it can remove old index rows. Hot paths that
 already know the previous value use `ReplaceAsync(previous, current)` instead. To add an index
 generation, deploy a schema containing both generations (ordinary writes then dual-write), backfill
-the new generation in bounded batches, switch application reads, and finally delete the old range.
+the new generation in bounded batches, switch application reads, deploy a schema that no longer
+writes the old generation, and finally delete the old range.
 
 Runtime defaults now match the TS client truth surface:
 

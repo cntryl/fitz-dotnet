@@ -50,6 +50,8 @@ public sealed class KvDirectory<T, TKey>
             throw new ArgumentOutOfRangeException(nameof(options), "MaximumSerializedValueBytes must be positive.");
         if (_options.MaximumIndexGenerations < 0 || indexes.Count > _options.MaximumIndexGenerations)
             throw new ArgumentOutOfRangeException(nameof(indexes), "The schema exceeds MaximumIndexGenerations.");
+        if (_options.MaximumIndexEntriesPerEntity <= 0)
+            throw new ArgumentOutOfRangeException(nameof(options), "MaximumIndexEntriesPerEntity must be positive.");
         if (indexes.Any(static index => index is null))
             throw new ArgumentException("An index cannot be null.", nameof(indexes));
         var duplicate = indexes.GroupBy(static index => (index.Name, index.Generation))
@@ -70,8 +72,9 @@ public sealed class KvDirectory<T, TKey>
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(value);
         var bytes = Serialize(value);
+        var indexes = IndexKeys(value);
         await transaction.InsertAsync(PrimaryKey(_identity(value)), bytes, ct).ConfigureAwait(false);
-        await PutIndexesAsync(transaction, value, bytes, ct).ConfigureAwait(false);
+        await PutIndexesAsync(transaction, indexes, bytes, ct).ConfigureAwait(false);
     }
 
     /// <summary>Replaces a known previous value without reading, maintaining every configured index.</summary>
@@ -87,10 +90,12 @@ public sealed class KvDirectory<T, TKey>
         var previousIdentity = _identity(previous);
         if (!EqualityComparer<TKey>.Default.Equals(previousIdentity, _identity(current)))
             throw new ArgumentException("A replacement cannot change the entity identity.", nameof(current));
-        await DeleteIndexesAsync(transaction, previous, ct).ConfigureAwait(false);
         var bytes = Serialize(current);
+        var previousIndexes = IndexKeys(previous);
+        var currentIndexes = IndexKeys(current);
+        await DeleteIndexesAsync(transaction, previousIndexes, ct).ConfigureAwait(false);
         await transaction.PutAsync(PrimaryKey(previousIdentity), bytes, ct).ConfigureAwait(false);
-        await PutIndexesAsync(transaction, current, bytes, ct).ConfigureAwait(false);
+        await PutIndexesAsync(transaction, currentIndexes, bytes, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -114,7 +119,8 @@ public sealed class KvDirectory<T, TKey>
     {
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(value);
-        await DeleteIndexesAsync(transaction, value, ct).ConfigureAwait(false);
+        var indexes = IndexKeys(value);
+        await DeleteIndexesAsync(transaction, indexes, ct).ConfigureAwait(false);
         await transaction.DeleteAsync(PrimaryKey(_identity(value)), ct).ConfigureAwait(false);
     }
 
@@ -231,7 +237,8 @@ public sealed class KvDirectory<T, TKey>
         foreach (var record in processed)
         {
             var value = Deserialize(record.Value);
-            await transaction.PutAsync(IndexKey(index, value), record.Value, ct).ConfigureAwait(false);
+            foreach (var key in IndexKeys(index, value))
+                await transaction.PutAsync(key, record.Value, ct).ConfigureAwait(false);
         }
         await transaction.CommitAsync(ct).ConfigureAwait(false);
         var next = records.Count > limit ? EncodeCursor(fingerprint, processed[^1].Key) : null;
@@ -249,7 +256,6 @@ public sealed class KvDirectory<T, TKey>
     {
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(index);
-        index = Resolve(index);
         var prefix = IndexPrefix(index, []);
         return new ValueTask(transaction.DeleteRangeAsync(
             LexKey.EncodeFirst(prefix).AsMemory(), LexKey.EncodeLast(prefix).AsMemory(), ct));
@@ -269,20 +275,29 @@ public sealed class KvDirectory<T, TKey>
                 $"The limit must be between 1 and {_options.MaximumPageSize}.");
     }
 
-    async ValueTask PutIndexesAsync(
+    static async ValueTask PutIndexesAsync(
         IKvTransaction transaction,
-        T value,
+        IReadOnlyList<ReadOnlyMemory<byte>[]> indexes,
         ReadOnlyMemory<byte> bytes,
         CancellationToken ct)
     {
-        foreach (var index in _indexes)
-            await transaction.PutAsync(IndexKey(index, value), bytes, ct).ConfigureAwait(false);
+        foreach (var index in indexes)
+        {
+            foreach (var key in index)
+                await transaction.PutAsync(key, bytes, ct).ConfigureAwait(false);
+        }
     }
 
-    async ValueTask DeleteIndexesAsync(IKvTransaction transaction, T value, CancellationToken ct)
+    static async ValueTask DeleteIndexesAsync(
+        IKvTransaction transaction,
+        IReadOnlyList<ReadOnlyMemory<byte>[]> indexes,
+        CancellationToken ct)
     {
-        foreach (var index in _indexes)
-            await transaction.DeleteAsync(IndexKey(index, value), ct).ConfigureAwait(false);
+        foreach (var index in indexes)
+        {
+            foreach (var key in index)
+                await transaction.DeleteAsync(key, ct).ConfigureAwait(false);
+        }
     }
 
     ReadOnlyMemory<byte> PrimaryKey(TKey identity) =>
@@ -290,15 +305,42 @@ public sealed class KvDirectory<T, TKey>
 
     LexKeyPart[] PrimaryPrefix() => [_name, "record"];
 
-    ReadOnlyMemory<byte> IndexKey(KvDirectoryIndex<T> index, T value) =>
-        LexKey.EncodeComposite(Combine(
-            IndexPrefix(index, index.Select(value)), IdentityParts(_identity(value)))).AsMemory();
+    ReadOnlyMemory<byte>[][] IndexKeys(T value)
+    {
+        var result = new ReadOnlyMemory<byte>[_indexes.Length][];
+        for (var position = 0; position < _indexes.Length; position++)
+            result[position] = IndexKeys(_indexes[position], value);
+        return result;
+    }
+
+    ReadOnlyMemory<byte>[] IndexKeys(KvDirectoryIndex<T> index, T value)
+    {
+        var selected = index.Select(value);
+        if (selected.Count > _options.MaximumIndexEntriesPerEntity)
+            throw new InvalidOperationException(
+                $"Index '{index.Name}' exceeds MaximumIndexEntriesPerEntity.");
+        var identity = IdentityParts(_identity(value));
+        var result = new ReadOnlyMemory<byte>[selected.Count];
+        for (var position = 0; position < selected.Count; position++)
+        {
+            var key = selected[position]
+                ?? throw new InvalidOperationException($"Index '{index.Name}' returned a null key.");
+            result[position] = LexKey.EncodeComposite(Combine(IndexPrefix(index, key), identity)).AsMemory();
+        }
+        return result;
+    }
 
     LexKeyPart[] IndexPrefix(KvDirectoryIndex<T> index, LexKeyPart[] suffix) =>
         Combine([_name, "index", index.Name, index.Generation], suffix);
 
-    LexKeyPart[] IdentityParts(TKey identity) =>
-        _identityKey(identity) ?? throw new InvalidOperationException("The identity selector returned a null key.");
+    LexKeyPart[] IdentityParts(TKey identity)
+    {
+        var parts = _identityKey(identity)
+            ?? throw new InvalidOperationException("The identity selector returned a null key.");
+        if (parts.Length == 0)
+            throw new InvalidOperationException("The identity selector must return at least one part.");
+        return parts;
+    }
 
     static LexKeyPart[] Combine(LexKeyPart[] first, LexKeyPart[] second)
     {

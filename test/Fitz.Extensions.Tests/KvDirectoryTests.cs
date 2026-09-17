@@ -14,7 +14,10 @@ public sealed class KvDirectoryTests
         "by_name", 2, static widget => [Normalize(widget.Name)]);
     static readonly KvDirectoryIndex<Widget> ByPriorityName = new(
         "by_priority_name", 1, static widget => [widget.Priority, Normalize(widget.Name)]);
-    static readonly KvDirectory<Widget, Guid> Directory = CreateDirectory(ByNameV1, ByPriorityName);
+    static readonly KvDirectoryIndex<Widget> ByTag = KvDirectoryIndex.Many<Widget>(
+        "by_tag", 1, static widget => widget.Tags?
+            .Select(static tag => new LexKeyPart[] { Normalize(tag) }).ToArray() ?? []);
+    static readonly KvDirectory<Widget, Guid> Directory = CreateDirectory(ByNameV1, ByPriorityName, ByTag);
 
     [Fact]
     public async Task ShouldReadEntityGivenInsertedValue()
@@ -49,6 +52,33 @@ public sealed class KvDirectoryTests
         Assert.Null(page.NextCursor);
         Assert.All(client.Operations.Where(static operation => operation.Operation is KvTestOperation.Scan),
             static operation => Assert.Equal((ulong)3, operation.ScanQuery!.Limit));
+    }
+
+    [Fact]
+    public async Task ShouldKeepReadWorkBoundedGivenLargeDirectory()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        await using (var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadWrite))
+        {
+            for (var index = 0; index < 1_000; index++)
+            {
+                await Directory.InsertAsync(transaction,
+                    new Widget(Guid.NewGuid(), $"Widget {index:D4}", index));
+            }
+            await transaction.CommitAsync();
+        }
+        client.ClearOperations();
+
+        // Act
+        var page = await Directory.QueryAsync(client, Route, ByNameV1.Query().Take(3));
+
+        // Assert
+        Assert.Equal(3, page.Items.Count);
+        Assert.NotNull(page.NextCursor);
+        Assert.DoesNotContain(client.Operations, static operation => operation.Operation is KvTestOperation.Get);
+        var scan = Assert.Single(client.Operations, static operation => operation.Operation is KvTestOperation.Scan);
+        Assert.Equal((ulong)4, scan.ScanQuery!.Limit);
     }
 
     [Fact]
@@ -106,6 +136,23 @@ public sealed class KvDirectoryTests
 
         // Assert
         Assert.Equal("Low", Assert.Single(page.Items).Name);
+    }
+
+    [Fact]
+    public async Task ShouldReturnEntityFromEachMatchingTermGivenMultiEntryIndex()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        var widget = new Widget(Guid.NewGuid(), "Alpha", 1, ["review", "admin"]);
+        await WriteAsync(client, transaction => Directory.InsertAsync(transaction, widget));
+
+        // Act
+        var review = await Directory.QueryAsync(client, Route, ByTag.Query().WithPrefix(["REVIEW"]));
+        var admin = await Directory.QueryAsync(client, Route, ByTag.Query().WithPrefix(["ADMIN"]));
+
+        // Assert
+        Assert.Equivalent(widget, Assert.Single(review.Items), strict: true);
+        Assert.Equivalent(widget, Assert.Single(admin.Items), strict: true);
     }
 
     [Theory]
@@ -277,16 +324,17 @@ public sealed class KvDirectoryTests
     {
         // Arrange
         var client = new InMemoryKvClient();
-        var directory = CreateDirectory(ByNameV1, ByNameV2);
-        await WriteAsync(client, transaction => directory.InsertAsync(
+        var dualWrite = CreateDirectory(ByNameV1, ByNameV2);
+        await WriteAsync(client, transaction => dualWrite.InsertAsync(
             transaction, new Widget(Guid.NewGuid(), "Alpha", 1)));
+        var cutover = CreateDirectory(ByNameV2);
 
         // Act
-        await WriteAsync(client, transaction => directory.DeleteIndexGenerationAsync(transaction, ByNameV1));
+        await WriteAsync(client, transaction => cutover.DeleteIndexGenerationAsync(transaction, ByNameV1));
 
         // Assert
-        Assert.Empty((await directory.QueryAsync(client, Route, ByNameV1.Query())).Items);
-        Assert.Single((await directory.QueryAsync(client, Route, ByNameV2.Query())).Items);
+        Assert.Empty((await dualWrite.QueryAsync(client, Route, ByNameV1.Query())).Items);
+        Assert.Single((await cutover.QueryAsync(client, Route, ByNameV2.Query())).Items);
     }
 
     [Fact]
@@ -316,6 +364,53 @@ public sealed class KvDirectoryTests
         _ = Assert.Throws<ArgumentException>(() => CreateDirectory(ByNameV1, duplicate));
     }
 
+    [Fact]
+    public async Task ShouldRejectWriteGivenIdentityHasNoKeyParts()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        var directory = new KvDirectory<Widget, Guid>(
+            "widgets",
+            WidgetJsonContext.Default.Widget,
+            static widget => widget.Id,
+            static _ => [],
+            [ByNameV1]);
+
+        // Act
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => WriteAsync(
+            client, transaction => directory.InsertAsync(
+                transaction, new Widget(Guid.NewGuid(), "Alpha", 1))));
+
+        // Assert
+        Assert.Contains("at least one part", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ShouldNotStageWriteGivenIndexExceedsBound()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        var tooMany = KvDirectoryIndex.Many<Widget>(
+            "too_many", 1, static _ => [["one"], ["two"]]);
+        var directory = new KvDirectory<Widget, Guid>(
+            "widgets",
+            WidgetJsonContext.Default.Widget,
+            static widget => widget.Id,
+            static id => [id],
+            [ByNameV1, tooMany],
+            new KvDirectoryOptions { MaximumIndexEntriesPerEntity = 1 });
+        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadWrite);
+        client.ClearOperations();
+
+        // Act
+        _ = await Assert.ThrowsAsync<InvalidOperationException>(() => directory.InsertAsync(
+            transaction, new Widget(Guid.NewGuid(), "Alpha", 1)).AsTask());
+
+        // Assert
+        Assert.DoesNotContain(client.Operations, static operation =>
+            operation.Operation is KvTestOperation.Insert or KvTestOperation.Put);
+    }
+
     static KvDirectory<Widget, Guid> CreateDirectory(params KvDirectoryIndex<Widget>[] indexes) =>
         new(
             "widgets",
@@ -330,6 +425,7 @@ public sealed class KvDirectoryTests
                 MaximumCursorBytes = 1024,
                 MaximumSerializedValueBytes = 256,
                 MaximumIndexGenerations = 4,
+                MaximumIndexEntriesPerEntity = 8,
             });
 
     static string Normalize(string value) => value.ToUpperInvariant();
