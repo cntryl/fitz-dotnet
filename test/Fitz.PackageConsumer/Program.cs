@@ -1,5 +1,6 @@
 using Cntryl.Fitz;
 using Cntryl.Fitz.DependencyInjection;
+using Cntryl.Fitz.Extensions;
 using Cntryl.Fitz.Testing;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -9,9 +10,10 @@ services.AddFitzClient(new ClientConfig(new Uri("ws://localhost:4190/ws")));
 Console.WriteLine(typeof(Client).FullName);
 Console.WriteLine(typeof(IKvClient).FullName);
 Console.WriteLine(typeof(ServiceCollectionExtensions).FullName);
+Console.WriteLine(typeof(ListQuery).FullName);
 Console.WriteLine(typeof(InMemoryKvClient).FullName);
 
-foreach (var assembly in new[] { typeof(Client).Assembly, typeof(IKvClient).Assembly, typeof(ServiceCollectionExtensions).Assembly, typeof(InMemoryKvClient).Assembly })
+foreach (var assembly in new[] { typeof(Client).Assembly, typeof(IKvClient).Assembly, typeof(ServiceCollectionExtensions).Assembly, typeof(ListQuery).Assembly, typeof(InMemoryKvClient).Assembly })
 {
     var name = assembly.GetName();
     if (name.Version != new Version(1, 0, 0, 0))
