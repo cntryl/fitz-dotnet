@@ -7,6 +7,7 @@
 - `Cntryl.Fitz.Core`: core client API
 - `Cntryl.Fitz.Abstractions`: public interfaces and shared contracts
 - `Cntryl.Fitz.DependencyInjection`: DI registration helpers
+- `Cntryl.Fitz.Testing`: deterministic in-memory KV transactions for consumer tests
 
 `Cntryl.Fitz.Core` also ships the Roslyn analyzers and their code fixes, so installing
 it is all a consumer does to get the compile-time route and lifetime diagnostics. They
@@ -18,7 +19,7 @@ each package, so IntelliSense works without consulting this file.
 
 ## Trimming and Native AOT
 
-The three runtime packages use no reflection on any code path — no `GetType()`,
+The runtime packages and optional testing package use no reflection on any code path — no `GetType()`,
 no `Enum.IsDefined`, no container type activation — declare no
 `DynamicallyAccessedMembers`/`RequiresUnreferencedCode`/`RequiresDynamicCode`
 contracts, and suppress no trim or AOT warning. They are trim-safe and
@@ -29,7 +30,7 @@ Enforcement is mechanical, not aspirational:
 - every package sets `IsAotCompatible=true`, enabling the trim, AOT, and
   single-file analyzers, and warnings are errors repo-wide
 - the `package` CI job publishes and runs a Native AOT executable against the
-  freshly packed artifacts with **all three assemblies rooted**, so ILC analyzes
+  freshly packed artifacts with **all four assemblies rooted**, so ILC analyzes
   every shipped method rather than only what the sample reaches, reports each
   finding individually, and fails the build on any of them
 
@@ -48,6 +49,7 @@ to `"custom"` rather than inspecting the runtime type.
 dotnet add package Cntryl.Fitz.Core
 dotnet add package Cntryl.Fitz.Abstractions
 dotnet add package Cntryl.Fitz.DependencyInjection
+dotnet add package Cntryl.Fitz.Testing # optional; test projects only
 ```
 
 The analyzers arrive with `Cntryl.Fitz.Core`. A discarded lease or an invalid route
@@ -55,10 +57,11 @@ literal becomes a build error, with a code fix offered in the IDE.
 
 ## One namespace
 
-The entire public surface lives in the single `Cntryl.Fitz` namespace, across all three
-packages, so a consumer writes one using directive rather than one per domain. The assembly
-and package names keep their `.Abstractions` and `.DependencyInjection` suffixes; only
-`AddFitzClient` sits apart, in `Cntryl.Fitz.DependencyInjection`.
+The production public surface lives in the single `Cntryl.Fitz` namespace, across all three
+runtime packages, so a consumer writes one using directive rather than one per domain. The
+assembly and package names keep their `.Abstractions` and `.DependencyInjection` suffixes;
+`AddFitzClient` sits in `Cntryl.Fitz.DependencyInjection`, and the optional test doubles sit
+in `Cntryl.Fitz.Testing`.
 
 ## Quick Start
 
@@ -89,6 +92,31 @@ services.AddFitzClient(new ClientConfig(
     new Uri("ws://127.0.0.1:4190/ws"),
     TokenProvider: _ => ValueTask.FromResult("your-jwt-token")));
 ```
+
+## Testing KV consumers
+
+`Cntryl.Fitz.Testing` supplies an `IKvClient` implementation without bringing in an
+assertion framework or test host. It is route-isolated and transactional, clones all byte
+buffers, supports read-your-writes, commit, rollback, read-only enforcement, optimistic
+conflicts, bounded or unbounded mutation subscriptions, configurable scan page caps,
+deterministic fault injection, reset-safe transactions, and operation history.
+
+```csharp
+using Cntryl.Fitz.Testing;
+
+var kv = new InMemoryKvClient(new InMemoryKvClientOptions { ScanPageSize = 2 });
+kv.Seed("kv://tenant/app/teams", "team/a"u8.ToArray(), payload);
+
+var service = new TeamDirectory(kv);
+var page = await service.ListAsync(/* ... */);
+
+Assert.Contains(kv.Operations, operation => operation.Operation == KvTestOperation.Scan);
+```
+
+Production and test transactions can use `ScanAllAsync` to own continuation safely in
+either direction; it rejects an impossible empty page whose `HasMore` flag is set. Fitz remains
+key-schema neutral. Use `Cntryl.LexKey` to construct typed keys and range bounds, then pass
+`LexKey.AsMemory()` directly to Fitz without copying.
 
 Runtime defaults now match the TS client truth surface:
 

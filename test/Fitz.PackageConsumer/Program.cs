@@ -1,5 +1,6 @@
 using Cntryl.Fitz;
 using Cntryl.Fitz.DependencyInjection;
+using Cntryl.Fitz.Testing;
 using Microsoft.Extensions.DependencyInjection;
 
 var services = new ServiceCollection();
@@ -8,14 +9,28 @@ services.AddFitzClient(new ClientConfig(new Uri("ws://localhost:4190/ws")));
 Console.WriteLine(typeof(Client).FullName);
 Console.WriteLine(typeof(IKvClient).FullName);
 Console.WriteLine(typeof(ServiceCollectionExtensions).FullName);
+Console.WriteLine(typeof(InMemoryKvClient).FullName);
 
-foreach (var assembly in new[] { typeof(Client).Assembly, typeof(IKvClient).Assembly, typeof(ServiceCollectionExtensions).Assembly })
+foreach (var assembly in new[] { typeof(Client).Assembly, typeof(IKvClient).Assembly, typeof(ServiceCollectionExtensions).Assembly, typeof(InMemoryKvClient).Assembly })
 {
     var name = assembly.GetName();
     if (name.Version != new Version(1, 0, 0, 0))
     {
         throw new InvalidOperationException($"{name.Name} assembly version must remain 1.0.0.0; found {name.Version}.");
     }
+}
+
+var inMemoryKv = new InMemoryKvClient(new InMemoryKvClientOptions { ScanPageSize = 1 });
+await using (var transaction = await inMemoryKv.BeginAsync(
+    "kv://consumer/package/smoke",
+    KvDurability.Async))
+{
+    await transaction.PutAsync("key"u8.ToArray(), "value"u8.ToArray());
+    await transaction.CommitAsync();
+}
+if (!inMemoryKv.Snapshot("kv://consumer/package/smoke").Single().Value.Span.SequenceEqual("value"u8))
+{
+    throw new InvalidOperationException("The packed in-memory KV client did not commit its value.");
 }
 
 uint[] rpcErrorCodes =

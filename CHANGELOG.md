@@ -13,6 +13,21 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-17
+
+### Added
+
+- Added the optional `Cntryl.Fitz.Testing` package. Its route-isolated
+  `InMemoryKvClient` supports transactional snapshots, read-your-writes, commit and
+  rollback, read-only enforcement, optimistic conflicts, byte-lexicographic scans with a
+  configurable broker page cap, bounded or unbounded KV subscriptions, deterministic fault
+  injection, operation history, reset-safe transactions, and deeply cloned setup and inspection
+  APIs without depending on a test framework.
+- Added `IKvTransaction.ScanAllAsync` to exhaust forward or reverse paged scans without
+  duplicating continuation logic. It rejects an invalid empty page that claims more results.
+- Key schema remains independent from Fitz. Use `Cntryl.LexKey` for typed key construction,
+  raw-prefix successors, and structured range bounds.
+
 ### Changed
 
 - **Breaking (package):** the core package and assembly are renamed `Cntryl.Fitz` to
