@@ -49,6 +49,9 @@ jobs:
       - name: Run analyzer tests
         run: dotnet test test/Fitz.Analyzers.Tests/Fitz.Analyzers.Tests.csproj -c Release --no-build
 
+      - name: Run testing-package tests
+        run: dotnet test test/Fitz.Testing.Tests/Fitz.Testing.Tests.csproj -c Release --no-build
+
   package:
     timeout-minutes: 10
     runs-on: ubuntu-latest
