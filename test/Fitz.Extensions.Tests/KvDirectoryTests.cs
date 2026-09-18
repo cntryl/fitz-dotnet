@@ -51,7 +51,7 @@ public sealed class KvDirectoryTests
         Assert.Equal(["Alpha", "Beta"], page.Items.Select(static widget => widget.Name));
         Assert.Null(page.NextCursor);
         Assert.All(client.Operations.Where(static operation => operation.Operation is KvTestOperation.Scan),
-            static operation => Assert.Equal((ulong)3, operation.ScanQuery!.Limit));
+            static operation => Assert.Equal((uint)3, operation.ScanQuery!.Limit));
     }
 
     [Fact]
@@ -78,7 +78,7 @@ public sealed class KvDirectoryTests
         Assert.NotNull(page.NextCursor);
         Assert.DoesNotContain(client.Operations, static operation => operation.Operation is KvTestOperation.Get);
         var scan = Assert.Single(client.Operations, static operation => operation.Operation is KvTestOperation.Scan);
-        Assert.Equal((ulong)4, scan.ScanQuery!.Limit);
+        Assert.Equal((uint)4, scan.ScanQuery!.Limit);
     }
 
     [Fact]

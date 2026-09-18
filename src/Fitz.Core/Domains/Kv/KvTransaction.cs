@@ -186,7 +186,7 @@ sealed class KvTransaction : IKvTransaction
         writer.WriteU8(query.Limit.HasValue ? (byte)1 : (byte)0);
         if (query.Limit.HasValue)
         {
-            writer.WriteU64(query.Limit.Value);
+            writer.WriteU32(query.Limit.Value);
         }
 
         // Encode reverse flag

@@ -178,9 +178,9 @@ public sealed class KvDirectory<T, TKey>
         var cursorKey = DecodeCursor(query.Cursor, fingerprint);
         ValidateCursorRange(cursorKey, rangeStart, rangeEnd);
         var scan = query.IsDescending
-            ? new KvScanQuery(rangeStart, cursorKey ?? rangeEnd, (ulong)(limit + 1), Reverse: true)
+            ? new KvScanQuery(rangeStart, cursorKey ?? rangeEnd, (uint)(limit + 1), Reverse: true)
             : new KvScanQuery(cursorKey is null ? rangeStart : After(cursorKey.Value.Span), rangeEnd,
-                (ulong)(limit + 1));
+                (uint)(limit + 1));
         await using var transaction = await client.BeginAsync(route, KvDurability.Async, KvMode.ReadOnly, ct)
             .ConfigureAwait(false);
         var matches = new List<KvPair>(limit + 1);
@@ -223,7 +223,7 @@ public sealed class KvDirectory<T, TKey>
         var cursorKey = DecodeCursor(cursor, fingerprint);
         ValidateCursorRange(cursorKey, rangeStart, rangeEnd);
         var scan = new KvScanQuery(
-            cursorKey is null ? rangeStart : After(cursorKey.Value.Span), rangeEnd, (ulong)(limit + 1));
+            cursorKey is null ? rangeStart : After(cursorKey.Value.Span), rangeEnd, (uint)(limit + 1));
         await using var transaction = await client.BeginAsync(route, KvDurability.Async, KvMode.ReadWrite, ct)
             .ConfigureAwait(false);
         var records = new List<KvPair>(limit + 1);
