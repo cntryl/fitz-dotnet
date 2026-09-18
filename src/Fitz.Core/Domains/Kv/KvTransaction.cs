@@ -47,6 +47,9 @@ sealed class KvTransaction : IKvTransaction
     }
 
     /// <inheritdoc />
+    public string Route => _route;
+
+    /// <inheritdoc />
     public async Task<KvGetResult> GetAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
     {
         ThrowIfClosed();

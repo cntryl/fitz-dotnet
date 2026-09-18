@@ -73,6 +73,25 @@ public sealed class KvClientTests
         Assert.Equal("GET_INVALID_RESPONSE", error.Code);
     }
 
+    [Fact]
+    public async Task ShouldReportOpenedRouteGivenBegunTransaction()
+    {
+        // Arrange
+        using var kv = new KvClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU64(7);
+            return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
+        });
+
+        // Act
+        await using var transaction = await kv.BeginAsync("kv://prod/app/data", KvDurability.Sync, KvMode.ReadOnly);
+
+        // Assert
+        Assert.Equal("kv://prod/app/data", transaction.Route);
+    }
+
     [Theory]
     [InlineData(2, 0)]
     [InlineData(0, 260)]

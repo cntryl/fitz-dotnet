@@ -141,7 +141,15 @@ var teams = new KvDirectory<Team, Guid>(
 await teams.InsertAsync(transaction, team, ct); // no read
 var page = await teams.QueryAsync(client, route,
     byName.Query().Take(50).After(cursor), ct);
+
+// Or through a transaction the caller already holds; a read-write one sees its staged writes.
+var same = await teams.QueryAsync(transaction, byName.Query().Take(50).After(cursor), ct);
 ```
+
+Record operations and queries accept a caller-owned `IKvTransaction`; the `(client, route)`
+read forms are shorthand that open a short read-only transaction. Cursors are bound to the route
+the query ran on, taken from `IKvTransaction.Route`, so a cursor from one route is rejected on
+another.
 
 `UpsertAsync` reads the previous primary record so it can remove old index rows. Hot paths that
 already know the previous value use `ReplaceAsync(previous, current)` instead. To add an index

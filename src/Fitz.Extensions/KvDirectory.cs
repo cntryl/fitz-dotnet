@@ -156,7 +156,27 @@ public sealed class KvDirectory<T, TKey>
         return await GetAsync(transaction, identity, ct).ConfigureAwait(false);
     }
 
-    /// <summary>Executes one bounded keyset query against a configured covering index.</summary>
+    /// <summary>
+    /// Executes one bounded keyset query against a configured covering index through a caller-owned
+    /// transaction. A read-write transaction sees its own staged writes. Cursors are bound to
+    /// <see cref="IKvTransaction.Route"/>, so a cursor issued for one route is rejected on another.
+    /// </summary>
+    /// <exception cref="NotSupportedException">The transaction does not report its route.</exception>
+    public async ValueTask<Page<T>> QueryAsync(
+        IKvTransaction transaction,
+        KvDirectoryQuery<T> query,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        ArgumentNullException.ThrowIfNull(query);
+        var plan = Plan(transaction.Route, query);
+        return await ExecuteAsync(transaction, plan, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Executes one bounded keyset query against a configured covering index in a short read-only
+    /// transaction. The query and cursor are validated before the transaction is opened.
+    /// </summary>
     [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task",
         Justification = "The await-using declaration must retain the transaction type.")]
     public async ValueTask<Page<T>> QueryAsync(
@@ -168,33 +188,10 @@ public sealed class KvDirectory<T, TKey>
         ArgumentNullException.ThrowIfNull(client);
         ArgumentException.ThrowIfNullOrWhiteSpace(route);
         ArgumentNullException.ThrowIfNull(query);
-        var index = Resolve(query.Index);
-        var limit = query.Limit ?? _options.DefaultPageSize;
-        ValidateLimit(limit);
-        var prefix = IndexPrefix(index, query.Prefix);
-        var rangeStart = LexKey.EncodeFirst(prefix).AsMemory();
-        var rangeEnd = LexKey.EncodeLast(prefix).AsMemory();
-        var fingerprint = Fingerprint(route, index, query.IsDescending, query.Prefix, "query");
-        var cursorKey = DecodeCursor(query.Cursor, fingerprint);
-        ValidateCursorRange(cursorKey, rangeStart, rangeEnd);
-        var scan = query.IsDescending
-            ? new KvScanQuery(rangeStart, cursorKey ?? rangeEnd, (uint)(limit + 1), Reverse: true)
-            : new KvScanQuery(cursorKey is null ? rangeStart : After(cursorKey.Value.Span), rangeEnd,
-                (uint)(limit + 1));
+        var plan = Plan(route, query);
         await using var transaction = await client.BeginAsync(route, KvDurability.Async, KvMode.ReadOnly, ct)
             .ConfigureAwait(false);
-        var matches = new List<KvPair>(limit + 1);
-        await foreach (var pair in transaction.ScanAllAsync(scan, ct).ConfigureAwait(false))
-        {
-            matches.Add(pair);
-            if (matches.Count > limit)
-                break;
-        }
-        var hasMore = matches.Count > limit;
-        var returned = matches.Take(limit).ToArray();
-        var items = returned.Select(pair => Deserialize(pair.Value)).ToArray();
-        var next = hasMore ? EncodeCursor(fingerprint, returned[^1].Key) : null;
-        return new Page<T>(items, next);
+        return await ExecuteAsync(transaction, plan, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -362,6 +359,42 @@ public sealed class KvDirectory<T, TKey>
     T Deserialize(ReadOnlyMemory<byte> value) =>
         JsonSerializer.Deserialize(value.Span, _valueTypeInfo)
         ?? throw new InvalidOperationException("The stored directory entry could not be deserialized.");
+
+    QueryPlan Plan(string route, KvDirectoryQuery<T> query)
+    {
+        var index = Resolve(query.Index);
+        var limit = query.Limit ?? _options.DefaultPageSize;
+        ValidateLimit(limit);
+        var prefix = IndexPrefix(index, query.Prefix);
+        var rangeStart = LexKey.EncodeFirst(prefix).AsMemory();
+        var rangeEnd = LexKey.EncodeLast(prefix).AsMemory();
+        var fingerprint = Fingerprint(route, index, query.IsDescending, query.Prefix, "query");
+        var cursorKey = DecodeCursor(query.Cursor, fingerprint);
+        ValidateCursorRange(cursorKey, rangeStart, rangeEnd);
+        var scan = query.IsDescending
+            ? new KvScanQuery(rangeStart, cursorKey ?? rangeEnd, (uint)(limit + 1), Reverse: true)
+            : new KvScanQuery(cursorKey is null ? rangeStart : After(cursorKey.Value.Span), rangeEnd,
+                (uint)(limit + 1));
+        return new QueryPlan(scan, fingerprint, limit);
+    }
+
+    async ValueTask<Page<T>> ExecuteAsync(IKvTransaction transaction, QueryPlan plan, CancellationToken ct)
+    {
+        var matches = new List<KvPair>(plan.Limit + 1);
+        await foreach (var pair in transaction.ScanAllAsync(plan.Scan, ct).ConfigureAwait(false))
+        {
+            matches.Add(pair);
+            if (matches.Count > plan.Limit)
+                break;
+        }
+        var hasMore = matches.Count > plan.Limit;
+        var returned = matches.Take(plan.Limit).ToArray();
+        var items = returned.Select(pair => Deserialize(pair.Value)).ToArray();
+        var next = hasMore ? EncodeCursor(plan.Fingerprint, returned[^1].Key) : null;
+        return new Page<T>(items, next);
+    }
+
+    readonly record struct QueryPlan(KvScanQuery Scan, byte[] Fingerprint, int Limit);
 
     byte[] Fingerprint(
         string route,

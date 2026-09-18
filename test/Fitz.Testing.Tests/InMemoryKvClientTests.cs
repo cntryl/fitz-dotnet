@@ -6,6 +6,21 @@ public sealed class InMemoryKvClientTests
 {
     const string Route = "kv://tenant/app/entities";
 
+    [Theory]
+    [InlineData(KvMode.ReadOnly)]
+    [InlineData(KvMode.ReadWrite)]
+    public async Task ShouldReportOpenedRouteGivenBegunTransaction(KvMode mode)
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+
+        // Act
+        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, mode);
+
+        // Assert
+        Assert.Equal(Route, transaction.Route);
+    }
+
     [Fact]
     public async Task ShouldExposeOwnWritesAndPersistOnlyCommittedChangesGivenTransactionLifecycle()
     {

@@ -6,6 +6,13 @@ namespace Cntryl.Fitz;
 public interface IKvTransaction : IAsyncDisposable
 {
     /// <summary>
+    /// Gets the exact KV route this transaction was opened on.
+    /// </summary>
+    /// <exception cref="NotSupportedException">The implementation does not report its route.</exception>
+    string Route => throw new NotSupportedException(
+        $"{GetType().FullName} does not report the route it was opened on. Implement IKvTransaction.Route.");
+
+    /// <summary>
     /// Reads a key from the transaction snapshot.
     /// </summary>
     /// <param name="key">Key bytes.</param>

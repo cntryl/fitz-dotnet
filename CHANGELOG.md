@@ -16,6 +16,28 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-18
+
+### Added
+
+- `IKvTransaction.Route` reports the exact route a transaction was opened on. The Fitz
+  transaction and `Cntryl.Fitz.Testing`'s `InMemoryKvClient` implement it. It is a default
+  interface member, so existing third-party implementations still compile, but they throw
+  `NotSupportedException` from it until they implement it.
+- **`Cntryl.Fitz.Extensions`:** `KvDirectory<T, TKey>.QueryAsync(IKvTransaction, query, ct)` runs
+  a query through a caller-owned transaction, as `GetAsync` and the write operations already do.
+  A read-write transaction sees its own staged writes. Cursors bind to `IKvTransaction.Route`, so
+  they interoperate with the `(client, route)` overload and are rejected on any other route. The
+  `(client, route)` overload now delegates to the same query logic and still validates the query
+  and cursor before opening its transaction.
+
+## [1.3.1] - 2026-09-18
+
+### Fixed
+
+- Encode the KV `SCAN` limit as the broker's unsigned 32-bit wire value instead of an unsigned
+  64-bit value, preventing the following fields from being shifted and misread.
+
 ## [1.3.0] - 2026-09-17
 
 ### Changed
