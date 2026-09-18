@@ -35,6 +35,20 @@ public sealed class KvScanHelpersTests
         Assert.Equal(new byte[] { 0x10, 0xFF, 0x00 }, transaction.Queries[1].StartKey!.Value.ToArray());
     }
 
+    [Fact]
+    public async Task ShouldFailLoudlyGivenImplementationThatDoesNotReportRoute()
+    {
+        // Arrange
+        await using IKvTransaction transaction = new EmptyContinuationTransaction();
+
+        // Act
+        var error = Assert.Throws<NotSupportedException>(() => transaction.Route);
+
+        // Assert
+        Assert.Contains(nameof(EmptyContinuationTransaction), error.Message, StringComparison.Ordinal);
+        Assert.Contains("IKvTransaction.Route", error.Message, StringComparison.Ordinal);
+    }
+
     sealed class EmptyContinuationTransaction : IKvTransaction
     {
         public Task<KvScanResult> ScanAsync(KvScanQuery query, CancellationToken ct = default) =>

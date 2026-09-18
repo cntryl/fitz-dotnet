@@ -238,6 +238,101 @@ public sealed class KvDirectoryTests
     }
 
     [Fact]
+    public async Task ShouldReturnSamePagesGivenCallerOwnedTransaction()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        foreach (var name in new[] { "Alpha", "Beta", "Gamma" })
+            await WriteAsync(client, transaction => Directory.InsertAsync(
+                transaction, new Widget(Guid.NewGuid(), name, 1)));
+        var expectedFirst = await Directory.QueryAsync(client, Route, ByNameV1.Query().Take(2));
+        var expectedSecond = await Directory.QueryAsync(
+            client, Route, ByNameV1.Query().Take(2).After(expectedFirst.NextCursor));
+
+        // Act
+        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        var first = await Directory.QueryAsync(transaction, ByNameV1.Query().Take(2));
+        var second = await Directory.QueryAsync(transaction, ByNameV1.Query().Take(2).After(first.NextCursor));
+
+        // Assert
+        Assert.Equal(expectedFirst.Items, first.Items);
+        Assert.Equal(expectedFirst.NextCursor, first.NextCursor);
+        Assert.Equal(expectedSecond.Items, second.Items);
+        Assert.Null(second.NextCursor);
+    }
+
+    [Fact]
+    public async Task ShouldRejectCursorGivenCallerOwnedTransactionOnDifferentRoute()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        await WriteAsync(client, transaction => Directory.InsertAsync(
+            transaction, new Widget(Guid.NewGuid(), "Alpha", 1)));
+        await WriteAsync(client, transaction => Directory.InsertAsync(
+            transaction, new Widget(Guid.NewGuid(), "Beta", 2)));
+        var first = await Directory.QueryAsync(client, Route, ByNameV1.Query().Take(1));
+        await using var other = await client.BeginAsync(OtherRoute, KvDurability.Async, KvMode.ReadOnly);
+
+        // Act
+        var error = await Assert.ThrowsAsync<KvDirectoryQueryException>(() => Directory.QueryAsync(
+            other, ByNameV1.Query().Take(1).After(first.NextCursor)).AsTask());
+
+        // Assert
+        Assert.Equal(KvDirectoryQueryError.CursorMismatch, error.Kind);
+    }
+
+    [Fact]
+    public async Task ShouldNotBeginTransactionGivenInvalidCursorOnClientQuery()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        client.ClearOperations();
+
+        // Act
+        var error = await Assert.ThrowsAsync<KvDirectoryQueryException>(() => Directory.QueryAsync(
+            client, Route, ByNameV1.Query().After("not-a-cursor")).AsTask());
+
+        // Assert
+        Assert.Equal(KvDirectoryQueryError.InvalidCursor, error.Kind);
+        Assert.DoesNotContain(client.Operations, static operation => operation.Operation is KvTestOperation.Begin);
+    }
+
+    [Fact]
+    public async Task ShouldSeeStagedWritesGivenQueryInsideReadWriteTransaction()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        await WriteAsync(client, transaction => Directory.InsertAsync(
+            transaction, new Widget(Guid.NewGuid(), "Alpha", 1)));
+        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadWrite);
+        await Directory.InsertAsync(transaction, new Widget(Guid.NewGuid(), "Beta", 2));
+
+        // Act
+        var page = await Directory.QueryAsync(transaction, ByNameV1.Query());
+
+        // Assert
+        Assert.Equal(["Alpha", "Beta"], page.Items.Select(static widget => widget.Name));
+    }
+
+    [Fact]
+    public async Task ShouldRejectQueryGivenMissingTransactionOrQuery()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+
+        // Act
+        var missingTransaction = await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            Directory.QueryAsync((IKvTransaction)null!, ByNameV1.Query()).AsTask());
+        var missingQuery = await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            Directory.QueryAsync(transaction, null!).AsTask());
+
+        // Assert
+        Assert.Equal("transaction", missingTransaction.ParamName);
+        Assert.Equal("query", missingQuery.ParamName);
+    }
+
+    [Fact]
     public async Task ShouldReplaceWithoutReadingGivenPreviousValue()
     {
         // Arrange

@@ -591,6 +591,8 @@ public sealed class InMemoryKvClient : IKvClient
             _scanPageSize = scanPageSize;
         }
 
+        public string Route => _route;
+
         public Task<KvGetResult> GetAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
         {
             ct.ThrowIfCancellationRequested();
