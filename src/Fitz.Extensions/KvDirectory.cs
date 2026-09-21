@@ -195,6 +195,55 @@ public sealed class KvDirectory<T, TKey>
     }
 
     /// <summary>
+    /// Reads one bounded page in primary-key order through a caller-owned transaction. A read-write
+    /// transaction sees its own staged writes. Cursors are bound to <see cref="IKvTransaction.Route"/>
+    /// and this directory's primary rows, so a cursor issued for another route or query is rejected.
+    /// </summary>
+    /// <param name="transaction">The caller-owned transaction used for the scan.</param>
+    /// <param name="limit">The maximum number of primary records to return.</param>
+    /// <param name="cursor">An opaque continuation cursor from a previous primary page.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Primary records in ascending key order and a cursor for the next page, if any.</returns>
+    /// <exception cref="NotSupportedException">The transaction does not report its route.</exception>
+    public async ValueTask<Page<T>> QueryPrimaryAsync(
+        IKvTransaction transaction,
+        int limit,
+        string? cursor = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(transaction);
+        var plan = PlanPrimary(transaction.Route, limit, cursor);
+        return await ExecuteAsync(transaction, plan, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Reads one bounded page in primary-key order through a short read-only transaction. The limit
+    /// and cursor are validated before the transaction is opened.
+    /// </summary>
+    /// <param name="client">The KV client used to open the read-only transaction.</param>
+    /// <param name="route">The exact KV route containing the directory.</param>
+    /// <param name="limit">The maximum number of primary records to return.</param>
+    /// <param name="cursor">An opaque continuation cursor from a previous primary page.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>Primary records in ascending key order and a cursor for the next page, if any.</returns>
+    [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task",
+        Justification = "The await-using declaration must retain the transaction type.")]
+    public async ValueTask<Page<T>> QueryPrimaryAsync(
+        IKvClient client,
+        string route,
+        int limit,
+        string? cursor = null,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentException.ThrowIfNullOrWhiteSpace(route);
+        var plan = PlanPrimary(route, limit, cursor);
+        await using var transaction = await client.BeginAsync(route, KvDurability.Async, KvMode.ReadOnly, ct)
+            .ConfigureAwait(false);
+        return await ExecuteAsync(transaction, plan, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Backfills one configured index generation from stable primary records in a committed,
     /// resumable batch. Deploy the upgraded schema first so ordinary writes dual-write old and new generations.
     /// </summary>
@@ -378,6 +427,20 @@ public sealed class KvDirectory<T, TKey>
         return new QueryPlan(scan, fingerprint, limit);
     }
 
+    QueryPlan PlanPrimary(string route, int limit, string? cursor)
+    {
+        ValidateLimit(limit);
+        var primaryPrefix = PrimaryPrefix();
+        var rangeStart = LexKey.EncodeFirst(primaryPrefix).AsMemory();
+        var rangeEnd = LexKey.EncodeLast(primaryPrefix).AsMemory();
+        var fingerprint = PrimaryFingerprint(route);
+        var cursorKey = DecodeCursor(cursor, fingerprint);
+        ValidateCursorRange(cursorKey, rangeStart, rangeEnd);
+        var scan = new KvScanQuery(
+            cursorKey is null ? rangeStart : After(cursorKey.Value.Span), rangeEnd, (uint)(limit + 1));
+        return new QueryPlan(scan, fingerprint, limit);
+    }
+
     async ValueTask<Page<T>> ExecuteAsync(IKvTransaction transaction, QueryPlan plan, CancellationToken ct)
     {
         var matches = new List<KvPair>(plan.Limit + 1);
@@ -413,6 +476,15 @@ public sealed class KvDirectory<T, TKey>
         scalar[4] = descending ? (byte)1 : (byte)0;
         hash.AppendData(scalar);
         hash.AppendData(LexKey.EncodeComposite(prefix).AsSpan());
+        return hash.GetHashAndReset()[..FingerprintLength];
+    }
+
+    byte[] PrimaryFingerprint(string route)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Append(hash, "primary-query");
+        Append(hash, route);
+        Append(hash, _name);
         return hash.GetHashAndReset()[..FingerprintLength];
     }
 
@@ -481,7 +553,7 @@ public sealed class KvDirectory<T, TKey>
         if (cursorKey is not { } key)
             return;
         if (key.Span.SequenceCompareTo(rangeStart.Span) < 0 || key.Span.SequenceCompareTo(rangeEnd.Span) >= 0)
-            throw InvalidCursor("The cursor key falls outside the selected index range.");
+            throw InvalidCursor("The cursor key falls outside the selected query range.");
     }
 
     static byte[] After(ReadOnlySpan<byte> key)

@@ -333,6 +333,177 @@ public sealed class KvDirectoryTests
     }
 
     [Fact]
+    public async Task ShouldPageHistoricalAndCurrentRowsGivenPrimaryKeysWhenQuerying()
+    {
+        // Arrange
+        var client = new InMemoryKvClient(new InMemoryKvClientOptions { ScanPageSize = 1 });
+        var historicalDirectory = CreateDirectory();
+        var currentDirectory = CreateDirectory(ByNameV1);
+        var historicalFirst = new Widget(
+            Guid.Parse("00000000-0000-0000-0000-000000000001"), "Historical one", 1);
+        var historicalSecond = new Widget(
+            Guid.Parse("00000000-0000-0000-0000-000000000002"), "Historical two", 2);
+        var current = new Widget(
+            Guid.Parse("00000000-0000-0000-0000-000000000003"), "Current", 3);
+        await WriteAsync(client, transaction => historicalDirectory.InsertAsync(transaction, historicalFirst));
+        await WriteAsync(client, transaction => historicalDirectory.InsertAsync(transaction, historicalSecond));
+        await WriteAsync(client, transaction => currentDirectory.InsertAsync(transaction, current));
+        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        client.ClearOperations();
+
+        // Act
+        var first = await currentDirectory.QueryPrimaryAsync(transaction, limit: 2);
+        var second = await currentDirectory.QueryPrimaryAsync(transaction, limit: 2, cursor: first.NextCursor);
+
+        // Assert
+        Assert.Equal([historicalFirst, historicalSecond], first.Items);
+        Assert.NotNull(first.NextCursor);
+        Assert.Equal([current], second.Items);
+        Assert.Null(second.NextCursor);
+        Assert.All(client.Operations, static operation => Assert.Equal(KvTestOperation.Scan, operation.Operation));
+        Assert.All(client.Operations, static operation => Assert.Equal((uint)3, operation.ScanQuery!.Limit));
+    }
+
+    [Fact]
+    public async Task ShouldUseReadOnlyTransactionGivenClientWhenQueryingPrimaryKeys()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        var widget = new Widget(Guid.NewGuid(), "Alpha", 1);
+        await WriteAsync(client, transaction => Directory.InsertAsync(transaction, widget));
+        client.ClearOperations();
+
+        // Act
+        var page = await Directory.QueryPrimaryAsync(client, Route, limit: 1);
+
+        // Assert
+        Assert.Equal(widget, Assert.Single(page.Items));
+        var begin = Assert.Single(client.Operations,
+            static operation => operation.Operation is KvTestOperation.Begin);
+        Assert.Equal(KvMode.ReadOnly, begin.Mode);
+        Assert.DoesNotContain(client.Operations, static operation => operation.Operation is
+            KvTestOperation.Get or KvTestOperation.Put or KvTestOperation.Insert or KvTestOperation.Delete or
+            KvTestOperation.DeleteRange or KvTestOperation.Commit);
+    }
+
+    [Fact]
+    public async Task ShouldRejectPrimaryCursorGivenDifferentRouteOrQueryWhenResuming()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        await WriteAsync(client, transaction => Directory.InsertAsync(
+            transaction, new Widget(Guid.Parse("00000000-0000-0000-0000-000000000001"), "Alpha", 1)));
+        await WriteAsync(client, transaction => Directory.InsertAsync(
+            transaction, new Widget(Guid.Parse("00000000-0000-0000-0000-000000000002"), "Beta", 2)));
+        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        var first = await Directory.QueryPrimaryAsync(transaction, limit: 1);
+        await using var other = await client.BeginAsync(OtherRoute, KvDurability.Async, KvMode.ReadOnly);
+
+        // Act
+        var routeError = await Assert.ThrowsAsync<KvDirectoryQueryException>(() =>
+            Directory.QueryPrimaryAsync(other, limit: 1, cursor: first.NextCursor).AsTask());
+        var queryError = await Assert.ThrowsAsync<KvDirectoryQueryException>(() => Directory.QueryAsync(
+            transaction, ByNameV1.Query().Take(1).After(first.NextCursor)).AsTask());
+
+        // Assert
+        Assert.Equal(KvDirectoryQueryError.CursorMismatch, routeError.Kind);
+        Assert.Equal(KvDirectoryQueryError.CursorMismatch, queryError.Kind);
+    }
+
+    [Theory]
+    [InlineData(0, null, KvDirectoryQueryError.InvalidLimit)]
+    [InlineData(4, null, KvDirectoryQueryError.InvalidLimit)]
+    [InlineData(1, "not-base64", KvDirectoryQueryError.InvalidCursor)]
+    public async Task ShouldRejectInvalidInputGivenPrimaryQueryWhenPlanning(
+        int limit,
+        string? cursor,
+        KvDirectoryQueryError expected)
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        client.ClearOperations();
+
+        // Act
+        var error = await Assert.ThrowsAsync<KvDirectoryQueryException>(() =>
+            Directory.QueryPrimaryAsync(transaction, limit, cursor).AsTask());
+
+        // Assert
+        Assert.Equal(expected, error.Kind);
+        Assert.Empty(client.Operations);
+    }
+
+    [Fact]
+    public async Task ShouldRejectOversizedCursorGivenClientWhenPlanningPrimaryQuery()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+
+        // Act
+        var error = await Assert.ThrowsAsync<KvDirectoryQueryException>(() =>
+            Directory.QueryPrimaryAsync(client, Route, limit: 1, cursor: new string('A', 5000)).AsTask());
+
+        // Assert
+        Assert.Equal(KvDirectoryQueryError.InvalidCursor, error.Kind);
+        Assert.Empty(client.Operations);
+    }
+
+    [Fact]
+    public async Task ShouldRejectCursorKeyOutsidePrimaryRangeGivenModifiedCursorWhenResuming()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        await WriteAsync(client, transaction => Directory.InsertAsync(
+            transaction, new Widget(Guid.Parse("00000000-0000-0000-0000-000000000001"), "Alpha", 1)));
+        await WriteAsync(client, transaction => Directory.InsertAsync(
+            transaction, new Widget(Guid.Parse("00000000-0000-0000-0000-000000000002"), "Beta", 2)));
+        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        var first = await Directory.QueryPrimaryAsync(transaction, limit: 1);
+        var payload = Convert.FromBase64String(first.NextCursor!);
+        payload[21] = 0;
+        client.ClearOperations();
+
+        // Act
+        var error = await Assert.ThrowsAsync<KvDirectoryQueryException>(() => Directory.QueryPrimaryAsync(
+            transaction, limit: 1, cursor: Convert.ToBase64String(payload)).AsTask());
+
+        // Assert
+        Assert.Equal(KvDirectoryQueryError.InvalidCursor, error.Kind);
+        Assert.Empty(client.Operations);
+    }
+
+    [Fact]
+    public async Task ShouldRejectMissingTransactionGivenPrimaryQueryWhenPlanning()
+    {
+        // Arrange
+        // Act
+        var error = await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            Directory.QueryPrimaryAsync((IKvTransaction)null!, limit: 1).AsTask());
+
+        // Assert
+        Assert.Equal("transaction", error.ParamName);
+    }
+
+    [Fact]
+    public async Task ShouldPropagateCancellationGivenCanceledTokenWhenQueryingPrimaryKeys()
+    {
+        // Arrange
+        var client = new InMemoryKvClient();
+        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        using var cancellation = new CancellationTokenSource();
+        await cancellation.CancelAsync();
+        client.ClearOperations();
+
+        // Act
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            Directory.QueryPrimaryAsync(transaction, limit: 1, ct: cancellation.Token).AsTask());
+
+        // Assert
+        Assert.Equal(cancellation.Token, error.CancellationToken);
+        Assert.Empty(client.Operations);
+    }
+
+    [Fact]
     public async Task ShouldReplaceWithoutReadingGivenPreviousValue()
     {
         // Arrange

@@ -2,7 +2,7 @@ namespace Cntryl.Fitz.Extensions;
 
 /// <summary>
 /// One keyset-ordered directory page. <see cref="NextCursor"/> is opaque and bound to the route,
-/// directory, index generation, direction, and prefix that produced it.
+/// directory, and primary or index query shape that produced it.
 /// </summary>
 /// <typeparam name="T">The item type.</typeparam>
 /// <param name="Items">The items in this page, in the query's effective order.</param>
