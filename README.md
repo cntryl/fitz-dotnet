@@ -122,9 +122,9 @@ key-schema neutral. Use `Cntryl.LexKey` to construct typed keys and range bounds
 
 ## Indexed KV directories
 
-`Cntryl.Fitz.Extensions` turns declared query shapes into bounded covering-index scans. The
-application owns which indexes exist and maps external sort or filter input to those handles;
-Fitz owns atomic index maintenance, bounds, keyset continuation, and generation migration.
+`Cntryl.Fitz.Extensions` turns declared query shapes into bounded primary-key or covering-index
+scans. The application owns which indexes exist and maps external sort or filter input to those
+handles; Fitz owns atomic index maintenance, bounds, keyset continuation, and generation migration.
 
 ```csharp
 var byName = new KvDirectoryIndex<Team>(
@@ -144,12 +144,19 @@ var page = await teams.QueryAsync(client, route,
 
 // Or through a transaction the caller already holds; a read-write one sees its staged writes.
 var same = await teams.QueryAsync(transaction, byName.Query().Take(50).After(cursor), ct);
+
+// Page the existing primary rows directly when identity order is the required order.
+var primaryPage = await teams.QueryPrimaryAsync(transaction, limit: 50, cursor: primaryCursor, ct);
 ```
 
 Record operations and queries accept a caller-owned `IKvTransaction`; the `(client, route)`
 read forms are shorthand that open a short read-only transaction. Cursors are bound to the route
 the query ran on, taken from `IKvTransaction.Route`, so a cursor from one route is rejected on
 another.
+
+Primary-key pages are ascending and bounded, and use their own route-bound opaque cursors.
+They read the primary rows already maintained by the directory, including historical rows, so
+they require no secondary index, backfill, migration marker, or request-path write.
 
 `UpsertAsync` reads the previous primary record so it can remove old index rows. Hot paths that
 already know the previous value use `ReplaceAsync(previous, current)` instead. To add an index

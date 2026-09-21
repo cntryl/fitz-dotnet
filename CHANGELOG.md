@@ -16,6 +16,16 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-09-21
+
+### Added
+
+- **`Cntryl.Fitz.Extensions`:** `KvDirectory<T, TKey>.QueryPrimaryAsync` pages existing primary
+  records in stable key order through either a caller-owned transaction or a short read-only
+  transaction. Each request is bounded to `limit + 1`; opaque cursors bind to the route,
+  directory, and primary-query shape. Existing records require no secondary index, backfill,
+  migration marker, or request-path write.
+
 ## [1.4.0] - 2026-09-18
 
 ### Added
