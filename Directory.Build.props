@@ -11,7 +11,7 @@
 
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
     <!-- Assembly identity stays fixed permanently; release only by advancing PackageVersion. -->
-    <PackageVersion>1.4.1</PackageVersion>
+    <PackageVersion>1.4.2</PackageVersion>
     <Version>$(PackageVersion)</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <InformationalVersion>$(PackageVersion)</InformationalVersion>
@@ -26,7 +26,7 @@
     <DebugType>portable</DebugType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>fitz distributed-systems kv queue rpc lease notice stream schedule</PackageTags>
-    <PackageReleaseNotes>Adds bounded read-only primary-key paging for Cntryl.Fitz.Extensions directories. See CHANGELOG.md.</PackageReleaseNotes>
+    <PackageReleaseNotes>Exposes named stream write-contention error codes for broker codes 2001 and 2002. See CHANGELOG.md.</PackageReleaseNotes>
     <PackageOutputPath>$(MSBuildThisFileDirectory)artifacts\packages</PackageOutputPath>
   </PropertyGroup>
 

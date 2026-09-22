@@ -56,6 +56,16 @@ if (!rpcErrorCodes.SequenceEqual(Enumerable.Range(6001, 13).Select(static code =
     throw new InvalidOperationException("RPC error code constants must cover the canonical 6001-6013 range.");
 }
 
+uint[] streamWriteContentionCodes =
+[
+    FitzErrorCodes.StreamConcurrencyConflict,
+    FitzErrorCodes.StreamSessionAlreadyActive,
+];
+if (!streamWriteContentionCodes.SequenceEqual(Enumerable.Range(2001, 2).Select(static code => (uint)code)))
+{
+    throw new InvalidOperationException("Stream write-contention error code constants must cover the canonical 2001-2002 range.");
+}
+
 
 static async Task CompilePreviewApiAsync(
     INoticeClient notice,

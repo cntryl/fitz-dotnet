@@ -31,6 +31,17 @@ public static class FitzErrorCodes
     public const uint KvSubscriptionLimit = 1013;
 
     /// <summary>
+    /// An append operation found that the stream's committed position no longer matches its
+    /// expected position.
+    /// </summary>
+    public const uint StreamConcurrencyConflict = 2001;
+
+    /// <summary>
+    /// An append session is already active for the resource stream.
+    /// </summary>
+    public const uint StreamSessionAlreadyActive = 2002;
+
+    /// <summary>
     /// The stream subscription selector was malformed or unsupported.
     /// </summary>
     public const uint StreamInvalidSubscriptionPattern = 2010;

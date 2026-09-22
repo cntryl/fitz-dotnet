@@ -16,6 +16,14 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-09-21
+
+### Fixed
+
+- **`Cntryl.Fitz.Abstractions`:** expose `FitzErrorCodes.StreamConcurrencyConflict` (2001) and
+  `FitzErrorCodes.StreamSessionAlreadyActive` (2002), so callers can classify the broker's
+  structured stream write-contention responses without matching error text.
+
 ## [1.4.1] - 2026-09-21
 
 ### Added
