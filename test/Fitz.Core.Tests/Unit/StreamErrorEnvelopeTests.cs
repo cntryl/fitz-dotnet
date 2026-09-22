@@ -5,10 +5,20 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class StreamErrorEnvelopeTests
 {
+    [Fact]
+    public void ShouldMatchWireProtocolGivenStreamWriteContentionCodesWhenValidated()
+    {
+        // Arrange
+        // Act
+        // Assert
+        Assert.Equal(2001u, FitzErrorCodes.StreamConcurrencyConflict);
+        Assert.Equal(2002u, FitzErrorCodes.StreamSessionAlreadyActive);
+    }
+
     [Theory]
-    [InlineData("APPEND", 2001u, "unrelated wording")]
-    [InlineData("COMMIT", 2001u, "unrelated wording")]
-    [InlineData("APPEND", 2002u, "concurrency conflict")]
+    [InlineData("APPEND", FitzErrorCodes.StreamConcurrencyConflict, "unrelated wording")]
+    [InlineData("COMMIT", FitzErrorCodes.StreamConcurrencyConflict, "unrelated wording")]
+    [InlineData("BEGIN", FitzErrorCodes.StreamSessionAlreadyActive, "unrelated wording")]
     [InlineData("COMMIT", 2012u, "backend unavailable")]
     [InlineData("BEGIN", 2003u, "session unavailable")]
     [InlineData("ROLLBACK", 2003u, "session unavailable")]

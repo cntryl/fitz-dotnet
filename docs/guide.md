@@ -125,9 +125,10 @@ catch (RpcException ex) when (ex.DomainCode == FitzErrorCodes.RpcTimeout)
 }
 ```
 
-`FitzErrorCodes` lists every code the broker defines. Transport and lifecycle problems surface
-as `ConnectionException`, `AuthenticationException`, `RequestTimeoutException`,
-`RequestQueueFullException`, or `ProtocolException`.
+`FitzErrorCodes` exposes named constants for the broker codes the SDK classifies. Other
+structured domain codes remain available on an exception's `DomainCode`; never match error text.
+Transport and lifecycle problems surface as `ConnectionException`, `AuthenticationException`,
+`RequestTimeoutException`, `RequestQueueFullException`, or `ProtocolException`.
 
 Two exceptions sit outside that hierarchy and derive from `Exception` directly:
 `SubscriptionBackpressureException` and `AsyncHandlerOverflowException`. They are declared in
@@ -313,8 +314,11 @@ await session.CommitAsync(ct);
 ```
 
 `AppendAsync` takes the offset you expect to write at; a mismatch is an optimistic-concurrency
-failure, reported as `StreamException` with `DomainCode` 2001. Classify on that code, never on
-the message.
+failure, reported as `StreamException` with `DomainCode ==
+FitzErrorCodes.StreamConcurrencyConflict`. `BeginAsync` reports
+`FitzErrorCodes.StreamSessionAlreadyActive` when an append session currently owns the resource
+stream. These are distinct structured write-contention conditions; classify on the
+code, never on the message.
 
 Use `ReadPageAsync` when you need to see what the broker withheld: a `StreamReadPage` contains
 `StreamReadItem`s whose `Kind` distinguishes delivered records from filtered ones, so gaps in
