@@ -115,6 +115,81 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
     }
 
     /// <inheritdoc />
+    public async Task CreateBatchAsync(IReadOnlyList<ScheduleEntry> entries, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(entries);
+        using var writer = new BinaryBufferWriter();
+        writer.WriteU32(checked((uint)entries.Count));
+        foreach (var entry in entries)
+        {
+            ValidateScheduleRoute(entry.Route);
+            if (entry.DeliveryMode is not ScheduleDeliveryMode.Broadcast and not ScheduleDeliveryMode.Once)
+                throw new ArgumentOutOfRangeException(nameof(entries), "Unknown schedule delivery mode");
+            writer.WriteString(entry.Route);
+            writer.WriteString(entry.Cron);
+            writer.WriteU8((byte)entry.DeliveryMode);
+            writer.WriteU32(checked((uint)entry.Payload.Length));
+            writer.WriteBytes(entry.Payload.Span);
+        }
+
+        var data = await AssertExtensionSuccessAsync(MessageTypes.ScheduleCreateBatch, writer.WrittenMemory, "CREATE_BATCH", ct).ConfigureAwait(false);
+        if (!data.IsEmpty)
+            throw new ScheduleException("CREATE_BATCH response has trailing bytes", "CREATE_BATCH_INVALID_RESPONSE");
+    }
+
+    /// <inheritdoc />
+    public async Task<ScheduleCursorPage> ListV2Async(string? continuation = null, ulong? limit = null, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        using var writer = new BinaryBufferWriter();
+        writer.WriteU8(continuation is null ? (byte)0 : (byte)1);
+        if (continuation is not null)
+            writer.WriteString(continuation);
+        writer.WriteU8(limit.HasValue ? (byte)1 : (byte)0);
+        if (limit.HasValue)
+            writer.WriteU64(limit.Value);
+
+        var data = await AssertExtensionSuccessAsync(MessageTypes.ScheduleListV2, writer.WrittenMemory, "LIST_V2", ct).ConfigureAwait(false);
+        try
+        {
+            var reader = new BinaryBufferReader(data);
+            if (reader.ReadU8() != 1)
+                throw new ScheduleException("LIST_V2 response has an unknown version", "LIST_V2_INVALID_RESPONSE");
+            var more = reader.ReadU8();
+            if (more > 1)
+                throw new ScheduleException("LIST_V2 response has an invalid has_more flag", "LIST_V2_INVALID_RESPONSE");
+            var hasContinuation = reader.ReadU8();
+            if (hasContinuation > 1)
+                throw new ScheduleException("LIST_V2 response has an invalid continuation flag", "LIST_V2_INVALID_RESPONSE");
+            var next = hasContinuation == 1 ? reader.ReadString() : null;
+            var entries = new List<ScheduleEntry>();
+            while (true)
+            {
+                var hasEntry = reader.ReadU8();
+                if (hasEntry == 0)
+                    break;
+                if (hasEntry != 1)
+                    throw new ScheduleException("LIST_V2 response has an invalid entry flag", "LIST_V2_INVALID_RESPONSE");
+                var route = reader.ReadString();
+                var cron = reader.ReadString();
+                var mode = reader.ReadU8();
+                if (mode > 1)
+                    throw new ScheduleException("LIST_V2 response has an invalid delivery mode", "LIST_V2_INVALID_RESPONSE");
+                var payload = reader.ReadBytes(reader.ReadU32());
+                entries.Add(new ScheduleEntry(null, route, cron, (ScheduleDeliveryMode)mode, payload));
+            }
+            if (!reader.IsEof)
+                throw new ScheduleException("LIST_V2 response has trailing bytes", "LIST_V2_INVALID_RESPONSE");
+            return new ScheduleCursorPage(entries, more == 1, next);
+        }
+        catch (ProtocolException)
+        {
+            throw new ScheduleException("LIST_V2 response is truncated", "LIST_V2_INVALID_RESPONSE");
+        }
+    }
+
+    /// <inheritdoc />
     public async Task CancelAsync(string route, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -638,6 +713,42 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
             }
 
             return clone;
+        }
+    }
+
+    async ValueTask<ReadOnlyMemory<byte>> AssertExtensionSuccessAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct)
+    {
+        var response = await _request(messageType, payload, ct).ConfigureAwait(false);
+        if (response.IsEmpty)
+            throw new ScheduleException($"{operation} response is empty", $"{operation}_INVALID_RESPONSE");
+        var reader = new BinaryBufferReader(response);
+        var status = reader.ReadU8();
+        if (status == 0)
+            return response.Slice(1);
+        if (status != 1)
+            throw new ScheduleException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
+
+        try
+        {
+            var first = reader.ReadU32();
+            uint? domainCode = null;
+            string message;
+            if (reader.RemainingBytes == first)
+            {
+                message = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(first));
+            }
+            else
+            {
+                domainCode = first;
+                message = reader.ReadString();
+            }
+            if (!reader.IsEof)
+                throw new ScheduleException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE", status, domainCode);
+            throw new ScheduleException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+        }
+        catch (ProtocolException)
+        {
+            throw new ScheduleException($"{operation} error response is truncated", $"{operation}_INVALID_RESPONSE", status);
         }
     }
 

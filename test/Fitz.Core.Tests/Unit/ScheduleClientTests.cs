@@ -6,6 +6,82 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class ScheduleClientTests
 {
     [Fact]
+    public async Task ShouldEncodeBatchAndDecodeCursorPageGivenScheduleExtensions()
+    {
+        // Arrange
+        var calls = new List<ushort>();
+        using var schedule = new ScheduleClient((type, payload, _) =>
+        {
+            calls.Add(type);
+            var request = new BinaryBufferReader(payload);
+            if (type == MessageTypes.ScheduleCreateBatch)
+            {
+                Assert.Equal(1u, request.ReadU32());
+                Assert.Equal("schedule://prod/app/jobs/run", request.ReadString());
+                Assert.Equal("*/5 * * * *", request.ReadString());
+                Assert.Equal((byte)1, request.ReadU8());
+                Assert.Equal("ping", System.Text.Encoding.UTF8.GetString(request.ReadBytes(request.ReadU32())));
+                Assert.True(request.IsEof);
+                return Task.FromResult(new byte[] { 0 });
+            }
+            Assert.Equal(MessageTypes.ScheduleListV2, type);
+            Assert.Equal((byte)1, request.ReadU8());
+            Assert.Equal("next", request.ReadString());
+            Assert.Equal((byte)1, request.ReadU8());
+            Assert.Equal(2UL, request.ReadU64());
+            Assert.True(request.IsEof);
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU8(1);
+            writer.WriteU8(1);
+            writer.WriteU8(1);
+            writer.WriteString("last");
+            writer.WriteU8(1);
+            writer.WriteString("schedule://prod/app/jobs/run");
+            writer.WriteString("*/5 * * * *");
+            writer.WriteU8(1);
+            writer.WriteU32(4);
+            writer.WriteBytes("ping"u8);
+            writer.WriteU8(0);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        await schedule.CreateBatchAsync([new ScheduleEntry(null, "schedule://prod/app/jobs/run", "*/5 * * * *", ScheduleDeliveryMode.Once, "ping"u8.ToArray())]);
+        var page = await schedule.ListV2Async("next", 2);
+
+        // Assert
+        Assert.Equal([MessageTypes.ScheduleCreateBatch, MessageTypes.ScheduleListV2], calls);
+        Assert.True(page.HasMore);
+        Assert.Equal("last", page.Continuation);
+        Assert.Single(page.Entries);
+    }
+
+    [Theory]
+    [InlineData(true, 7010u)]
+    [InlineData(false, null)]
+    public async Task ShouldDecodeCodedAndPlainErrorsGivenScheduleBatchFailure(bool coded, uint? expectedCode)
+    {
+        // Arrange
+        using var schedule = new ScheduleClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(1);
+            if (coded)
+                writer.WriteU32(7010);
+            writer.WriteString("broker rejected batch");
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.CreateBatchAsync([]));
+
+        // Assert
+        Assert.Equal(expectedCode, error.DomainCode);
+        Assert.Contains("broker rejected batch", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ShouldReturnTypedErrorGivenTruncatedSuccessWhenListingSchedules()
     {
         // Arrange

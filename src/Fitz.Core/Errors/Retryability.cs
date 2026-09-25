@@ -35,9 +35,11 @@ public static class Retryability
     {
         return error switch
         {
-            KvException kv when kv.DomainCode is FitzErrorCodes.KvIsolationConflict or FitzErrorCodes.KvBackendError => true,
+            KvException kv when kv.DomainCode is FitzErrorCodes.KvIsolationConflict or FitzErrorCodes.KvBusy => true,
+            StreamException stream when stream.DomainCode == FitzErrorCodes.StreamBusy => true,
+            NoticeException notice when notice.DomainCode == FitzErrorCodes.NoticeBusy => true,
             QueueException queue when queue.DomainCode == FitzErrorCodes.QueueFull => true,
-            LeaseException lease when lease.DomainCode == FitzErrorCodes.LeaseHeld => true,
+            LeaseException lease when lease.DomainCode is FitzErrorCodes.LeaseHeld or FitzErrorCodes.LeaseQueueFull => true,
             RpcException rpc when rpc.DomainCode is FitzErrorCodes.RpcTimeout or FitzErrorCodes.RpcWorkerNotFound or FitzErrorCodes.RpcBackpressure or FitzErrorCodes.RpcRouteNotRegistered
                 || rpc.Code is "TIMEOUT" or "WORKER_NOT_FOUND" or "BACKPRESSURE" or "ROUTE_NOT_REGISTERED" => true,
             ScheduleException schedule when schedule.DomainCode == FitzErrorCodes.ScheduleBackendError => true,
