@@ -28,4 +28,9 @@ public interface INoticeClient
     /// Each notification carries the exact concrete route that matched.
     /// </returns>
     Task<NoticeSubscription> SubscribeAsync(string pattern, CancellationToken ct = default);
+
+    /// <summary>Removes all Notice subscriptions for the current broker session.</summary>
+    /// <param name="ct">Cancellation token for the broker request.</param>
+    /// <returns>A task that completes after broker acknowledgement and local cleanup.</returns>
+    Task UnsubscribeAllAsync(CancellationToken ct = default);
 }

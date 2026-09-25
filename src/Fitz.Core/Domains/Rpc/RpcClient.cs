@@ -443,6 +443,17 @@ sealed class RpcClient : IRpcClient, IDisposable
             {
                 await handler(new RpcRequest(route, body), writer, ct).ConfigureAwait(false);
             }
+            catch (Exception)
+            {
+                if (!writer.IsEnded)
+                {
+                    await writer.SendAsync(
+                        EncodeTerminalErrorBody(FitzErrorCodes.RpcBackendError, "Local RPC worker failed"),
+                        isEnd: true,
+                        ct).ConfigureAwait(false);
+                }
+                throw;
+            }
             finally
             {
                 concurrencyGate.Release();
@@ -825,6 +836,8 @@ sealed class RpcClient : IRpcClient, IDisposable
         readonly SemaphoreSlim _sendGate = new(1, 1);
         ulong _sequence;
         bool _ended;
+
+        internal bool IsEnded => _ended;
 
         internal RpcResponseWriter(Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send, byte[] correlationId)
         {

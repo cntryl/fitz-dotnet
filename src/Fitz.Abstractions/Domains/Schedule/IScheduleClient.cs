@@ -19,6 +19,12 @@ public interface IScheduleClient
     /// </returns>
     Task<string?> CreateAsync(string route, string cron, ScheduleDeliveryMode deliveryMode, ReadOnlyMemory<byte> payload, CancellationToken ct = default);
 
+    /// <summary>Creates several schedules in one broker request (extension 706).</summary>
+    Task CreateBatchAsync(IReadOnlyList<ScheduleEntry> entries, CancellationToken ct = default);
+
+    /// <summary>Reads a cursor page using broker extension 707.</summary>
+    Task<ScheduleCursorPage> ListV2Async(string? continuation = null, ulong? limit = null, CancellationToken ct = default);
+
     /// <summary>
     /// Removes a registered schedule.
     /// </summary>

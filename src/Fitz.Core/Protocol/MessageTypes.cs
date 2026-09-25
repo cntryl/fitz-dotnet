@@ -292,4 +292,10 @@ static class MessageTypes
     /// Broker-originated notification carrying a schedule firing.
     /// </summary>
     public const ushort ScheduleNotify = 705;
+
+    /// <summary>Creates several schedules in one broker request.</summary>
+    public const ushort ScheduleCreateBatch = 706;
+
+    /// <summary>Reads the broker's cursor-based schedule page.</summary>
+    public const ushort ScheduleListV2 = 707;
 }

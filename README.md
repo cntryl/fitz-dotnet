@@ -241,6 +241,12 @@ error `FitzErrorCodes.ScheduleBackendError` (`7010`). `Retryability` classifies
 it as retryable subject to operation safety; it is not reported as malformed
 cron or parse input.
 
+`Notice.UnsubscribeAllAsync()` sends broker message 503 and completes this
+client's local subscriptions after acknowledgment. `Schedule.CreateBatchAsync()`
+and `Schedule.ListV2Async()` expose broker extensions 706 and 707; use
+`Schedule.ListAsync()` for portable offset pagination. RPC worker handler failures
+send a terminal 6010 response to the caller and invoke the worker error hook.
+
 ## Upgrading from 0.1.x
 
 `1.0.0` is the release that settles the public surface, so it carries the breaking

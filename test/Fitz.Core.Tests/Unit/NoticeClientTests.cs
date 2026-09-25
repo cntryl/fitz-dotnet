@@ -7,6 +7,42 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class NoticeClientTests
 {
     [Fact]
+    public async Task ShouldCompleteAllRegistrationsGivenBrokerAcknowledgedUnsubscribeAll()
+    {
+        // Arrange
+        var subscriptionId = 40UL;
+        var sent = new List<ushort>();
+        using var notice = new NoticeClient(
+            (_, _, _) => Task.CompletedTask,
+            (messageType, payload, _) =>
+            {
+                sent.Add(messageType);
+                if (messageType == MessageTypes.NoticeSubscribe)
+                {
+                    using var response = new BinaryBufferWriter();
+                    response.WriteU8(0);
+                    response.WriteU8(1);
+                    response.WriteU64(++subscriptionId);
+                    return Task.FromResult(response.Build());
+                }
+                Assert.Empty(payload);
+                return Task.FromResult(new byte[] { 0 });
+            },
+            (_, _) => new TestRegistration());
+        var first = await notice.SubscribeAsync("notice://prod/app/first");
+        var second = await notice.SubscribeAsync("notice://prod/app/second");
+
+        // Act
+        await notice.UnsubscribeAllAsync();
+
+        // Assert
+        await first.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+        await second.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(1, sent.Count(messageType => messageType == MessageTypes.NoticeUnsubscribeAll));
+        Assert.DoesNotContain(MessageTypes.NoticeUnsubscribe, sent);
+    }
+
+    [Fact]
     public async Task ShouldRejectSubscriptionGivenDisposedClientWhenBeforeHandlerRegistration()
     {
         // Arrange

@@ -20,6 +20,9 @@ public static class FitzErrorCodes
     /// </summary>
     public const uint KvBackendError = 1009;
 
+    /// <summary>The KV mailbox was full before the request was accepted.</summary>
+    public const uint KvBusy = 1014;
+
     /// <summary>
     /// The KV subscription pattern was malformed or could not match three segments.
     /// </summary>
@@ -41,6 +44,9 @@ public static class FitzErrorCodes
     /// </summary>
     public const uint StreamSessionAlreadyActive = 2002;
 
+    /// <summary>The Stream mailbox was full before the request was accepted.</summary>
+    public const uint StreamBusy = 2014;
+
     /// <summary>
     /// The stream subscription selector was malformed or unsupported.
     /// </summary>
@@ -60,6 +66,9 @@ public static class FitzErrorCodes
     /// The session reached the broker limit on wildcard notice registrations.
     /// </summary>
     public const uint NoticeSubscriptionLimit = 3003;
+
+    /// <summary>The Notice mailbox was full before the request was accepted.</summary>
+    public const uint NoticeBusy = 3006;
 
     /// <summary>
     /// The queue subscription pattern was malformed or could not match three segments.
@@ -85,6 +94,9 @@ public static class FitzErrorCodes
     /// The lease request was rejected as malformed by the broker.
     /// </summary>
     public const uint LeaseBadRequest = 5008;
+
+    /// <summary>The Lease request queue was full before the request was accepted.</summary>
+    public const uint LeaseQueueFull = 5007;
 
     /// <summary>
     /// The lease subscription route was not an exact <c>lease://realm/area/resource</c> route.
