@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 env:
   NuGetPackageSourceCredentials_cntryl: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }}
