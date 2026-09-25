@@ -1,0 +1,45 @@
+name: Native AOT
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  NuGetPackageSourceCredentials_cntryl: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  consumer:
+    name: Native AOT package consumer
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore
+        run: dotnet restore Fitz.sln
+
+      - name: Pack NuGet packages
+        run: dotnet pack Fitz.sln -c Release --no-restore --output artifacts/packages
+
+      # NuGet caches by package id and version. Remove copies from an earlier pack so the
+      # consumer restores the packages built in this run.
+      - name: Clear consumer package cache
+        run: rm -rf artifacts/consumer-package-cache
+
+      # The consumer roots each shipped assembly for whole-program AOT analysis.
+      - name: Publish Native AOT consumer
+        run: dotnet publish test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj -c Release -r linux-x64 -p:PublishAot=true --output artifacts/native-aot
+
+      - name: Run Native AOT consumer
+        run: artifacts/native-aot/Fitz.PackageConsumer

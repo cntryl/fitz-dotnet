@@ -28,17 +28,22 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
         with:
           dotnet-version: "10.0.x"
+
       - name: Read package version
         id: version
         run: echo "package-version=$(dotnet msbuild src/Fitz.Abstractions/Fitz.Abstractions.csproj -getProperty:PackageVersion -nologo)" >> "$GITHUB_OUTPUT"
+
       - name: Pack packages
         run: dotnet pack Fitz.sln --configuration Release --output artifacts/packages -p:PackageVersion="${{ steps.version.outputs.package-version }}"
+
       - name: Publish packages
         run: dotnet nuget push "artifacts/packages/*.nupkg" --api-key "$NUGET_AUTH_TOKEN" --source "$PACKAGE_SOURCE" --skip-duplicate
+
       - name: Tag release
         env:
           PACKAGE_VERSION: ${{ steps.version.outputs.package-version }}
