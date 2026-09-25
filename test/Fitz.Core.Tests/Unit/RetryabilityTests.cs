@@ -15,6 +15,10 @@ public sealed class RetryabilityTests
         Assert.True(Retryability.IsRetryable(new QueueException("queue full", "ENQUEUE_FAILED", 1, FitzErrorCodes.QueueFull)));
         Assert.True(Retryability.IsRetryable(new LeaseException("lease held", "LEASE_HELD", 1, FitzErrorCodes.LeaseHeld)));
         Assert.True(Retryability.IsRetryable(new KvException("conflict", "PUT_FAILED", 1, FitzErrorCodes.KvIsolationConflict)));
+        Assert.True(Retryability.IsRetryable(new KvException("busy", "BUSY", 1, FitzErrorCodes.KvBusy)));
+        Assert.True(Retryability.IsRetryable(new StreamException("busy", "BUSY", 1, FitzErrorCodes.StreamBusy)));
+        Assert.True(Retryability.IsRetryable(new NoticeException("busy", "BUSY", 1, FitzErrorCodes.NoticeBusy)));
+        Assert.True(Retryability.IsRetryable(new LeaseException("queue full", "QUEUE_FULL", 1, FitzErrorCodes.LeaseQueueFull)));
         Assert.True(Retryability.IsRetryable(new ScheduleException("backend busy", "BACKEND_ERROR", 1, FitzErrorCodes.ScheduleBackendError)));
     }
 
@@ -29,6 +33,7 @@ public sealed class RetryabilityTests
         Assert.False(Retryability.IsRetryable(new QueueException("invalid token", "INVALID_TOKEN", 1, 4001)));
         Assert.False(Retryability.IsRetryable(new LeaseException("not found", "LEASE_NOT_FOUND", 1, 5004)));
         Assert.False(Retryability.IsRetryable(new StreamException("missing", "STREAM_NOT_FOUND", 1)));
+        Assert.False(Retryability.IsRetryable(new KvException("backend", "BACKEND_ERROR", 1, FitzErrorCodes.KvBackendError)));
         Assert.False(Retryability.IsRetryable(new QueueException(
             "failed to commit transaction: memory budget exceeded",
             "ENQUEUE_FAILED",

@@ -570,6 +570,45 @@ public sealed class DomainWorkflowIntegrationTests
     }
 
     [Fact]
+    public async Task ShouldCreateBatchAndListCursorPageGivenBrokerScheduleExtensions()
+    {
+        // Arrange
+        var route = IntegrationFixture.CreateUniqueRoute("schedule");
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+
+        // Act
+        await client.Schedule.CreateBatchAsync([new ScheduleEntry(null, route, "*/5 * * * *", ScheduleDeliveryMode.Once, "batch"u8.ToArray())]);
+        var page = await client.Schedule.ListV2Async(limit: 100);
+        var found = page.Entries.Any(entry => entry.Route == route);
+        while (!found && page.HasMore && page.Continuation is not null)
+        {
+            page = await client.Schedule.ListV2Async(page.Continuation, 100);
+            found = page.Entries.Any(entry => entry.Route == route);
+        }
+
+        // Assert
+        Assert.True(found);
+        await client.Schedule.CancelAsync(route);
+    }
+
+    [Fact]
+    public async Task ShouldCompleteNoticeHandleGivenBrokerBulkUnsubscribe()
+    {
+        // Arrange
+        var route = IntegrationFixture.CreateUniqueRoute("notice");
+        await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
+        await client.ConnectAsync();
+        await using var subscription = await client.Notice.SubscribeAsync(route);
+
+        // Act
+        await client.Notice.UnsubscribeAllAsync();
+
+        // Assert
+        await subscription.Completion.WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
     public async Task ShouldWriteThenReadKvValueGivenTransactionCommitWorkflowWhenWorkflowRuns()
     {
         // Arrange

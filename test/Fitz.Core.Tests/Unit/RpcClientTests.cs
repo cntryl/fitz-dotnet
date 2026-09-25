@@ -399,9 +399,15 @@ public sealed class RpcClientTests
         // Arrange
         Action<byte[]>? incomingHandler = null;
         var reported = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var response = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var rpc = new RpcClient(
             request: (_, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0, 0, 0, 0, 0 }),
-            send: (_, _, _) => ValueTask.CompletedTask,
+            send: (type, payload, _) =>
+            {
+                Assert.Equal(MessageTypes.RpcResponse, type);
+                response.TrySetResult(payload.ToArray());
+                return ValueTask.CompletedTask;
+            },
             registerNotificationHandler: (_, handler) =>
             {
                 incomingHandler = handler;
@@ -425,6 +431,13 @@ public sealed class RpcClientTests
         // Assert
         Assert.IsType<InvalidOperationException>(exception);
         Assert.Equal("worker failed", exception.Message);
+        var reply = new BinaryBufferReader(await response.Task.WaitAsync(TimeSpan.FromSeconds(1)));
+        reply.ReadBytes(16);
+        Assert.Equal(0UL, reply.ReadU64());
+        Assert.Equal((byte)1, reply.ReadU8());
+        var body = new BinaryBufferReader(reply.ReadBytes(reply.ReadU32()));
+        Assert.Equal((byte)1, body.ReadU8());
+        Assert.Equal(FitzErrorCodes.RpcBackendError, body.ReadU32());
     }
 
     [Fact]

@@ -171,6 +171,46 @@ sealed class NoticeClient : INoticeClient, IDisposable
         }
     }
 
+    /// <inheritdoc />
+    public async Task UnsubscribeAllAsync(CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        if (_request is null)
+        {
+            throw new InvalidOperationException("Request support is required for notice unsubscription");
+        }
+
+        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var response = await _request(MessageTypes.NoticeUnsubscribeAll, ReadOnlyMemory<byte>.Empty, ct).ConfigureAwait(false);
+            var reader = NoticeWireHelpers.ReadSuccess(response, "UNSUBSCRIBE_ALL");
+            if (!reader.IsEof)
+            {
+                throw new NoticeException("UNSUBSCRIBE_ALL response has trailing bytes", "UNSUBSCRIBE_ALL_INVALID_RESPONSE");
+            }
+
+            List<SubscriptionRegistration<NoticeMessage>> registrations;
+            lock (_gate)
+            {
+                registrations = _subscriptionsByPattern.Values
+                    .SelectMany(subscription => subscription.Writers.Values)
+                    .ToList();
+                _subscriptionsByPattern.Clear();
+                _patternsBySubscriptionId.Clear();
+            }
+
+            foreach (var registration in registrations)
+            {
+                registration.Dispose();
+            }
+        }
+        finally
+        {
+            _subscriptionGate.Release();
+        }
+    }
+
     NoticeSubscription CreateSubscription(
         string pattern,
         long handleId,
