@@ -33,6 +33,9 @@ static class MessageTypes
     /// </summary>
     public const ushort ServerHello = 4;
 
+    /// <summary>Reports a friendly service name after metadata capability negotiation.</summary>
+    public const ushort SessionMetadata = 5;
+
     /// <summary>
     /// Opens a KV transaction over a route and returns its transaction identifier.
     /// </summary>

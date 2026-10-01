@@ -40,6 +40,7 @@ namespace Cntryl.Fitz;
 /// Supplies a custom <see cref="ITransport"/> instead of the built-in ones. Override
 /// <see cref="ITransport.TransportName"/> to label it in telemetry.
 /// </param>
+/// <param name="ServiceName">Optional friendly service name reported when the broker advertises session metadata.</param>
 /// <remarks>
 /// This record is validated centrally before any connection work starts, so invalid
 /// configuration fails fast rather than at first use.
@@ -59,7 +60,8 @@ public sealed record ClientConfig(
     int MaxFrameSize = FitzLimits.MaxFrameSize,
     int MaxInFlightRequests = 256,
     int MaxRequestQueueSize = 1024,
-    Func<ClientConfig, ITransport>? TransportFactory = null
+    Func<ClientConfig, ITransport>? TransportFactory = null,
+    string? ServiceName = null
 )
 {
     static readonly ReconnectOptions DefaultReconnect = new();
@@ -83,6 +85,27 @@ public sealed record ClientConfig(
     internal void Validate()
     {
         ArgumentNullException.ThrowIfNull(Url);
+        if (ServiceName is { } serviceName)
+        {
+            var utf8 = new System.Text.UTF8Encoding(false, true);
+            int byteCount;
+            try
+            {
+                byteCount = utf8.GetByteCount(serviceName);
+            }
+            catch (System.Text.EncoderFallbackException exception)
+            {
+                throw new ArgumentException("ServiceName must contain valid Unicode characters.", nameof(ServiceName), exception);
+            }
+            if (string.IsNullOrWhiteSpace(serviceName) || byteCount > 128)
+            {
+                throw new ArgumentException("ServiceName must be non-empty and at most 128 UTF-8 bytes.", nameof(ServiceName));
+            }
+            if (serviceName.Any(char.IsControl))
+            {
+                throw new ArgumentException("ServiceName must not contain control characters.", nameof(ServiceName));
+            }
+        }
         if (!Url.IsAbsoluteUri)
         {
             throw new ArgumentException("The Fitz URL must be absolute.", nameof(Url));

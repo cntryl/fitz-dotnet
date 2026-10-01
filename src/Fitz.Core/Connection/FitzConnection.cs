@@ -101,19 +101,59 @@ sealed class FitzConnection : IAsyncDisposable
     /// Records a broker capability advertisement. An unparseable or unrecognised advertisement is
     /// ignored rather than rejected: it must never be more disruptive than a missing one.
     /// </summary>
-    void ApplyServerHello(ReadOnlySpan<byte> payload)
+    async ValueTask<bool> ApplyServerHelloAsync(
+        ReadOnlyMemory<byte> payload,
+        ITransport sessionTransport,
+        bool serviceMetadataSent)
     {
-        if (!ServerCapabilities.TryParse(payload, out var capabilities))
+        if (!ServerCapabilities.TryParse(payload.Span, out var capabilities))
         {
-            return;
+            return serviceMetadataSent;
         }
 
-        Interlocked.Exchange(ref _capabilityState, PackCapabilities(capabilities));
+        bool sendMetadata;
+        string? serviceName;
+        lock (_gate)
+        {
+            if (!ReferenceEquals(Volatile.Read(ref _transport), sessionTransport))
+            {
+                return serviceMetadataSent;
+            }
+
+            Interlocked.Exchange(ref _capabilityState, PackCapabilities(capabilities));
+            serviceName = _config.ServiceName;
+            sendMetadata = capabilities.SupportsSessionMetadata && serviceName is not null && !serviceMetadataSent;
+        }
         Log(FitzLogLevel.Debug, "fitz.connection.server_hello", new Dictionary<string, object?>
         {
             ["protocol_version"] = capabilities.ProtocolVersion,
             ["correlation"] = capabilities.SupportsCorrelation,
         });
+        if (sendMetadata)
+        {
+            await SendSessionMetadataAsync(serviceName!, sessionTransport).ConfigureAwait(false);
+            return true;
+        }
+        return serviceMetadataSent;
+    }
+
+    async Task SendSessionMetadataAsync(string serviceName, ITransport sessionTransport)
+    {
+        try
+        {
+            var name = new System.Text.UTF8Encoding(false, true).GetBytes(serviceName);
+            var payload = new byte[sizeof(uint) + name.Length];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(payload, (uint)name.Length);
+            name.CopyTo(payload.AsSpan(sizeof(uint)));
+            await sessionTransport.SendAsync(
+                FrameCodec.Encode(MessageTypes.SessionMetadata, payload),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is IOException or WebSocketException or System.Net.Sockets.SocketException or
+            ObjectDisposedException or InvalidOperationException or OperationCanceledException)
+        {
+            ScheduleConnectionLoss(exception, sessionTransport);
+        }
     }
 
     /// <summary>
@@ -689,7 +729,12 @@ sealed class FitzConnection : IAsyncDisposable
         EmitLifecycleEvent(isReconnect ? "reconnect_start" : "connect_start");
 
         var transport = _transportFactory();
-        var previousTransport = Interlocked.Exchange(ref _transport, transport);
+        ITransport? previousTransport;
+        lock (_gate)
+        {
+            Interlocked.Exchange(ref _capabilityState, 0L);
+            previousTransport = Interlocked.Exchange(ref _transport, transport);
+        }
         if (previousTransport is not null && !ReferenceEquals(previousTransport, transport))
         {
             await DisposeTransportAsync(previousTransport, CancellationToken.None).ConfigureAwait(false);
@@ -708,9 +753,6 @@ sealed class FitzConnection : IAsyncDisposable
             SetState(ConnectionState.Connected);
             _multiplexer.BeginSession();
             _frameParser.Reset();
-            // A new transport session has not advertised anything yet. Until its SERVER_HELLO
-            // arrives the client behaves as it would against a legacy broker.
-            Interlocked.Exchange(ref _capabilityState, 0L);
             StartReceiveLoop();
 
             SetState(ConnectionState.Authenticating);
@@ -874,6 +916,7 @@ sealed class FitzConnection : IAsyncDisposable
 
         _receiveLoop = Task.Run(async () =>
         {
+            var serviceMetadataSent = false;
             while (!token.IsCancellationRequested && !_closeRequested)
             {
                 try
@@ -884,12 +927,18 @@ sealed class FitzConnection : IAsyncDisposable
                         throw new ConnectionException("Transport closed.");
                     }
 
+                    if (!ReferenceEquals(Volatile.Read(ref _transport), receiveTransport))
+                    {
+                        return;
+                    }
+
                     if (!data.Memory.IsEmpty)
                     {
                         _frameParser.Append(data.Memory.Span);
                     }
 
-                    DrainParsedFrames();
+                    serviceMetadataSent = await DrainParsedFramesAsync(receiveTransport, serviceMetadataSent)
+                        .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested || _closeRequested)
                 {
@@ -913,13 +962,14 @@ sealed class FitzConnection : IAsyncDisposable
     /// violation: the client's request-to-response mapping would be ambiguous, and there is no
     /// caller left to answer, so the session is torn down rather than guessed at.
     /// </remarks>
-    void DrainParsedFrames()
+    async Task<bool> DrainParsedFramesAsync(ITransport sessionTransport, bool serviceMetadataSent)
     {
         while (_frameParser.TryReadFrame(out var frame))
         {
             if (frame.MessageType != MessageTypes.Correlated)
             {
-                DispatchFrame(frame.MessageType, frame.Payload);
+                serviceMetadataSent = await DispatchFrameAsync(
+                    frame.MessageType, frame.Payload, sessionTransport, serviceMetadataSent).ConfigureAwait(false);
                 continue;
             }
 
@@ -940,20 +990,26 @@ sealed class FitzConnection : IAsyncDisposable
                 // A domain may emit more than one frame for one correlation (for example a queued
                 // Lease ACQUIRE followed later by its grant). Once the request has completed, route
                 // any later phase normally so a registered push handler can observe it.
-                DispatchFrame(labelled.MessageType, labelled.Payload);
+                serviceMetadataSent = await DispatchFrameAsync(
+                    labelled.MessageType, labelled.Payload, sessionTransport, serviceMetadataSent).ConfigureAwait(false);
             }
         }
+        return serviceMetadataSent;
     }
 
-    void DispatchFrame(ushort messageType, ReadOnlyMemory<byte> payload)
+    async ValueTask<bool> DispatchFrameAsync(
+        ushort messageType,
+        ReadOnlyMemory<byte> payload,
+        ITransport sessionTransport,
+        bool serviceMetadataSent)
     {
         if (messageType == MessageTypes.ServerHello)
         {
-            ApplyServerHello(payload.Span);
-            return;
+            return await ApplyServerHelloAsync(payload, sessionTransport, serviceMetadataSent).ConfigureAwait(false);
         }
 
         _multiplexer.Dispatch(messageType, payload);
+        return serviceMetadataSent;
     }
 
     void ScheduleConnectionLoss(Exception exception, ITransport? failedTransport = null)
