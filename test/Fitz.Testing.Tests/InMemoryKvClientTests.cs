@@ -128,13 +128,10 @@ public sealed class InMemoryKvClientTests
         Assert.True(reverse.HasMore);
     }
 
-    [Theory]
-    [InlineData(false, "a,b,c,d,e")]
-    [InlineData(true, "e,d,c,b,a")]
-    public async Task ShouldOwnExclusivePageResumptionGivenScanAll(bool reverse, string expected)
+    [Fact]
+    public async Task ShouldOwnForwardPageResumptionGivenScanAll()
     {
         // Arrange
-        ArgumentNullException.ThrowIfNull(expected);
         var client = new InMemoryKvClient(new InMemoryKvClientOptions { ScanPageSize = 2 });
         foreach (var key in new[] { "a", "b", "c", "d", "e" })
         {
@@ -144,13 +141,39 @@ public sealed class InMemoryKvClientTests
 
         // Act
         var keys = new List<string>();
-        await foreach (var pair in transaction.ScanAllAsync(new KvScanQuery(Reverse: reverse)))
+        await foreach (var pair in transaction.ScanAllAsync(new KvScanQuery()))
         {
             keys.Add(System.Text.Encoding.UTF8.GetString(pair.Key.Span));
         }
 
         // Assert
-        Assert.Equal(expected.Split(','), keys);
+        Assert.Equal(["a", "b", "c", "d", "e"], keys);
+    }
+
+    [Fact]
+    public async Task ShouldRejectReversePageResumptionGivenMissingExclusiveCapability()
+    {
+        // Arrange
+        var client = new InMemoryKvClient(new InMemoryKvClientOptions { ScanPageSize = 2 });
+        foreach (var key in new[] { "a", "b", "c", "d", "e" })
+        {
+            client.Seed(Route, System.Text.Encoding.UTF8.GetBytes(key), Array.Empty<byte>());
+        }
+        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        var keys = new List<string>();
+
+        // Act
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+        {
+            await foreach (var pair in transaction.ScanAllAsync(new KvScanQuery(Reverse: true)))
+            {
+                keys.Add(System.Text.Encoding.UTF8.GetString(pair.Key.Span));
+            }
+        });
+
+        // Assert
+        Assert.Equal("This client cannot safely continue a reverse KV SCAN across pages.", exception.Message);
+        Assert.Equal(["e", "d"], keys);
     }
 
     [Fact]
