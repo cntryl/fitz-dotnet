@@ -36,6 +36,46 @@ public sealed class KvScanHelpersTests
     }
 
     [Fact]
+    public async Task ShouldFailLoudlyGivenReverseScanNeedsAnotherPageWhenStartExclusiveIsUnavailable()
+    {
+        // Arrange
+        await using var transaction = new RecordingContinuationTransaction();
+        var query = new KvScanQuery(Reverse: true);
+
+        // Act
+        var enumerate = async () =>
+        {
+            await foreach (var _ in transaction.ScanAllAsync(query))
+            {
+            }
+        };
+
+        // Assert
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(enumerate);
+        Assert.Contains("cannot safely continue a reverse", error.Message, StringComparison.Ordinal);
+        Assert.Single(transaction.Queries);
+    }
+
+    [Fact]
+    public async Task ShouldResumeReverseScanGivenAdvertisedExclusiveSupportWhenScanAllCalled()
+    {
+        // Arrange
+        await using var transaction = new RecordingContinuationTransaction
+        {
+            SupportsExclusiveScan = true,
+        };
+
+        // Act
+        await foreach (var _ in transaction.ScanAllAsync(new KvScanQuery(Reverse: true)))
+        {
+        }
+
+        // Assert
+        Assert.Equal(new byte[] { 0x10, 0xFF }, transaction.Queries[1].StartKey!.Value.ToArray());
+        Assert.True(transaction.Queries[1].StartExclusive);
+    }
+
+    [Fact]
     public async Task ShouldFailLoudlyGivenImplementationThatDoesNotReportRoute()
     {
         // Arrange
@@ -66,6 +106,7 @@ public sealed class KvScanHelpersTests
 
     sealed class RecordingContinuationTransaction : IKvTransaction
     {
+        public bool SupportsExclusiveScan { get; init; }
         public List<KvScanQuery> Queries { get; } = [];
 
         public Task<KvScanResult> ScanAsync(KvScanQuery query, CancellationToken ct = default)

@@ -14,6 +14,7 @@ sealed class KvTransaction : IKvTransaction
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
+    readonly Func<bool> _supportsExclusiveScan;
     readonly string _route;
     readonly ulong _txId;
     IDisposable? _disconnectRegistration;
@@ -29,12 +30,14 @@ sealed class KvTransaction : IKvTransaction
         string route,
         ulong txId,
         Func<Action, IDisposable>? registerOnDisconnect = null,
-        Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null)
+        Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null,
+        Func<bool>? supportsExclusiveScan = null)
     {
         _request = request;
         _route = route;
         _txId = txId;
         _retryRequest = retryRequest;
+        _supportsExclusiveScan = supportsExclusiveScan ?? (() => false);
         var disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
         if (disconnectRegistration is not null)
         {
@@ -48,6 +51,9 @@ sealed class KvTransaction : IKvTransaction
 
     /// <inheritdoc />
     public string Route => _route;
+
+    /// <inheritdoc />
+    public bool SupportsExclusiveScan => _supportsExclusiveScan();
 
     /// <inheritdoc />
     public async Task<KvGetResult> GetAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
@@ -194,6 +200,16 @@ sealed class KvTransaction : IKvTransaction
 
         // Encode reverse flag
         writer.WriteU8(query.Reverse ? (byte)1 : (byte)0);
+        if (query.StartExclusive)
+        {
+            if (!SupportsExclusiveScan)
+            {
+                throw new KvException(
+                    "Broker did not advertise exclusive KV SCAN resume support",
+                    "UNSUPPORTED_CAPABILITY");
+            }
+            writer.WriteU8(1);
+        }
 
         var response = await RequestWithRetryAsync(
             RetryOperations.KvScan,
@@ -203,7 +219,7 @@ sealed class KvTransaction : IKvTransaction
         var reader = KvWireHelpers.ReadSuccess(response, "SCAN");
 
         var pairCount = reader.ReadU32();
-        if (pairCount > (uint)(reader.RemainingBytes / 8))
+        if (reader.RemainingBytes < 1 || pairCount > (uint)((reader.RemainingBytes - 1) / 8))
         {
             throw new KvException("SCAN response pair count exceeds the remaining payload", "SCAN_INVALID_RESPONSE");
         }

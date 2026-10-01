@@ -21,6 +21,7 @@ sealed class KvClient : IKvClient, IDisposable
     readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly int _subscriptionBufferCapacity;
+    readonly Func<bool> _supportsExclusiveScan;
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     readonly object _gate = new();
@@ -43,7 +44,8 @@ sealed class KvClient : IKvClient, IDisposable
                     ct),
             connection.RegisterBorrowedNotificationHandler,
             (handler, rejected) => connection.TryDispatchAsyncHandler("kv", handler, rejected),
-            connection.SubscriptionBufferCapacity)
+            connection.SubscriptionBufferCapacity,
+            () => connection.Capabilities.SupportsKvScanExclusive)
     {
         _reconnectRegistration = connection.OnReconnect(RestoreSubscriptionsAsync);
     }
@@ -63,7 +65,8 @@ sealed class KvClient : IKvClient, IDisposable
         Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null,
         Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null,
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
-        int subscriptionBufferCapacity = SubscriptionRegistration<KvNotification>.DefaultCapacity)
+        int subscriptionBufferCapacity = SubscriptionRegistration<KvNotification>.DefaultCapacity,
+        Func<bool>? supportsExclusiveScan = null)
     {
         _request = request;
         _registerOnDisconnect = registerOnDisconnect;
@@ -71,6 +74,7 @@ sealed class KvClient : IKvClient, IDisposable
         _registerNotificationHandler = registerNotificationHandler;
         _dispatchAsyncHandler = dispatchAsyncHandler;
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
+        _supportsExclusiveScan = supportsExclusiveScan ?? (() => false);
     }
 
     /// <inheritdoc />
@@ -113,7 +117,13 @@ sealed class KvClient : IKvClient, IDisposable
             throw new KvException("BEGIN response has trailing bytes", "BEGIN_INVALID_RESPONSE");
         }
 
-        return new KvTransaction(_request, route, txId, _registerOnDisconnect, _retryRequest);
+        return new KvTransaction(
+            _request,
+            route,
+            txId,
+            _registerOnDisconnect,
+            _retryRequest,
+            _supportsExclusiveScan);
     }
 
     /// <inheritdoc />
