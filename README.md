@@ -30,7 +30,7 @@ Enforcement is mechanical, not aspirational:
 
 - every package sets `IsAotCompatible=true`, enabling the trim, AOT, and
   single-file analyzers, and warnings are errors repo-wide
-- the `package` CI job publishes and runs a Native AOT executable against the
+- the Native AOT workflow publishes and runs a Native AOT executable against the
   freshly packed artifacts with **all five assemblies rooted**, so ILC analyzes
   every shipped method rather than only what the sample reaches, reports each
   finding individually, and fails the build on any of them
