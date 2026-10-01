@@ -54,11 +54,16 @@ public sealed class CorrelationConnectionTests
     {
         // Arrange
         var validConfig = Config() with { ServiceName = string.Concat(Enumerable.Repeat("é", 64)) };
+        var paddedValidConfig = Config() with
+        {
+            ServiceName = $" {string.Concat(Enumerable.Repeat("é", 64))} ",
+        };
         var oversizedConfig = Config() with { ServiceName = string.Concat(Enumerable.Repeat("é", 65)) };
         var invalidUnicodeConfig = Config() with { ServiceName = "bad\ud800name" };
 
         // Act
         validConfig.Validate();
+        paddedValidConfig.Validate();
 
         // Assert
         Assert.Throws<ArgumentException>(() => oversizedConfig.Validate());
@@ -88,7 +93,7 @@ public sealed class CorrelationConnectionTests
         // Arrange
         await using var transport = new TestQueuedTransport();
         await using var connection = new FitzConnection(
-            Config() with { ServiceName = "orders-worker" },
+            Config() with { ServiceName = " orders-worker " },
             () => transport);
         await connection.ConnectAsync();
 

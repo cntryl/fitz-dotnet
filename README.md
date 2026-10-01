@@ -85,9 +85,9 @@ await tx.PutAsync("user-1"u8.ToArray(), """{"name":"Alice"}"""u8.ToArray());
 await tx.CommitAsync();
 ```
 
-`ClientConfig.ServiceName` is optional. New brokers record it on the active
-session after advertising the `SESSION_METADATA` capability; older brokers
-receive no metadata frame.
+`ClientConfig.ServiceName` is optional. New brokers record its trimmed value on
+the active session after advertising the `SESSION_METADATA` capability; older
+brokers receive no metadata frame.
 
 Generic Host consumers can register the same client through DI. The hosted
 lifecycle connects during host startup and closes asynchronously during host

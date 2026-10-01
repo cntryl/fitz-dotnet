@@ -141,7 +141,7 @@ sealed class FitzConnection : IAsyncDisposable
     {
         try
         {
-            var name = new System.Text.UTF8Encoding(false, true).GetBytes(serviceName);
+            var name = new System.Text.UTF8Encoding(false, true).GetBytes(serviceName.Trim());
             var payload = new byte[sizeof(uint) + name.Length];
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(payload, (uint)name.Length);
             name.CopyTo(payload.AsSpan(sizeof(uint)));

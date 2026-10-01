@@ -40,7 +40,7 @@ namespace Cntryl.Fitz;
 /// Supplies a custom <see cref="ITransport"/> instead of the built-in ones. Override
 /// <see cref="ITransport.TransportName"/> to label it in telemetry.
 /// </param>
-/// <param name="ServiceName">Optional friendly service name reported when the broker advertises session metadata.</param>
+/// <param name="ServiceName">Optional friendly service name, trimmed before reporting when the broker advertises session metadata.</param>
 /// <remarks>
 /// This record is validated centrally before any connection work starts, so invalid
 /// configuration fails fast rather than at first use.
@@ -87,21 +87,22 @@ public sealed record ClientConfig(
         ArgumentNullException.ThrowIfNull(Url);
         if (ServiceName is { } serviceName)
         {
+            var normalizedServiceName = serviceName.Trim();
             var utf8 = new System.Text.UTF8Encoding(false, true);
             int byteCount;
             try
             {
-                byteCount = utf8.GetByteCount(serviceName);
+                byteCount = utf8.GetByteCount(normalizedServiceName);
             }
             catch (System.Text.EncoderFallbackException exception)
             {
                 throw new ArgumentException("ServiceName must contain valid Unicode characters.", nameof(ServiceName), exception);
             }
-            if (string.IsNullOrWhiteSpace(serviceName) || byteCount > 128)
+            if (normalizedServiceName.Length == 0 || byteCount > 128)
             {
                 throw new ArgumentException("ServiceName must be non-empty and at most 128 UTF-8 bytes.", nameof(ServiceName));
             }
-            if (serviceName.Any(char.IsControl))
+            if (normalizedServiceName.Any(char.IsControl))
             {
                 throw new ArgumentException("ServiceName must not contain control characters.", nameof(ServiceName));
             }

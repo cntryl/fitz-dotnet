@@ -18,7 +18,7 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ### Added
 
-- Optional, capability-gated client service names for session metadata.
+- Optional, capability-gated client service names trimmed before reporting session metadata.
 
 ### Changed
 
