@@ -11,6 +11,10 @@ on:
 # One run per branch. A new push supersedes the run still going for the branch it replaced,
 # except on main, where every commit keeps its own result rather than being cancelled by
 # whatever merges next.
+permissions:
+  contents: read
+  packages: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
