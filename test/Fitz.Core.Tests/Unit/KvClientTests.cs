@@ -564,6 +564,98 @@ public sealed class KvClientTests
     }
 
     [Fact]
+    public async Task ShouldAppendExclusiveFlagGivenAdvertisedSupportWhenScanAsyncCalled()
+    {
+        // Arrange
+        byte[]? requestPayload = null;
+        var transaction = new KvTransaction(
+            (messageType, payload, _) =>
+            {
+                if (messageType == MessageTypes.KvRollback)
+                {
+                    return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
+                }
+                Assert.Equal(MessageTypes.KvScan, messageType);
+                requestPayload = payload.ToArray();
+                using var response = new BinaryBufferWriter();
+                response.WriteU8(0);
+                response.WriteU32(0);
+                response.WriteU8(0);
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(response.Build());
+            },
+            "kv://prod/app/users",
+            126,
+            supportsExclusiveScan: () => true);
+
+        // Act
+        await transaction.ScanAsync(new KvScanQuery(StartKey: "key"u8.ToArray(), StartExclusive: true));
+
+        // Assert
+        Assert.NotNull(requestPayload);
+        Assert.Equal(1, requestPayload[^1]);
+        await transaction.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ShouldRejectExclusiveFlagGivenMissingCapabilityWhenScanAsyncCalled()
+    {
+        // Arrange
+        var requestCount = 0;
+        var transaction = new KvTransaction(
+            (messageType, _, _) =>
+            {
+                if (messageType == MessageTypes.KvRollback)
+                {
+                    return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
+                }
+                requestCount++;
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(Array.Empty<byte>());
+            },
+            "kv://prod/app/users",
+            126);
+
+        // Act
+        var action = () => transaction.ScanAsync(new KvScanQuery(StartExclusive: true));
+
+        // Assert
+        var error = await Assert.ThrowsAsync<KvException>(action);
+        Assert.Equal("UNSUPPORTED_CAPABILITY", error.Code);
+        Assert.Equal(0, requestCount);
+        await transaction.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ShouldRejectScanCountGivenMissingHasMoreByteWhenCallingScanAsync()
+    {
+        // Arrange
+        using var kv = new KvClient((messageType, _, _) =>
+        {
+            using var response = new BinaryBufferWriter();
+            response.WriteU8(0);
+            if (messageType == MessageTypes.KvBegin)
+            {
+                response.WriteU64(127);
+            }
+            else
+            {
+                response.WriteU32(1);
+                response.WriteU32(0); // empty key
+                response.WriteU32(0); // empty value; has_more is missing
+            }
+
+            return Task.FromResult(response.Build());
+        });
+        var transaction = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async);
+
+        // Act
+        var error = await Assert.ThrowsAsync<KvException>(() => transaction.ScanAsync(new KvScanQuery()));
+
+        // Assert
+        Assert.Equal("SCAN_INVALID_RESPONSE", error.Code);
+        Assert.Contains("pair count exceeds", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task ShouldRejectEmptyRouteBeforeBeginningTransactionGivenActiveTransactionWhenOperationRuns()
     {
         // Arrange

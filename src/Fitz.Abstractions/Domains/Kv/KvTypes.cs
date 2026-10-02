@@ -52,15 +52,17 @@ public sealed record KvScanResult(IReadOnlyList<KvPair> Pairs, bool HasMore);
 /// <summary>
 /// Query parameters for KV scan operations.
 /// </summary>
-/// <param name="StartKey">Inclusive start key.</param>
-/// <param name="EndKey">Exclusive end key.</param>
-/// <param name="Limit">Maximum number of pairs to return.</param>
+/// <param name="StartKey">Inclusive directional bound: lower forward, upper in reverse scans.</param>
+/// <param name="EndKey">Exclusive directional bound: upper forward, lower in reverse scans.</param>
+/// <param name="Limit">Maximum pairs to return; zero uses the broker's default page budget.</param>
 /// <param name="Reverse">Whether to scan in reverse order.</param>
+/// <param name="StartExclusive">Whether to resume strictly after the directional start key.</param>
 public sealed record KvScanQuery(
     ReadOnlyMemory<byte>? StartKey = null,
     ReadOnlyMemory<byte>? EndKey = null,
     uint? Limit = null,
-    bool Reverse = false);
+    bool Reverse = false,
+    bool StartExclusive = false);
 
 /// <summary>A committed KV mutation notification.</summary>
 public sealed record KvNotification(string Route, ulong MutationCount);

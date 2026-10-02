@@ -13,11 +13,23 @@ readonly record struct ServerCapabilities(ushort ProtocolVersion, uint Capabilit
     /// <summary>Bit 0: the broker accepts <c>CORRELATE</c> and echoes <c>CORRELATED</c>.</summary>
     public const uint CorrelationBit = 1u << 0;
 
+    /// <summary>Bit 1: the broker accepts client-reported service names.</summary>
+    public const uint SessionMetadataBit = 1u << 1;
+
+    /// <summary>Bit 2: the broker accepts the trailing exclusive KV SCAN resume byte.</summary>
+    public const uint KvScanExclusiveBit = 1u << 2;
+
     /// <summary>The state before any advertisement arrives, and the state for a legacy broker.</summary>
     public static ServerCapabilities None => default;
 
     /// <summary>Whether per-request correlation may be used on this session.</summary>
     public bool SupportsCorrelation => (CapabilityBits & CorrelationBit) != 0;
+
+    /// <summary>Whether the broker accepts a client-reported service name.</summary>
+    public bool SupportsSessionMetadata => (CapabilityBits & SessionMetadataBit) != 0;
+
+    /// <summary>Whether exclusive KV SCAN continuation is supported on this session.</summary>
+    public bool SupportsKvScanExclusive => (CapabilityBits & KvScanExclusiveBit) != 0;
 
     /// <summary>
     /// Parses a <c>SERVER_HELLO</c> payload: <c>[u16 BE protocol_version][u32 BE capability_bits]</c>.

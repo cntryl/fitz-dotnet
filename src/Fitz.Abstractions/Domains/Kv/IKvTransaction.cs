@@ -5,6 +5,8 @@ namespace Cntryl.Fitz;
 /// </summary>
 public interface IKvTransaction : IAsyncDisposable
 {
+    /// <summary>Whether this transaction's broker session supports exclusive SCAN continuation.</summary>
+    bool SupportsExclusiveScan => false;
     /// <summary>
     /// Gets the exact KV route this transaction was opened on.
     /// </summary>

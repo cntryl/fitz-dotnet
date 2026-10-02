@@ -12,6 +12,8 @@ sealed class TestQueuedTransport : ITransport
 
     public Action<int>? AfterSend { get; set; }
 
+    public Func<Task>? BeforeReceiveReturns { get; set; }
+
     public Uri Url { get; } = new("ws://queued");
 
     public Task ConnectAsync(CancellationToken ct = default)
@@ -37,7 +39,18 @@ sealed class TestQueuedTransport : ITransport
     public ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        return _incoming.Reader.ReadAsync(ct);
+        return ReceiveCoreAsync(ct);
+    }
+
+    async ValueTask<PooledFrame> ReceiveCoreAsync(CancellationToken ct)
+    {
+        var frame = await _incoming.Reader.ReadAsync(ct).ConfigureAwait(false);
+        if (BeforeReceiveReturns is { } beforeReceiveReturns)
+        {
+            await beforeReceiveReturns().ConfigureAwait(false);
+        }
+
+        return frame;
     }
 
     public void QueueIncomingFrame(byte[] frame)

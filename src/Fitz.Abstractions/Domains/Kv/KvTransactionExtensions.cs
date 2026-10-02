@@ -13,8 +13,13 @@ public static class KvTransactionExtensions
     /// <param name="ct">Cancellation token.</param>
     /// <returns>The pairs in byte-lexicographic scan order.</returns>
     /// <exception cref="InvalidOperationException">
-    /// A scan reports more data but returns no continuation key.
+    /// A scan reports more data but returns no continuation key, or the broker does
+    /// not advertise exclusive resume support for a reverse scan.
     /// </exception>
+    /// <remarks>
+    /// Pages are streamed as they arrive. If a later page fails, pairs from earlier pages
+    /// have already been yielded to the caller.
+    /// </remarks>
     public static async IAsyncEnumerable<KvPair> ScanAllAsync(
         this IKvTransaction transaction,
         KvScanQuery? query = null,
@@ -41,11 +46,23 @@ public static class KvTransactionExtensions
             {
                 throw new InvalidOperationException("KV SCAN returned an empty page with HasMore set.");
             }
-
-            var lastKey = page.Pairs[^1].Key;
-            next = query.Reverse
-                ? query with { EndKey = lastKey }
-                : query with { StartKey = After(lastKey.Span) };
+            if (transaction.SupportsExclusiveScan)
+            {
+                next = query with { StartKey = page.Pairs[^1].Key, StartExclusive = true };
+            }
+            else if (query.Reverse)
+            {
+                throw new InvalidOperationException(
+                    "This client cannot safely continue a reverse KV SCAN across pages.");
+            }
+            else
+            {
+                next = query with
+                {
+                    StartKey = After(page.Pairs[^1].Key.Span),
+                    StartExclusive = false,
+                };
+            }
         }
     }
 

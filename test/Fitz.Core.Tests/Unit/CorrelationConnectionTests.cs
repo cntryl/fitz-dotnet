@@ -50,6 +50,27 @@ public sealed class CorrelationConnectionTests
     }
 
     [Fact]
+    public void ShouldValidateServiceNameGivenUtf8ByteLimitWhenConfigIsValidated()
+    {
+        // Arrange
+        var validConfig = Config() with { ServiceName = string.Concat(Enumerable.Repeat("é", 64)) };
+        var paddedValidConfig = Config() with
+        {
+            ServiceName = $" {string.Concat(Enumerable.Repeat("é", 64))} ",
+        };
+        var oversizedConfig = Config() with { ServiceName = string.Concat(Enumerable.Repeat("é", 65)) };
+        var invalidUnicodeConfig = Config() with { ServiceName = "bad\ud800name" };
+
+        // Act
+        validConfig.Validate();
+        paddedValidConfig.Validate();
+
+        // Assert
+        Assert.Throws<ArgumentException>(() => oversizedConfig.Validate());
+        Assert.Throws<ArgumentException>(() => invalidUnicodeConfig.Validate());
+    }
+
+    [Fact]
     public async Task ShouldReportCorrelationEnabledGivenServerHelloWhenAdvertised()
     {
         // Arrange
@@ -67,11 +88,42 @@ public sealed class CorrelationConnectionTests
     }
 
     [Fact]
+    public async Task ShouldReportFriendlyNameGivenMetadataCapabilityWhenAdvertised()
+    {
+        // Arrange
+        await using var transport = new TestQueuedTransport();
+        await using var connection = new FitzConnection(
+            Config() with { ServiceName = " orders-worker " },
+            () => transport);
+        await connection.ConnectAsync();
+
+        // Act
+        transport.QueueIncomingFrame(ServerHelloFrame(ServerCapabilities.SessionMetadataBit));
+        await WaitForAsync(
+            () => transport.SentFrames.Any(frame => FrameCodec.DecodeStrict(frame).MessageType == MessageTypes.SessionMetadata),
+            "SESSION_METADATA should follow a supporting SERVER_HELLO.");
+
+        // Assert
+        Assert.True(connection.Capabilities.SupportsSessionMetadata);
+        Assert.False(connection.Capabilities.SupportsKvScanExclusive);
+        var metadata = FrameCodec.DecodeStrict(transport.SentFrames.Single(frame =>
+            FrameCodec.DecodeStrict(frame).MessageType == MessageTypes.SessionMetadata));
+        Assert.Equal(MessageTypes.SessionMetadata, metadata.MessageType);
+        Assert.Equal(new byte[]
+        {
+            0, 0, 0, 13, (byte)'o', (byte)'r', (byte)'d', (byte)'e', (byte)'r', (byte)'s',
+            (byte)'-', (byte)'w', (byte)'o', (byte)'r', (byte)'k', (byte)'e', (byte)'r',
+        }, metadata.Payload.ToArray());
+    }
+
+    [Fact]
     public async Task ShouldNotBlockConnectGivenNoServerHelloWhenLegacyBroker()
     {
         // Arrange
         await using var transport = new TestQueuedTransport();
-        await using var connection = new FitzConnection(Config(), () => transport);
+        await using var connection = new FitzConnection(
+            Config() with { ServiceName = "orders-worker" },
+            () => transport);
 
         // Act: no advertisement is ever queued.
         var stopwatch = Stopwatch.StartNew();
@@ -82,6 +134,49 @@ public sealed class CorrelationConnectionTests
         Assert.Equal(ConnectionState.Authenticated, connection.State);
         Assert.False(connection.CorrelationEnabled);
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2), $"Connect took {stopwatch.Elapsed}.");
+        Assert.Single(transport.SentFrames);
+    }
+
+    [Fact]
+    public async Task ShouldIgnoreBufferedServerHelloGivenReconnectToAnotherTransport()
+    {
+        // Arrange
+        await using var firstTransport = new TestQueuedTransport();
+        await using var secondTransport = new TestQueuedTransport();
+        var transportNumber = 0;
+        var connection = new FitzConnection(
+            Config() with
+            {
+                ServiceName = "orders-worker",
+                Reconnect = new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
+            },
+            () => Interlocked.Increment(ref transportNumber) == 1 ? firstTransport : secondTransport);
+        await using (connection)
+        {
+            await connection.ConnectAsync();
+            var receiveEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseReceive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            firstTransport.BeforeReceiveReturns = async () =>
+            {
+                receiveEntered.TrySetResult();
+                await releaseReceive.Task.ConfigureAwait(false);
+            };
+
+            // Act: hold an old-session metadata-capable hello after the transport has dequeued it,
+            // reconnect, then let the old receive complete before the new session hello arrives.
+            firstTransport.QueueIncomingFrame(ServerHelloFrame(ServerCapabilities.SessionMetadataBit));
+            await receiveEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            connection.InvalidateSession(new IOException("Reconnect for stale-frame regression."));
+            await WaitForAsync(() => secondTransport.SentFrames.Count > 0, "Reconnect should send CONNECT on the replacement transport.");
+            releaseReceive.TrySetResult();
+            await Task.Delay(25);
+            secondTransport.QueueIncomingFrame(ServerHelloFrame(ServerCapabilities.CorrelationBit));
+            await WaitForAsync(() => connection.Capabilities.SupportsCorrelation, "Replacement SERVER_HELLO should apply.");
+
+            // Assert: stale capability data must not leak into the replacement session parser.
+            Assert.DoesNotContain(secondTransport.SentFrames, frame =>
+                FrameCodec.DecodeStrict(frame).MessageType == MessageTypes.SessionMetadata);
+        }
     }
 
     [Fact]

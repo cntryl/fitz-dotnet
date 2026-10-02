@@ -16,6 +16,18 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ## [Unreleased]
 
+### Added
+
+- Optional, capability-gated client service names trimmed before reporting session metadata.
+
+### Changed
+
+- Negotiate exclusive KV SCAN continuation through its server capability bit.
+
+### Fixed
+
+- Ignore stale receive frames from superseded transports during reconnect.
+
 ## [1.4.2] - 2026-09-21
 
 ### Fixed

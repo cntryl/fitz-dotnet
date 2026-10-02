@@ -30,7 +30,7 @@ Enforcement is mechanical, not aspirational:
 
 - every package sets `IsAotCompatible=true`, enabling the trim, AOT, and
   single-file analyzers, and warnings are errors repo-wide
-- the `package` CI job publishes and runs a Native AOT executable against the
+- the Native AOT workflow publishes and runs a Native AOT executable against the
   freshly packed artifacts with **all five assemblies rooted**, so ILC analyzes
   every shipped method rather than only what the sample reaches, reports each
   finding individually, and fails the build on any of them
@@ -73,7 +73,8 @@ using Cntryl.Fitz;
 await using var client = new Client(
     new ClientConfig(
         new Uri("ws://127.0.0.1:4190/ws"),
-        TokenProvider: _ => ValueTask.FromResult("your-jwt-token")
+        TokenProvider: _ => ValueTask.FromResult("your-jwt-token"),
+        ServiceName: "orders-worker"
     )
 );
 
@@ -83,6 +84,10 @@ var tx = await client.Kv.BeginAsync("kv://realm/app/users", KvDurability.Async);
 await tx.PutAsync("user-1"u8.ToArray(), """{"name":"Alice"}"""u8.ToArray());
 await tx.CommitAsync();
 ```
+
+`ClientConfig.ServiceName` is optional. New brokers record its trimmed value on
+the active session after advertising the `SESSION_METADATA` capability; older
+brokers receive no metadata frame.
 
 Generic Host consumers can register the same client through DI. The hosted
 lifecycle connects during host startup and closes asynchronously during host
