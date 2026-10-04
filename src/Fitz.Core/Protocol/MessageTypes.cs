@@ -151,6 +151,12 @@ static class MessageTypes
     /// </summary>
     public const ushort RpcResponse = 303;
 
+    /// <summary>Requests RPC cancellation or acknowledges worker cleanup.</summary>
+    public const ushort RpcCancel = 304;
+
+    /// <summary>Reports RPC cancellation results and worker cancellation signals.</summary>
+    public const ushort RpcLifecycle = 305;
+
     /// <summary>
     /// Claims a lease, returning its fencing token and expiry.
     /// </summary>

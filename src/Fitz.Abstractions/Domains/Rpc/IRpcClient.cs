@@ -12,10 +12,18 @@ public interface IRpcClient
     /// <param name="body">Opaque request payload.</param>
     /// <param name="ct">Cancellation token for the call.</param>
     /// <returns>
-    /// The response frames in order, ending with the terminal frame. A unary call yields a
-    /// single frame. Enumeration is lazy: no request is sent until enumeration starts.
+    /// A lazy response sequence and a task for the broker's cancellation result. No request
+    /// is sent until enumeration starts. A unary call yields one frame.
     /// </returns>
-    IAsyncEnumerable<RpcResponseFrame> CallAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default);
+    RpcCall CallAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default);
+
+    /// <summary>Invokes a route with an explicit end-to-end budget.</summary>
+    /// <param name="route">Concrete <c>rpc://</c> route to invoke.</param>
+    /// <param name="body">Opaque request payload.</param>
+    /// <param name="timeout">End-to-end budget propagated to supporting workers.</param>
+    /// <param name="ct">Cancellation token for the call.</param>
+    /// <returns>A lazy response sequence and a task for the broker's cancellation result.</returns>
+    RpcCall CallAsync(string route, ReadOnlyMemory<byte> body, TimeSpan? timeout, CancellationToken ct = default);
 
     /// <summary>
     /// Registers a handler that serves invocations for routes matching a pattern.
@@ -26,8 +34,9 @@ public interface IRpcClient
     /// </param>
     /// <param name="handler">
     /// Invoked for each inbound request. Write the response through the supplied writer;
-    /// the handler's cancellation token is cancelled when the registration ends or the
-    /// connection is lost.
+    /// the handler's cancellation token is cancelled when the broker requests cancellation
+    /// or the connection is lost. Use <see cref="RpcRequest.RemainingTime"/> when passing
+    /// the remaining budget to a downstream RPC call.
     /// </param>
     /// <param name="options">Worker options, including concurrency. Defaults to one at a time.</param>
     /// <param name="ct">Cancellation token for the registration request.</param>

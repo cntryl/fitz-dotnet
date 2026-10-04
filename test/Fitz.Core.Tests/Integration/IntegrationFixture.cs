@@ -139,8 +139,20 @@ static class IntegrationFixture
 
     internal static async Task RestartBrokerForModeAsync(string transport, string authMode, CancellationToken ct = default)
     {
-        var serviceName = GetBrokerServiceName(authMode);
-        await RunProcessAsync("docker", $"compose -f \"{GetBrokerComposePath()}\" restart {serviceName}", ct);
+        var executable = Environment.GetEnvironmentVariable("FITZ_BROKER_RESTART_EXECUTABLE");
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            var serviceName = GetBrokerServiceName(authMode);
+            await RunProcessAsync("docker", $"compose -f \"{GetBrokerComposePath()}\" restart {serviceName}", ct);
+        }
+        else
+        {
+            var argumentKey = string.Equals(authMode, "anonymous", StringComparison.OrdinalIgnoreCase)
+                ? "FITZ_BROKER_RESTART_ANON_ARGUMENTS" : "FITZ_BROKER_RESTART_AUTH_ARGUMENTS";
+            var arguments = Environment.GetEnvironmentVariable(argumentKey)
+                ?? throw new InvalidOperationException($"{argumentKey} is required with a custom restart executable.");
+            await RunProcessAsync(executable, arguments, ct);
+        }
         await WaitForBrokerReadyAsync(transport, authMode, TimeSpan.FromSeconds(30), ct);
     }
 

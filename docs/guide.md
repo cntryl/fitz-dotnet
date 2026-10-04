@@ -240,6 +240,55 @@ No delivery guarantee and no persistence: subscribers connected at publish time 
 
 ### RPC — request/response with streaming
 
+RPC calls are lazy: enumeration starts the request. `CallAsync(route, body,
+timeout, ct)` adds an end-to-end budget, capped at one day. Worker
+`RpcRequest.RemainingTime` accounts for time since transport receipt, including
+time waiting in the local dispatcher. The handler token is cancelled by broker
+cancellation, local budget expiry, or connection loss.
+
+For an A → B → C chain, B passes both the remaining budget and its handler token:
+
+```csharp
+await using var worker = await client.Rpc.RegisterWorkerAsync(
+    "rpc://prod/app/b", async (request, writer, handlerToken) =>
+    {
+        await foreach (var frame in client.Rpc.CallAsync(
+            "rpc://prod/app/c", request.Body, request.RemainingTime, handlerToken))
+        {
+            await writer.SendAsync(frame.Body, ct: handlerToken);
+        }
+        // Release invocation-owned resources before the handler returns.
+        await writer.SendAsync(ReadOnlyMemory<byte>.Empty, isEnd: true, handlerToken);
+    });
+```
+
+Disposing or cancelling a response enumerator requests remote cancellation when
+negotiated. The call's `Cancellation` task reports the broker outcome. `Forwarded`
+confirms delivery of a cancellation signal to a worker; it does not prove that
+work or side effects stopped. Older brokers receive unchanged bytes and return
+`Unsupported` for remote cancellation. Disposal removes downstream token links
+without cancelling unrelated invocations.
+
+A terminal response does not acknowledge worker cleanup. The SDK sends a
+negotiated cleanup acknowledgment after the handler and its `finally` blocks
+complete and the local worker credit is released. Cancellation does not imply
+rollback or safe retry after dispatch. A worker that ignores cancellation can
+lose its session when the broker's configured grace expires; other active work
+on that session can then be indeterminate.
+
+`RpcCancellationChainTests` uses real SDK handlers for both cancellation and
+inherited deadline expiration. Set `FITZ_RPC_CHAIN_ADDR` to a TCP or WebSocket
+candidate broker endpoint, and `FITZ_BROKER_JWT_HMAC_SECRET` for authenticated
+scenarios. These checks do not publish packages or create release tags.
+
+The full conformance suite restarts its broker for reconnect acceptance. A
+native candidate runner can set `FITZ_BROKER_RESTART_EXECUTABLE` plus
+`FITZ_BROKER_RESTART_ANON_ARGUMENTS` and `FITZ_BROKER_RESTART_AUTH_ARGUMENTS`.
+The executable must restart the same isolated broker instances addressed by
+the test endpoint settings. The default runner uses this repository's Docker
+Compose services. The test fixture invokes the configured executable directly,
+without a shell, and waits for the selected endpoint to become ready again.
+
 ```csharp
 await foreach (var frame in client.Rpc.CallAsync("rpc://prod/app/resize", body, ct))
 {

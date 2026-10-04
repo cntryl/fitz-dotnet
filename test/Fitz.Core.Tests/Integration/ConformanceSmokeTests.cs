@@ -5,6 +5,7 @@ using Cntryl.Fitz.Observability;
 namespace Cntryl.Fitz.Core.Tests.Integration;
 
 [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Conformance scenarios intentionally capture arbitrary client failures as structured result evidence.")]
+[Collection("Broker restart")]
 public sealed partial class ConformanceSmokeTests
 {
     [Fact]
@@ -624,7 +625,8 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("same client returned to authenticated state after reconnect");
 
             var rpcDisconnect = await CaptureExceptionAsync(() => pendingCallTask);
-            if (rpcDisconnect is not ConnectionException and not RequestTimeoutException)
+            if (rpcDisconnect is not ConnectionException and not RequestTimeoutException
+                and not RpcException { DomainCode: FitzErrorCodes.RpcWorkerNotFound })
             {
                 evidence.Add($"pending rpc call surfaced {rpcDisconnect?.GetType().Name ?? "no error"}");
                 return Result("CS-010", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, rpcDisconnect?.Message ?? "pending rpc call unexpectedly succeeded");

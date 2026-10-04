@@ -19,6 +19,9 @@ readonly record struct ServerCapabilities(ushort ProtocolVersion, uint Capabilit
     /// <summary>Bit 2: the broker accepts the trailing exclusive KV SCAN resume byte.</summary>
     public const uint KvScanExclusiveBit = 1u << 2;
 
+    /// <summary>Bit 3: the broker accepts RPC cancellation and deadline extensions.</summary>
+    public const uint RpcCancellationBit = 1u << 3;
+
     /// <summary>The state before any advertisement arrives, and the state for a legacy broker.</summary>
     public static ServerCapabilities None => default;
 
@@ -30,6 +33,9 @@ readonly record struct ServerCapabilities(ushort ProtocolVersion, uint Capabilit
 
     /// <summary>Whether exclusive KV SCAN continuation is supported on this session.</summary>
     public bool SupportsKvScanExclusive => (CapabilityBits & KvScanExclusiveBit) != 0;
+
+    /// <summary>Whether RPC cancellation and deadline extensions are supported.</summary>
+    public bool SupportsRpcCancellation => (CapabilityBits & RpcCancellationBit) != 0;
 
     /// <summary>
     /// Parses a <c>SERVER_HELLO</c> payload: <c>[u16 BE protocol_version][u32 BE capability_bits]</c>.
