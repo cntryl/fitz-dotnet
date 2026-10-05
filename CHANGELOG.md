@@ -19,6 +19,8 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 ### Added
 
 - Optional, capability-gated client service names trimmed before reporting session metadata.
+- Capability-gated RPC cancellation, worker cancellation tokens, remaining-budget propagation,
+  and the caller-visible cancellation result on `RpcCall`.
 
 ### Changed
 

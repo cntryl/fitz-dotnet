@@ -620,6 +620,153 @@ public sealed class RpcClientTests
     }
 
     [Fact]
+    public async Task ShouldSendNegotiatedBudgetAndResolveCallerCancellationGivenCancelledCall()
+    {
+        // Arrange
+        Action<byte[]>? lifecycleHandler = null;
+        byte[]? requestPayload = null;
+        var requestSent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancellationSent = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var rpc = new RpcClient(
+            (_, _, _) => Task.FromResult(Array.Empty<byte>()),
+            send: (messageType, payload, _) =>
+            {
+                if (messageType == MessageTypes.RpcRequest)
+                {
+                    requestPayload = payload.ToArray();
+                    requestSent.TrySetResult();
+                }
+                if (messageType == MessageTypes.RpcCancel)
+                {
+                    cancellationSent.TrySetResult(payload.ToArray());
+                }
+                return Task.CompletedTask;
+            },
+            registerNotificationHandler: (messageType, handler) =>
+            {
+                if (messageType == MessageTypes.RpcLifecycle)
+                {
+                    lifecycleHandler = handler;
+                }
+                return new TestRegistration();
+            },
+            getCapabilityBits: () => ServerCapabilities.RpcCancellationBit);
+        using var cts = new CancellationTokenSource();
+        var call = rpc.CallAsync("rpc://prod/app/cancel", "ping"u8.ToArray(), TimeSpan.FromSeconds(5), cts.Token);
+
+        // Act
+        var enumeration = Task.Run(async () =>
+        {
+            await foreach (var _ in call)
+            {
+            }
+        });
+        await requestSent.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await cts.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => enumeration);
+        var cancellationPayload = await cancellationSent.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var correlationId = cancellationPayload.AsSpan(1, 16).ToArray();
+        var lifecycleResult = new byte[18];
+        lifecycleResult[0] = 4;
+        correlationId.CopyTo(lifecycleResult, 1);
+        lifecycleResult[17] = 2;
+        lifecycleHandler!(lifecycleResult);
+
+        // Assert
+        var requestReader = new BinaryBufferReader(requestPayload!);
+        _ = requestReader.ReadBytes(16);
+        Assert.Equal("rpc://prod/app/cancel", requestReader.ReadString());
+        _ = requestReader.ReadBytes(requestReader.ReadU32());
+        Assert.Equal((byte)1, requestReader.ReadU8());
+        Assert.Equal((byte)1, requestReader.ReadU8());
+        Assert.InRange(requestReader.ReadU32(), 1u, 5000u);
+        Assert.True(requestReader.IsEof);
+        Assert.Equal((byte)1, cancellationPayload[0]);
+        Assert.Equal((byte)1, cancellationPayload[17]);
+        Assert.Equal(RpcCancellationOutcome.Forwarded, await call.Cancellation);
+    }
+
+    [Fact]
+    public async Task ShouldCancelWorkerAndAcknowledgeCleanupGivenBrokerLifecycleSignal()
+    {
+        // Arrange
+        Action<byte[]>? requestHandler = null;
+        Action<byte[]>? lifecycleHandler = null;
+        byte[]? registrationPayload = null;
+        var handlerStarted = new TaskCompletionSource<(RpcRequest Request, CancellationToken Token)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cleanupAck = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var rpc = new RpcClient(
+            (messageType, payload, _) =>
+            {
+                if (messageType == MessageTypes.RpcSubscribeWorker)
+                {
+                    registrationPayload = payload.ToArray();
+                }
+                return Task.FromResult(new byte[] { 0, 0, 0, 0, 0 });
+            },
+            send: (messageType, payload, _) =>
+            {
+                if (messageType == MessageTypes.RpcCancel)
+                {
+                    cleanupAck.TrySetResult(payload.ToArray());
+                }
+                return Task.CompletedTask;
+            },
+            registerNotificationHandler: (messageType, handler) =>
+            {
+                if (messageType == MessageTypes.RpcRequest)
+                {
+                    requestHandler = handler;
+                }
+                if (messageType == MessageTypes.RpcLifecycle)
+                {
+                    lifecycleHandler = handler;
+                }
+                return new TestRegistration();
+            },
+            getCapabilityBits: () => ServerCapabilities.RpcCancellationBit);
+        await using var registration = await rpc.RegisterWorkerAsync(
+            "rpc://prod/app/worker",
+            async (request, _, ct) =>
+            {
+                handlerStarted.TrySetResult((request, ct));
+                await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            });
+        var correlationId = new byte[16];
+        correlationId[0] = 9;
+        using var incoming = new BinaryBufferWriter();
+        incoming.WriteBytes(correlationId);
+        incoming.WriteString("rpc://prod/app/worker");
+        incoming.WriteU32(4);
+        incoming.WriteBytes("work"u8);
+        incoming.WriteU8(1);
+        incoming.WriteU8(1);
+        incoming.WriteU32(3000);
+
+        // Act
+        requestHandler!(incoming.Build());
+        var started = await handlerStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        var cancellation = new byte[18];
+        cancellation[0] = 2;
+        correlationId.CopyTo(cancellation, 1);
+        cancellation[17] = 1;
+        lifecycleHandler!(cancellation);
+        var ack = await cleanupAck.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        // Assert
+        Assert.True(started.Token.IsCancellationRequested);
+        Assert.InRange(started.Request.RemainingTime!.Value.TotalMilliseconds, 0, 3000);
+        var subscriptionReader = new BinaryBufferReader(registrationPayload!);
+        Assert.Equal("rpc://prod/app/worker", subscriptionReader.ReadString());
+        Assert.Equal(1u, subscriptionReader.ReadU32());
+        Assert.Equal((byte)1, subscriptionReader.ReadU8());
+        Assert.Equal((byte)1, subscriptionReader.ReadU8());
+        Assert.True(subscriptionReader.IsEof);
+        Assert.Equal((byte)3, ack[0]);
+        Assert.Equal(correlationId, ack[1..]);
+    }
+
+    [Fact]
     public async Task ShouldThrowConnectionExceptionGivenConnectionClosedWhenCallingRpc()
     {
         // Arrange

@@ -240,6 +240,9 @@ Callbacks have no default deadline; configure `AsyncHandlerOptions.Timeout`
 explicitly when the application wants slow callbacks to be cancelled.
 An unsubscribe rejected by the broker remains retryable.
 RPC worker saturation continues to use broker-visible protocol backpressure.
+For an A→B→C call, pass the handler's `RpcRequest.RemainingTime` and
+`CancellationToken` to the downstream `CallAsync` so its budget and cancellation
+are linked explicitly to the parent request.
 
 Schedule backend unavailability and broker saturation use the distinct coded
 error `FitzErrorCodes.ScheduleBackendError` (`7010`). `Retryability` classifies
