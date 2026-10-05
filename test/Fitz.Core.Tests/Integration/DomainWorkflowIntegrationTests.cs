@@ -454,7 +454,7 @@ public sealed class DomainWorkflowIntegrationTests
         var session = await client.Stream.BeginAsync(route);
         await session.AppendAsync(0, "one"u8.ToArray());
         await session.AppendAsync(1, "two"u8.ToArray());
-        await session.CommitAsync();
+        await session.CommitAsync(StreamCommitMode.Sync);
 
         var records = new List<string>();
 
@@ -481,7 +481,7 @@ public sealed class DomainWorkflowIntegrationTests
         var session = await client.Stream.BeginAsync(route);
         await session.AppendAsync(0, "alpha"u8.ToArray(), discriminator: "proj.alpha");
         await session.AppendAsync(1, "beta"u8.ToArray(), discriminator: "audit.beta");
-        await session.CommitAsync();
+        await session.CommitAsync(StreamCommitMode.Sync);
 
         var filter = new StreamFilterSet
         {

@@ -726,7 +726,7 @@ public sealed partial class ConformanceSmokeTests
             await session.AppendAsync(0, new byte[] { 10 });
             await session.AppendAsync(1, new byte[] { 20 });
             await session.AppendAsync(2, new byte[] { 30 });
-            await session.CommitAsync();
+            await session.CommitAsync(StreamCommitMode.Sync);
             evidence.Add("stream session appended 3 records");
 
             var records = new List<StreamRecord>();
@@ -774,7 +774,7 @@ public sealed partial class ConformanceSmokeTests
             var session = await client.Stream.BeginAsync(route);
             await session.AppendAsync(0, "first"u8.ToArray());
             await session.AppendAsync(1, "last"u8.ToArray());
-            await session.CommitAsync();
+            await session.CommitAsync(StreamCommitMode.Sync);
             evidence.Add("stream session committed");
 
             var count = 0;
@@ -812,7 +812,7 @@ public sealed partial class ConformanceSmokeTests
             var route = IntegrationFixture.CreateUniqueRoute("stream");
             var session = await client.Stream.BeginAsync(route);
             await session.AppendAsync(0, "record-1"u8.ToArray());
-            await session.CommitAsync();
+            await session.CommitAsync(StreamCommitMode.Sync);
             evidence.Add("written first record at offset 0");
 
             Exception? caught = null;
@@ -1015,7 +1015,7 @@ public sealed partial class ConformanceSmokeTests
 
             var firstOffset = await session.AppendAsync(0, "alpha"u8.ToArray(), discriminator: "proj.alpha");
             var secondOffset = await session.AppendAsync(1, "beta"u8.ToArray(), discriminator: "audit.beta");
-            await session.CommitAsync();
+            await session.CommitAsync(StreamCommitMode.Sync);
 
             if (firstOffset is null || secondOffset is null)
             {

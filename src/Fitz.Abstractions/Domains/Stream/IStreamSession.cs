@@ -26,11 +26,12 @@ public interface IStreamSession : IAsyncDisposable
     Task<ulong?> AppendAsync(ulong expectedOffset, ReadOnlyMemory<byte> body, ReadOnlyMemory<byte>? metadata = null, string? discriminator = null, CancellationToken ct = default);
 
     /// <summary>
-    /// Commits the session, publishing every appended record.
+    /// Commits the session, publishing every appended record with the selected durability policy.
     /// </summary>
+    /// <param name="mode">The durability policy required for this commit.</param>
     /// <param name="ct">Cancellation token for the commit.</param>
-    /// <returns>A task that completes once the broker accepts the commit.</returns>
-    Task CommitAsync(CancellationToken ct = default);
+    /// <returns>A task that completes once the broker confirms the selected commit policy.</returns>
+    Task CommitAsync(StreamCommitMode mode, CancellationToken ct = default);
 
     /// <summary>
     /// Abandons the session and discards every appended record.
