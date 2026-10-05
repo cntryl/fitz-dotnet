@@ -80,23 +80,52 @@ sealed partial class RpcClient
             {
                 return;
             }
+            var queued = new QueuedRpcInvocation(payload, correlationBytes, receivedAt, connectionClosed);
             lock (_workerSync)
             {
-                _queuedWorkerCalls.Add(GuidFromNetworkBytes(correlationBytes));
+                _queuedWorkerCalls.Add(GuidFromNetworkBytes(correlationBytes), queued);
             }
             if (_dispatchAsyncHandler is not null)
             {
-                if (!_dispatchAsyncHandler(token => new ValueTask(HandleIncomingRequestAsync(payload, receivedAt, connectionClosed, token)),
-                    exception => { _ = TrySendBackpressureResponseAsync(payload, connectionClosed); }))
+                if (!_dispatchAsyncHandler(token => new ValueTask(DispatchQueuedRequestAsync(queued, token)),
+                    exception => { _ = DispatchQueuedRequestAsync(queued, CancellationToken.None, reject: true); }))
                 {
-                    _ = TrySendBackpressureResponseAsync(payload, connectionClosed);
+                    _ = DispatchQueuedRequestAsync(queued, CancellationToken.None, reject: true);
                 }
 
                 return;
             }
 
-            _ = HandleIncomingRequestAsync(payload, receivedAt, connectionClosed, CancellationToken.None);
+            _ = DispatchQueuedRequestAsync(queued, CancellationToken.None);
         });
+    }
+
+    async Task DispatchQueuedRequestAsync(QueuedRpcInvocation queued, CancellationToken ct, bool reject = false)
+    {
+        byte[]? payload;
+        lock (_workerSync)
+        {
+            var invocationId = GuidFromNetworkBytes(queued.CorrelationBytes);
+            if (!_queuedWorkerCalls.Remove(invocationId))
+                return;
+            payload = queued.Payload;
+            queued.Payload = null;
+            if (payload is null)
+                return;
+            _claimedWorkerCalls.Add(invocationId);
+        }
+        try
+        {
+            if (reject)
+                await TrySendBackpressureResponseAsync(payload, queued.ConnectionClosed).ConfigureAwait(false);
+            else
+                await HandleIncomingRequestAsync(payload, queued.ReceivedAt, queued.ConnectionClosed, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            payload = null;
+            await SendWorkerCleanupAckAsync(queued.CorrelationBytes, queued.ConnectionClosed).ConfigureAwait(false);
+        }
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "RPC worker callbacks are user code and must not break notification dispatch.")]
@@ -171,7 +200,7 @@ sealed partial class RpcClient
                 lock (_workerSync)
                 {
                     var invocationId = GuidFromNetworkBytes(correlationId);
-                    _queuedWorkerCalls.Remove(invocationId);
+                    _claimedWorkerCalls.Remove(invocationId);
                     cancelImmediately = _cancelledWorkerCalls.Remove(invocationId);
                     _activeWorkerCalls[invocationId] = invocation;
                 }
@@ -209,7 +238,6 @@ sealed partial class RpcClient
             finally
             {
                 concurrencyGate.Release();
-                await SendWorkerCleanupAckAsync(correlationId, connectionClosed).ConfigureAwait(false);
             }
         }
         catch (Exception exception)
@@ -237,6 +265,7 @@ sealed partial class RpcClient
         {
             var invocationId = GuidFromNetworkBytes(payload.AsSpan(0, CorrelationIdLength));
             _queuedWorkerCalls.Remove(invocationId);
+            _claimedWorkerCalls.Remove(invocationId);
             _cancelledWorkerCalls.Remove(invocationId);
         }
     }
@@ -396,7 +425,6 @@ sealed partial class RpcClient
 
             var writer = new RpcResponseWriter(_send, correlationId, connectionClosed);
             await writer.SendAsync(EncodeTerminalErrorBody(RpcBackpressureErrorCode, "Local RPC worker is overloaded"), isEnd: true, connectionClosed).ConfigureAwait(false);
-            await SendWorkerCleanupAckAsync(correlationId, connectionClosed).ConfigureAwait(false);
         }
         catch
         {
@@ -453,6 +481,14 @@ sealed partial class RpcClient
     sealed class ActiveRpcInvocation(CancellationTokenSource cancellation)
     {
         internal CancellationTokenSource Cancellation { get; } = cancellation;
+    }
+
+    sealed class QueuedRpcInvocation(byte[] payload, byte[] correlationBytes, long receivedAt, CancellationToken connectionClosed)
+    {
+        internal byte[]? Payload { get; set; } = payload;
+        internal byte[] CorrelationBytes { get; } = correlationBytes;
+        internal long ReceivedAt { get; } = receivedAt;
+        internal CancellationToken ConnectionClosed { get; } = connectionClosed;
     }
 
     [SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "The send gate may still have concurrent holders when a worker returns and has no resource to release unless AvailableWaitHandle is used.")]

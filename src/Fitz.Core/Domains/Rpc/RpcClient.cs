@@ -63,7 +63,8 @@ sealed partial class RpcClient : IRpcClient, IDisposable
     readonly object _workerSync = new();
     readonly Dictionary<Guid, ActiveRpcInvocation> _activeWorkerCalls = [];
     readonly HashSet<Guid> _cancelledWorkerCalls = [];
-    readonly HashSet<Guid> _queuedWorkerCalls = [];
+    readonly Dictionary<Guid, QueuedRpcInvocation> _queuedWorkerCalls = [];
+    readonly HashSet<Guid> _claimedWorkerCalls = [];
     readonly object _responseSync = new();
     readonly Dictionary<Guid, RpcCallState> _calls = [];
     readonly Dictionary<Guid, PendingCancellation> _pendingCancellations = [];
@@ -468,18 +469,25 @@ sealed partial class RpcClient : IRpcClient, IDisposable
         if (payload[0] == 2 && payload[17] is >= 1 and <= 4)
         {
             CancellationTokenSource? cancellation = null;
+            QueuedRpcInvocation? discarded = null;
             lock (_workerSync)
             {
                 if (_activeWorkerCalls.TryGetValue(correlationId, out var invocation))
                 {
                     cancellation = invocation.Cancellation;
                 }
-                else if (_queuedWorkerCalls.Contains(correlationId))
+                else if (_claimedWorkerCalls.Contains(correlationId))
                 {
                     _cancelledWorkerCalls.Add(correlationId);
                 }
+                else if (_queuedWorkerCalls.Remove(correlationId, out discarded))
+                {
+                    discarded.Payload = null;
+                }
             }
             CancelWorkerInvocation(cancellation);
+            if (discarded is not null)
+                _ = SendWorkerCleanupAckAsync(discarded.CorrelationBytes, discarded.ConnectionClosed);
             return;
         }
 
@@ -731,6 +739,9 @@ sealed partial class RpcClient : IRpcClient, IDisposable
             activeWorkerCalls = [.. _activeWorkerCalls.Values.Select(static invocation => invocation.Cancellation)];
             _activeWorkerCalls.Clear();
             _cancelledWorkerCalls.Clear();
+            _claimedWorkerCalls.Clear();
+            foreach (var queued in _queuedWorkerCalls.Values)
+                queued.Payload = null;
             _queuedWorkerCalls.Clear();
         }
         foreach (var cancellation in activeWorkerCalls)

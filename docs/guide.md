@@ -271,7 +271,10 @@ without cancelling unrelated invocations.
 
 A terminal response does not acknowledge worker cleanup. The SDK sends a
 negotiated cleanup acknowledgment after the handler and its `finally` blocks
-complete and the local worker credit is released. Cancellation does not imply
+complete and the local worker credit is released. Broker cancellation discards
+a buffered invocation's payload and acknowledges cleanup before a deferred
+callback runs. Active handlers acknowledge after their cleanup completes.
+Cancellation does not imply
 rollback or safe retry after dispatch. A worker that ignores cancellation can
 lose its session when the broker's configured grace expires; other active work
 on that session can then be indeterminate.
