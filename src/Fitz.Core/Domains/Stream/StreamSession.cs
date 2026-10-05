@@ -83,15 +83,22 @@ sealed class StreamSession : IStreamSession
     }
 
     /// <inheritdoc />
-    public async Task CommitAsync(CancellationToken ct = default)
+    public async Task CommitAsync(StreamCommitMode mode, CancellationToken ct = default)
     {
+        var wireMode = mode switch
+        {
+            StreamCommitMode.Buffered => (byte)0,
+            StreamCommitMode.Sync => (byte)1,
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown stream commit mode."),
+        };
+
         await _finalizationGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             ThrowIfClosed();
             using var writer = new BinaryBufferWriter();
             writer.WriteU64(_sessionId);
-            writer.WriteU8(0);
+            writer.WriteU8(wireMode);
             await ExpectStatusAsync(MessageTypes.StreamCommit, writer.WrittenMemory, "COMMIT", ct).ConfigureAwait(false);
         }
         finally

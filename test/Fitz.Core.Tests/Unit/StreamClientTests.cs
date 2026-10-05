@@ -1027,8 +1027,10 @@ public sealed class StreamClientTests
         Assert.Equal(discriminator, reader.ReadString());
     }
 
-    [Fact]
-    public async Task ShouldEncodeCommitFlagGivenStreamSessionWhenCommitting()
+    [Theory]
+    [InlineData(StreamCommitMode.Buffered, 0)]
+    [InlineData(StreamCommitMode.Sync, 1)]
+    public async Task ShouldEncodeCommitModeGivenStreamSessionWhenCommitting(StreamCommitMode mode, byte wireMode)
     {
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
@@ -1055,7 +1057,7 @@ public sealed class StreamClientTests
         var session = await stream.BeginAsync("stream://prod/app/events");
 
         // Act
-        await session.CommitAsync();
+        await session.CommitAsync(mode);
 
         // Assert
         Assert.Equal(2, calls.Count);
@@ -1064,7 +1066,41 @@ public sealed class StreamClientTests
 
         var commitReader = new BinaryBufferReader(calls[1].Payload);
         Assert.Equal((ulong)44, commitReader.ReadU64());
-        Assert.Equal((byte)0, commitReader.ReadU8());
+        Assert.Equal(wireMode, commitReader.ReadU8());
+    }
+
+    [Fact]
+    public async Task ShouldRejectUnknownCommitModeGivenStreamSessionWhenCommitting()
+    {
+        // Arrange
+        var calls = new List<ushort>();
+        using var stream = new StreamClient((messageType, _, _) =>
+        {
+            calls.Add(messageType);
+
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            if (messageType == MessageTypes.StreamBegin)
+            {
+                writer.WriteU64(44);
+                writer.WriteU32(0);
+            }
+            else if (messageType == MessageTypes.StreamCommit)
+            {
+                writer.WriteU32(0);
+            }
+
+            return Task.FromResult(writer.Build());
+        });
+        var session = await stream.BeginAsync("stream://prod/app/events");
+
+        // Act
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => session.CommitAsync((StreamCommitMode)42));
+        await session.CommitAsync(StreamCommitMode.Buffered);
+
+        // Assert
+        Assert.Equal([MessageTypes.StreamBegin, MessageTypes.StreamCommit], calls);
     }
 
     [Fact]
@@ -1093,7 +1129,7 @@ public sealed class StreamClientTests
         var session = await stream.BeginAsync("stream://prod/app/events");
 
         // Act / Assert
-        await session.CommitAsync();
+        await session.CommitAsync(StreamCommitMode.Sync);
     }
 
     [Fact]

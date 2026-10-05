@@ -362,8 +362,11 @@ Appending is transactional through a session:
 ```csharp
 await using var session = await client.Stream.BeginAsync(route, ct: ct);
 await session.AppendAsync(expectedOffset, body, ct: ct);
-await session.CommitAsync(ct);
+await session.CommitAsync(StreamCommitMode.Sync, ct);
 ```
+
+Use `Buffered` when losing recently accepted commits after a broker crash is acceptable. `Sync`
+waits for the broker's synchronous write policy before returning.
 
 `AppendAsync` takes the offset you expect to write at; a mismatch is an optimistic-concurrency
 failure, reported as `StreamException` with `DomainCode ==
