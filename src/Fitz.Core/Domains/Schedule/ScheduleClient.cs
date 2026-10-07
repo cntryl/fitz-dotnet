@@ -477,8 +477,7 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var message = reader.ReadString();
-            throw new ScheduleException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status);
+            throw ReadError(response, "SUBSCRIBE", status);
         }
 
         if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
@@ -728,54 +727,22 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
         if (status != 1)
             throw new ScheduleException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
 
+        throw ReadError(response, operation, status);
+    }
+
+    ValueTask<ReadOnlyMemory<byte>> AssertSuccessAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct) =>
+        AssertExtensionSuccessAsync(messageType, payload, operation, ct);
+
+    static ScheduleException ReadError(ReadOnlyMemory<byte> response, string operation, byte status)
+    {
         try
         {
-            var first = reader.ReadU32();
-            uint? domainCode = null;
-            string message;
-            if (reader.RemainingBytes == first)
-            {
-                message = System.Text.Encoding.UTF8.GetString(reader.ReadBytes(first));
-            }
-            else
-            {
-                domainCode = first;
-                message = reader.ReadString();
-            }
-            if (!reader.IsEof)
-                throw new ScheduleException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE", status, domainCode);
-            throw new ScheduleException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+            var (code, message) = ResponseError.Read(response);
+            return new ScheduleException($"{operation} failed: {message}", $"{operation}_FAILED", status, code);
         }
         catch (ProtocolException)
         {
-            throw new ScheduleException($"{operation} error response is truncated", $"{operation}_INVALID_RESPONSE", status);
+            return new ScheduleException($"{operation} error response is malformed or ambiguous", $"{operation}_INVALID_RESPONSE", status);
         }
-    }
-
-    async ValueTask<ReadOnlyMemory<byte>> AssertSuccessAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct)
-    {
-        var response = await _request(messageType, payload, ct).ConfigureAwait(false);
-        if (response.IsEmpty)
-        {
-            throw new ScheduleException($"{operation} response is empty", $"{operation}_INVALID_RESPONSE");
-        }
-
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            if (status == 1)
-            {
-                var message = reader.ReadString();
-                if (!reader.IsEof)
-                {
-                    throw new ScheduleException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE", status);
-                }
-                throw new ScheduleException($"{operation} failed: {message}", $"{operation}_FAILED", status);
-            }
-            throw new ScheduleException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
-        }
-
-        return reader.IsEof ? ReadOnlyMemory<byte>.Empty : response.Slice(1);
     }
 }

@@ -28,6 +28,9 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ### Fixed
 
+- Preserve coded Queue admission failures alongside legacy plain errors, including retryable capacity rejection and terminal unknown outcomes.
+- Preserve coded Schedule admission failures on legacy plain-response operations.
+
 - Ignore stale receive frames from superseded transports during reconnect.
 
 ## [1.4.2] - 2026-09-21
