@@ -26,7 +26,7 @@ env:
   NuGetPackageSourceCredentials_cntryl: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }}
   # Next-server acceptance must fail on main until the 0.2.0 contracts arrive.
   # Manual develop runs are diagnostic; they do not qualify the main image.
-  FITZ_BROKER_IMAGE: ghcr.io/cntryl/fitz:${{ inputs.broker_tag || 'main' }}
+  FITZ_BROKER_IMAGE: ghcr.io/cntryl/fitz:${{ inputs.broker_tag || 'develop@sha256:639832120496ae98309f7f8f947fbf431ea28ef3371cf0f00a70411b0e73e110' }}
 
 jobs:
   spec:
