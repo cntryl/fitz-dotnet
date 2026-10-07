@@ -100,14 +100,7 @@ sealed class QueueClient : IQueueClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var errorCode = reader.ReadU32();
-            var errorMessage = reader.ReadString();
-            if (!reader.IsEof)
-            {
-                throw new QueueException("ENQUEUE error response has trailing bytes", "ENQUEUE_INVALID_RESPONSE");
-            }
-
-            throw new QueueException(errorMessage, "ENQUEUE_FAILED", status, errorCode);
+            throw QueueWireHelpers.ReadError(response, "ENQUEUE", status, codedOnly: true);
         }
 
         var result = reader.IsEof ? 0UL : reader.ReadU64();
@@ -173,9 +166,7 @@ sealed class QueueClient : IQueueClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            uint? domainCode = reader.RemainingBytes >= 4 ? reader.ReadU32() : null;
-            var message = reader.IsEof ? string.Empty : reader.ReadString();
-            throw new QueueException($"RESERVE failed with status {status}: {message}", "RESERVE_FAILED", status, domainCode);
+            throw QueueWireHelpers.ReadError(response, "RESERVE", status, codedOnly: true);
         }
 
         var wildcard = route.Split('/').Any(static segment => segment.Contains('*', StringComparison.Ordinal));
@@ -324,8 +315,7 @@ sealed class QueueClient : IQueueClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var message = reader.ReadString();
-            throw new QueueException($"SUBSCRIBE failed: {message}", "SUBSCRIBE_FAILED", status);
+            throw QueueWireHelpers.ReadError(response, "SUBSCRIBE", status);
         }
 
         if (reader.RemainingBytes != 9 || reader.ReadU8() != 1)
@@ -352,13 +342,7 @@ sealed class QueueClient : IQueueClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            var message = reader.ReadString();
-            if (!reader.IsEof)
-            {
-                throw new QueueException("UNSUBSCRIBE error response has trailing bytes", "UNSUBSCRIBE_INVALID_RESPONSE", status);
-            }
-
-            throw new QueueException($"UNSUBSCRIBE failed: {message}", "UNSUBSCRIBE_FAILED", status);
+            throw QueueWireHelpers.ReadError(response, "UNSUBSCRIBE", status);
         }
 
         if (!reader.IsEof)
