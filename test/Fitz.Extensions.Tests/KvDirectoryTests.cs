@@ -59,14 +59,14 @@ public sealed class KvDirectoryTests
     {
         // Arrange
         var client = new InMemoryKvClient();
-        await using (var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadWrite))
+        await using (var transaction = await client.BeginAsync(Route, KvMode.ReadWrite))
         {
             for (var index = 0; index < 1_000; index++)
             {
                 await Directory.InsertAsync(transaction,
                     new Widget(Guid.NewGuid(), $"Widget {index:D4}", index));
             }
-            await transaction.CommitAsync();
+            await transaction.CommitAsync(KvDurability.Sync);
         }
         client.ClearOperations();
 
@@ -250,7 +250,7 @@ public sealed class KvDirectoryTests
             client, Route, ByNameV1.Query().Take(2).After(expectedFirst.NextCursor));
 
         // Act
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
         var first = await Directory.QueryAsync(transaction, ByNameV1.Query().Take(2));
         var second = await Directory.QueryAsync(transaction, ByNameV1.Query().Take(2).After(first.NextCursor));
 
@@ -271,7 +271,7 @@ public sealed class KvDirectoryTests
         await WriteAsync(client, transaction => Directory.InsertAsync(
             transaction, new Widget(Guid.NewGuid(), "Beta", 2)));
         var first = await Directory.QueryAsync(client, Route, ByNameV1.Query().Take(1));
-        await using var other = await client.BeginAsync(OtherRoute, KvDurability.Async, KvMode.ReadOnly);
+        await using var other = await client.BeginAsync(OtherRoute, KvMode.ReadOnly);
 
         // Act
         var error = await Assert.ThrowsAsync<KvDirectoryQueryException>(() => Directory.QueryAsync(
@@ -304,7 +304,7 @@ public sealed class KvDirectoryTests
         var client = new InMemoryKvClient();
         await WriteAsync(client, transaction => Directory.InsertAsync(
             transaction, new Widget(Guid.NewGuid(), "Alpha", 1)));
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadWrite);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadWrite);
         await Directory.InsertAsync(transaction, new Widget(Guid.NewGuid(), "Beta", 2));
 
         // Act
@@ -319,7 +319,7 @@ public sealed class KvDirectoryTests
     {
         // Arrange
         var client = new InMemoryKvClient();
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
 
         // Act
         var missingTransaction = await Assert.ThrowsAsync<ArgumentNullException>(() =>
@@ -348,7 +348,7 @@ public sealed class KvDirectoryTests
         await WriteAsync(client, transaction => historicalDirectory.InsertAsync(transaction, historicalFirst));
         await WriteAsync(client, transaction => historicalDirectory.InsertAsync(transaction, historicalSecond));
         await WriteAsync(client, transaction => currentDirectory.InsertAsync(transaction, current));
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
         client.ClearOperations();
 
         // Act
@@ -395,9 +395,9 @@ public sealed class KvDirectoryTests
             transaction, new Widget(Guid.Parse("00000000-0000-0000-0000-000000000001"), "Alpha", 1)));
         await WriteAsync(client, transaction => Directory.InsertAsync(
             transaction, new Widget(Guid.Parse("00000000-0000-0000-0000-000000000002"), "Beta", 2)));
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
         var first = await Directory.QueryPrimaryAsync(transaction, limit: 1);
-        await using var other = await client.BeginAsync(OtherRoute, KvDurability.Async, KvMode.ReadOnly);
+        await using var other = await client.BeginAsync(OtherRoute, KvMode.ReadOnly);
 
         // Act
         var routeError = await Assert.ThrowsAsync<KvDirectoryQueryException>(() =>
@@ -421,7 +421,7 @@ public sealed class KvDirectoryTests
     {
         // Arrange
         var client = new InMemoryKvClient();
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
         client.ClearOperations();
 
         // Act
@@ -457,7 +457,7 @@ public sealed class KvDirectoryTests
             transaction, new Widget(Guid.Parse("00000000-0000-0000-0000-000000000001"), "Alpha", 1)));
         await WriteAsync(client, transaction => Directory.InsertAsync(
             transaction, new Widget(Guid.Parse("00000000-0000-0000-0000-000000000002"), "Beta", 2)));
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
         var first = await Directory.QueryPrimaryAsync(transaction, limit: 1);
         var payload = Convert.FromBase64String(first.NextCursor!);
         payload[21] = 0;
@@ -489,7 +489,7 @@ public sealed class KvDirectoryTests
     {
         // Arrange
         var client = new InMemoryKvClient();
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
         using var cancellation = new CancellationTokenSource();
         await cancellation.CancelAsync();
         client.ClearOperations();
@@ -559,8 +559,10 @@ public sealed class KvDirectoryTests
         Assert.Empty((await Directory.QueryAsync(client, Route, ByNameV1.Query())).Items);
     }
 
-    [Fact]
-    public async Task ShouldBackfillInBoundedPagesGivenNewIndexGeneration()
+    [Theory]
+    [InlineData(KvDurability.Buffered)]
+    [InlineData(KvDurability.Sync)]
+    public async Task ShouldBackfillInBoundedPagesGivenNewIndexGeneration(KvDurability durability)
     {
         // Arrange
         var client = new InMemoryKvClient();
@@ -571,13 +573,16 @@ public sealed class KvDirectoryTests
                 transaction, new Widget(Guid.NewGuid(), name, 1)));
         }
         var upgraded = CreateDirectory(ByNameV1, ByNameV2);
+        client.ClearOperations();
 
         // Act
-        var first = await upgraded.BackfillAsync(client, Route, ByNameV2, limit: 2);
-        var second = await upgraded.BackfillAsync(client, Route, ByNameV2, limit: 2, cursor: first.NextCursor);
+        var first = await upgraded.BackfillAsync(client, Route, ByNameV2, limit: 2, durability: durability);
+        var second = await upgraded.BackfillAsync(client, Route, ByNameV2, limit: 2, durability: durability, cursor: first.NextCursor);
         var page = await upgraded.QueryAsync(client, Route, ByNameV2.Query());
 
         // Assert
+        Assert.All(client.Operations.Where(static operation => operation.Operation is KvTestOperation.Commit),
+            operation => Assert.Equal(durability, operation.Durability));
         Assert.Equal(2, first.Processed);
         Assert.NotNull(first.NextCursor);
         Assert.Equal(1, second.Processed);
@@ -665,7 +670,7 @@ public sealed class KvDirectoryTests
             static id => [id],
             [ByNameV1, tooMany],
             new KvDirectoryOptions { MaximumIndexEntriesPerEntity = 1 });
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadWrite);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadWrite);
         client.ClearOperations();
 
         // Act
@@ -698,8 +703,8 @@ public sealed class KvDirectoryTests
 
     static async Task WriteAsync(InMemoryKvClient client, Func<IKvTransaction, ValueTask> write)
     {
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadWrite);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadWrite);
         await write(transaction);
-        await transaction.CommitAsync();
+        await transaction.CommitAsync(KvDurability.Sync);
     }
 }

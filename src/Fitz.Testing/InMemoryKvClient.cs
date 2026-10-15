@@ -214,16 +214,11 @@ public sealed class InMemoryKvClient : IKvClient
     /// <inheritdoc />
     public Task<IKvTransaction> BeginAsync(
         string route,
-        KvDurability durability,
         KvMode mode = KvMode.ReadWrite,
         CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
         ValidateRoute(route);
-        if (durability is not KvDurability.Async and not KvDurability.Sync)
-        {
-            throw new ArgumentOutOfRangeException(nameof(durability));
-        }
         if (mode is not KvMode.ReadOnly and not KvMode.ReadWrite)
         {
             throw new ArgumentOutOfRangeException(nameof(mode));
@@ -232,7 +227,7 @@ public sealed class InMemoryKvClient : IKvClient
         lock (_gate)
         {
             var transactionId = ++_nextTransactionId;
-            RecordAndFault(transactionId, KvTestOperation.Begin, route, mode, durability: durability);
+            RecordAndFault(transactionId, KvTestOperation.Begin, route, mode);
             var state = GetOrCreateRoute(route);
             IKvTransaction transaction = new InMemoryKvTransaction(
                 this,
@@ -696,13 +691,17 @@ public sealed class InMemoryKvClient : IKvClient
             }
         }
 
-        public Task CommitAsync(CancellationToken ct = default)
+        public Task CommitAsync(KvDurability durability, CancellationToken ct = default)
         {
+            if (durability is not KvDurability.Buffered and not KvDurability.Sync)
+            {
+                throw new ArgumentOutOfRangeException(nameof(durability));
+            }
             ct.ThrowIfCancellationRequested();
             lock (_gate)
             {
                 EnsureOpen();
-                _owner.RecordAndFault(_transactionId, KvTestOperation.Commit, _route, _mode);
+                _owner.RecordAndFault(_transactionId, KvTestOperation.Commit, _route, _mode, durability: durability);
                 _owner.Commit(_route, _generation, _snapshotVersion, _values, _mutationCount);
                 _closed = true;
                 return Task.CompletedTask;

@@ -41,7 +41,7 @@ public sealed class PublicSurfaceTests
 
 
         // Assert
-        await Assert.ThrowsAsync<ObjectDisposedException>(() => kv.BeginAsync("kv://prod/app/data", KvDurability.Sync));
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => kv.BeginAsync("kv://prod/app/data"));
         await Assert.ThrowsAsync<ObjectDisposedException>(() => lease.QueryAsync("lease://prod/app/resource"));
         await Assert.ThrowsAsync<ObjectDisposedException>(() => notice.PublishAsync("notice://prod/app/event", ReadOnlyMemory<byte>.Empty));
         await Assert.ThrowsAsync<ObjectDisposedException>(() => queue.EnqueueAsync("queue://prod/app/tasks", ReadOnlyMemory<byte>.Empty));

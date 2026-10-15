@@ -110,9 +110,9 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add($"client is_connected = {client.IsConnected}");
 
             var route = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await client.Kv.BeginAsync(route, Cntryl.Fitz.KvDurability.Async);
+            var tx = await client.Kv.BeginAsync(route);
             await tx.PutAsync("cs001-key"u8.ToArray(), "cs001-value"u8.ToArray());
-            await tx.CommitAsync();
+            await tx.CommitAsync(KvDurability.Sync);
             evidence.Add("first domain request (kv) succeeded");
 
             return Result("CS-001", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
@@ -158,12 +158,12 @@ public sealed partial class ConformanceSmokeTests
             await client.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await client.Kv.BeginAsync(route, Cntryl.Fitz.KvDurability.Async);
+            var tx = await client.Kv.BeginAsync(route);
             await tx.PutAsync("user:1"u8.ToArray(), "Alice"u8.ToArray());
-            await tx.CommitAsync();
+            await tx.CommitAsync(KvDurability.Sync);
             evidence.Add("kv begin/put/commit succeeded");
 
-            var readTx = await client.Kv.BeginAsync(route, Cntryl.Fitz.KvDurability.Async, KvMode.ReadOnly);
+            var readTx = await client.Kv.BeginAsync(route, KvMode.ReadOnly);
             var result = await readTx.GetAsync("user:1"u8.ToArray());
             if (!result.Found)
             {
@@ -212,9 +212,9 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add($"rpc to unregistered route raised {caught.GetType().Name}");
 
             var route = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await client.Kv.BeginAsync(route, Cntryl.Fitz.KvDurability.Async);
+            var tx = await client.Kv.BeginAsync(route);
             await tx.PutAsync("k"u8.ToArray(), "v"u8.ToArray());
-            await tx.CommitAsync();
+            await tx.CommitAsync(KvDurability.Sync);
             evidence.Add("client remains usable after unknown-route error");
             return Result("CS-004", transport, authMode, caught is RpcException ? "pass" : "partial", sw.ElapsedMilliseconds, evidence, caught.Message);
         }
@@ -236,12 +236,12 @@ public sealed partial class ConformanceSmokeTests
             await client.ConnectAsync();
 
             var route = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await client.Kv.BeginAsync(route, Cntryl.Fitz.KvDurability.Async);
+            var tx = await client.Kv.BeginAsync(route);
             await tx.InsertAsync("dup-key"u8.ToArray(), "first"u8.ToArray());
-            await tx.CommitAsync();
+            await tx.CommitAsync(KvDurability.Sync);
             evidence.Add("first insert succeeded");
 
-            var tx2 = await client.Kv.BeginAsync(route, Cntryl.Fitz.KvDurability.Async);
+            var tx2 = await client.Kv.BeginAsync(route);
             Exception? caught = null;
             try
             {
@@ -303,11 +303,11 @@ public sealed partial class ConformanceSmokeTests
             }
 
             var kvRoute = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await client.Kv.BeginAsync(kvRoute, Cntryl.Fitz.KvDurability.Async);
+            var tx = await client.Kv.BeginAsync(kvRoute);
             await tx.InsertAsync("x"u8.ToArray(), "1"u8.ToArray());
-            await tx.CommitAsync();
+            await tx.CommitAsync(KvDurability.Sync);
 
-            var tx2 = await client.Kv.BeginAsync(kvRoute, Cntryl.Fitz.KvDurability.Async);
+            var tx2 = await client.Kv.BeginAsync(kvRoute);
             Exception? kvError = null;
             try
             {
@@ -382,9 +382,9 @@ public sealed partial class ConformanceSmokeTests
             var verdict = caught is RequestTimeoutException ? "pass" : "partial";
 
             var kvRoute = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await callerClient.Kv.BeginAsync(kvRoute, Cntryl.Fitz.KvDurability.Async);
+            var tx = await callerClient.Kv.BeginAsync(kvRoute);
             await tx.PutAsync("post-timeout"u8.ToArray(), "ok"u8.ToArray());
-            await tx.CommitAsync();
+            await tx.CommitAsync(KvDurability.Sync);
             evidence.Add("connection healthy after timeout");
             return Result("CS-007", transport, authMode, verdict, sw.ElapsedMilliseconds, evidence, caught.Message);
         }
@@ -444,9 +444,9 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add($"cancellation threw: {caught.GetType().Name}");
 
             var kvRoute = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await callerClient.Kv.BeginAsync(kvRoute, Cntryl.Fitz.KvDurability.Async);
+            var tx = await callerClient.Kv.BeginAsync(kvRoute);
             await tx.PutAsync("after-cancel"u8.ToArray(), "ok"u8.ToArray());
-            await tx.CommitAsync();
+            await tx.CommitAsync(KvDurability.Sync);
             evidence.Add("subsequent request succeeded after cancellation");
 
             var verdict = caught is OperationCanceledException ? "pass" : "partial";
@@ -572,7 +572,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("responder client connected");
 
             var kvRoute = IntegrationFixture.CreateUniqueRoute("kv");
-            var kvTransaction = await client.Kv.BeginAsync(kvRoute, Cntryl.Fitz.KvDurability.Async);
+            var kvTransaction = await client.Kv.BeginAsync(kvRoute);
 
             var queueRoute = IntegrationFixture.CreateUniqueRoute("queue");
             await client.Queue.EnqueueAsync(queueRoute, "queued-before-reconnect"u8.ToArray());
@@ -660,9 +660,9 @@ public sealed partial class ConformanceSmokeTests
                 Backoff: TimeSpan.FromMilliseconds(100),
                 MaxBackoff: TimeSpan.FromMilliseconds(500)));
             var postReconnectRoute = IntegrationFixture.CreateUniqueRoute("kv");
-            var postReconnectTx = await client.Kv.BeginAsync(postReconnectRoute, Cntryl.Fitz.KvDurability.Async);
+            var postReconnectTx = await client.Kv.BeginAsync(postReconnectRoute);
             await postReconnectTx.PutAsync("post-reconnect"u8.ToArray(), "ok"u8.ToArray());
-            await postReconnectTx.CommitAsync();
+            await postReconnectTx.CommitAsync(KvDurability.Sync);
             evidence.Add("same client completed a new kv transaction after reconnect");
 
             verifierClient = IntegrationFixture.CreateClientForMode(
@@ -860,11 +860,11 @@ public sealed partial class ConformanceSmokeTests
 
             var tasks = routes.Select((route, index) => Task.Run(async () =>
             {
-                var tx = await client.Kv.BeginAsync(route, Cntryl.Fitz.KvDurability.Async);
+                var tx = await client.Kv.BeginAsync(route);
                 await tx.PutAsync(Encoding.UTF8.GetBytes($"key-{index}"), Encoding.UTF8.GetBytes($"value-{index}"));
-                await tx.CommitAsync();
+                await tx.CommitAsync(KvDurability.Sync);
 
-                var readTx = await client.Kv.BeginAsync(route, Cntryl.Fitz.KvDurability.Async, KvMode.ReadOnly);
+                var readTx = await client.Kv.BeginAsync(route, KvMode.ReadOnly);
                 var result = await readTx.GetAsync(Encoding.UTF8.GetBytes($"key-{index}"));
                 return result.Value.HasValue ? Encoding.UTF8.GetString(result.Value.Value.Span) : string.Empty;
             })).ToArray();
@@ -898,7 +898,7 @@ public sealed partial class ConformanceSmokeTests
         {
             await client.ConnectAsync();
             var route = IntegrationFixture.CreateUniqueRoute("kv");
-            var beginTask = client.Kv.BeginAsync(route, Cntryl.Fitz.KvDurability.Async);
+            var beginTask = client.Kv.BeginAsync(route);
 
             await Task.Delay(50);
             await client.DisposeAsync();

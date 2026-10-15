@@ -41,7 +41,6 @@ internal Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnl
 // Public: always a round trip.
 public async Task<IKvTransaction> BeginAsync(
     string route,
-    KvDurability durability,
     KvMode mode = KvMode.ReadWrite,
     CancellationToken ct = default)
 ```

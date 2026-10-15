@@ -99,7 +99,7 @@ public sealed class KvScanHelpersTests
         public Task InsertAsync(ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value, CancellationToken ct = default) => throw new NotSupportedException();
         public Task DeleteAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task DeleteRangeAsync(ReadOnlyMemory<byte> startKey, ReadOnlyMemory<byte> endKey, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task CommitAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task CommitAsync(KvDurability durability, CancellationToken ct = default) => throw new NotSupportedException();
         public Task RollbackAsync(CancellationToken ct = default) => throw new NotSupportedException();
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
@@ -122,7 +122,7 @@ public sealed class KvScanHelpersTests
         public Task InsertAsync(ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value, CancellationToken ct = default) => throw new NotSupportedException();
         public Task DeleteAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default) => throw new NotSupportedException();
         public Task DeleteRangeAsync(ReadOnlyMemory<byte> startKey, ReadOnlyMemory<byte> endKey, CancellationToken ct = default) => throw new NotSupportedException();
-        public Task CommitAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public Task CommitAsync(KvDurability durability, CancellationToken ct = default) => throw new NotSupportedException();
         public Task RollbackAsync(CancellationToken ct = default) => throw new NotSupportedException();
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }

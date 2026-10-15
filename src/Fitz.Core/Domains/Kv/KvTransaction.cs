@@ -249,10 +249,14 @@ sealed class KvTransaction : IKvTransaction
     }
 
     /// <inheritdoc />
-    public Task CommitAsync(CancellationToken ct = default)
+    public Task CommitAsync(KvDurability durability, CancellationToken ct = default)
     {
         ThrowIfClosed();
-        return FinalizeAsync(MessageTypes.KvCommit, "COMMIT", ct);
+        if (durability is not KvDurability.Buffered and not KvDurability.Sync)
+        {
+            throw new ArgumentOutOfRangeException(nameof(durability), durability, "Unknown KV commit persistence");
+        }
+        return FinalizeAsync(MessageTypes.KvCommit, "COMMIT", ct, durability);
     }
 
     /// <inheritdoc />
@@ -310,7 +314,7 @@ sealed class KvTransaction : IKvTransaction
         await ExpectStatusAsync(messageType, writer.WrittenMemory, operation, ct).ConfigureAwait(false);
     }
 
-    async Task FinalizeAsync(ushort messageType, string operation, CancellationToken ct)
+    async Task FinalizeAsync(ushort messageType, string operation, CancellationToken ct, KvDurability? durability = null)
     {
         await _finalizationGate.WaitAsync(ct).ConfigureAwait(false);
         try
@@ -319,6 +323,10 @@ sealed class KvTransaction : IKvTransaction
             using var writer = new BinaryBufferWriter();
             writer.WriteU64(_txId);
             writer.WriteString(_route);
+            if (durability is { } persistence)
+            {
+                writer.WriteU8((byte)persistence);
+            }
             await ExpectStatusAsync(messageType, writer.WrittenMemory, operation, ct, ensureOpen: false).ConfigureAwait(false);
             MarkClosed();
         }

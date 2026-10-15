@@ -24,11 +24,10 @@ foreach (var assembly in new[] { typeof(Client).Assembly, typeof(IKvClient).Asse
 
 var inMemoryKv = new InMemoryKvClient(new InMemoryKvClientOptions { ScanPageSize = 1 });
 await using (var transaction = await inMemoryKv.BeginAsync(
-    "kv://consumer/package/smoke",
-    KvDurability.Async))
+    "kv://consumer/package/smoke"))
 {
     await transaction.PutAsync("key"u8.ToArray(), "value"u8.ToArray());
-    await transaction.CommitAsync();
+    await transaction.CommitAsync(KvDurability.Sync);
 }
 if (!inMemoryKv.Snapshot("kv://consumer/package/smoke").Single().Value.Span.SequenceEqual("value"u8))
 {

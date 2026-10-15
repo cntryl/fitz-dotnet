@@ -45,7 +45,7 @@ public enum KvTestOperation
 /// <param name="TransactionId">Stable test-local transaction identifier, when applicable.</param>
 /// <param name="Operation">Operation kind.</param>
 /// <param name="Route">Exact route or subscription pattern used by the operation.</param>
-/// <param name="Durability">Requested durability, for a begin operation.</param>
+/// <param name="Durability">Requested persistence, for a commit operation.</param>
 /// <param name="Mode">Transaction mode, when applicable.</param>
 /// <param name="Key">Cloned primary key, when applicable.</param>
 /// <param name="Value">Cloned value, when applicable.</param>

@@ -90,7 +90,7 @@ Caller cancellation surfaces as `OperationCanceledException`, never as a Fitz ex
 Handles are `IAsyncDisposable` and must be awaited with `await using`, not `using`:
 
 ```csharp
-await using var tx = await client.Kv.BeginAsync(route, KvDurability.Sync, ct: ct);
+await using var tx = await client.Kv.BeginAsync(route, ct: ct);
 ```
 
 `Client.CloseAsync` is the explicit, idempotent shutdown. `DisposeAsync` delegates to it, so
@@ -195,16 +195,16 @@ keepalive and WebSocket PING/PONG, configured through `HeartbeatOptions`.
 
 ```csharp
 await using var tx = await client.Kv.BeginAsync(
-    "kv://prod/billing/invoices", KvDurability.Sync, KvMode.ReadWrite, ct);
+    "kv://prod/billing/invoices", KvMode.ReadWrite, ct);
 
 await tx.PutAsync(key, value, ct);
 var result = await tx.GetAsync(key, ct);
 if (result.Found) { Use(result.Value); }
 
-await tx.CommitAsync(ct);
+await tx.CommitAsync(KvDurability.Sync, ct);
 ```
 
-Durability is explicit and has no default: `Sync` waits for the write to be durable, `Async`
+Commit persistence is explicit and has no default: `Sync` waits for durability, `Buffered`
 does not. Without a `CommitAsync` the transaction rolls back on disposal. `ScanAsync` returns
 a `KvScanResult` whose `HasMore` tells you to continue from the last key.
 

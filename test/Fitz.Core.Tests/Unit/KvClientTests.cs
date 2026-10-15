@@ -64,7 +64,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var transaction = await kv.BeginAsync("kv://prod/app/data", KvDurability.Sync);
+        var transaction = await kv.BeginAsync("kv://prod/app/data");
 
 
         // Assert
@@ -86,16 +86,16 @@ public sealed class KvClientTests
         });
 
         // Act
-        await using var transaction = await kv.BeginAsync("kv://prod/app/data", KvDurability.Sync, KvMode.ReadOnly);
+        await using var transaction = await kv.BeginAsync("kv://prod/app/data", KvMode.ReadOnly);
 
         // Assert
         Assert.Equal("kv://prod/app/data", transaction.Route);
     }
 
     [Theory]
-    [InlineData(2, 0)]
-    [InlineData(0, 260)]
-    public async Task ShouldRejectUndefinedEnumGivenInvalidValueWhenBeginningTransaction(int mode, int durability)
+    [InlineData(2)]
+    [InlineData(260)]
+    public async Task ShouldRejectUndefinedEnumGivenInvalidValueWhenBeginningTransaction(int mode)
     {
         // Arrange
         var requestCalled = false;
@@ -111,7 +111,6 @@ public sealed class KvClientTests
         // Assert
         await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => kv.BeginAsync(
             "kv://prod/app/users",
-            (Cntryl.Fitz.KvDurability)durability,
             (Cntryl.Fitz.KvMode)mode));
 
         Assert.False(requestCalled);
@@ -159,7 +158,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var transaction = await kv.BeginAsync("kv://prod/app/data", KvDurability.Sync);
+        var transaction = await kv.BeginAsync("kv://prod/app/data");
 
 
         // Assert
@@ -197,13 +196,13 @@ public sealed class KvClientTests
         });
 
         // Act
-        var transaction = await kv.BeginAsync("kv://prod/app/data", KvDurability.Sync);
+        var transaction = await kv.BeginAsync("kv://prod/app/data");
 
 
         // Assert
-        await Assert.ThrowsAsync<KvException>(() => transaction.CommitAsync());
-        await transaction.CommitAsync();
-        var closed = await Assert.ThrowsAsync<KvException>(() => transaction.CommitAsync());
+        await Assert.ThrowsAsync<KvException>(() => transaction.CommitAsync(KvDurability.Sync));
+        await transaction.CommitAsync(KvDurability.Sync);
+        var closed = await Assert.ThrowsAsync<KvException>(() => transaction.CommitAsync(KvDurability.Sync));
 
         Assert.Equal("TX_CLOSED", closed.Code);
         Assert.Equal(2, commitCalls);
@@ -231,12 +230,11 @@ public sealed class KvClientTests
 
         // Act
         var transaction = await kv.BeginAsync(
-            "kv://realm/area/resource",
-            Cntryl.Fitz.KvDurability.Sync);
+            "kv://realm/area/resource");
 
 
         // Assert
-        await Assert.ThrowsAsync<KvException>(() => transaction.CommitAsync());
+        await Assert.ThrowsAsync<KvException>(() => transaction.CommitAsync(KvDurability.Sync));
         await transaction.DisposeAsync();
         var error = await Assert.ThrowsAsync<KvException>(
             () => transaction.GetAsync("key"u8.ToArray()));
@@ -354,7 +352,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async, KvMode.ReadWrite);
+        var tx = await kv.BeginAsync("kv://prod/app/users", KvMode.ReadWrite);
 
         // Assert
         Assert.NotNull(tx);
@@ -364,7 +362,7 @@ public sealed class KvClientTests
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("kv://prod/app/users", reader.ReadString());
         Assert.Equal((byte)KvMode.ReadWrite, reader.ReadU8());
-        Assert.Equal((byte)Cntryl.Fitz.KvDurability.Async, reader.ReadU8());
+        Assert.True(reader.IsEof);
     }
 
     [Fact]
@@ -393,7 +391,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async);
+        var tx = await kv.BeginAsync("kv://prod/app/users");
         var result = await tx.GetAsync(new ReadOnlyMemory<byte>("user:1"u8.ToArray()));
 
         // Assert
@@ -425,7 +423,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async);
+        var tx = await kv.BeginAsync("kv://prod/app/users");
         var result = await tx.GetAsync("missing"u8.ToArray());
 
         // Assert
@@ -451,7 +449,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async);
+        var tx = await kv.BeginAsync("kv://prod/app/users");
         await tx.InsertAsync(new ReadOnlyMemory<byte>("user:2"u8.ToArray()), new ReadOnlyMemory<byte>("bob"u8.ToArray()));
 
         // Assert
@@ -478,7 +476,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async);
+        var tx = await kv.BeginAsync("kv://prod/app/users");
         await tx.DeleteAsync(new ReadOnlyMemory<byte>("user:1"u8.ToArray()));
 
         // Assert
@@ -505,7 +503,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async);
+        var tx = await kv.BeginAsync("kv://prod/app/users");
         await tx.DeleteRangeAsync(new ReadOnlyMemory<byte>("user:1"u8.ToArray()), new ReadOnlyMemory<byte>("user:9"u8.ToArray()));
 
         // Assert
@@ -552,7 +550,7 @@ public sealed class KvClientTests
         });
 
         // Act
-        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async);
+        var tx = await kv.BeginAsync("kv://prod/app/users");
         var result = await tx.ScanAsync(new KvScanQuery());
         var pairs = result.Pairs;
 
@@ -645,7 +643,7 @@ public sealed class KvClientTests
 
             return Task.FromResult(response.Build());
         });
-        var transaction = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async);
+        var transaction = await kv.BeginAsync("kv://prod/app/users");
 
         // Act
         var error = await Assert.ThrowsAsync<KvException>(() => transaction.ScanAsync(new KvScanQuery()));
@@ -669,7 +667,7 @@ public sealed class KvClientTests
         // Act
         var ex = await Assert.ThrowsAsync<KvException>(async () =>
         {
-            await kv.BeginAsync("", Cntryl.Fitz.KvDurability.Async);
+            await kv.BeginAsync("");
         });
 
         // Assert
@@ -726,7 +724,7 @@ public sealed class KvClientTests
         using var kv = new KvClient(connection);
 
         await connection.ConnectAsync();
-        var tx = await kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async);
+        var tx = await kv.BeginAsync("kv://prod/app/users");
 
         firstTransport.QueueClosed();
 
@@ -756,7 +754,7 @@ public sealed class KvClientTests
 
         // Act
         var error = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
-            () => kv.BeginAsync("kv://prod/app/data", KvDurability.Sync, (KvMode)99));
+            () => kv.BeginAsync("kv://prod/app/data", (KvMode)99));
 
         // Assert
         Assert.Equal("mode", error.ParamName);
@@ -764,19 +762,19 @@ public sealed class KvClientTests
     }
 
     [Fact]
-    public async Task ShouldRejectUndefinedDurabilityGivenOutOfRangeEnumWhenBeginCalled()
+    public async Task ShouldRejectUndefinedDurabilityGivenOutOfRangeEnumWhenCommitCalled()
     {
         // Arrange
         var transportCalls = 0;
-        using var kv = new KvClient((_, _, _) =>
+        await using var transaction = new KvTransaction((_, _, _) =>
         {
             transportCalls++;
-            return Task.FromResult(Array.Empty<byte>());
-        });
+            return ValueTask.FromResult<ReadOnlyMemory<byte>>(Array.Empty<byte>());
+        }, "kv://prod/app/data", 7);
 
         // Act
         var error = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
-            () => kv.BeginAsync("kv://prod/app/data", (KvDurability)99));
+            () => transaction.CommitAsync((KvDurability)99));
 
         // Assert
         Assert.Equal("durability", error.ParamName);
