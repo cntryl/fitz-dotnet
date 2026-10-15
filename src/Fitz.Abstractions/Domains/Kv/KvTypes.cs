@@ -24,7 +24,7 @@ public enum KvDurability
     /// <summary>
     /// Buffered/async durability.
     /// </summary>
-    Async = 0,
+    Buffered = 0,
 
     /// <summary>
     /// Synchronous durability.

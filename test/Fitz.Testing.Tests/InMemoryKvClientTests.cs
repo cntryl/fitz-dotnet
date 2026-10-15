@@ -15,7 +15,7 @@ public sealed class InMemoryKvClientTests
         var client = new InMemoryKvClient();
 
         // Act
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, mode);
+        await using var transaction = await client.BeginAsync(Route, mode);
 
         // Assert
         Assert.Equal(Route, transaction.Route);
@@ -29,15 +29,15 @@ public sealed class InMemoryKvClientTests
         client.Seed(Route, "a"u8.ToArray(), "original"u8.ToArray());
 
         // Act
-        await using (var rolledBack = await client.BeginAsync(Route, KvDurability.Async))
+        await using (var rolledBack = await client.BeginAsync(Route))
         {
             await rolledBack.PutAsync("a"u8.ToArray(), "temporary"u8.ToArray());
             Assert.Equal("temporary"u8.ToArray(), (await rolledBack.GetAsync("a"u8.ToArray())).Value!.Value.ToArray());
         }
-        await using (var committed = await client.BeginAsync(Route, KvDurability.Sync))
+        await using (var committed = await client.BeginAsync(Route))
         {
             await committed.PutAsync("b"u8.ToArray(), "saved"u8.ToArray());
-            await committed.CommitAsync();
+            await committed.CommitAsync(KvDurability.Sync);
         }
 
         // Assert
@@ -73,7 +73,7 @@ public sealed class InMemoryKvClientTests
     {
         // Arrange
         var client = new InMemoryKvClient();
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
 
         // Act
         var put = () => transaction.PutAsync("a"u8.ToArray(), "value"u8.ToArray());
@@ -93,13 +93,13 @@ public sealed class InMemoryKvClientTests
         {
             client.Seed(Route, System.Text.Encoding.UTF8.GetBytes(key), "value"u8.ToArray());
         }
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async);
+        await using var transaction = await client.BeginAsync(Route);
 
         // Act
         var duplicate = await Record.ExceptionAsync(() =>
             transaction.InsertAsync("a"u8.ToArray(), "other"u8.ToArray()));
         await transaction.DeleteRangeAsync("b"u8.ToArray(), "d"u8.ToArray());
-        await transaction.CommitAsync();
+        await transaction.CommitAsync(KvDurability.Sync);
 
         // Assert
         Assert.Equal("KEY_EXISTS", Assert.IsType<KvException>(duplicate).Code);
@@ -115,7 +115,7 @@ public sealed class InMemoryKvClientTests
         {
             client.Seed(Route, System.Text.Encoding.UTF8.GetBytes(key), Array.Empty<byte>());
         }
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
 
         // Act
         var forward = await transaction.ScanAsync(new KvScanQuery("b"u8.ToArray(), "e"u8.ToArray(), Limit: 10));
@@ -137,7 +137,7 @@ public sealed class InMemoryKvClientTests
         {
             client.Seed(Route, System.Text.Encoding.UTF8.GetBytes(key), Array.Empty<byte>());
         }
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
 
         // Act
         var keys = new List<string>();
@@ -159,7 +159,7 @@ public sealed class InMemoryKvClientTests
         {
             client.Seed(Route, System.Text.Encoding.UTF8.GetBytes(key), Array.Empty<byte>());
         }
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
         var keys = new List<string>();
 
         // Act
@@ -181,14 +181,14 @@ public sealed class InMemoryKvClientTests
     {
         // Arrange
         var client = new InMemoryKvClient();
-        await using var winner = await client.BeginAsync(Route, KvDurability.Async);
-        await using var loser = await client.BeginAsync(Route, KvDurability.Async);
+        await using var winner = await client.BeginAsync(Route);
+        await using var loser = await client.BeginAsync(Route);
         await winner.PutAsync("a"u8.ToArray(), Array.Empty<byte>());
         await loser.PutAsync("b"u8.ToArray(), Array.Empty<byte>());
 
         // Act
-        await winner.CommitAsync();
-        var commit = () => loser.CommitAsync();
+        await winner.CommitAsync(KvDurability.Sync);
+        var commit = () => loser.CommitAsync(KvDurability.Sync);
 
         // Assert
         var error = await Assert.ThrowsAsync<KvException>(commit);
@@ -201,12 +201,12 @@ public sealed class InMemoryKvClientTests
         // Arrange
         var client = new InMemoryKvClient();
         await using var subscription = await client.SubscribeAsync("kv://tenant/**");
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async);
+        await using var transaction = await client.BeginAsync(Route);
 
         // Act
         await transaction.PutAsync("a"u8.ToArray(), Array.Empty<byte>());
         await transaction.DeleteAsync("missing"u8.ToArray());
-        await transaction.CommitAsync();
+        await transaction.CommitAsync(KvDurability.Sync);
         await using var enumerator = subscription.GetAsyncEnumerator();
         Assert.True(await enumerator.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1)));
 
@@ -221,7 +221,7 @@ public sealed class InMemoryKvClientTests
         // Arrange
         var client = new InMemoryKvClient();
         client.FailNext(KvTestOperation.Put, new KvException("planned", "BACKEND_ERROR"), Route);
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async);
+        await using var transaction = await client.BeginAsync(Route);
 
         // Act
         var first = () => transaction.PutAsync("a"u8.ToArray(), Array.Empty<byte>());
@@ -245,7 +245,7 @@ public sealed class InMemoryKvClientTests
 
         // Act
         client.ClearFaults();
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async);
+        await using var transaction = await client.BeginAsync(Route);
 
         // Assert
         Assert.Equal(KvTestOperation.Begin, client.Operations.Single().Operation);
@@ -256,7 +256,7 @@ public sealed class InMemoryKvClientTests
     {
         // Arrange
         var client = new InMemoryKvClient();
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async);
+        await using var transaction = await client.BeginAsync(Route);
         await transaction.PutAsync("key"u8.ToArray(), "value"u8.ToArray());
 
         // Act
@@ -278,7 +278,6 @@ public sealed class InMemoryKvClientTests
         byte[] end = [.. "team"u8, 1];
         await using var transaction = await client.BeginAsync(
             Route,
-            KvDurability.Sync,
             KvMode.ReadOnly);
 
         // Act
@@ -291,7 +290,7 @@ public sealed class InMemoryKvClientTests
         // Assert
         Assert.NotNull(begin.TransactionId);
         Assert.Equal(begin.TransactionId, scan.TransactionId);
-        Assert.Equal(KvDurability.Sync, begin.Durability);
+        Assert.Null(begin.Durability);
         Assert.Equal(KvMode.ReadOnly, begin.Mode);
         Assert.Equal("team\0"u8.ToArray(), scan.ScanQuery!.StartKey!.Value.ToArray());
         Assert.Equal([.. "team"u8, 1], scan.ScanQuery.EndKey!.Value.ToArray());
@@ -328,7 +327,7 @@ public sealed class InMemoryKvClientTests
         client.FailNext(KvTestOperation.Begin, "BACKEND_ERROR", route: Route);
 
         // Act
-        var begin = () => client.BeginAsync(Route, KvDurability.Async);
+        var begin = () => client.BeginAsync(Route);
 
         // Assert
         Assert.Equal("BACKEND_ERROR", (await Assert.ThrowsAsync<KvException>(begin)).Code);
@@ -339,7 +338,7 @@ public sealed class InMemoryKvClientTests
     {
         // Arrange
         var client = new InMemoryKvClient();
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async);
+        await using var transaction = await client.BeginAsync(Route);
         using var cancellation = new CancellationTokenSource();
         await cancellation.CancelAsync();
 
@@ -361,7 +360,7 @@ public sealed class InMemoryKvClientTests
             new KvPair("a"u8.ToArray(), Array.Empty<byte>()),
             new KvPair("b"u8.ToArray(), Array.Empty<byte>()),
             new KvPair("c"u8.ToArray(), Array.Empty<byte>()));
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
 
         // Act
         var page = await transaction.ScanAsync(new KvScanQuery(Limit: 0));
@@ -380,7 +379,7 @@ public sealed class InMemoryKvClientTests
             Route,
             new KvPair("a"u8.ToArray(), Array.Empty<byte>()),
             new KvPair("b"u8.ToArray(), Array.Empty<byte>()));
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
+        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
 
         // Act
         var page = await transaction.ScanAsync(new KvScanQuery());
@@ -395,7 +394,7 @@ public sealed class InMemoryKvClientTests
     {
         // Arrange
         var client = new InMemoryKvClient();
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async);
+        await using var transaction = await client.BeginAsync(Route);
 
         // Act
         await transaction.DeleteRangeAsync("a"u8.ToArray(), "z"u8.ToArray());
@@ -412,13 +411,13 @@ public sealed class InMemoryKvClientTests
     {
         // Arrange
         var client = new InMemoryKvClient();
-        await using var oldTransaction = await client.BeginAsync(Route, KvDurability.Async);
+        await using var oldTransaction = await client.BeginAsync(Route);
         client.Reset();
 
         // Act
         var staleWrite = () => oldTransaction.PutAsync("stale"u8.ToArray(), Array.Empty<byte>());
         var error = await Assert.ThrowsAsync<KvException>(staleWrite);
-        await using var newTransaction = await client.BeginAsync(Route, KvDurability.Async);
+        await using var newTransaction = await client.BeginAsync(Route);
 
         // Assert
         Assert.Equal("TX_CLOSED", error.Code);
@@ -432,12 +431,12 @@ public sealed class InMemoryKvClientTests
         // Arrange
         var client = new InMemoryKvClient();
         client.Seed(Route, "key"u8.ToArray(), "old"u8.ToArray());
-        await using var reader = await client.BeginAsync(Route, KvDurability.Async, KvMode.ReadOnly);
-        await using var writer = await client.BeginAsync(Route, KvDurability.Async);
+        await using var reader = await client.BeginAsync(Route, KvMode.ReadOnly);
+        await using var writer = await client.BeginAsync(Route);
 
         // Act
         await writer.PutAsync("key"u8.ToArray(), "new"u8.ToArray());
-        await writer.CommitAsync();
+        await writer.CommitAsync(KvDurability.Sync);
         var read = await reader.GetAsync("key"u8.ToArray());
 
         // Assert
@@ -450,7 +449,7 @@ public sealed class InMemoryKvClientTests
     {
         // Arrange
         var client = new InMemoryKvClient();
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async);
+        await using var transaction = await client.BeginAsync(Route);
         await transaction.PutAsync("key"u8.ToArray(), "value"u8.ToArray());
 
         // Act
@@ -470,11 +469,11 @@ public sealed class InMemoryKvClientTests
         var client = new InMemoryKvClient();
         await using var matching = await client.SubscribeAsync("kv://tenant/**");
         await using var other = await client.SubscribeAsync("kv://other/**");
-        await using var transaction = await client.BeginAsync(Route, KvDurability.Async);
+        await using var transaction = await client.BeginAsync(Route);
 
         // Act
         await transaction.PutAsync("key"u8.ToArray(), Array.Empty<byte>());
-        await transaction.CommitAsync();
+        await transaction.CommitAsync(KvDurability.Sync);
         await using var matchingEnumerator = matching.GetAsyncEnumerator();
         using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
         await using var otherEnumerator = other.GetAsyncEnumerator(timeout.Token);
@@ -499,9 +498,9 @@ public sealed class InMemoryKvClientTests
         // Act
         for (var index = 0; index < 2; index++)
         {
-            await using var transaction = await client.BeginAsync(Route, KvDurability.Async);
+            await using var transaction = await client.BeginAsync(Route);
             await transaction.PutAsync(new byte[] { (byte)index }, Array.Empty<byte>());
-            await transaction.CommitAsync();
+            await transaction.CommitAsync(KvDurability.Sync);
         }
         await using var enumerator = subscription.GetAsyncEnumerator();
         var received = await enumerator.MoveNextAsync();
@@ -542,7 +541,7 @@ public sealed class InMemoryKvClientTests
         var client = new InMemoryKvClient();
 
         // Act
-        var begin = () => client.BeginAsync(route, KvDurability.Async);
+        var begin = () => client.BeginAsync(route);
 
         // Assert
         Assert.Equal("INVALID_ROUTE", (await Assert.ThrowsAsync<KvException>(begin)).Code);

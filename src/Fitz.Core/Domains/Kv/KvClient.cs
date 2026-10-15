@@ -80,7 +80,6 @@ sealed class KvClient : IKvClient, IDisposable
     /// <inheritdoc />
     public async Task<IKvTransaction> BeginAsync(
         string route,
-        KvDurability durability,
         KvMode mode = KvMode.ReadWrite,
         CancellationToken ct = default)
     {
@@ -93,15 +92,10 @@ sealed class KvClient : IKvClient, IDisposable
         {
             throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown KV transaction mode");
         }
-        if (durability is not KvDurability.Async and not KvDurability.Sync)
-        {
-            throw new ArgumentOutOfRangeException(nameof(durability), durability, "Unknown KV durability mode");
-        }
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteU8((byte)mode);
-        writer.WriteU8((byte)durability);
 
         var response = await _request(MessageTypes.KvBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = KvWireHelpers.ReadSuccess(response, "BEGIN");

@@ -45,7 +45,7 @@ public class DomainHotPathBenchmarks : IDisposable
     [Benchmark]
     public async Task KvBeginGet()
     {
-        var tx = await _kv.BeginAsync("kv://bench/hotpath/resource", Cntryl.Fitz.KvDurability.Async).ConfigureAwait(false);
+        var tx = await _kv.BeginAsync("kv://bench/hotpath/resource").ConfigureAwait(false);
         _ = await tx.GetAsync(Payload).ConfigureAwait(false);
     }
 

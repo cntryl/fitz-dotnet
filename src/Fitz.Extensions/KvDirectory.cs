@@ -151,7 +151,7 @@ public sealed class KvDirectory<T, TKey>
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(client);
-        await using var transaction = await client.BeginAsync(route, KvDurability.Async, KvMode.ReadOnly, ct)
+        await using var transaction = await client.BeginAsync(route, KvMode.ReadOnly, ct)
             .ConfigureAwait(false);
         return await GetAsync(transaction, identity, ct).ConfigureAwait(false);
     }
@@ -189,7 +189,7 @@ public sealed class KvDirectory<T, TKey>
         ArgumentException.ThrowIfNullOrWhiteSpace(route);
         ArgumentNullException.ThrowIfNull(query);
         var plan = Plan(route, query);
-        await using var transaction = await client.BeginAsync(route, KvDurability.Async, KvMode.ReadOnly, ct)
+        await using var transaction = await client.BeginAsync(route, KvMode.ReadOnly, ct)
             .ConfigureAwait(false);
         return await ExecuteAsync(transaction, plan, ct).ConfigureAwait(false);
     }
@@ -238,7 +238,7 @@ public sealed class KvDirectory<T, TKey>
         ArgumentNullException.ThrowIfNull(client);
         ArgumentException.ThrowIfNullOrWhiteSpace(route);
         var plan = PlanPrimary(route, limit, cursor);
-        await using var transaction = await client.BeginAsync(route, KvDurability.Async, KvMode.ReadOnly, ct)
+        await using var transaction = await client.BeginAsync(route, KvMode.ReadOnly, ct)
             .ConfigureAwait(false);
         return await ExecuteAsync(transaction, plan, ct).ConfigureAwait(false);
     }
@@ -254,6 +254,7 @@ public sealed class KvDirectory<T, TKey>
         string route,
         KvDirectoryIndex<T> index,
         int limit,
+        KvDurability durability,
         string? cursor = null,
         CancellationToken ct = default)
     {
@@ -270,7 +271,7 @@ public sealed class KvDirectory<T, TKey>
         ValidateCursorRange(cursorKey, rangeStart, rangeEnd);
         var scan = new KvScanQuery(
             cursorKey is null ? rangeStart : After(cursorKey.Value.Span), rangeEnd, (uint)(limit + 1));
-        await using var transaction = await client.BeginAsync(route, KvDurability.Async, KvMode.ReadWrite, ct)
+        await using var transaction = await client.BeginAsync(route, KvMode.ReadWrite, ct)
             .ConfigureAwait(false);
         var records = new List<KvPair>(limit + 1);
         await foreach (var pair in transaction.ScanAllAsync(scan, ct).ConfigureAwait(false))
@@ -286,7 +287,7 @@ public sealed class KvDirectory<T, TKey>
             foreach (var key in IndexKeys(index, value))
                 await transaction.PutAsync(key, record.Value, ct).ConfigureAwait(false);
         }
-        await transaction.CommitAsync(ct).ConfigureAwait(false);
+        await transaction.CommitAsync(durability, ct).ConfigureAwait(false);
         var next = records.Count > limit ? EncodeCursor(fingerprint, processed[^1].Key) : null;
         return new KvDirectoryBackfillPage(processed.Length, next);
     }

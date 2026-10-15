@@ -16,6 +16,10 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ## [Unreleased]
 
+- Requires the server commit-time persistence contract from cntryl/fitz#471; the old KV wire format is incompatible. Validated against `fitz:develop`.
+
+- Breaking: KV BEGIN no longer accepts persistence. KV COMMIT requires an explicit Buffered or Sync choice; Stream COMMIT also requires an explicit choice. No connection default or silent Sync downgrade is used.
+
 ### Added
 
 - Optional, capability-gated client service names trimmed before reporting session metadata.

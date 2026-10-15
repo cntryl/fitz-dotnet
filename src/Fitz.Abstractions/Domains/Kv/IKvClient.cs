@@ -9,13 +9,11 @@ public interface IKvClient
     /// Begins a KV transaction for a route.
     /// </summary>
     /// <param name="route">Target KV route.</param>
-    /// <param name="durability">Requested durability level.</param>
     /// <param name="mode">Transaction mode.</param>
     /// <param name="ct">Cancellation token for the operation.</param>
     /// <returns>A transaction handle used for KV operations.</returns>
     Task<IKvTransaction> BeginAsync(
         string route,
-        KvDurability durability,
         KvMode mode = KvMode.ReadWrite,
         CancellationToken ct = default
     );

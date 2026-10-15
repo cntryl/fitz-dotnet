@@ -62,10 +62,11 @@ public interface IKvTransaction : IAsyncDisposable
     Task<KvScanResult> ScanAsync(KvScanQuery query, CancellationToken ct = default);
 
     /// <summary>
-    /// Commits the transaction.
+    /// Commits the transaction using an explicit persistence choice.
     /// </summary>
     /// <param name="ct">Cancellation token.</param>
-    Task CommitAsync(CancellationToken ct = default);
+    /// <param name="durability">Required Buffered or Sync persistence.</param>
+    Task CommitAsync(KvDurability durability, CancellationToken ct = default);
 
     /// <summary>
     /// Rolls back the transaction.

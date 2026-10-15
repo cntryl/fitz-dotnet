@@ -39,13 +39,13 @@ public sealed partial class ConformanceSmokeTests
             IntegrationFixture.GetConformanceTransport(), IntegrationFixture.GetConformanceAuthMode());
         await client.ConnectAsync();
         var route = IntegrationFixture.CreateUniqueRoute("kv");
-        await using var seed = await client.Kv.BeginAsync(route, KvDurability.Sync);
+        await using var seed = await client.Kv.BeginAsync(route);
         foreach (var key in new byte[][] { [0x10], [0x10, 0], [0x20] })
         {
             await seed.PutAsync(key, key);
         }
-        await seed.CommitAsync();
-        await using var tx = await client.Kv.BeginAsync(route, KvDurability.Sync, KvMode.ReadOnly);
+        await seed.CommitAsync(KvDurability.Sync);
+        await using var tx = await client.Kv.BeginAsync(route, KvMode.ReadOnly);
         var first = await tx.ScanAsync(new KvScanQuery(Limit: 1, Reverse: reverse));
         var start = Assert.Single(first.Pairs).Key;
         Assert.True(first.HasMore);

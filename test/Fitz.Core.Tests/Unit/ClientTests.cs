@@ -975,8 +975,7 @@ public sealed class ClientTests
 
         // Act
         var request = client.Kv.BeginAsync(
-            "kv://prod/app/users",
-            Cntryl.Fitz.KvDurability.Async);
+            "kv://prod/app/users");
 
 
         // Assert
@@ -1018,7 +1017,7 @@ public sealed class ClientTests
 
         // Assert
         var ex = await Assert.ThrowsAsync<RequestTimeoutException>(() =>
-            client.Kv.BeginAsync("kv://prod/app/users", Cntryl.Fitz.KvDurability.Async));
+            client.Kv.BeginAsync("kv://prod/app/users"));
 
         Assert.Contains("Request timeout", ex.Message, StringComparison.OrdinalIgnoreCase);
         await WaitForConditionAsync(() => !client.IsConnected, TimeSpan.FromSeconds(1));
