@@ -127,13 +127,17 @@ public interface IFitzMeter
 /// <param name="Url">Endpoint involved, falling back to the configured URL.</param>
 /// <param name="Attempt">Attempt number, for retry and reconnect events.</param>
 /// <param name="Error">Failure message, for events that carry one.</param>
+/// <param name="Code">Broker GOAWAY code, when this is a <c>goaway</c> event.</param>
+/// <param name="GraceMs">Broker GOAWAY grace period in milliseconds.</param>
 public sealed record FitzLifecycleEvent(
     string Event,
     ConnectionState State,
     string? Transport = null,
     Uri? Url = null,
     int? Attempt = null,
-    string? Error = null
+    string? Error = null,
+    ushort? Code = null,
+    uint? GraceMs = null
 );
 
 /// <summary>

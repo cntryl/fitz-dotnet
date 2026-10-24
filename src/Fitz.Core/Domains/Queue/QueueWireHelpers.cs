@@ -14,13 +14,15 @@ static class QueueWireHelpers
         return new BinaryBufferReader(response);
     }
 
-    internal static QueueException ReadError(ReadOnlyMemory<byte> response, string operation, byte status, bool codedOnly = false)
+    internal static QueueException ReadError(ReadOnlyMemory<byte> response, string operation, byte status)
     {
         try
         {
-            var (code, message) = ResponseError.Read(response, codedOnly);
-            var description = operation == "ENQUEUE" ? message : $"{operation} failed: {message}";
-            return new QueueException(description, $"{operation}_FAILED", status, code);
+            var error = ResponseError.Read(response);
+            var description = operation == "ENQUEUE" ? error.Message : $"{operation} failed: {error.Message}";
+            var domainError = new QueueException(description, $"{operation}_FAILED", status, error.Code);
+            domainError.SetWireError(error.Class, error.Effect);
+            return domainError;
         }
         catch (ProtocolException)
         {

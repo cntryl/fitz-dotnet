@@ -28,8 +28,8 @@ namespace Cntryl.Fitz;
 /// <param name="Observability">Logging, tracing, metrics, and lifecycle hooks.</param>
 /// <param name="AsyncHandlers">Bounds on callback dispatch and subscription buffering.</param>
 /// <param name="MaxFrameSize">
-/// Largest transport frame accepted or produced. The Fitz payload length is 16-bit, and a
-/// correlated frame includes its label, so this is bounded by the protocol: see
+/// Largest transport frame accepted or produced, including the fixed Wire-2 header. This is
+/// bounded by the protocol: see
 /// <see cref="FitzLimits.MinFrameSize"/> and <see cref="FitzLimits.MaxFrameSize"/>.
 /// </param>
 /// <param name="MaxInFlightRequests">Maximum requests awaiting a response at once.</param>
@@ -40,7 +40,7 @@ namespace Cntryl.Fitz;
 /// Supplies a custom <see cref="ITransport"/> instead of the built-in ones. Override
 /// <see cref="ITransport.TransportName"/> to label it in telemetry.
 /// </param>
-/// <param name="ServiceName">Optional friendly service name, trimmed before reporting when the broker advertises session metadata.</param>
+/// <param name="ServiceName">Optional friendly service name included in the Wire-2 CONNECT payload.</param>
 /// <remarks>
 /// This record is validated centrally before any connection work starts, so invalid
 /// configuration fails fast rather than at first use.
@@ -125,7 +125,7 @@ public sealed record ClientConfig(
         if (MaxFrameSize is < FitzLimits.MinFrameSize or > FitzLimits.MaxFrameSize)
         {
             throw new ArgumentOutOfRangeException(nameof(MaxFrameSize),
-                $"MaxFrameSize must be between {FitzLimits.MinFrameSize} and {FitzLimits.MaxFrameSize}; the Fitz wire payload length is 16-bit and a correlated transport frame includes its label.");
+                $"MaxFrameSize must be between {FitzLimits.MinFrameSize} and {FitzLimits.MaxFrameSize} bytes, including the Wire-2 header.");
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxInFlightRequests);

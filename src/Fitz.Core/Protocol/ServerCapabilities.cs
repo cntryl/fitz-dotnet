@@ -1,61 +1,39 @@
+using System.Buffers.Binary;
+
 namespace Cntryl.Fitz.Protocol;
 
-/// <summary>
-/// Broker capabilities advertised by a <c>SERVER_HELLO</c> (4) frame.
-/// </summary>
-/// <remarks>
-/// A broker that predates the advertisement never sends one. Absence means "legacy broker" and is
-/// never an error: the client keeps one in-flight request per message type and sends no
-/// <c>CORRELATE</c> records.
-/// </remarks>
-readonly record struct ServerCapabilities(ushort ProtocolVersion, uint CapabilityBits)
+/// <summary>Limits and session data negotiated by the Wire-2 HELLO frame.</summary>
+sealed record ServerCapabilities(
+    ushort ProtocolVersion,
+    uint CapabilityBits,
+    uint MaxMessageBytes,
+    uint MaxInFlightRequests,
+    ulong SessionId)
 {
-    /// <summary>Bit 0: the broker accepts <c>CORRELATE</c> and echoes <c>CORRELATED</c>.</summary>
-    public const uint CorrelationBit = 1u << 0;
+    public const uint CorrelationBit = 0;
+    public const uint SessionMetadataBit = 0;
+    public const uint KvScanExclusiveBit = 0;
+    public const uint RpcCancellationBit = 0;
+    public static ServerCapabilities None { get; } = new(0, 0, 1024 * 1024, 256, 0);
+    public bool SupportsCorrelation => ProtocolVersion >= 2;
+    public bool SupportsSessionMetadata => false;
+    public bool SupportsKvScanExclusive => ProtocolVersion >= 2;
+    public bool SupportsRpcCancellation => ProtocolVersion >= 2;
 
-    /// <summary>Bit 1: the broker accepts client-reported service names.</summary>
-    public const uint SessionMetadataBit = 1u << 1;
-
-    /// <summary>Bit 2: the broker accepts the trailing exclusive KV SCAN resume byte.</summary>
-    public const uint KvScanExclusiveBit = 1u << 2;
-
-    /// <summary>Bit 3: the broker accepts RPC cancellation and deadline extensions.</summary>
-    public const uint RpcCancellationBit = 1u << 3;
-
-    /// <summary>The state before any advertisement arrives, and the state for a legacy broker.</summary>
-    public static ServerCapabilities None => default;
-
-    /// <summary>Whether per-request correlation may be used on this session.</summary>
-    public bool SupportsCorrelation => (CapabilityBits & CorrelationBit) != 0;
-
-    /// <summary>Whether the broker accepts a client-reported service name.</summary>
-    public bool SupportsSessionMetadata => (CapabilityBits & SessionMetadataBit) != 0;
-
-    /// <summary>Whether exclusive KV SCAN continuation is supported on this session.</summary>
-    public bool SupportsKvScanExclusive => (CapabilityBits & KvScanExclusiveBit) != 0;
-
-    /// <summary>Whether RPC cancellation and deadline extensions are supported.</summary>
-    public bool SupportsRpcCancellation => (CapabilityBits & RpcCancellationBit) != 0;
-
-    /// <summary>
-    /// Parses a <c>SERVER_HELLO</c> payload: <c>[u16 BE protocol_version][u32 BE capability_bits]</c>.
-    /// </summary>
-    /// <remarks>
-    /// Trailing bytes are ignored so a later protocol version can append fields without consuming
-    /// another message id. A truncated payload is ignored rather than rejected, because an
-    /// unparseable advertisement must not be more disruptive than a missing one.
-    /// </remarks>
+    /// <summary>Parses the fixed HELLO fields and permits forward-compatible trailing bytes.</summary>
     public static bool TryParse(ReadOnlySpan<byte> payload, out ServerCapabilities capabilities)
     {
-        if (payload.Length < 6)
+        if (payload.Length < 22)
         {
             capabilities = None;
             return false;
         }
-
         capabilities = new ServerCapabilities(
-            System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(payload[..2]),
-            System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(payload.Slice(2, 4)));
-        return true;
+            BinaryPrimitives.ReadUInt16BigEndian(payload[..2]),
+            BinaryPrimitives.ReadUInt32BigEndian(payload.Slice(2, 4)),
+            BinaryPrimitives.ReadUInt32BigEndian(payload.Slice(6, 4)),
+            BinaryPrimitives.ReadUInt32BigEndian(payload.Slice(10, 4)),
+            BinaryPrimitives.ReadUInt64BigEndian(payload.Slice(14, 8)));
+        return capabilities.ProtocolVersion == 2 && capabilities.MaxMessageBytes >= 15 && capabilities.MaxMessageBytes <= FrameCodec.MaxTransportFrameSize && capabilities.MaxInFlightRequests > 0;
     }
 }

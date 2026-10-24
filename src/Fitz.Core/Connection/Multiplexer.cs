@@ -215,8 +215,7 @@ sealed class Multiplexer : IDisposable
     }
 
     /// <summary>
-    /// Dispatches a response that arrived behind a <c>CORRELATED</c> record, routing it by
-    /// identifier rather than by arrival order.
+    /// Dispatches a response using the correlation identifier from its Wire-2 frame header.
     /// </summary>
     /// <returns>
     /// <see langword="false"/> when no request is waiting on the identifier, which happens when the
@@ -726,12 +725,12 @@ sealed class Multiplexer : IDisposable
 
         internal LinkedListNode<PendingRequest>? QueueNode { get; set; }
 
-        /// <summary>Non-zero when this request was labelled with a <c>CORRELATE</c> record.</summary>
+        /// <summary>Non-zero when this request has a Wire-2 header correlation identifier.</summary>
         internal ulong CorrelationId { get; init; }
 
         /// <summary>
-        /// A correlated request is matched by identifier, so cancelling or timing it out cannot
-        /// desynchronize a response lane the way an uncorrelated one does.
+        /// A request with a header correlation is matched by identifier, so cancelling or timing it
+        /// out cannot desynchronize a response lane.
         /// </summary>
         internal bool IsIdentified => _responseMatcher is not null || CorrelationId != 0;
 

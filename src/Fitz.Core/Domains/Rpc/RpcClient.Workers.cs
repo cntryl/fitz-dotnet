@@ -153,25 +153,24 @@ sealed partial class RpcClient
 
             var body = reader.ReadBytes(bodyLength);
             TimeSpan? remainingTime = null;
-            if (reader.RemainingBytes != 0)
+            if (reader.RemainingBytes < 1)
             {
-                if ((_getCapabilityBits() & ServerCapabilities.RpcCancellationBit) == 0)
-                {
+                return;
+            }
+            var hasBudget = reader.ReadU8();
+            if (hasBudget == 1)
+            {
+                if (reader.RemainingBytes != 4)
                     return;
-                }
-                if (reader.RemainingBytes != 6 || reader.ReadU8() != 1 || reader.ReadU8() != 1)
-                {
-                    return;
-                }
-
                 var remainingBudgetMs = reader.ReadU32();
-                if (!reader.IsEof || remainingBudgetMs > 86_400_000)
-                {
+                if (remainingBudgetMs > 86_400_000)
                     return;
-                }
-
                 var budget = TimeSpan.FromMilliseconds(remainingBudgetMs) - System.Diagnostics.Stopwatch.GetElapsedTime(receivedAt);
                 remainingTime = budget > TimeSpan.Zero ? budget : TimeSpan.Zero;
+            }
+            else if (hasBudget != 0 || !reader.IsEof)
+            {
+                return;
             }
 
             if (!TryGetWorker(route, out var handler, out var concurrencyGate))
@@ -333,11 +332,7 @@ sealed partial class RpcClient
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
         writer.WriteU32(maxConcurrency);
-        if ((_getCapabilityBits() & ServerCapabilities.RpcCancellationBit) != 0)
-        {
-            writer.WriteU8(1);
-            writer.WriteU8(1);
-        }
+        writer.WriteU8(1);
 
         var response = await _request(MessageTypes.RpcSubscribeWorker, writer.WrittenMemory, ct).ConfigureAwait(false);
         _ = ReadRpcSuccess(response, "REGISTER");
@@ -424,7 +419,7 @@ sealed partial class RpcClient
             }
 
             var writer = new RpcResponseWriter(_send, correlationId, connectionClosed);
-            await writer.SendAsync(EncodeTerminalErrorBody(RpcBackpressureErrorCode, "Local RPC worker is overloaded"), isEnd: true, connectionClosed).ConfigureAwait(false);
+            await writer.SendAsync(EncodeTerminalErrorBody(RpcBackpressureErrorCode, "Local RPC worker is overloaded", 5, 0), isEnd: true, connectionClosed).ConfigureAwait(false);
         }
         catch
         {
@@ -463,14 +458,14 @@ sealed partial class RpcClient
             }
 
             _ = reader.ReadBytes(bodyLength);
-            if (reader.IsEof)
+            if (reader.RemainingBytes < 1)
             {
-                return true;
+                return false;
             }
-
-            return (_getCapabilityBits() & ServerCapabilities.RpcCancellationBit) != 0 &&
-                reader.RemainingBytes == 6 && reader.ReadU8() == 1 && reader.ReadU8() == 1 &&
-                reader.ReadU32() <= 86_400_000 && reader.IsEof;
+            var hasBudget = reader.ReadU8();
+            if (hasBudget == 0)
+                return reader.IsEof;
+            return hasBudget == 1 && reader.RemainingBytes == 4 && reader.ReadU32() <= 86_400_000 && reader.IsEof;
         }
         catch
         {

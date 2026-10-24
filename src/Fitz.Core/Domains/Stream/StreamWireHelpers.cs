@@ -404,15 +404,23 @@ static class StreamWireHelpers
         var status = reader.ReadU8();
         if (status != 0)
         {
-            if (status is 1 or 2)
+            if (status == 1)
             {
-                uint? domainCode = status == 2 || operation == "READ" ? reader.ReadU32() : null;
+                var domainCode = reader.ReadU16();
+                var errorClass = reader.ReadU8();
+                var effect = reader.ReadU8();
+                if (effect > 2)
+                {
+                    throw new StreamException($"{operation} error response has an invalid effect", $"{operation}_INVALID_RESPONSE");
+                }
                 var message = reader.ReadString();
                 if (!reader.IsEof)
                 {
                     throw new StreamException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE", status, domainCode);
                 }
-                throw new StreamException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+                var domainError = new StreamException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+                domainError.SetWireError(errorClass > 10 ? (byte)6 : errorClass, effect);
+                throw domainError;
             }
             throw new StreamException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
         }

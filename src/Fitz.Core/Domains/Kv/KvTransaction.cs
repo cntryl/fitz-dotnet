@@ -37,7 +37,7 @@ sealed class KvTransaction : IKvTransaction
         _route = route;
         _txId = txId;
         _retryRequest = retryRequest;
-        _supportsExclusiveScan = supportsExclusiveScan ?? (() => false);
+        _supportsExclusiveScan = supportsExclusiveScan ?? (() => true);
         var disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
         if (disconnectRegistration is not null)
         {
@@ -198,18 +198,8 @@ sealed class KvTransaction : IKvTransaction
             writer.WriteU32(query.Limit.Value);
         }
 
-        // Encode reverse flag
-        writer.WriteU8(query.Reverse ? (byte)1 : (byte)0);
-        if (query.StartExclusive)
-        {
-            if (!SupportsExclusiveScan)
-            {
-                throw new KvException(
-                    "Broker did not advertise exclusive KV SCAN resume support",
-                    "UNSUPPORTED_CAPABILITY");
-            }
-            writer.WriteU8(1);
-        }
+        // Wire-2 combines reverse and exclusive-start into the final options byte.
+        writer.WriteU8((byte)((query.Reverse ? 1 : 0) | (query.StartExclusive ? 2 : 0)));
 
         var response = await RequestWithRetryAsync(
             RetryOperations.KvScan,

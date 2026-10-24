@@ -181,6 +181,8 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
             }
             if (!reader.IsEof)
                 throw new ScheduleException("LIST_V2 response has trailing bytes", "LIST_V2_INVALID_RESPONSE");
+            if ((more == 1) != (next is not null))
+                throw new ScheduleException("LIST response has inconsistent cursor state", "LIST_INVALID_RESPONSE");
             return new ScheduleCursorPage(entries, more == 1, next);
         }
         catch (ProtocolException)
@@ -208,87 +210,12 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
     public async Task<ScheduleListPage> ListAsync(ulong? offset = null, ulong? limit = null, CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        using var writer = new BinaryBufferWriter();
-        writer.WriteU8((byte)(offset.HasValue ? 1 : 0));
-        if (offset.HasValue)
-            writer.WriteU64(offset.Value);
-        writer.WriteU8((byte)(limit.HasValue ? 1 : 0));
-        if (limit.HasValue)
-            writer.WriteU64(limit.Value);
-
-        var response = await _request(MessageTypes.ScheduleListPage, writer.WrittenMemory, ct).ConfigureAwait(false);
-        if (response.IsEmpty)
+        if (offset is > 0)
         {
-            throw new ScheduleException("LIST response is empty", "LIST_INVALID_RESPONSE");
+            throw new ArgumentOutOfRangeException(nameof(offset), "Schedule LIST uses continuation cursors; nonzero offsets are unsupported.");
         }
-
-        var reader = new BinaryBufferReader(response);
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            uint? domainCode = null;
-            var message = "Schedule LIST failed";
-            try
-            {
-                if (reader.RemainingBytes >= 4)
-                {
-                    domainCode = reader.ReadU32();
-                    if (reader.RemainingBytes >= 4)
-                    {
-                        message = reader.ReadString();
-                    }
-                }
-            }
-            catch (ProtocolException)
-            {
-                throw new ScheduleException("LIST error response is truncated", "LIST_INVALID_RESPONSE", status, domainCode);
-            }
-
-            if (!reader.IsEof)
-            {
-                throw new ScheduleException("LIST error response has trailing or truncated bytes", "LIST_INVALID_RESPONSE", status, domainCode);
-            }
-
-            throw new ScheduleException($"LIST failed: {message}", "LIST_FAILED", status, domainCode);
-        }
-        if (reader.RemainingBytes < 9)
-        {
-            throw new ScheduleException("LIST response is missing its total count or entry sentinel", "LIST_INVALID_RESPONSE");
-        }
-        var totalCount = reader.ReadU64();
-        var entries = new List<ScheduleEntry>();
-
-        while (true)
-        {
-            var hasEntry = reader.ReadU8();
-            if (hasEntry == 0)
-            {
-                break;
-            }
-            if (hasEntry != 1)
-            {
-                throw new ScheduleException($"LIST response has invalid entry sentinel {hasEntry}", "LIST_INVALID_RESPONSE");
-            }
-
-            var route = reader.ReadString();
-            var cron = reader.ReadString();
-            var deliveryModeValue = reader.ReadU8();
-            var deliveryMode = (ScheduleDeliveryMode)deliveryModeValue;
-            if (deliveryMode is not ScheduleDeliveryMode.Broadcast and not ScheduleDeliveryMode.Once)
-            {
-                throw new ScheduleException($"LIST response has invalid delivery mode {deliveryModeValue}", "LIST_INVALID_RESPONSE");
-            }
-            var payloadLength = reader.ReadU32();
-            var payload = reader.ReadBytes(payloadLength);
-            entries.Add(new ScheduleEntry(null, route, cron, deliveryMode, payload));
-        }
-
-        if (!reader.IsEof)
-        {
-            throw new ScheduleException("LIST response has trailing bytes", "LIST_INVALID_RESPONSE");
-        }
-
-        return new ScheduleListPage(entries.ToArray(), totalCount);
+        var page = await ListV2Async(limit: limit, ct: ct).ConfigureAwait(false);
+        return new ScheduleListPage(page.Entries, null, page.HasMore, page.Continuation);
     }
 
     /// <inheritdoc />
@@ -301,19 +228,19 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
         }
 
         var entries = new List<ScheduleEntry>();
-        ulong offset = 0;
+        string? continuation = null;
         const ulong limit = 1000;
         while (true)
         {
-            var page = await ListAsync(offset, limit, ct).ConfigureAwait(false);
+            var page = await ListV2Async(continuation, limit, ct).ConfigureAwait(false);
             entries.AddRange(page.Entries.Where(entry => RouteValidation.MatchesPattern(entry.Route, selector)));
-            offset += (ulong)page.Entries.Count;
-            if (offset >= page.TotalCount)
+            if (!page.HasMore)
             {
                 return entries;
             }
             if (page.Entries.Count == 0)
-                throw new ScheduleException("LIST returned an empty page before total_count", "LIST_INVALID_RESPONSE");
+                throw new ScheduleException("LIST returned an empty page with another cursor", "LIST_INVALID_RESPONSE");
+            continuation = page.Continuation;
         }
     }
 
@@ -737,8 +664,10 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
     {
         try
         {
-            var (code, message) = ResponseError.Read(response);
-            return new ScheduleException($"{operation} failed: {message}", $"{operation}_FAILED", status, code);
+            var error = ResponseError.Read(response);
+            var domainError = new ScheduleException($"{operation} failed: {error.Message}", $"{operation}_FAILED", status, error.Code);
+            domainError.SetWireError(error.Class, error.Effect);
+            return domainError;
         }
         catch (ProtocolException)
         {

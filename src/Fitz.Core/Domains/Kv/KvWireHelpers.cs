@@ -1,4 +1,3 @@
-using System.Text;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Domains.Kv;
@@ -24,20 +23,18 @@ static class KvWireHelpers
             throw InvalidResponse(operation, $"unknown status {status}");
         }
 
-        if (reader.RemainingBytes < 8)
+        ResponseErrorEnvelope error;
+        try
         {
-            throw InvalidResponse(operation, "error envelope is truncated");
+            error = ResponseError.Read(response);
         }
-
-        var domainCode = reader.ReadU32();
-        var messageLength = reader.ReadU32();
-        if (messageLength > int.MaxValue || messageLength != reader.RemainingBytes)
+        catch (ProtocolException exception)
         {
-            throw InvalidResponse(operation, "error message length is invalid");
+            throw new KvException($"{operation} error response is malformed: {exception.Message}", $"{operation}_INVALID_RESPONSE");
         }
-
-        var message = Encoding.UTF8.GetString(reader.ReadSpan(messageLength));
-        throw new KvException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+        var domainError = new KvException($"{operation} failed: {error.Message}", $"{operation}_FAILED", status, error.Code);
+        domainError.SetWireError(error.Class, error.Effect);
+        throw domainError;
     }
 
     internal static KvException InvalidResponse(string operation, string reason) =>

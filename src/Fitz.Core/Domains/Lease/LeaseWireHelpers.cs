@@ -20,14 +20,10 @@ static class LeaseWireHelpers
                 throw new LeaseException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
             }
 
-            var domainCode = reader.ReadU32();
-            var message = reader.ReadString();
-            if (!reader.IsEof)
-            {
-                throw new LeaseException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE");
-            }
-
-            throw new LeaseException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+            var error = ResponseError.Read(response);
+            var domainError = new LeaseException($"{operation} failed: {error.Message}", $"{operation}_FAILED", status, error.Code);
+            domainError.SetWireError(error.Class, error.Effect);
+            throw domainError;
         }
         catch (ProtocolException exception)
         {

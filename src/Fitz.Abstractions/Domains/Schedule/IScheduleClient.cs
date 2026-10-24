@@ -22,7 +22,7 @@ public interface IScheduleClient
     /// <summary>Creates several schedules in one broker request (extension 706).</summary>
     Task CreateBatchAsync(IReadOnlyList<ScheduleEntry> entries, CancellationToken ct = default);
 
-    /// <summary>Reads a cursor page using broker extension 707.</summary>
+    /// <summary>Reads a cursor page using broker Schedule LIST (702).</summary>
     Task<ScheduleCursorPage> ListV2Async(string? continuation = null, ulong? limit = null, CancellationToken ct = default);
 
     /// <summary>
@@ -36,10 +36,10 @@ public interface IScheduleClient
     /// <summary>
     /// Reads one page of registered schedules.
     /// </summary>
-    /// <param name="offset">Zero-based index of the first entry to return. Defaults to the start.</param>
+    /// <param name="offset">Only null or zero is supported by the cursor-based wire format.</param>
     /// <param name="limit">Maximum entries to return. Defaults to the broker's page size.</param>
     /// <param name="ct">Cancellation token for the list request.</param>
-    /// <returns>The page of entries together with the total schedule count.</returns>
+    /// <returns>The page of entries and cursor state. Wire 2 does not include a total count.</returns>
     Task<ScheduleListPage> ListAsync(ulong? offset = null, ulong? limit = null, CancellationToken ct = default);
 
     /// <summary>

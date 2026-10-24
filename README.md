@@ -85,9 +85,9 @@ await tx.PutAsync("user-1"u8.ToArray(), """{"name":"Alice"}"""u8.ToArray());
 await tx.CommitAsync(KvDurability.Sync);
 ```
 
-`ClientConfig.ServiceName` is optional. New brokers record its trimmed value on
-the active session after advertising the `SESSION_METADATA` capability; older
-brokers receive no metadata frame.
+`ClientConfig.ServiceName` is optional and is sent in the Wire-2 `CONNECT`
+payload with the client build identity. Capability bits are reserved as zero in
+Wire 2.
 
 Generic Host consumers can register the same client through DI. The hosted
 lifecycle connects during host startup and closes asynchronously during host
@@ -244,15 +244,16 @@ For an A→B→C call, pass the handler's `RpcRequest.RemainingTime` and
 `CancellationToken` to the downstream `CallAsync` so its budget and cancellation
 are linked explicitly to the parent request.
 
-Schedule backend unavailability and broker saturation use the distinct coded
-error `FitzErrorCodes.ScheduleBackendError` (`7010`). `Retryability` classifies
-it as retryable subject to operation safety; it is not reported as malformed
-cron or parse input.
+Schedule broker saturation is `FitzErrorCodes.ScheduleBusy` (`7005`) and is
+retryable when the wire effect is `NOT_APPLIED`. Backend errors use
+`FitzErrorCodes.ScheduleBackendError` (`7006`) and keep the broker's reported
+effect.
 
 `Notice.UnsubscribeAllAsync()` sends broker message 503 and completes this
 client's local subscriptions after acknowledgment. `Schedule.CreateBatchAsync()`
-and `Schedule.ListV2Async()` expose broker extensions 706 and 707; use
-`Schedule.ListAsync()` for portable offset pagination. RPC worker handler failures
+and `Schedule.ListV2Async()` expose Schedule CREATE_BATCH (706) and cursor LIST
+(702). `Schedule.ListAsync()` reads the first cursor page; nonzero offsets are
+unsupported. RPC worker handler failures
 send a terminal 6010 response to the caller and invoke the worker error hook.
 
 ## Upgrading from 0.1.x

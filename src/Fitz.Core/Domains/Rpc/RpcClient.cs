@@ -18,8 +18,6 @@ sealed partial class RpcClient : IRpcClient, IDisposable
 {
     const int CorrelationIdLength = 16;
     const byte RpcResponseFlagStreamEnd = 0x01;
-    const uint RpcErrorCodeMin = 6001;
-    const uint RpcErrorCodeMax = 6013;
     const uint RpcBackpressureErrorCode = FitzErrorCodes.RpcBackpressure;
 
     static byte[] GuidToNetworkBytes(Guid value)
@@ -53,7 +51,6 @@ sealed partial class RpcClient : IRpcClient, IDisposable
     readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
     readonly Func<Func<CancellationToken, ValueTask>, IDisposable>? _onReconnect;
     readonly Func<CancellationToken>? _getConnectionClosedToken;
-    readonly Func<uint> _getCapabilityBits;
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly Action<Exception>? _onWorkerError;
     readonly TimeSpan _responseTimeout;
@@ -85,8 +82,7 @@ sealed partial class RpcClient : IRpcClient, IDisposable
             () => connection.ConnectionClosedToken,
             (handler, rejected) => connection.TryDispatchAsyncHandler("rpc", handler, rejected),
             connectionTimeout: connection.Timeout,
-            onWorkerError: connection.ReportAsyncHandlerError,
-            getCapabilityBits: () => connection.Capabilities.CapabilityBits)
+            onWorkerError: connection.ReportAsyncHandlerError)
     {
     }
 
@@ -138,7 +134,6 @@ sealed partial class RpcClient : IRpcClient, IDisposable
         _getConnectionClosedToken = getConnectionClosedToken;
         _dispatchAsyncHandler = dispatchAsyncHandler;
         _onWorkerError = onWorkerError;
-        _getCapabilityBits = getCapabilityBits ?? (() => 0);
         _responseTimeout = connectionTimeout ?? TimeSpan.FromSeconds(30);
     }
 
@@ -207,13 +202,16 @@ sealed partial class RpcClient : IRpcClient, IDisposable
         writer.WriteString(route);
         writer.WriteU32((uint)body.Length);
         writer.WriteBytes(body.Span);
-        if (timeout is not null && (_getCapabilityBits() & ServerCapabilities.RpcCancellationBit) != 0)
+        if (timeout is not null)
         {
             var remaining = timeout.Value - System.Diagnostics.Stopwatch.GetElapsedTime(budgetStartedAt);
             var remainingMs = (uint)Math.Clamp((long)remaining.TotalMilliseconds, 0L, 86_400_000L);
             writer.WriteU8(1);
-            writer.WriteU8(1);
             writer.WriteU32(remainingMs);
+        }
+        else
+        {
+            writer.WriteU8(0);
         }
 
         var requestSent = false;
@@ -371,10 +369,6 @@ sealed partial class RpcClient : IRpcClient, IDisposable
 
     void EnsureRpcLifecycleHandlerInitializedLocked()
     {
-        if ((_getCapabilityBits() & ServerCapabilities.RpcCancellationBit) == 0)
-        {
-            return;
-        }
         _rpcLifecycleRegistration ??= _registerNotificationHandler!(MessageTypes.RpcLifecycle, HandleRpcLifecycle);
     }
 
@@ -400,12 +394,6 @@ sealed partial class RpcClient : IRpcClient, IDisposable
         RpcCallState call,
         byte reason)
     {
-        if ((_getCapabilityBits() & ServerCapabilities.RpcCancellationBit) == 0)
-        {
-            call.Cancellation.TrySetResult(RpcCancellationOutcome.Unsupported);
-            return;
-        }
-
         var pending = new PendingCancellation(call.Cancellation);
         lock (_responseSync)
         {
@@ -552,7 +540,7 @@ sealed partial class RpcClient : IRpcClient, IDisposable
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Worker cleanup acknowledgments are best-effort lifecycle messages.")]
     async Task SendWorkerCleanupAckAsync(byte[] correlationBytes, CancellationToken connectionClosed)
     {
-        if (connectionClosed.IsCancellationRequested || (_getCapabilityBits() & ServerCapabilities.RpcCancellationBit) == 0)
+        if (connectionClosed.IsCancellationRequested)
         {
             return;
         }
@@ -595,7 +583,7 @@ sealed partial class RpcClient : IRpcClient, IDisposable
 
         try
         {
-            if (payload.Length < 5)
+            if (payload.Length < 9)
             {
                 return false;
             }
@@ -606,8 +594,10 @@ sealed partial class RpcClient : IRpcClient, IDisposable
                 return false;
             }
 
-            var code = reader.ReadU32();
-            if (code < RpcErrorCodeMin || code > RpcErrorCodeMax)
+            var code = reader.ReadU16();
+            var errorClass = reader.ReadU8();
+            var effect = reader.ReadU8();
+            if (effect > 2)
             {
                 return false;
             }
@@ -623,6 +613,7 @@ sealed partial class RpcClient : IRpcClient, IDisposable
                 MapRpcErrorCode(code),
                 1,
                 code);
+            rpcError.SetWireError(errorClass > 10 ? (byte)6 : errorClass, effect);
             return true;
         }
         catch
@@ -631,11 +622,13 @@ sealed partial class RpcClient : IRpcClient, IDisposable
         }
     }
 
-    static byte[] EncodeTerminalErrorBody(uint code, string message)
+    static byte[] EncodeTerminalErrorBody(uint code, string message, byte errorClass = 6, byte effect = 1)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(1);
-        writer.WriteU32(code);
+        writer.WriteU16(checked((ushort)code));
+        writer.WriteU8(errorClass);
+        writer.WriteU8(effect);
         writer.WriteString(message);
         return writer.Build();
     }
@@ -646,7 +639,7 @@ sealed partial class RpcClient : IRpcClient, IDisposable
         {
             FitzErrorCodes.RpcTimeout => "TIMEOUT",
             FitzErrorCodes.RpcWorkerNotFound => "WORKER_NOT_FOUND",
-            FitzErrorCodes.RpcBackpressure => "BACKPRESSURE",
+            FitzErrorCodes.RpcBackpressure => "BUSY",
             FitzErrorCodes.RpcRouteNotRegistered => "ROUTE_NOT_REGISTERED",
             FitzErrorCodes.RpcCorrelationNotFound => "CORRELATION_NOT_FOUND",
             FitzErrorCodes.RpcInvalidSequence => "INVALID_SEQUENCE",
@@ -672,12 +665,7 @@ sealed partial class RpcClient : IRpcClient, IDisposable
         var status = reader.ReadU8();
         if (status == 0)
         {
-            var data = reader.ReadBytes(reader.ReadU32());
-            if (!reader.IsEof)
-            {
-                throw new RpcException($"{operation} success response has trailing bytes", $"{operation}_INVALID_RESPONSE");
-            }
-            return data;
+            return reader.ReadBytes(reader.RemainingBytes);
         }
 
         if (status != 1)
@@ -685,14 +673,10 @@ sealed partial class RpcClient : IRpcClient, IDisposable
             throw new RpcException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
         }
 
-        var domainCode = reader.ReadU32();
-        var message = reader.ReadString();
-        if (!reader.IsEof)
-        {
-            throw new RpcException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE");
-        }
-
-        throw new RpcException($"{operation} failed: {message}", MapRpcErrorCode(domainCode), status, domainCode);
+        var error = ResponseError.Read(response);
+        var domainError = new RpcException($"{operation} failed: {error.Message}", MapRpcErrorCode(error.Code), status, error.Code);
+        domainError.SetWireError(error.Class, error.Effect);
+        throw domainError;
     }
 
     /// <summary>Releases local resources and ends any registrations this client owns.</summary>

@@ -1,22 +1,33 @@
-using System.Buffers.Binary;
-
 namespace Cntryl.Fitz.Protocol;
+
+readonly record struct ResponseErrorEnvelope(ushort Code, byte Class, byte Effect, string Message);
 
 static class ResponseError
 {
-    internal static (uint? Code, string Message) Read(ReadOnlyMemory<byte> response, bool codedOnly = false)
+    internal static ResponseErrorEnvelope Read(ReadOnlyMemory<byte> response)
     {
-        var payload = response.Span;
-        var plain = payload.Length >= 5 && BinaryPrimitives.ReadUInt32BigEndian(payload.Slice(1, 4)) == payload.Length - 5;
-        var coded = payload.Length >= 9 && BinaryPrimitives.ReadUInt32BigEndian(payload.Slice(5, 4)) == payload.Length - 9;
-        if (payload.IsEmpty || payload[0] != 1 || (codedOnly ? !coded : plain == coded))
+        var reader = new BinaryBufferReader(response);
+        if (reader.ReadU8() != 1)
         {
-            throw new ProtocolException("Error response is malformed or ambiguous");
+            throw new ProtocolException("Error response must begin with status 1.");
         }
 
-        var reader = new BinaryBufferReader(response);
-        reader.ReadU8();
-        uint? code = coded ? reader.ReadU32() : null;
-        return (code, reader.ReadString());
+        var code = reader.ReadU16();
+        var errorClass = reader.ReadU8();
+        var effect = reader.ReadU8();
+        if (effect > 2)
+        {
+            throw new ProtocolException("Error response contains an unknown effect.");
+        }
+        if (errorClass > 10)
+        {
+            errorClass = 6;
+        }
+        var message = reader.ReadString();
+        if (!reader.IsEof)
+        {
+            throw new ProtocolException("Error response has trailing bytes.");
+        }
+        return new ResponseErrorEnvelope(code, errorClass, effect, message);
     }
 }

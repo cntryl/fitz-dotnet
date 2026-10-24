@@ -100,7 +100,7 @@ sealed class QueueClient : IQueueClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw QueueWireHelpers.ReadError(response, "ENQUEUE", status, codedOnly: true);
+            throw QueueWireHelpers.ReadError(response, "ENQUEUE", status);
         }
 
         var result = reader.IsEof ? 0UL : reader.ReadU64();
@@ -166,7 +166,7 @@ sealed class QueueClient : IQueueClient, IDisposable
         var status = reader.ReadU8();
         if (status != 0)
         {
-            throw QueueWireHelpers.ReadError(response, "RESERVE", status, codedOnly: true);
+            throw QueueWireHelpers.ReadError(response, "RESERVE", status);
         }
 
         var wildcard = route.Split('/').Any(static segment => segment.Contains('*', StringComparison.Ordinal));
