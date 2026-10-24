@@ -251,7 +251,7 @@ public sealed class QueueClientTests
             else
             {
                 writer.WriteU8(1);
-                TestErrorEnvelope.Write(writer, 4051);
+                TestErrorEnvelope.Write(writer, 4050);
                 writer.WriteString("InvalidToken");
             }
             return Task.FromResult(writer.Build());
@@ -264,7 +264,7 @@ public sealed class QueueClientTests
         // Assert
         var error = await Assert.ThrowsAsync<QueueException>(act);
         Assert.Contains("InvalidToken", error.Message, StringComparison.Ordinal);
-        Assert.Equal(4051u, error.DomainCode);
+        Assert.Equal(4050u, error.DomainCode);
     }
 
     [Fact]
