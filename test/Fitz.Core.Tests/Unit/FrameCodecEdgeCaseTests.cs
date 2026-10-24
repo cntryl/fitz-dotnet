@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -20,7 +21,7 @@ public sealed class FrameCodecEdgeCaseTests
     }
 
     [Fact]
-    public void ShouldEncodeType254AsSingleByteGivenProtocolFrameWhenEncodingOrDecoding()
+    public void ShouldEncodeFixedWidthType254GivenProtocolFrameWhenEncodingOrDecoding()
     {
         // Arrange
         var payload = new byte[] { 0x11, 0x22 };
@@ -35,7 +36,7 @@ public sealed class FrameCodecEdgeCaseTests
     }
 
     [Fact]
-    public void ShouldRequireEscapeForType255GivenProtocolFrameWhenEncodingOrDecoding()
+    public void ShouldEncodeFixedWidthType255GivenProtocolFrameWhenEncodingOrDecoding()
     {
         // Arrange
         var payload = new byte[] { 0x33, 0x44 };
@@ -46,7 +47,7 @@ public sealed class FrameCodecEdgeCaseTests
 
         // Assert
         Assert.Equal((ushort)255, decoded.MessageType);
-        Assert.Equal((byte)0xFF, encoded[0]);
+        Assert.Equal((ushort)255, BinaryPrimitives.ReadUInt16BigEndian(encoded));
     }
 
     [Fact]
@@ -111,7 +112,7 @@ public sealed class FrameCodecEdgeCaseTests
     public void ShouldRoundTripMaximumSizePayloadGivenProtocolFrameWhenEncodingOrDecoding()
     {
         // Arrange
-        var payload = new byte[65535];
+        var payload = new byte[FrameCodec.MaxTransportFrameSize - FrameCodec.MaxHeaderSize];
         for (var i = 0; i < payload.Length; i++)
             payload[i] = (byte)(i % 256);
         var encoded = FrameCodec.Encode(500, payload);
@@ -129,7 +130,7 @@ public sealed class FrameCodecEdgeCaseTests
     [InlineData(1)]
     [InlineData(127)]
     [InlineData(254)]
-    public void ShouldUseSingleByteForSmallTypesGivenProtocolFrameWhenEncodingOrDecoding(ushort messageType)
+    public void ShouldEncodeFixedWidthSmallTypesGivenProtocolFrameWhenEncodingOrDecoding(ushort messageType)
     {
         // Arrange
         var payload = new byte[] { 0xFF };
@@ -146,7 +147,7 @@ public sealed class FrameCodecEdgeCaseTests
     [InlineData(256)]
     [InlineData(1000)]
     [InlineData(65535)]
-    public void ShouldUseEscapeForLargeTypesGivenProtocolFrameWhenEncodingOrDecoding(ushort messageType)
+    public void ShouldEncodeFixedWidthLargeTypesGivenProtocolFrameWhenEncodingOrDecoding(ushort messageType)
     {
         // Arrange
         var payload = new byte[] { 0xAA };
@@ -155,7 +156,7 @@ public sealed class FrameCodecEdgeCaseTests
         var encoded = FrameCodec.Encode(messageType, payload);
 
         // Assert
-        Assert.Equal((byte)0xFF, encoded[0]);
+        Assert.Equal(messageType, BinaryPrimitives.ReadUInt16BigEndian(encoded));
     }
 
     [Fact]
@@ -200,7 +201,7 @@ public sealed class FrameCodecEdgeCaseTests
         // Assert
         var ex = Assert.Throws<ProtocolException>(() => FrameCodec.DecodeStrict(new byte[] { 0xFF, 0x01, 0x02, 0x03 }));
 
-        Assert.Equal("Extended frame header is incomplete.", ex.Message);
+        Assert.Equal("Frame header is incomplete.", ex.Message);
     }
 
     [Fact]
@@ -209,10 +210,10 @@ public sealed class FrameCodecEdgeCaseTests
         // Arrange
         // Act
         // Assert
-        var payload = new byte[ushort.MaxValue + 1];
+        var payload = new byte[FrameCodec.MaxTransportFrameSize - FrameCodec.MaxHeaderSize + 1];
 
         var ex = Assert.Throws<ProtocolException>(() => FrameCodec.Encode(100, payload));
 
-        Assert.Contains("65535-byte Fitz wire limit", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("1 MiB Wire-2 limit", ex.Message, StringComparison.Ordinal);
     }
 }

@@ -663,7 +663,12 @@ sealed partial class RpcClient : IRpcClient, IDisposable
         var status = reader.ReadU8();
         if (status == 0)
         {
-            return reader.ReadBytes(reader.RemainingBytes);
+            var body = reader.ReadBytes(reader.ReadU32());
+            if (!reader.IsEof)
+            {
+                throw new ProtocolException($"{operation} response has trailing bytes.");
+            }
+            return body;
         }
 
         if (status != 1)

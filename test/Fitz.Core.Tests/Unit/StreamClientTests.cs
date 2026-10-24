@@ -1178,7 +1178,7 @@ public sealed class StreamClientTests
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
-                transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+                transport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             }
             else if (sentFrameCount == 2)
             {
@@ -1186,7 +1186,7 @@ public sealed class StreamClientTests
                 beginWriter.WriteU8(0);
                 beginWriter.WriteU64(44);
                 beginWriter.WriteU32(0);
-                transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamBegin, beginWriter.WrittenSpan));
+                transport.QueueResponse(MessageTypes.StreamBegin, beginWriter.WrittenSpan);
             }
         };
 
@@ -1223,7 +1223,7 @@ public sealed class StreamClientTests
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             }
             else if (sentFrameCount == 2)
             {
@@ -1231,7 +1231,7 @@ public sealed class StreamClientTests
                 beginWriter.WriteU8(0);
                 beginWriter.WriteU64(44);
                 beginWriter.WriteU32(0);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamBegin, beginWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.StreamBegin, beginWriter.WrittenSpan);
             }
         };
 
@@ -1244,7 +1244,7 @@ public sealed class StreamClientTests
 
             using var authProbeWriter = new BinaryBufferWriter();
             authProbeWriter.WriteU8(0);
-            secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            secondTransport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             reconnected.TrySetResult();
         };
 
@@ -1291,7 +1291,7 @@ public sealed class StreamClientTests
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             }
             else if (sentFrameCount == 2)
             {
@@ -1299,7 +1299,7 @@ public sealed class StreamClientTests
                 subscribeWriter.WriteU8(0);
                 subscribeWriter.WriteU8(1);
                 subscribeWriter.WriteU64(555);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamSubscribe, subscribeWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.StreamSubscribe, subscribeWriter.WrittenSpan);
             }
         };
 
@@ -1309,7 +1309,7 @@ public sealed class StreamClientTests
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
-                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+                secondTransport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             }
             else if (sentFrameCount == 2)
             {
@@ -1317,7 +1317,7 @@ public sealed class StreamClientTests
                 subscribeWriter.WriteU8(0);
                 subscribeWriter.WriteU8(1);
                 subscribeWriter.WriteU64(777);
-                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamSubscribe, subscribeWriter.WrittenSpan));
+                secondTransport.QueueResponse(MessageTypes.StreamSubscribe, subscribeWriter.WrittenSpan);
 
                 _ = Task.Run(async () =>
                 {
@@ -1328,7 +1328,7 @@ public sealed class StreamClientTests
                     var json = System.Text.Encoding.UTF8.GetBytes("{\"event\":\"committed\",\"last_resource_offset\":29}");
                     notification.WriteU32((uint)json.Length);
                     notification.WriteBytes(json);
-                    secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamNotify, notification.WrittenSpan));
+                    secondTransport.QueueResponse(MessageTypes.StreamNotify, notification.WrittenSpan);
                 });
             }
         };
@@ -1365,7 +1365,7 @@ public sealed class StreamClientTests
             var json = System.Text.Encoding.UTF8.GetBytes("{\"event\":\"committed\",\"last_resource_offset\":19}");
             notification.WriteU32((uint)json.Length);
             notification.WriteBytes(json);
-            firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.StreamNotify, notification.WrittenSpan));
+            firstTransport.QueueResponse(MessageTypes.StreamNotify, notification.WrittenSpan);
         }
 
         // Act

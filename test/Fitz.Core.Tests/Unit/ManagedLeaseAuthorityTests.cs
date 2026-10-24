@@ -182,10 +182,10 @@ public sealed class ManagedLeaseAuthorityTests
 
         // Assert
         Assert.NotNull(acquireHandler);
-        acquireHandler(ErrorResponse(5006, "lease wait timed out"));
+        acquireHandler(ErrorResponse(5055, "lease wait timed out"));
 
         var error = await Assert.ThrowsAsync<LeaseException>(() => pending);
-        Assert.Equal((uint)5006, error.DomainCode);
+        Assert.Equal((uint)5055, error.DomainCode);
         Assert.False(callbackInvoked);
     }
 
@@ -270,7 +270,7 @@ public sealed class ManagedLeaseAuthorityTests
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(1);
-        writer.WriteU32(code);
+        TestErrorEnvelope.Write(writer, code);
         writer.WriteString(message);
         return writer.Build();
     }

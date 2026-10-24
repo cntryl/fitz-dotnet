@@ -156,7 +156,7 @@ public sealed class LeaseClientTests
             else if (Interlocked.Increment(ref releaseCalls) == 1)
             {
                 writer.WriteU8(1);
-                writer.WriteU32(5009);
+                TestErrorEnvelope.Write(writer, 5009);
                 writer.WriteString("try again");
             }
             else
@@ -188,7 +188,7 @@ public sealed class LeaseClientTests
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
-            writer.WriteU32(FitzErrorCodes.LeaseHeld);
+            TestErrorEnvelope.Write(writer, FitzErrorCodes.LeaseHeld);
             writer.WriteString("HeldByOther: worker-1");
             return Task.FromResult(writer.Build());
         });
@@ -704,7 +704,7 @@ public sealed class LeaseClientTests
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
-                transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+                transport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             }
             else if (sentFrameCount == 2)
             {
@@ -712,7 +712,7 @@ public sealed class LeaseClientTests
                 acquireWriter.WriteU8(0);
                 acquireWriter.WriteU8(1);
                 acquireWriter.WriteU64(77);
-                transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseAcquire, acquireWriter.WrittenSpan));
+                transport.QueueResponse(MessageTypes.LeaseAcquire, acquireWriter.WrittenSpan);
             }
         };
 
@@ -746,7 +746,7 @@ public sealed class LeaseClientTests
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             }
             else if (sentFrameCount == 2)
             {
@@ -754,7 +754,7 @@ public sealed class LeaseClientTests
                 acquireWriter.WriteU8(0);
                 acquireWriter.WriteU8(1);
                 acquireWriter.WriteU64(77);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseAcquire, acquireWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.LeaseAcquire, acquireWriter.WrittenSpan);
             }
         };
 
@@ -767,7 +767,7 @@ public sealed class LeaseClientTests
 
             using var authProbeWriter = new BinaryBufferWriter();
             authProbeWriter.WriteU8(0);
-            secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            secondTransport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             reconnected.TrySetResult();
         };
 
@@ -907,14 +907,14 @@ public sealed class LeaseClientTests
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             }
             else if (sentFrameCount == 2)
             {
                 using var subscribeWriter = new BinaryBufferWriter();
                 subscribeWriter.WriteU8(0);
                 subscribeWriter.WriteU64(555);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseSubscribe, subscribeWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.LeaseSubscribe, subscribeWriter.WrittenSpan);
             }
         };
 
@@ -924,14 +924,14 @@ public sealed class LeaseClientTests
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
-                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+                secondTransport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             }
             else if (sentFrameCount == 2)
             {
                 using var subscribeWriter = new BinaryBufferWriter();
                 subscribeWriter.WriteU8(0);
                 subscribeWriter.WriteU64(777);
-                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseSubscribe, subscribeWriter.WrittenSpan));
+                secondTransport.QueueResponse(MessageTypes.LeaseSubscribe, subscribeWriter.WrittenSpan);
 
                 _ = Task.Run(async () =>
                 {
@@ -940,7 +940,7 @@ public sealed class LeaseClientTests
                     notification.WriteU64(777);
                     notification.WriteString("lease://prod/app/lock");
                     notification.WriteU32(0);
-                    secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseNotify, notification.WrittenSpan));
+                    secondTransport.QueueResponse(MessageTypes.LeaseNotify, notification.WrittenSpan);
                 });
             }
         };
@@ -975,7 +975,7 @@ public sealed class LeaseClientTests
             notification.WriteU64(555);
             notification.WriteString("lease://prod/app/lock");
             notification.WriteU32(0);
-            firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseNotify, notification.WrittenSpan));
+            firstTransport.QueueResponse(MessageTypes.LeaseNotify, notification.WrittenSpan);
         }
 
         // Act

@@ -13,9 +13,8 @@ namespace Cntryl.Fitz;
 /// <param name="Transport">Transport override. Defaults to selecting from the URL scheme.</param>
 /// <param name="Timeout">Per-request deadline. Defaults to 30 seconds.</param>
 /// <param name="AuthSettleDelay">
-/// Compatibility window the client waits after sending credentials. The protocol has no
-/// positive authentication acknowledgement, so a rejection arriving within this window is
-/// treated as authoritative.
+/// Legacy setting retained for source compatibility. Wire 2 waits for HELLO or
+/// CONNECT_REJECTED within the configured operation timeout.
 /// </param>
 /// <param name="TokenProvider">
 /// Supplies a bearer token per connection attempt. Invoked again on every reconnect, so it

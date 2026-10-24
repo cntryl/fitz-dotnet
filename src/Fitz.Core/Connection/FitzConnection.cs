@@ -87,8 +87,7 @@ sealed class FitzConnection : IAsyncDisposable
     public ServerCapabilities Capabilities => Volatile.Read(ref _capabilities) ?? ServerCapabilities.None;
 
     /// <summary>
-    /// Records a broker capability advertisement. An unparseable or unrecognised advertisement is
-    /// ignored rather than rejected: it must never be more disruptive than a missing one.
+    /// Validates the broker HELLO and completes authentication for its transport generation.
     /// </summary>
     ValueTask ApplyHelloAsync(ReadOnlyMemory<byte> payload, ITransport sessionTransport)
     {
@@ -97,6 +96,7 @@ sealed class FitzConnection : IAsyncDisposable
             throw new ProtocolException("HELLO payload is truncated or contains invalid negotiated limits.");
         }
 
+        TaskCompletionSource<bool>? authentication;
         lock (_gate)
         {
             if (!ReferenceEquals(Volatile.Read(ref _transport), sessionTransport))
@@ -107,7 +107,9 @@ sealed class FitzConnection : IAsyncDisposable
             Volatile.Write(ref _capabilities, capabilities);
             var inFlightLimit = Math.Min(capabilities.MaxInFlightRequests, (uint)_config.MaxInFlightRequests);
             _requestGate.SetMaxConcurrency((int)inFlightLimit);
+            authentication = _authFailure;
         }
+        authentication?.TrySetResult(true);
         Log(FitzLogLevel.Debug, "fitz.connection.hello", new Dictionary<string, object?>
         {
             ["protocol_version"] = capabilities.ProtocolVersion,
@@ -710,6 +712,7 @@ sealed class FitzConnection : IAsyncDisposable
         lock (_gate)
         {
             Volatile.Write(ref _capabilities, null);
+            _authFailure = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             _goAwayTransport = null;
             previousTransport = Interlocked.Exchange(ref _transport, transport);
         }
@@ -734,7 +737,6 @@ sealed class FitzConnection : IAsyncDisposable
 
             SetState(ConnectionState.Authenticating);
             _authAttemptIsReconnect = isReconnect;
-            _authFailure = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             var tokenProvider = _config.TokenProvider;
             var token = tokenProvider is null
@@ -854,30 +856,15 @@ sealed class FitzConnection : IAsyncDisposable
 
     async Task WaitForAuthSettlementAsync(CancellationToken ct)
     {
-        var settleDelay = _config.AuthSettleDelay is { } configured && configured >= TimeSpan.Zero
-            ? configured
-            : GetDefaultAuthSettleDelay();
-
-        if (_authFailure is null)
+        var authentication = _authFailure
+            ?? throw new ConnectionException("Connection closed during the Wire-2 handshake.");
+        try
         {
-            return;
+            await authentication.Task.WaitAsync(Timeout, ct).ConfigureAwait(false);
         }
-
-        if (settleDelay == TimeSpan.Zero)
+        catch (TimeoutException exception)
         {
-            if (_authFailure.Task.IsCompleted)
-            {
-                await _authFailure.Task.ConfigureAwait(false);
-            }
-
-            return;
-        }
-
-        var delayTask = Task.Delay(settleDelay, ct);
-        var completed = await Task.WhenAny(_authFailure.Task, delayTask).ConfigureAwait(false);
-        if (completed == _authFailure.Task)
-        {
-            await _authFailure.Task.ConfigureAwait(false);
+            throw new RequestTimeoutException("Timed out waiting for the broker HELLO.", exception);
         }
     }
 
@@ -1688,7 +1675,6 @@ sealed class FitzConnection : IAsyncDisposable
             : "connection closed during CONNECT";
     }
 
-    static TimeSpan GetDefaultAuthSettleDelay() => TimeSpan.FromMilliseconds(100);
 
     static TimeSpan Min(TimeSpan left, TimeSpan right) => left <= right ? left : right;
 

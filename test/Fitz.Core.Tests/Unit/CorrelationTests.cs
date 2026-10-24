@@ -1,17 +1,16 @@
-using System.Buffers.Binary;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
 /// <summary>
-/// Covers the request-correlation contract: CORRELATE/CORRELATED framing, capability negotiation,
+/// Covers the Wire 2 request correlation header, HELLO negotiation,
 /// and the concurrency regimes either side of it.
 /// </summary>
 public sealed class CorrelationTests
 {
     [Fact]
-    public void ShouldEncodeTwoRecordsGivenCorrelatedRequestWhenEncoding()
+    public void ShouldEncodeHeaderCorrelationGivenRequestWhenEncoding()
     {
         // Arrange
         var payload = new byte[] { 0xAA, 0xBB };
@@ -20,14 +19,10 @@ public sealed class CorrelationTests
         var frame = FrameCodec.EncodeCorrelated(0x0102030405060708, MessageTypes.KvGet, payload);
 
         // Assert
-        Assert.Equal(MessageTypes.Correlate, frame[0]);
-        Assert.Equal(8, BinaryPrimitives.ReadUInt16BigEndian(frame.AsSpan(1, 2)));
-        Assert.Equal(0x0102030405060708UL, BinaryPrimitives.ReadUInt64BigEndian(frame.AsSpan(3, 8)));
-
-        // The labelled request follows immediately, in the same transport frame.
-        Assert.Equal(MessageTypes.KvGet, frame[FrameCodec.CorrelationRecordSize]);
-        Assert.Equal(payload.Length, BinaryPrimitives.ReadUInt16BigEndian(frame.AsSpan(FrameCodec.CorrelationRecordSize + 1, 2)));
-        Assert.Equal(payload, frame.AsSpan(FrameCodec.CorrelationRecordSize + 3).ToArray());
+        var decoded = FrameCodec.DecodeStrict(frame);
+        Assert.Equal(MessageTypes.KvGet, decoded.MessageType);
+        Assert.Equal(0x0102030405060708UL, decoded.CorrelationId);
+        Assert.Equal(payload, decoded.Payload.ToArray());
     }
 
     [Fact]
@@ -44,25 +39,20 @@ public sealed class CorrelationTests
     }
 
     [Fact]
-    public void ShouldReadBothRecordsGivenOneTransportFrameWhenParsing()
+    public void ShouldReadCorrelatedFrameGivenOneTransportFrameWhenParsing()
     {
-        // Arrange: a correlated response is two TLV records in a single transport frame.
+        // Arrange
         var parser = new FrameParser();
         var frame = FrameCodec.EncodeCorrelated(42, MessageTypes.KvGet, [0x7]);
-        frame[0] = (byte)MessageTypes.Correlated;
 
         // Act
         parser.Append(frame);
 
         // Assert
-        Assert.True(parser.TryReadFrame(out var label));
-        Assert.Equal(MessageTypes.Correlated, label.MessageType);
-        Assert.Equal(42UL, FrameCodec.ReadCorrelationId(label.Payload.Span));
-
         Assert.True(parser.TryReadFrame(out var response));
+        Assert.Equal(42UL, response.CorrelationId);
         Assert.Equal(MessageTypes.KvGet, response.MessageType);
         Assert.Equal([0x7], response.Payload.ToArray());
-
         Assert.False(parser.TryReadFrame(out _));
     }
 
@@ -70,7 +60,7 @@ public sealed class CorrelationTests
     public void ShouldCarryMaximumPayloadGivenCorrelatedExtendedFrameWhenParsing()
     {
         // Arrange
-        var payload = new byte[ushort.MaxValue];
+        var payload = new byte[FrameCodec.MaxTransportFrameSize - FrameCodec.MaxHeaderSize];
         var frame = FrameCodec.EncodeCorrelated(42, ushort.MaxValue, payload);
         var parser = new FrameParser();
 
@@ -79,11 +69,10 @@ public sealed class CorrelationTests
 
         // Assert
         Assert.Equal(FrameCodec.MaxTransportFrameSize, frame.Length);
-        Assert.True(parser.TryReadFrame(out var label));
-        Assert.Equal(MessageTypes.Correlate, label.MessageType);
         Assert.True(parser.TryReadFrame(out var request));
+        Assert.Equal(42UL, request.CorrelationId);
         Assert.Equal(ushort.MaxValue, request.MessageType);
-        Assert.Equal(ushort.MaxValue, request.Payload.Length);
+        Assert.Equal(payload.Length, request.Payload.Length);
         Assert.False(parser.TryReadFrame(out _));
     }
 
@@ -91,16 +80,15 @@ public sealed class CorrelationTests
     public void ShouldParseGivenServerHelloWithTrailingBytesWhenAdvertising()
     {
         // Arrange: a later protocol version may append fields; readers ignore the tail.
-        Span<byte> payload = stackalloc byte[10];
-        BinaryPrimitives.WriteUInt16BigEndian(payload[..2], 3);
-        BinaryPrimitives.WriteUInt32BigEndian(payload.Slice(2, 4), ServerCapabilities.CorrelationBit);
+        var payload = new byte[24];
+        ConnectionNegotiationTests.HelloFrame().AsSpan(FrameCodec.MaxHeaderSize).CopyTo(payload);
 
         // Act
         var parsed = ServerCapabilities.TryParse(payload, out var capabilities);
 
         // Assert
         Assert.True(parsed);
-        Assert.Equal(3, capabilities.ProtocolVersion);
+        Assert.Equal(2, capabilities.ProtocolVersion);
         Assert.True(capabilities.SupportsCorrelation);
     }
 

@@ -12,7 +12,7 @@ public sealed class QueueBackpressureTests
         // Arrange
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(1);
-        writer.WriteU32(4005);
+        TestErrorEnvelope.Write(writer, 4005);
         writer.WriteString("not accepted");
         await using var item = new QueueReservedItem("queue://prod/app/tasks", ReadOnlyMemory<byte>.Empty,
             QueueItem.AttemptUnavailable, 7, 11, (_, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build()));
@@ -29,13 +29,13 @@ public sealed class QueueBackpressureTests
         // Arrange
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(1);
-        writer.WriteU32(7010);
+        TestErrorEnvelope.Write(writer, 7005);
         writer.WriteString("not accepted");
         using var schedule = new ScheduleClient((_, _, _) => Task.FromResult(writer.Build()));
         // Act
         var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.CancelAsync("schedule://prod/app/jobs/run"));
         // Assert
-        Assert.Equal(7010u, error.DomainCode);
+        Assert.Equal(7005u, error.DomainCode);
         Assert.True(Retryability.IsRetryable(error));
     }
 
@@ -47,7 +47,7 @@ public sealed class QueueBackpressureTests
         // Arrange
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(1);
-        writer.WriteU32(code);
+        TestErrorEnvelope.Write(writer, code);
         writer.WriteString("broker rejection");
         var calls = 0;
         await using var item = new QueueReservedItem("queue://prod/app/tasks", ReadOnlyMemory<byte>.Empty,
@@ -65,7 +65,7 @@ public sealed class QueueBackpressureTests
     }
 
     [Fact]
-    public void ShouldPreservePlainMessageGivenLongErrorWhenReadingQueueResponse()
+    public void ShouldRejectPlainMessageGivenLongErrorWhenReadingQueueResponse()
     {
         // Arrange
         var message = new string('x', 4005);
@@ -76,7 +76,7 @@ public sealed class QueueBackpressureTests
         var error = QueueWireHelpers.ReadError(writer.Build(), "COMPLETE", 1);
         // Assert
         Assert.Null(error.DomainCode);
-        Assert.Contains(message, error.Message, StringComparison.Ordinal);
+        Assert.EndsWith("INVALID_RESPONSE", error.Code, StringComparison.Ordinal);
         Assert.False(Retryability.IsRetryable(error));
     }
 

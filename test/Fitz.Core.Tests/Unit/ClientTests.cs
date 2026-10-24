@@ -248,7 +248,7 @@ public sealed class ClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+            transport.QueueResponse(MessageTypes.LeaseQuery, writer.WrittenSpan);
         };
         var config = new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
@@ -267,7 +267,11 @@ public sealed class ClientTests
         Assert.Single(transport.SentFrames);
         var frame = FrameCodec.DecodeStrict(transport.SentFrames[0]);
         Assert.Equal(MessageTypes.Connect, frame.MessageType);
-        Assert.Equal("token-123", System.Text.Encoding.UTF8.GetString(frame.Payload.Span));
+        var connect = new BinaryBufferReader(frame.Payload.ToArray());
+        Assert.Equal((ushort)2, connect.ReadU16());
+        Assert.Equal((ushort)2, connect.ReadU16());
+        Assert.Equal(0u, connect.ReadU32());
+        Assert.Equal("token-123", connect.ReadString());
     }
 
     [Fact]
@@ -349,7 +353,7 @@ public sealed class ClientTests
         {
             if (sentFrameCount == 2)
             {
-                reconnectTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, [0, 0, 0, 0, 0, 0]));
+                reconnectTransport.QueueResponse(MessageTypes.LeaseQuery, [0, 0, 0, 0, 0, 0]);
             }
         };
         var factoryCalls = 0;
@@ -395,7 +399,7 @@ public sealed class ClientTests
             });
         await connection.ConnectAsync();
 
-        var oversizedPayload = new byte[ushort.MaxValue + 1];
+        var oversizedPayload = new byte[FrameCodec.MaxTransportFrameSize - FrameCodec.MaxHeaderSize + 1];
 
         // Act
         var operation = request
@@ -543,7 +547,7 @@ public sealed class ClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+            firstTransport.QueueResponse(MessageTypes.LeaseQuery, writer.WrittenSpan);
         };
         _ = Task.Run(async () =>
         {
@@ -589,7 +593,7 @@ public sealed class ClientTests
             {
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.LeaseQuery, writer.WrittenSpan);
             }
         };
         var neverConnects = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -835,7 +839,7 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task ShouldResetResponseLaneGivenSentRequestWhenOuterDeadlineExpires()
+    public async Task ShouldKeepSessionGivenCorrelatedRequestWhenOuterDeadlineExpires()
     {
         // Arrange
         await using var transport = CreateConfirmingTransport();
@@ -857,9 +861,7 @@ public sealed class ClientTests
 
         // Assert
         await Assert.ThrowsAsync<RequestTimeoutException>(() => operation);
-        await WaitForConditionAsync(
-            () => connection.State != ConnectionState.Authenticated,
-            TimeSpan.FromSeconds(1));
+        Assert.Equal(ConnectionState.Authenticated, connection.State);
     }
 
     [Fact]
@@ -955,7 +957,7 @@ public sealed class ClientTests
             {
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.LeaseQuery, writer.WrittenSpan);
                 return;
             }
 
@@ -986,7 +988,7 @@ public sealed class ClientTests
     }
 
     [Fact]
-    public async Task ShouldResetConnectionGivenUncorrelatedRequestTimeoutWhenConnectionOperationRuns()
+    public async Task ShouldKeepConnectionGivenCorrelatedRequestTimeoutWhenConnectionOperationRuns()
     {
         // Arrange
         await using var transport = new QueuedTransport();
@@ -999,7 +1001,7 @@ public sealed class ClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+            transport.QueueResponse(MessageTypes.LeaseQuery, writer.WrittenSpan);
         };
         await using var client = new Client(
             new ClientConfig(
@@ -1020,7 +1022,7 @@ public sealed class ClientTests
             client.Kv.BeginAsync("kv://prod/app/users"));
 
         Assert.Contains("Request timeout", ex.Message, StringComparison.OrdinalIgnoreCase);
-        await WaitForConditionAsync(() => !client.IsConnected, TimeSpan.FromSeconds(1));
+        Assert.True(client.IsConnected);
     }
 
     [Fact]
@@ -1037,7 +1039,7 @@ public sealed class ClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+            transport.QueueResponse(MessageTypes.LeaseQuery, writer.WrittenSpan);
         };
         await using var connection = new FitzConnection(
             new ClientConfig(
@@ -1064,11 +1066,11 @@ public sealed class ClientTests
         Assert.False(secondRequest.IsCompleted);
         Assert.Equal(2, transport.SentFrames.Count);
 
-        transport.QueueIncomingFrame(FrameCodec.Encode(77, "ok"u8));
+        transport.QueueResponse(77, "ok"u8);
         Assert.Equal("ok", System.Text.Encoding.UTF8.GetString((await firstRequest).Span));
 
         await WaitForConditionAsync(() => transport.SentFrames.Count == 3, TimeSpan.FromSeconds(1));
-        transport.QueueIncomingFrame(FrameCodec.Encode(77, "done"u8));
+        transport.QueueResponse(77, "done"u8);
         Assert.Equal("done", System.Text.Encoding.UTF8.GetString((await secondRequest).Span));
 
         await connection.CloseAsync();
@@ -1106,9 +1108,9 @@ public sealed class ClientTests
 
             Assert.Contains("queue", ex.Message, StringComparison.OrdinalIgnoreCase);
 
-            transport.QueueIncomingFrame(FrameCodec.Encode(88, "ok"u8));
+            transport.QueueResponse(88, "ok"u8);
             await WaitForConditionAsync(() => transport.SentFrames.Count == 3, TimeSpan.FromSeconds(1));
-            transport.QueueIncomingFrame(FrameCodec.Encode(88, "done"u8));
+            transport.QueueResponse(88, "done"u8);
             await Task.WhenAll(first.AsTask(), second.AsTask());
         }
         finally
@@ -1131,7 +1133,7 @@ public sealed class ClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+            transport.QueueResponse(MessageTypes.LeaseQuery, writer.WrittenSpan);
         };
         await using var client = new Client(
             new ClientConfig(
@@ -1148,7 +1150,7 @@ public sealed class ClientTests
             subscribeResponse.WriteU8(0);
             subscribeResponse.WriteU8(1);
             subscribeResponse.WriteU64(55);
-            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.NoticeSubscribe, subscribeResponse.WrittenSpan));
+            transport.QueueResponse(MessageTypes.NoticeSubscribe, subscribeResponse.WrittenSpan);
         }
 
         var subscription = await subscribeTask;
@@ -1161,7 +1163,7 @@ public sealed class ClientTests
             notification.WriteString("notice://prod/app/events");
             notification.WriteU32(5);
             notification.WriteBytes("hello"u8);
-            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.NoticeNotify, notification.WrittenSpan));
+            transport.QueueResponse(MessageTypes.NoticeNotify, notification.WrittenSpan);
         }
 
         var message = await received.WaitAsync(TimeSpan.FromSeconds(1));
@@ -1178,9 +1180,9 @@ public sealed class ClientTests
         using (var unsubscribeResponse = new BinaryBufferWriter())
         {
             unsubscribeResponse.WriteU8(0);
-            transport.QueueIncomingFrame(FrameCodec.Encode(
+            transport.QueueResponse(
                 MessageTypes.NoticeUnsubscribe,
-                unsubscribeResponse.WrittenSpan));
+                unsubscribeResponse.WrittenSpan);
         }
         await disposeTask;
     }
@@ -1289,38 +1291,12 @@ public sealed class ClientTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    sealed class IdleTransport : ITransport
+    sealed class IdleTransport : TestQueuedTransport
     {
-        public Uri Url { get; } = new("ws://idle");
-
-        public Task ConnectAsync(CancellationToken ct = default)
-        {
-            ct.ThrowIfCancellationRequested();
-            return Task.CompletedTask;
-        }
-
-        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
-        {
-            ct.ThrowIfCancellationRequested();
-            return Task.CompletedTask;
-        }
-
-        public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
-        {
-            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, ct);
-            return PooledFrame.Closed;
-        }
-
-        public Task CloseAsync(CancellationToken ct = default)
-        {
-            ct.ThrowIfCancellationRequested();
-            return Task.CompletedTask;
-        }
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public override Uri Url { get; } = new("ws://idle");
     }
 
-    sealed class BlockingConnectTransport : ITransport
+    sealed class BlockingConnectTransport : TestQueuedTransport
     {
         readonly Task _connectSignal;
 
@@ -1329,11 +1305,11 @@ public sealed class ClientTests
             _connectSignal = connectSignal;
         }
 
-        public Uri Url { get; } = new("ws://blocking");
+        public override Uri Url { get; } = new("ws://blocking");
 
         public bool CancellationObserved { get; private set; }
 
-        public async Task ConnectAsync(CancellationToken ct = default)
+        public override async Task ConnectAsync(CancellationToken ct = default)
         {
             ct.ThrowIfCancellationRequested();
             try
@@ -1347,88 +1323,9 @@ public sealed class ClientTests
             }
         }
 
-        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
-        {
-            ct.ThrowIfCancellationRequested();
-            return Task.CompletedTask;
-        }
-
-        public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
-        {
-            await Task.Delay(System.Threading.Timeout.InfiniteTimeSpan, ct);
-            return PooledFrame.Closed;
-        }
-
-        public Task CloseAsync(CancellationToken ct = default)
-        {
-            ct.ThrowIfCancellationRequested();
-            return Task.CompletedTask;
-        }
-
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    sealed class QueuedTransport : ITransport
-    {
-        readonly Channel<PooledFrame> _incoming = Channel.CreateUnbounded<PooledFrame>();
-        readonly object _sentFramesGate = new();
-
-        public List<byte[]> SentFrames { get; } = [];
-        public Action<int>? AfterSend { get; set; }
-
-        public Uri Url { get; } = new("ws://queued");
-
-        public Task ConnectAsync(CancellationToken ct = default)
-        {
-            ct.ThrowIfCancellationRequested();
-            return Task.CompletedTask;
-        }
-
-        public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
-        {
-            ct.ThrowIfCancellationRequested();
-            int sentFrameCount;
-            lock (_sentFramesGate)
-            {
-                SentFrames.Add(data.ToArray());
-                sentFrameCount = SentFrames.Count;
-            }
-
-            AfterSend?.Invoke(sentFrameCount);
-
-            return Task.CompletedTask;
-        }
-
-        public async ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default)
-        {
-            ct.ThrowIfCancellationRequested();
-            return await _incoming.Reader.ReadAsync(ct);
-        }
-
-        public void QueueIncomingFrame(byte[] frame)
-        {
-            ArgumentNullException.ThrowIfNull(frame);
-
-            var buffer = ArrayPool<byte>.Shared.Rent(frame.Length);
-            frame.AsSpan().CopyTo(buffer);
-            _incoming.Writer.TryWrite(PooledFrame.FromRentedBuffer(buffer, frame.Length));
-        }
-
-        public void QueueClosed() => _incoming.Writer.TryWrite(PooledFrame.Closed);
-
-        public Task CloseAsync(CancellationToken ct = default)
-        {
-            ct.ThrowIfCancellationRequested();
-            _incoming.Writer.TryComplete();
-            return Task.CompletedTask;
-        }
-
-        public ValueTask DisposeAsync()
-        {
-            _incoming.Writer.TryComplete();
-            return ValueTask.CompletedTask;
-        }
-    }
+    sealed class QueuedTransport : TestQueuedTransport { }
 
     [Fact]
     public async Task ShouldReportCallerSuppliedTransportNameGivenCustomTransportWhenLifecycleEventEmitted()
@@ -1479,7 +1376,7 @@ public sealed class ClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
-            transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, writer.WrittenSpan));
+            transport.QueueResponse(MessageTypes.LeaseQuery, writer.WrittenSpan);
         };
         return transport;
     }
