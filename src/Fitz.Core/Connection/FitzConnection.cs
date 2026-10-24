@@ -978,7 +978,7 @@ sealed class FitzConnection : IAsyncDisposable
             {
                 throw new ProtocolException("GOAWAY contains trailing bytes.");
             }
-            Log(FitzLogLevel.Information, "fitz.connection.goaway", new Dictionary<string, object?>
+            Log(FitzLogLevel.Info, "fitz.connection.goaway", new Dictionary<string, object?>
             {
                 ["code"] = goAwayCode,
                 ["grace_ms"] = graceMs,

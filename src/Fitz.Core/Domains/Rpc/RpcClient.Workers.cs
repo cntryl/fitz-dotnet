@@ -431,7 +431,7 @@ sealed partial class RpcClient
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Try-decode treats every malformed untrusted frame as a non-match.")]
-    bool TryDecodeInboundRequest(byte[] payload, out byte[] correlationId, out string route)
+    static bool TryDecodeInboundRequest(byte[] payload, out byte[] correlationId, out string route)
     {
         correlationId = Array.Empty<byte>();
         route = string.Empty;

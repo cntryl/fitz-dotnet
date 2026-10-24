@@ -16,7 +16,7 @@ sealed record ServerCapabilities(
     public const uint RpcCancellationBit = 0;
     public static ServerCapabilities None { get; } = new(0, 0, 1024 * 1024, 256, 0);
     public bool SupportsCorrelation => ProtocolVersion >= 2;
-    public bool SupportsSessionMetadata => false;
+    public static bool SupportsSessionMetadata => false;
     public bool SupportsKvScanExclusive => ProtocolVersion >= 2;
     public bool SupportsRpcCancellation => ProtocolVersion >= 2;
 

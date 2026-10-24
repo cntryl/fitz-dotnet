@@ -367,10 +367,8 @@ sealed partial class RpcClient : IRpcClient, IDisposable
         EnsureRpcLifecycleHandlerInitializedLocked();
     }
 
-    void EnsureRpcLifecycleHandlerInitializedLocked()
-    {
+    void EnsureRpcLifecycleHandlerInitializedLocked() =>
         _rpcLifecycleRegistration ??= _registerNotificationHandler!(MessageTypes.RpcLifecycle, HandleRpcLifecycle);
-    }
 
     void CompleteRpcCall(Guid correlationId, RpcCallState call, Exception? exception = null)
     {
