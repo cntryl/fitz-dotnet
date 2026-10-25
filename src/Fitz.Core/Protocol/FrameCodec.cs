@@ -10,7 +10,8 @@ static class FrameCodec
     // Kept as an internal source-compatibility name; correlation now occupies the frame header.
     public const int CorrelationRecordSize = MaxHeaderSize;
     public const byte AckRequestedFlag = 1;
-    const byte KnownFlags = AckRequestedFlag;
+    public const byte ResponseFinalFlag = 2;
+    const byte KnownFlags = AckRequestedFlag | ResponseFinalFlag;
 
     /// <summary>Largest encoded size for a payload of the given length.</summary>
     public static int MaxEncodedSize(int payloadLength)

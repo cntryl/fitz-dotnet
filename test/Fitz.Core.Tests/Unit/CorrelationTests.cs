@@ -57,6 +57,21 @@ public sealed class CorrelationTests
     }
 
     [Fact]
+    public void ShouldAcceptResponseFinalFlagGivenCorrelatedTerminalResponse()
+    {
+        // Arrange
+        var frame = FrameCodec.Encode(MessageTypes.KvGet, [0x6F, 0x6B], flags: FrameCodec.ResponseFinalFlag, correlationId: 1);
+
+        // Act
+        var decoded = FrameCodec.DecodeStrict(frame);
+
+        // Assert
+        Assert.Equal(FrameCodec.ResponseFinalFlag, decoded.Flags);
+        Assert.Equal(1UL, decoded.CorrelationId);
+        Assert.Equal(new byte[] { 0x6F, 0x6B }, decoded.Payload.ToArray());
+    }
+
+    [Fact]
     public void ShouldCarryMaximumPayloadGivenCorrelatedExtendedFrameWhenParsing()
     {
         // Arrange

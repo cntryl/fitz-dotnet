@@ -275,6 +275,27 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
+    public async Task ShouldReturnAlreadyQueuedGivenDuplicateQueuedAcquireOutcome()
+    {
+        // Arrange
+        using var leaseClient = new LeaseClient((_, _, _) =>
+        {
+            using var response = new BinaryBufferWriter();
+            response.WriteU8(0);
+            response.WriteU8(3);
+            response.WriteU64(0);
+            return Task.FromResult(response.Build());
+        });
+
+        // Act
+        var error = await Assert.ThrowsAsync<LeaseException>(() =>
+            leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(5)));
+
+        // Assert
+        Assert.Equal("ALREADY_QUEUED", error.Code);
+    }
+
+    [Fact]
     public async Task ShouldCopyPayloadGivenDeferredGrantWhenBorrowedNotificationReturns()
     {
         // Arrange
