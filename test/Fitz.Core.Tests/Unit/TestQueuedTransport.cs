@@ -105,6 +105,10 @@ class TestQueuedTransport : ITransport
                 _answered.Add(correlationId);
             }
         }
+        if (correlationId != 0 && !(messageType == 400 && payload.StartsWith(new byte[] { 0, 2 })))
+        {
+            flags |= FrameCodec.ResponseFinalFlag;
+        }
         QueueIncomingFrame(FrameCodec.Encode(messageType, payload, flags, correlationId));
     }
 

@@ -151,6 +151,42 @@ public sealed class CorrelationTests
     }
 
     [Fact]
+    public async Task ShouldWaitGivenIntermediateFrameForFinalCorrelatedResponse()
+    {
+        // Arrange
+        using var mux = new Multiplexer();
+        mux.SetConnected();
+        var request = mux.RequestAsync(
+            MessageTypes.LeaseAcquire,
+            [0x1],
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromSeconds(10),
+            correlationId: 17);
+
+        // Act
+        Assert.True(mux.DispatchCorrelated(17, MessageTypes.LeaseAcquire, new byte[] { 0, 2 }, responseFinal: false));
+        Assert.False(request.IsCompleted);
+        Assert.True(mux.DispatchCorrelated(17, MessageTypes.LeaseAcquire, new byte[] { 0, 0, 0, 9 }, responseFinal: true));
+
+        // Assert
+        Assert.Equal(new byte[] { 0, 0, 0, 9 }, await request.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
+
+    [Fact]
+    public void ShouldRejectGivenUnknownCorrelationWhenDispatched()
+    {
+        // Arrange
+        using var mux = new Multiplexer();
+        mux.SetConnected();
+
+        // Act
+        Action act = () => { _ = mux.DispatchCorrelated(99, MessageTypes.LeaseAcquire, new byte[] { 0x1 }); };
+
+        // Assert
+        Assert.Throws<ProtocolException>(act);
+    }
+
+    [Fact]
     public async Task ShouldNotSerializeGivenManySameTypeRequestsWhenCorrelated()
     {
         // Arrange: correlated requests share no lane, so all of them reach the transport.
@@ -225,27 +261,22 @@ public sealed class CorrelationTests
     }
 
     [Fact]
-    public async Task ShouldFallThroughGivenLaterPhaseForCompletedCorrelationWhenDispatched()
+    public void ShouldNotFallbackGivenUnknownCorrelationWhenDispatched()
     {
-        // Arrange: one correlation may produce a later domain-defined phase after its request
-        // waiter completed. The connection falls through to normal message-type routing.
+        // Arrange
         using var mux = new Multiplexer();
         mux.SetConnected();
-        var pushed = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var called = false;
         using var registration = mux.RegisterNotificationHandler(
             MessageTypes.LeaseAcquire,
-            payload => pushed.TrySetResult(payload));
+            _ => called = true);
 
         // Act
-        var routed = mux.DispatchCorrelated(9999, MessageTypes.LeaseAcquire, new byte[] { 0x1 });
-        if (!routed)
-        {
-            mux.Dispatch(MessageTypes.LeaseAcquire, new byte[] { 0x1 });
-        }
+        Action act = () => { _ = mux.DispatchCorrelated(9999, MessageTypes.LeaseAcquire, new byte[] { 0x1 }); };
 
         // Assert
-        Assert.False(routed);
-        Assert.Equal([0x1], await pushed.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Throws<ProtocolException>(act);
+        Assert.False(called);
     }
 
     [Fact]

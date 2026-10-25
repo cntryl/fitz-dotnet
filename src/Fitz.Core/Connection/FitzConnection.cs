@@ -137,11 +137,14 @@ sealed class FitzConnection : IAsyncDisposable
     {
         while (true)
         {
-            var next = unchecked((ulong)Interlocked.Increment(ref _nextCorrelationId));
-            if (next != 0)
+            var current = Volatile.Read(ref _nextCorrelationId);
+            if (current == -1)
             {
-                return next;
+                throw new ProtocolException("Correlation identifiers exhausted; reconnect before another request.");
             }
+            var next = unchecked(current + 1);
+            if (Interlocked.CompareExchange(ref _nextCorrelationId, next, current) == current)
+                return unchecked((ulong)next);
         }
     }
 
@@ -424,7 +427,11 @@ sealed class FitzConnection : IAsyncDisposable
         CancellationToken ct = default)
     {
         await WaitForRequestReadyAsync(ct).ConfigureAwait(false);
-        var correlationId = IsRpcMessage(messageType) ? NextCorrelationId() : 0UL;
+        var rpcResponseWithoutRequestCorrelation = messageType is 303 or 305 ||
+            (messageType == 304 && (payload.IsEmpty || payload.Span[0] != 1));
+        var correlationId = IsRpcMessage(messageType) && !rpcResponseWithoutRequestCorrelation
+            ? NextCorrelationId()
+            : 0UL;
         var frame = EncodeFrame(messageType, payload.Span, 0, correlationId);
         ITransport? sendTransport = null;
 
@@ -732,6 +739,7 @@ sealed class FitzConnection : IAsyncDisposable
         {
             await transport.ConnectAsync(ct).ConfigureAwait(false);
             SetState(ConnectionState.Connected);
+            Interlocked.Exchange(ref _nextCorrelationId, 0);
             _multiplexer.BeginSession();
             StartReceiveLoop();
 
@@ -993,9 +1001,13 @@ sealed class FitzConnection : IAsyncDisposable
             return;
         }
 
-        if (frame.CorrelationId != 0 &&
-            _multiplexer.DispatchCorrelated(frame.CorrelationId, frame.MessageType, frame.Payload))
+        if (frame.CorrelationId != 0)
         {
+            _multiplexer.DispatchCorrelated(
+                frame.CorrelationId,
+                frame.MessageType,
+                frame.Payload,
+                (frame.Flags & FrameCodec.ResponseFinalFlag) != 0);
             return;
         }
 

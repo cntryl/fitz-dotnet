@@ -108,7 +108,7 @@ public sealed class CorrelationConnectionTests
         var request = connection.RequestAsync(MessageTypes.KvGet, new byte[] { 1 }).AsTask();
         await WaitForAsync(() => transport.SentFrames.Count == 2, "Request should reach transport.");
         var sent = FrameCodec.DecodeStrict(transport.SentFrames[1]);
-        transport.QueueIncomingFrame(FrameCodec.EncodeCorrelated(sent.CorrelationId, MessageTypes.KvGet, [0xAB]));
+        transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.KvGet, new byte[] { 0xAB }, FrameCodec.ResponseFinalFlag, sent.CorrelationId));
         var response = await request.WaitAsync(TimeSpan.FromSeconds(2));
         // Assert
         Assert.Equal(MessageTypes.KvGet, sent.MessageType);
@@ -129,8 +129,8 @@ public sealed class CorrelationConnectionTests
         var firstId = FrameCodec.DecodeStrict(transport.SentFrames[1]).CorrelationId;
         var secondId = FrameCodec.DecodeStrict(transport.SentFrames[2]).CorrelationId;
         // Act
-        transport.QueueIncomingFrame(FrameCodec.EncodeCorrelated(secondId, MessageTypes.QueueReserve, [0xB]));
-        transport.QueueIncomingFrame(FrameCodec.EncodeCorrelated(firstId, MessageTypes.QueueReserve, [0xA]));
+        transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueReserve, new byte[] { 0xB }, FrameCodec.ResponseFinalFlag, secondId));
+        transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueReserve, new byte[] { 0xA }, FrameCodec.ResponseFinalFlag, firstId));
         // Assert
         Assert.NotEqual(firstId, secondId);
         Assert.Equal([0xA], (await first.WaitAsync(TimeSpan.FromSeconds(2))).ToArray());
@@ -149,24 +149,25 @@ public sealed class CorrelationConnectionTests
         var next = connection.RequestAsync(MessageTypes.KvGet, new byte[] { 2 }).AsTask();
         await WaitForAsync(() => transport.SentFrames.Count == 3, "Next request should use current transport.");
         var id = FrameCodec.DecodeStrict(transport.SentFrames[2]).CorrelationId;
-        transport.QueueIncomingFrame(FrameCodec.EncodeCorrelated(id, MessageTypes.KvGet, [0xAB]));
+        transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.KvGet, new byte[] { 0xAB }, FrameCodec.ResponseFinalFlag, id));
         // Assert
         Assert.Equal([0xAB], (await next.WaitAsync(TimeSpan.FromSeconds(2))).ToArray());
         Assert.Equal(ConnectionState.Authenticated, connection.State);
     }
 
     [Fact]
-    public async Task ShouldRouteLaterPhaseGivenCorrelationNoLongerPendingWhenReceived()
+    public async Task ShouldRejectUnknownCorrelationGivenMatchingNotificationType()
     {
         // Arrange
         await using var transport = new TestQueuedTransport();
         await using var connection = new FitzConnection(Config(), () => transport);
         await connection.ConnectAsync();
-        var later = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var registration = connection.RegisterNotificationHandler(MessageTypes.LeaseAcquire, payload => later.TrySetResult(payload));
+        var called = false;
+        using var registration = connection.RegisterNotificationHandler(MessageTypes.LeaseAcquire, _ => called = true);
         // Act
-        transport.QueueIncomingFrame(FrameCodec.EncodeCorrelated(999, MessageTypes.LeaseAcquire, [0xCA]));
+        transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseAcquire, new byte[] { 0xCA }, FrameCodec.ResponseFinalFlag, 999));
         // Assert
-        Assert.Equal([0xCA], await later.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+        await WaitForAsync(() => connection.State != ConnectionState.Authenticated, "Unknown correlation should close the session.");
+        Assert.False(called);
     }
 }

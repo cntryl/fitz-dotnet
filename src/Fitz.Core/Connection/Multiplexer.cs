@@ -221,20 +221,26 @@ sealed class Multiplexer : IDisposable
     /// <see langword="false"/> when no request is waiting on the identifier, which happens when the
     /// caller already gave up. The frame is then dropped rather than handed to an unrelated waiter.
     /// </returns>
-    public bool DispatchCorrelated(ulong correlationId, ushort messageType, ReadOnlyMemory<byte> payload)
+    public bool DispatchCorrelated(
+        ulong correlationId,
+        ushort messageType,
+        ReadOnlyMemory<byte> payload,
+        bool responseFinal = true)
     {
         PendingRequest? pending;
         lock (_gate)
         {
-            if (_state != ConnectionState.Authenticated)
+            if (_state != ConnectionState.Authenticated || !_correlated.TryGetValue(correlationId, out pending))
             {
-                return false;
+                throw new ProtocolException($"Unexpected response correlation {correlationId}.");
             }
 
-            if (!_correlated.Remove(correlationId, out pending))
+            if (!responseFinal)
             {
-                return false;
+                return true;
             }
+
+            _correlated.Remove(correlationId);
         }
 
         pending.CompleteResponse(payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray());
@@ -523,7 +529,7 @@ sealed class Multiplexer : IDisposable
     {
         lock (_gate)
         {
-            if (request.CorrelationId != 0)
+            if (request.CorrelationId != 0 && !request.RetainCorrelationTombstone)
             {
                 // Only drop the entry if it is still this request's: a late duplicate response must
                 // not evict a newer request that reused the identifier.
@@ -733,6 +739,17 @@ sealed class Multiplexer : IDisposable
         /// out cannot desynchronize a response lane.
         /// </summary>
         internal bool IsIdentified => _responseMatcher is not null || CorrelationId != 0;
+
+        internal bool RetainCorrelationTombstone
+        {
+            get
+            {
+                lock (_stateGate)
+                {
+                    return _completionKind is CompletionKind.Canceled or CompletionKind.TimedOut;
+                }
+            }
+        }
 
         internal long SessionEpoch { get; set; }
 
