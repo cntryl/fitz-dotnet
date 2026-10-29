@@ -7,6 +7,19 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class StreamClientTests
 {
     [Fact]
+    public void ShouldPreserveMissingValueGivenOptionalBytesWhenDecoded()
+    {
+        // Arrange
+        var reader = new BinaryBufferReader(new byte[] { 0 });
+
+        // Act
+        var metadata = StreamWireHelpers.ReadOptionalBytes(reader, "READ", "metadata");
+
+        // Assert
+        Assert.Null(metadata);
+    }
+
+    [Fact]
     public async Task ShouldReturnTypedErrorGivenEmptyResponseWhenPeekingStream()
     {
         // Arrange

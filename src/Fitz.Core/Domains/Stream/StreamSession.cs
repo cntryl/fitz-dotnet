@@ -44,7 +44,7 @@ sealed class StreamSession : IStreamSession
         writer.WriteU64(expectedOffset);
         writer.WriteU32((uint)body.Length);
         writer.WriteBytes(body.Span);
-        if (metadata.HasValue && metadata.Value.Length > 0)
+        if (metadata.HasValue)
         {
             writer.WriteU8(1);
             writer.WriteU32((uint)metadata.Value.Length);
