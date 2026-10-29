@@ -66,7 +66,7 @@ public sealed class RpcCancellationChainTests
         await chain.WaitForCleanupAsync();
 
         // Assert
-        Assert.True(error is OperationCanceledException || error is RpcException { DomainCode: 6001 });
+        Assert.True(error is OperationCanceledException || error is RpcException { DomainCode: FitzErrorCodes.RpcTimeout });
         Assert.InRange(chain.Elapsed.TotalMilliseconds, 0, 1500);
     }
 
