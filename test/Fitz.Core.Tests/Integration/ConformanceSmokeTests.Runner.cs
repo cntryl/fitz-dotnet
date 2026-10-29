@@ -67,7 +67,7 @@ public sealed partial class ConformanceSmokeTests
             "CS-013" => await RunCs013StreamErrorMidFlight(transport, authMode),
             "CS-014" => await RunCs014ConcurrentInflightRequests(transport, authMode),
             "CS-015" => await RunCs015ShutdownDuringActiveWork(transport, authMode),
-            "CS-017" => await RunCs017BoundedConcurrencyUnderBurstLoad(transport, authMode),
+            "CS-017" => await RunCs017GlobalFilteredMultiPageReplay(transport, authMode),
             "CS-016" => await RunCs016FilteredStreamReplay(transport, authMode),
             _ => throw new InvalidOperationException($"Unknown conformance scenario '{scenarioId}'."),
         };
