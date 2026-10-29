@@ -1,13 +1,5 @@
 version: "1.0"
 name: "fitz-cross-language-client-conformance"
-status: "draft"
-updated: "2026-05-16"
-owners:
-  - "fitz server"
-  - "fitz-go"
-  - "fitz-ts"
-  - "fitz-py"
-
 policy:
   strict_reconnect_parity: true
   behavioral_equivalence_over_naming: true
@@ -34,6 +26,18 @@ contract:
     - anonymous
     - valid_jwt
     - invalid_jwt
+  correlation_contract:
+    required: true
+    expectations:
+      - "client parses exactly one message per transport frame"
+      - "client reads HELLO or CONNECT_REJECTED before treating the session as established"
+      - "client ignores trailing bytes after the documented HELLO fields"
+      - "client sends its configured service name in CONNECT"
+      - "client labels every request with a unique non-zero u64 correlation"
+      - "client matches responses by correlation identifier, not arrival order"
+      - "client routes a frame whose correlation is no longer pending by message type"
+      - "client never treats a non-zero correlation as a response-vs-notification test"
+
   reconnect_contract:
     required: true
     expectations:
@@ -55,7 +59,7 @@ result_schema:
     - auth_mode
     - verdict
     - evidence
-    - latency_ms
+    - correlation_enabled
 
 scenarios:
   - id: "CS-001"
@@ -165,6 +169,7 @@ scenarios:
       transport: ["websocket", "tcp"]
       auth_mode: ["anonymous", "valid_jwt"]
     expected:
+      - "the same client instance observes a real transport loss; constructing a replacement client does not pass"
       - "client performs configured reconnect backoff"
       - "client re-creates reconnect-safe subscriptions and worker registrations"
       - "client fails or invalidates stale session-bound handles"
@@ -247,8 +252,119 @@ scenarios:
       - "next offset advances on the global cursor axis"
       - "replay yields the caught-up page and then completes"
 
+  - id: "CS-018"
+    title: "bounded concurrency under burst load"
+    priority: "P1"
+    setup:
+      transport: ["websocket", "tcp"]
+      auth_mode: ["anonymous", "valid_jwt"]
+      concurrency_limit: 16
+      burst_size: 64
+    expected:
+      - "client enforces the configured in-flight ceiling"
+      - "requests above the ceiling are queued or backpressured instead of spawning unbounded work"
+      - "active work drains successfully once capacity frees"
+      - "client close returns background work to baseline"
+    required_evidence:
+      - "observed_max_inflight"
+      - "backpressure_or_queueing_event"
+      - "post_close_active_work_count"
+
+  - id: "CS-019"
+    title: "concurrent same-message-type requests"
+    priority: "P0"
+    setup:
+      transport: ["websocket", "tcp"]
+      auth_mode: ["anonymous", "valid_jwt"]
+    expected:
+      - "two concurrent Queue RESERVEs of the same message type resolve to their own callers"
+      - "the first targets an empty queue with wait_seconds=5 and parks"
+      - "the second targets a non-empty queue with wait_seconds=0 and resolves first"
+      - "the first then resolves with its own queue's message, not the second's"
+    notes: >
+      Do not substitute KV GETs: those happen to complete in receive order, so a
+      client matching by arrival order passes by luck. The parked Queue RESERVE
+      is the case where the broker genuinely answers out of order.
+    required_evidence:
+      - "per-caller response payloads"
+      - "observed resolution order"
+
+  - id: "CS-020"
+    title: "handshake negotiation"
+    priority: "P0"
+    setup:
+      transport: ["websocket", "tcp"]
+      auth_mode: ["anonymous", "valid_jwt"]
+    expected:
+      - "the client sends CONNECT with min_version 2, max_version 2, and client_caps 0"
+      - "the client reads HELLO and reports the negotiated version, broker_caps, max_message_bytes, and max_in_flight"
+      - "the client ignores broker_caps bits it does not implement and trailing HELLO bytes"
+      - "a CONNECT_REJECTED with code 0050 is surfaced as a version mismatch without retry"
+    required_evidence:
+      - "reported capability state"
+      - "connect duration"
+
+  - id: "CS-021"
+    title: "correlation survives an ingress-synthesized error"
+    priority: "P1"
+    setup:
+      transport: ["websocket", "tcp"]
+      auth_mode: ["anonymous", "valid_jwt"]
+    expected:
+      - "a correlated request answered by a broker-generated error resolves that caller"
+      - "sibling correlated requests of the same message type complete normally"
+      - "no caller is left waiting for a response that already arrived"
+
+  - id: "CS-022"
+    title: "notifications are never correlated"
+    priority: "P1"
+    setup:
+      transport: ["websocket", "tcp"]
+      auth_mode: ["anonymous", "valid_jwt"]
+    expected:
+      - "a NOTIFY arriving amid in-flight correlated requests is not consumed by any of them"
+      - "the notification reaches its subscription handler"
+      - "the client does not use correlation presence to classify response vs notification"
+
+  - id: "CS-023"
+    title: "one request yields exactly one terminal frame"
+    priority: "P1"
+    setup:
+      transport: ["websocket", "tcp"]
+      auth_mode: ["anonymous", "valid_jwt"]
+    expected:
+      - "a request whose domain actor stalls past the dispatch deadline receives exactly one terminal frame"
+      - "the client does not observe both a synthesized error and a late real response"
+    notes: >
+      Requires broker-side fault injection; mirror in the broker integration
+      tests where injection is available.
+
+  - id: "CS-024"
+    title: "400 KiB Stream event boundary and replay"
+    priority: "P0"
+    setup:
+      transport: ["websocket", "tcp"]
+      auth_mode: ["anonymous", "valid_jwt"]
+    expected:
+      - "APPEND accepts exactly 409600 combined body and metadata bytes"
+      - "APPEND rejects 409601 combined body and metadata bytes with BAD_REQUEST and NOT_APPLIED"
+      - "committed boundary-sized events replay without truncation on a 4096-byte route"
+      - "READ pagination fits the advertised message budget and preserves every event in order"
+
 scoring:
   fail_on:
     - "any P0 scenario verdict != pass"
   warn_on:
     - "any P1 scenario verdict in [partial, fail, not_implemented, unclear]"
+
+reporting:
+  output_format: "json"
+  aggregate_fields:
+    - "client"
+    - "transport"
+    - "auth_mode"
+    - "p0_pass"
+    - "p0_total"
+    - "p1_pass"
+    - "p1_total"
+    - "overall_status"

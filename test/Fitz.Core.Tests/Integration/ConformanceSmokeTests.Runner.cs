@@ -21,6 +21,8 @@ public sealed partial class ConformanceSmokeTests
         "CS-015",
         "CS-016",
         "CS-017",
+        "CS-019",
+        "CS-024",
     ];
 
     internal static async Task<AggregateResult> RunConformanceSuiteAsync() => await RunConformanceSuiteAsync(IntegrationFixture.GetConformanceRunConfig());
@@ -69,7 +71,9 @@ public sealed partial class ConformanceSmokeTests
             "CS-015" => await RunCs015ShutdownDuringActiveWork(transport, authMode),
             "CS-017" => await RunCs017GlobalFilteredMultiPageReplay(transport, authMode),
             "CS-016" => await RunCs016FilteredStreamReplay(transport, authMode),
-            _ => throw new InvalidOperationException($"Unknown conformance scenario '{scenarioId}'."),
+            "CS-019" => await RunCs019SameTypeRequests(transport, authMode),
+            "CS-024" => await RunCs024StreamBoundary(transport, authMode),
+            _ => Result(scenarioId, transport, authMode, "not_implemented", 0, ["Scenario is not implemented by this runner."]),
         };
     }
 

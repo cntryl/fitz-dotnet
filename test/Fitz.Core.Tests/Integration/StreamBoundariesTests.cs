@@ -34,6 +34,16 @@ public sealed class StreamBoundariesTests
         // Arrange
         var transport = IntegrationFixture.GetConformanceTransport();
         var authMode = IntegrationFixture.GetConformanceAuthMode();
+
+        // Act
+        var exercise = ExerciseBoundaryAsync(transport, authMode);
+
+        // Assert
+        await exercise;
+    }
+
+    internal static async Task ExerciseBoundaryAsync(string transport, string authMode)
+    {
         await using var client = IntegrationFixture.CreateClientForMode(transport, authMode);
         await client.ConnectAsync();
         var prefix = IntegrationFixture.CreateUniqueRoute("stream");
