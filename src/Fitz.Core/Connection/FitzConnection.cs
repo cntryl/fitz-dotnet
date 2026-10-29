@@ -19,6 +19,7 @@ namespace Cntryl.Fitz.Connection;
 /// </remarks>
 sealed class FitzConnection : IAsyncDisposable
 {
+    const ushort VersionMismatchCode = 50;
     static readonly TaskCompletionSource<bool> CompletedStateSignal = CreateCompletedStateSignal();
     static readonly CancellationToken ClosedConnectionToken = new(canceled: true);
 
@@ -962,6 +963,10 @@ sealed class FitzConnection : IAsyncDisposable
                 {
                     throw new ProtocolException("CONNECT_REJECTED contains trailing bytes.");
                 }
+                if (code == VersionMismatchCode)
+                {
+                    throw new ProtocolException($"Wire version mismatch ({code}): {message}", code);
+                }
                 throw new AuthenticationException($"Broker rejected CONNECT ({code}): {message}");
             }
 
@@ -1092,7 +1097,11 @@ sealed class FitzConnection : IAsyncDisposable
 
         var stateAtLoss = State;
 
-        if (_authAttemptIsReconnect)
+        if (exception is ProtocolException { RejectionCode: VersionMismatchCode })
+        {
+            _authFailure?.TrySetException(exception);
+        }
+        else if (_authAttemptIsReconnect)
         {
             _authFailure?.TrySetException(new ConnectionException(DescribeConnectionLoss(exception), exception));
         }
@@ -1171,6 +1180,10 @@ sealed class FitzConnection : IAsyncDisposable
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     return;
+                }
+                catch (ProtocolException error) when (error.RejectionCode == VersionMismatchCode)
+                {
+                    break;
                 }
                 catch when (!_closeRequested && !_authRejected)
                 {

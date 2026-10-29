@@ -21,6 +21,18 @@ public sealed class ProtocolException : FitzException
     {
     }
 
+    /// <summary>Initializes a protocol error returned during CONNECT.</summary>
+    /// <param name="message">Description of the failure.</param>
+    /// <param name="rejectionCode">Broker CONNECT_REJECTED code.</param>
+    public ProtocolException(string message, ushort rejectionCode)
+        : base(message)
+    {
+        RejectionCode = rejectionCode;
+    }
+
+    /// <summary>The broker's CONNECT_REJECTED code, when available.</summary>
+    public ushort? RejectionCode { get; }
+
     /// <summary>Initializes the exception with a message and underlying cause.</summary>
     /// <param name="message">Description of the failure.</param>
     /// <param name="innerException">The underlying cause.</param>
