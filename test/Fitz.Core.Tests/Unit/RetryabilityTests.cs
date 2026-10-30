@@ -12,14 +12,14 @@ public sealed class RetryabilityTests
         Assert.True(Retryability.IsRetryable(new TimeoutException("timed out")));
         Assert.True(Retryability.IsRetryable(new RequestTimeoutException("timed out")));
         Assert.True(Retryability.IsRetryable(new ConnectionException("connection closed")));
-        Assert.True(Retryability.IsRetryable(new QueueException("queue full", "ENQUEUE_FAILED", 1, FitzErrorCodes.QueueFull)));
-        Assert.True(Retryability.IsRetryable(new LeaseException("lease held", "LEASE_HELD", 1, FitzErrorCodes.LeaseHeld)));
-        Assert.True(Retryability.IsRetryable(new KvException("conflict", "PUT_FAILED", 1, FitzErrorCodes.KvIsolationConflict)));
-        Assert.True(Retryability.IsRetryable(new KvException("busy", "BUSY", 1, FitzErrorCodes.KvBusy)));
-        Assert.True(Retryability.IsRetryable(new StreamException("busy", "BUSY", 1, FitzErrorCodes.StreamBusy)));
-        Assert.True(Retryability.IsRetryable(new NoticeException("busy", "BUSY", 1, FitzErrorCodes.NoticeBusy)));
-        Assert.True(Retryability.IsRetryable(new LeaseException("queue full", "QUEUE_FULL", 1, FitzErrorCodes.LeaseQueueFull)));
-        Assert.True(Retryability.IsRetryable(new ScheduleException("backend busy", "BACKEND_ERROR", 1, FitzErrorCodes.ScheduleBackendError)));
+        Assert.True(Retryability.IsRetryable(WithWire(new QueueException("queue full", "ENQUEUE_FAILED", 1, FitzErrorCodes.QueueFull))));
+        Assert.True(Retryability.IsRetryable(WithWire(new LeaseException("lease held", "LEASE_HELD", 1, FitzErrorCodes.LeaseHeld))));
+        Assert.True(Retryability.IsRetryable(WithWire(new KvException("conflict", "PUT_FAILED", 1, FitzErrorCodes.KvIsolationConflict))));
+        Assert.True(Retryability.IsRetryable(WithWire(new KvException("busy", "BUSY", 1, FitzErrorCodes.KvBusy))));
+        Assert.True(Retryability.IsRetryable(WithWire(new StreamException("busy", "BUSY", 1, FitzErrorCodes.StreamBusy))));
+        Assert.True(Retryability.IsRetryable(WithWire(new NoticeException("busy", "BUSY", 1, FitzErrorCodes.NoticeBusy))));
+        Assert.True(Retryability.IsRetryable(WithWire(new LeaseException("queue full", "QUEUE_FULL", 1, FitzErrorCodes.LeaseQueueFull))));
+        Assert.False(Retryability.IsRetryable(WithWire(new ScheduleException("backend busy", "BACKEND_ERROR", 1, FitzErrorCodes.ScheduleBackendError), 6, 1)));
     }
 
     [Fact]
@@ -41,11 +41,16 @@ public sealed class RetryabilityTests
     }
 
     [Fact]
-    public void ShouldClassifyRetryableErrorGivenRpcTimeoutWhenRetryPolicyEvaluated() => Assert.True(Retryability.IsRetryable(new RpcException("timed out", "TIMEOUT")));
+    public void ShouldClassifyIndeterminateErrorGivenRpcTimeoutWhenRetryPolicyEvaluated() => Assert.False(Retryability.IsRetryable(WithWire(new RpcException("timed out", "TIMEOUT", 1, FitzErrorCodes.RpcTimeout), 7, 1)));
 
     [Fact]
-    public void ShouldClassifyRetryableErrorGivenRpcNoWorkerWhenRetryPolicyEvaluated() => Assert.True(Retryability.IsRetryable(new RpcException("no worker", "WORKER_NOT_FOUND")));
+    public void ShouldClassifyRetryableErrorGivenRpcNoWorkerWhenRetryPolicyEvaluated() => Assert.True(Retryability.IsRetryable(WithWire(new RpcException("no worker", "ROUTE_NOT_REGISTERED", 1, FitzErrorCodes.RpcRouteNotRegistered), 0)));
 
     [Fact]
     public void ShouldFailFastGivenRpcUnauthorizedWhenRetryPolicyEvaluated() => Assert.False(Retryability.IsRetryable(new RpcException("unauthorized", "UNAUTHORIZED")));
+    static T WithWire<T>(T error, byte category = 5, byte effect = 0) where T : FitzException
+    {
+        error.SetWireError(category, effect);
+        return error;
+    }
 }

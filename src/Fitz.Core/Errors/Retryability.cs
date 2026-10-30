@@ -33,16 +33,20 @@ public static class Retryability
 
     static bool IsRetryableDomainError(Exception error)
     {
+        if (error is not FitzException wireError || wireError.ErrorEffect != 0)
+        {
+            return false;
+        }
+        if (wireError.ErrorClass == 5)
+        {
+            return true;
+        }
+
         return error switch
         {
-            KvException kv when kv.DomainCode is FitzErrorCodes.KvIsolationConflict or FitzErrorCodes.KvBusy => true,
-            StreamException stream when stream.DomainCode == FitzErrorCodes.StreamBusy => true,
-            NoticeException notice when notice.DomainCode == FitzErrorCodes.NoticeBusy => true,
-            QueueException queue when queue.DomainCode == FitzErrorCodes.QueueFull => true,
+            KvException kv when kv.DomainCode == FitzErrorCodes.KvIsolationConflict => true,
             LeaseException lease when lease.DomainCode is FitzErrorCodes.LeaseHeld or FitzErrorCodes.LeaseQueueFull => true,
-            RpcException rpc when rpc.DomainCode is FitzErrorCodes.RpcTimeout or FitzErrorCodes.RpcWorkerNotFound or FitzErrorCodes.RpcBackpressure or FitzErrorCodes.RpcRouteNotRegistered
-                || rpc.Code is "TIMEOUT" or "WORKER_NOT_FOUND" or "BACKPRESSURE" or "ROUTE_NOT_REGISTERED" => true,
-            ScheduleException schedule when schedule.DomainCode == FitzErrorCodes.ScheduleBackendError => true,
+            RpcException rpc when rpc.DomainCode == FitzErrorCodes.RpcRouteNotRegistered => true,
             _ => false,
         };
     }

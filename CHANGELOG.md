@@ -32,6 +32,9 @@ never breaks for consumers. `test/Fitz.PackageConsumer` asserts this on every CI
 
 ### Fixed
 
+- Reject malformed RPC control acknowledgements with missing lengths or trailing bytes.
+- Wait for a valid Wire 2 HELLO before reporting a successful connection, including when `AuthSettleDelay` is zero. Missing HELLO now fails within the configured timeout.
+
 - Preserve coded Queue admission failures alongside legacy plain errors, including retryable capacity rejection and terminal unknown outcomes.
 - Preserve coded Schedule admission failures on legacy plain-response operations.
 

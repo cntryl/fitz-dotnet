@@ -18,6 +18,7 @@ sealed class NoticeClient : INoticeClient, IDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _request;
+    readonly Func<ushort, ReadOnlyMemory<byte>, byte, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _requestWithFlags;
     readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly int _subscriptionBufferCapacity;
@@ -38,7 +39,8 @@ sealed class NoticeClient : INoticeClient, IDisposable
             connection.RequestAsync,
             connection.RegisterBorrowedNotificationHandler,
             (handler, rejected) => connection.TryDispatchAsyncHandler("notice", handler, rejected),
-            connection.SubscriptionBufferCapacity)
+            connection.SubscriptionBufferCapacity,
+            connection.RequestWithFlagsAsync)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
     }
@@ -65,10 +67,12 @@ sealed class NoticeClient : INoticeClient, IDisposable
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? request = null,
         Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null,
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
-        int subscriptionBufferCapacity = SubscriptionRegistration<NoticeMessage>.DefaultCapacity)
+        int subscriptionBufferCapacity = SubscriptionRegistration<NoticeMessage>.DefaultCapacity,
+        Func<ushort, ReadOnlyMemory<byte>, byte, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? requestWithFlags = null)
     {
         _send = send;
         _request = request;
+        _requestWithFlags = requestWithFlags;
         _registerNotificationHandler = registerNotificationHandler;
         _dispatchAsyncHandler = dispatchAsyncHandler;
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
@@ -88,6 +92,35 @@ sealed class NoticeClient : INoticeClient, IDisposable
         writer.WriteU32((uint)body.Length);
         writer.WriteBytes(body.Span);
         await _send(MessageTypes.NoticePublish, writer.WrittenMemory, ct).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task PublishWithAckAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        if (!RouteValidation.IsFixedRoute(route, "notice", 3))
+        {
+            throw new NoticeException($"route '{route}' must be notice://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+        }
+        if (_requestWithFlags is null)
+        {
+            throw new InvalidOperationException("Request support with Wire-2 flags is required for acknowledged notice publish");
+        }
+
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(route);
+        writer.WriteU32((uint)body.Length);
+        writer.WriteBytes(body.Span);
+        var response = await _requestWithFlags(
+            MessageTypes.NoticePublish,
+            writer.WrittenMemory,
+            FrameCodec.AckRequestedFlag,
+            ct).ConfigureAwait(false);
+        var reader = NoticeWireHelpers.ReadSuccess(response, "PUBLISH");
+        if (!reader.IsEof)
+        {
+            throw new NoticeException("PUBLISH acknowledgement has trailing bytes", "PUBLISH_INVALID_RESPONSE");
+        }
     }
 
     /// <inheritdoc />

@@ -16,6 +16,15 @@ public interface INoticeClient
     Task PublishAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default);
 
     /// <summary>
+    /// Publishes a notice and waits for broker acceptance or a structured rejection.
+    /// </summary>
+    /// <param name="route">Concrete <c>notice://</c> route. Patterns are not accepted.</param>
+    /// <param name="body">Opaque payload delivered verbatim to subscribers.</param>
+    /// <param name="ct">Cancellation token for the publish.</param>
+    /// <returns>A task that completes after the broker responds to the publish.</returns>
+    Task PublishWithAckAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default);
+
+    /// <summary>
     /// Subscribes to notices matching a pattern.
     /// </summary>
     /// <param name="pattern">

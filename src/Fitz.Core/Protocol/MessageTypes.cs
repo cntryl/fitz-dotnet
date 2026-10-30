@@ -16,25 +16,23 @@ static class MessageTypes
     /// </summary>
     public const ushort Connect = 1;
 
-    /// <summary>
-    /// Labels the request record that immediately follows it in the same transport frame with a
-    /// client-generated <c>u64</c> identifier.
-    /// </summary>
-    public const ushort Correlate = 2;
+    /// <summary>Completes the Wire-2 CONNECT exchange with negotiated limits.</summary>
+    public const ushort Hello = 2;
 
     /// <summary>
-    /// Echoes a <see cref="Correlate"/> identifier ahead of the response it belongs to, in the same
-    /// transport frame. The broker sends it only for requests that carried <see cref="Correlate"/>.
+    /// Rejects the Wire-2 CONNECT exchange with a structured authentication error.
     /// </summary>
-    public const ushort Correlated = 3;
+    public const ushort ConnectRejected = 3;
 
     /// <summary>
-    /// Unsolicited broker capability advertisement, sent once per session on connect.
+    /// Announces a broker shutdown or drain.
     /// </summary>
-    public const ushort ServerHello = 4;
+    public const ushort GoAway = 4;
 
-    /// <summary>Reports a friendly service name after metadata capability negotiation.</summary>
-    public const ushort SessionMetadata = 5;
+    public const ushort Correlate = 0;
+    public const ushort Correlated = 0;
+    public const ushort ServerHello = Hello;
+    public const ushort SessionMetadata = 0;
 
     /// <summary>
     /// Opens a KV transaction over a route and returns its transaction identifier.
@@ -283,7 +281,7 @@ static class MessageTypes
     public const ushort ScheduleCancel = 701;
 
     /// <summary>
-    /// Reads a page of registered schedules plus the total count.
+    /// Reads a cursor page of registered schedules.
     /// </summary>
     public const ushort ScheduleListPage = 702;
 
@@ -306,5 +304,5 @@ static class MessageTypes
     public const ushort ScheduleCreateBatch = 706;
 
     /// <summary>Reads the broker's cursor-based schedule page.</summary>
-    public const ushort ScheduleListV2 = 707;
+    public const ushort ScheduleListV2 = 702;
 }

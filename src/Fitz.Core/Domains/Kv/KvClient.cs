@@ -45,7 +45,7 @@ sealed class KvClient : IKvClient, IDisposable
             connection.RegisterBorrowedNotificationHandler,
             (handler, rejected) => connection.TryDispatchAsyncHandler("kv", handler, rejected),
             connection.SubscriptionBufferCapacity,
-            () => connection.Capabilities.SupportsKvScanExclusive)
+            () => true)
     {
         _reconnectRegistration = connection.OnReconnect(RestoreSubscriptionsAsync);
     }
@@ -74,7 +74,7 @@ sealed class KvClient : IKvClient, IDisposable
         _registerNotificationHandler = registerNotificationHandler;
         _dispatchAsyncHandler = dispatchAsyncHandler;
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
-        _supportsExclusiveScan = supportsExclusiveScan ?? (() => false);
+        _supportsExclusiveScan = supportsExclusiveScan ?? (() => true);
     }
 
     /// <inheritdoc />

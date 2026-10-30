@@ -152,7 +152,10 @@ static class StreamWireHelpers
         var realmOffset = ReadOptionalU64(reader, operation, "realm offset");
         var globalOffset = global ? ReadOptionalU64(reader, operation, "global offset") : null;
         var body = ReadLengthPrefixedBytes(reader, operation, "record body");
-        var metadata = ReadOptionalBytes(reader, operation, "record metadata")?.ToArray();
+        var encodedMetadata = ReadOptionalBytes(reader, operation, "record metadata");
+        var metadata = encodedMetadata.HasValue
+            ? new ReadOnlyMemory<byte>(encodedMetadata.Value.ToArray())
+            : (ReadOnlyMemory<byte>?)null;
 
         if (reader.RemainingBytes < 8)
         {
@@ -317,7 +320,7 @@ static class StreamWireHelpers
         var flag = reader.ReadU8();
         return flag switch
         {
-            0 => null,
+            0 => (ReadOnlyMemory<byte>?)null,
             1 => ReadLengthPrefixedMemory(reader, operation, fieldName),
             _ => throw new StreamException($"{operation} response has invalid {fieldName} flag {flag}", $"{operation}_INVALID_RESPONSE"),
         };
@@ -404,15 +407,23 @@ static class StreamWireHelpers
         var status = reader.ReadU8();
         if (status != 0)
         {
-            if (status is 1 or 2)
+            if (status == 1)
             {
-                uint? domainCode = status == 2 || operation == "READ" ? reader.ReadU32() : null;
+                var domainCode = reader.ReadU16();
+                var errorClass = reader.ReadU8();
+                var effect = reader.ReadU8();
+                if (effect > 2)
+                {
+                    throw new StreamException($"{operation} error response has an invalid effect", $"{operation}_INVALID_RESPONSE");
+                }
                 var message = reader.ReadString();
                 if (!reader.IsEof)
                 {
                     throw new StreamException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE", status, domainCode);
                 }
-                throw new StreamException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+                var domainError = new StreamException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+                domainError.SetWireError(errorClass > 10 ? (byte)6 : errorClass, effect);
+                throw domainError;
             }
             throw new StreamException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
         }

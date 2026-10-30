@@ -184,7 +184,7 @@ public sealed class KvClientTests
             else if (Interlocked.Increment(ref commitCalls) == 1)
             {
                 writer.WriteU8(1);
-                writer.WriteU32(FitzErrorCodes.KvBackendError);
+                TestErrorEnvelope.Write(writer, FitzErrorCodes.KvBackendError);
                 writer.WriteString("try again");
             }
             else
@@ -295,7 +295,7 @@ public sealed class KvClientTests
             {
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(1);
-                writer.WriteU32(FitzErrorCodes.KvInvalidSubscriptionPattern);
+                TestErrorEnvelope.Write(writer, FitzErrorCodes.KvInvalidSubscriptionPattern);
                 writer.WriteString("invalid pattern");
                 return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
             },
@@ -590,12 +590,12 @@ public sealed class KvClientTests
 
         // Assert
         Assert.NotNull(requestPayload);
-        Assert.Equal(1, requestPayload[^1]);
+        Assert.Equal(2, requestPayload[^1]);
         await transaction.DisposeAsync();
     }
 
     [Fact]
-    public async Task ShouldRejectExclusiveFlagGivenMissingCapabilityWhenScanAsyncCalled()
+    public async Task ShouldUseBaseExclusiveFlagGivenNoOptionalCapabilityWhenScanAsyncCalled()
     {
         // Arrange
         var requestCount = 0;
@@ -607,7 +607,7 @@ public sealed class KvClientTests
                     return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
                 }
                 requestCount++;
-                return ValueTask.FromResult<ReadOnlyMemory<byte>>(Array.Empty<byte>());
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0, 0, 0, 0, 0, 0 });
             },
             "kv://prod/app/users",
             126);
@@ -616,9 +616,8 @@ public sealed class KvClientTests
         var action = () => transaction.ScanAsync(new KvScanQuery(StartExclusive: true));
 
         // Assert
-        var error = await Assert.ThrowsAsync<KvException>(action);
-        Assert.Equal("UNSUPPORTED_CAPABILITY", error.Code);
-        Assert.Equal(0, requestCount);
+        await action();
+        Assert.Equal(1, requestCount);
         await transaction.DisposeAsync();
     }
 
@@ -690,14 +689,14 @@ public sealed class KvClientTests
             {
                 using var authWriter = new BinaryBufferWriter();
                 authWriter.WriteU8(0);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.LeaseQuery, authWriter.WrittenSpan);
             }
             else if (sentFrameCount == 2)
             {
                 using var beginWriter = new BinaryBufferWriter();
                 beginWriter.WriteU8(0);
                 beginWriter.WriteU64(77);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.KvBegin, beginWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.KvBegin, beginWriter.WrittenSpan);
             }
         };
 
@@ -710,7 +709,7 @@ public sealed class KvClientTests
 
             using var authWriter = new BinaryBufferWriter();
             authWriter.WriteU8(0);
-            secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authWriter.WrittenSpan));
+            secondTransport.QueueResponse(MessageTypes.LeaseQuery, authWriter.WrittenSpan);
             reconnected.TrySetResult();
         };
 

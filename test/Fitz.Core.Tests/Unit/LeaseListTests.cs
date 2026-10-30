@@ -153,8 +153,8 @@ public sealed class LeaseListTests
     }
 
     [Theory]
-    [InlineData((uint)5011)]
-    [InlineData((uint)5012)]
+    [InlineData((uint)5057)]
+    [InlineData((uint)5003)]
     public async Task ShouldPreserveDomainCodeGivenTypedListErrorWhenParsingListResponse(uint domainCode)
     {
         // Arrange
@@ -162,7 +162,7 @@ public sealed class LeaseListTests
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
-            writer.WriteU32(domainCode);
+            TestErrorEnvelope.Write(writer, domainCode);
             writer.WriteString("invalid list request");
             return Task.FromResult(writer.Build());
         });
@@ -224,7 +224,7 @@ public sealed class LeaseListTests
         // Arrange
         // Act
         // Assert
-        Assert.Equal((uint)5011, FitzErrorCodes.LeaseInvalidListCursor);
-        Assert.Equal((uint)5012, FitzErrorCodes.LeaseInvalidListPattern);
+        Assert.Equal((uint)5057, FitzErrorCodes.LeaseInvalidListCursor);
+        Assert.Equal((uint)5003, FitzErrorCodes.LeaseInvalidListPattern);
     }
 }

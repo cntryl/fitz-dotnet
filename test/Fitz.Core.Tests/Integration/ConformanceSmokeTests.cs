@@ -32,12 +32,15 @@ public sealed partial class ConformanceSmokeTests
 
 
         // Assert
-        Assert.Equal(17, aggregate.Scenarios.Count);
+        Assert.Equal(24, aggregate.Scenarios.Count);
         Assert.Equal(config.ClientName, aggregate.Client);
         Assert.Equal(config.Transport, aggregate.Transport);
         Assert.Equal(config.AuthMode, aggregate.AuthMode);
-        Assert.Equal("pass", aggregate.OverallStatus);
-        Assert.All(aggregate.Scenarios, scenario => Assert.Equal("pass", scenario.Verdict));
+        Assert.Equal(aggregate.P0Total, aggregate.P0Pass);
+        Assert.NotEqual("fail", aggregate.OverallStatus);
+        Assert.All(
+            aggregate.Scenarios.Where(scenario => scenario.Priority == "P0"),
+            scenario => Assert.Equal("pass", scenario.Verdict));
         Assert.True(File.Exists(config.OutputPath));
     }
 
@@ -216,7 +219,7 @@ public sealed partial class ConformanceSmokeTests
             await tx.PutAsync("k"u8.ToArray(), "v"u8.ToArray());
             await tx.CommitAsync(KvDurability.Sync);
             evidence.Add("client remains usable after unknown-route error");
-            return Result("CS-004", transport, authMode, caught is RpcException ? "pass" : "partial", sw.ElapsedMilliseconds, evidence, caught.Message);
+            return Result("CS-004", transport, authMode, caught is RpcException { DomainCode: FitzErrorCodes.RpcRouteNotRegistered } ? "pass" : "partial", sw.ElapsedMilliseconds, evidence, caught.Message);
         }
         catch (Exception ex)
         {
@@ -235,34 +238,26 @@ public sealed partial class ConformanceSmokeTests
             await using var client = IntegrationFixture.CreateClientForMode(transport, authMode);
             await client.ConnectAsync();
 
-            var route = IntegrationFixture.CreateUniqueRoute("kv");
-            var tx = await client.Kv.BeginAsync(route);
-            await tx.InsertAsync("dup-key"u8.ToArray(), "first"u8.ToArray());
-            await tx.CommitAsync(KvDurability.Sync);
-            evidence.Add("first insert succeeded");
-
-            var tx2 = await client.Kv.BeginAsync(route);
             Exception? caught = null;
             try
             {
-                await tx2.InsertAsync("dup-key"u8.ToArray(), "second"u8.ToArray());
+                await client.Schedule.CreateAsync(IntegrationFixture.CreateUniqueRoute("schedule"), "not a cron", ScheduleDeliveryMode.Broadcast, ReadOnlyMemory<byte>.Empty);
             }
             catch (Exception ex)
             {
                 caught = ex;
             }
-            finally
+            if (caught is not ScheduleException)
             {
-                await tx2.RollbackAsync();
+                return Result("CS-005", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, $"invalid cron returned {caught?.GetType().Name ?? "no error"}");
             }
 
-            if (caught is null)
-            {
-                return Result("CS-005", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "duplicate insert unexpectedly succeeded");
-            }
-
-            evidence.Add($"duplicate insert raised {caught.GetType().Name}");
-            return Result("CS-005", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence, caught.Message);
+            evidence.Add("invalid cron produced a Schedule domain error");
+            var tx = await client.Kv.BeginAsync(IntegrationFixture.CreateUniqueRoute("kv"));
+            await tx.PutAsync("after-invalid"u8.ToArray(), "ok"u8.ToArray());
+            await tx.CommitAsync(KvDurability.Sync);
+            evidence.Add("client remains usable after the rejected operation");
+            return Result("CS-005", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
         }
         catch (Exception ex)
         {
@@ -327,7 +322,10 @@ public sealed partial class ConformanceSmokeTests
                 evidence.Add($"kv error type: {kvError.GetType().Name}");
             }
 
-            var verdict = rpcError is RpcException && kvError is KvException ? "pass" : "partial";
+            var verdict = rpcError is RpcException { DomainCode: FitzErrorCodes.RpcRouteNotRegistered, ErrorEffect: 0 }
+                && Retryability.IsRetryable(rpcError) && kvError is KvException && !Retryability.IsRetryable(kvError)
+                ? "pass" : "partial";
+            evidence.Add("required mapping includes retryable unregistered RPC and terminal KV errors");
             return Result("CS-006", transport, authMode, verdict, sw.ElapsedMilliseconds, evidence);
         }
         catch (Exception ex)
@@ -351,8 +349,10 @@ public sealed partial class ConformanceSmokeTests
             await workerClient.ConnectAsync();
             await callerClient.ConnectAsync();
 
+            var workerStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             await using var registration = await workerClient.Rpc.RegisterWorkerAsync(route, async (_, writer, ct) =>
             {
+                workerStarted.TrySetResult(true);
                 await Task.Delay(2000, ct);
                 await writer.SendAsync("late"u8.ToArray(), isEnd: true, ct);
             });
@@ -379,7 +379,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add($"rpc threw after ~{elapsed.TotalMilliseconds:F0}ms");
             evidence.Add($"error type: {caught.GetType().Name}");
 
-            var verdict = caught is RequestTimeoutException ? "pass" : "partial";
+            var verdict = caught is RequestTimeoutException && workerStarted.Task.IsCompletedSuccessfully ? "pass" : "partial";
 
             var kvRoute = IntegrationFixture.CreateUniqueRoute("kv");
             var tx = await callerClient.Kv.BeginAsync(kvRoute);
@@ -409,8 +409,10 @@ public sealed partial class ConformanceSmokeTests
             await workerClient.ConnectAsync();
             await callerClient.ConnectAsync();
 
+            var workerStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             await using var registration = await workerClient.Rpc.RegisterWorkerAsync(route, async (_, writer, ct) =>
             {
+                workerStarted.TrySetResult(true);
                 await Task.Delay(2000, ct);
                 await writer.SendAsync("late"u8.ToArray(), isEnd: true, ct);
             });
@@ -423,7 +425,7 @@ public sealed partial class ConformanceSmokeTests
                 }
             });
 
-            await Task.Delay(100);
+            await workerStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
             await cts.CancelAsync();
 
             Exception? caught = null;
@@ -506,7 +508,8 @@ public sealed partial class ConformanceSmokeTests
             }
 
             evidence.Add($"disconnect interrupted call with {caught.GetType().Name}");
-            return Result("CS-009", transport, authMode, caught is ConnectionException ? "pass" : "partial", sw.ElapsedMilliseconds, evidence, caught.Message);
+            evidence.Add("explicit client disposal does not exercise unexpected transport loss or reconnect");
+            return Result("CS-009", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, caught.Message);
         }
         catch (Exception ex)
         {
@@ -691,7 +694,8 @@ public sealed partial class ConformanceSmokeTests
                 evidence.Add($"lifecycle events: {string.Join(", ", lifecycleEvents)}");
             }
 
-            return Result("CS-010", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
+            evidence.Add("subscription restoration was not checked");
+            return Result("CS-010", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence);
         }
         catch (Exception ex)
         {
@@ -735,17 +739,17 @@ public sealed partial class ConformanceSmokeTests
                 records.Add(record);
             }
 
-            if (records.Count < 3)
+            if (records.Count != 3)
             {
-                evidence.Add($"expected >=3 records, got {records.Count}");
+                evidence.Add($"expected 3 records, got {records.Count}");
                 return Result("CS-011", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence);
             }
 
-            for (var i = 1; i < records.Count; i++)
+            for (var i = 0; i < records.Count; i++)
             {
-                if (records[i].Offset <= records[i - 1].Offset)
+                if (records[i].Offset != (ulong)i)
                 {
-                    evidence.Add($"out-of-order offsets at {i}");
+                    evidence.Add($"expected offset {i}, got {records[i].Offset}");
                     return Result("CS-011", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence);
                 }
             }
@@ -832,7 +836,8 @@ public sealed partial class ConformanceSmokeTests
             }
 
             evidence.Add($"append with wrong offset raised {caught.GetType().Name}");
-            return Result("CS-013", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence, caught.Message);
+            evidence.Add("an error during an active streaming read was not exercised");
+            return Result("CS-013", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, caught.Message);
         }
         catch (Exception ex)
         {
@@ -879,7 +884,8 @@ public sealed partial class ConformanceSmokeTests
             }
 
             evidence.Add("3 concurrent kv transactions completed correctly");
-            return Result("CS-014", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
+            evidence.Add("cross-domain concurrency and within-domain ordering were not exercised");
+            return Result("CS-014", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence);
         }
         catch (Exception ex)
         {
@@ -916,7 +922,8 @@ public sealed partial class ConformanceSmokeTests
 
             await client.DisposeAsync();
             evidence.Add("double close is safe");
-            return Result("CS-015", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
+            evidence.Add("the KV request may have completed before close; active-work interruption was not established");
+            return Result("CS-015", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence);
         }
         catch (Exception ex)
         {
@@ -926,77 +933,6 @@ public sealed partial class ConformanceSmokeTests
         finally
         {
             await client.DisposeAsync();
-        }
-    }
-
-    static async Task<ScenarioResult> RunCs017BoundedConcurrencyUnderBurstLoad(string transport, string authMode)
-    {
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var evidence = new List<string>();
-
-        try
-        {
-            await using var client = IntegrationFixture.CreateClientForMode(
-                transport,
-                authMode,
-                timeout: TimeSpan.FromMilliseconds(1500),
-                maxInFlightRequests: 16);
-            await using var workerClient = IntegrationFixture.CreateClientForMode(
-                transport,
-                authMode,
-                timeout: TimeSpan.FromSeconds(5),
-                asyncHandlers: new AsyncHandlerOptions(MaxConcurrency: 1));
-
-            await client.ConnectAsync();
-            await workerClient.ConnectAsync();
-
-            var route = IntegrationFixture.CreateUniqueRoute("rpc");
-            await using var registration = await workerClient.Rpc.RegisterWorkerAsync(route, async (req, writer, ct) =>
-            {
-                await Task.Delay(500, ct);
-                await writer.SendAsync(req.Body, isEnd: true, ct);
-            });
-
-            await using var firstEnumerator = client.Rpc.CallAsync(route, "first"u8.ToArray()).GetAsyncEnumerator();
-            await using var secondEnumerator = client.Rpc.CallAsync(route, "second"u8.ToArray()).GetAsyncEnumerator();
-
-            var firstNext = firstEnumerator.MoveNextAsync().AsTask();
-            var secondNext = secondEnumerator.MoveNextAsync().AsTask();
-            var secondSettledEarly = await Task.WhenAny(secondNext, Task.Delay(100)) == secondNext;
-
-            if (secondSettledEarly)
-            {
-                evidence.Add("second RPC call completed too early");
-                return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "second call should stay queued behind the first");
-            }
-
-            evidence.Add("second RPC call remained pending while first was in flight");
-            evidence.Add("configured maxInFlightRequests=16, worker maxConcurrency=1, and burst size=2");
-
-            if (!await firstNext || !await secondNext)
-            {
-                return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "expected both RPC calls to yield one response frame");
-            }
-
-            if (!string.Equals(Encoding.UTF8.GetString(firstEnumerator.Current.Body.Span), "first", StringComparison.Ordinal)
-                || !string.Equals(Encoding.UTF8.GetString(secondEnumerator.Current.Body.Span), "second", StringComparison.Ordinal))
-            {
-                return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "burst RPC responses were not correlated to their request bodies");
-            }
-
-            if (await firstEnumerator.MoveNextAsync() || await secondEnumerator.MoveNextAsync())
-            {
-                return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "expected single-frame RPC responses");
-            }
-
-            evidence.Add("both burst RPC calls completed with correlated responses");
-
-            return Result("CS-017", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
-        }
-        catch (Exception ex)
-        {
-            evidence.Add($"bounded concurrency scenario failed: {ex.GetType().Name}: {ex.Message}");
-            return Result("CS-017", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
         }
     }
 

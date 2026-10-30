@@ -72,9 +72,11 @@ public sealed class RpcClientTests
             },
             registerNotificationHandler: (messageType, handler) =>
             {
-                Assert.Equal(MessageTypes.RpcResponse, messageType);
-                responseRegistrations++;
-                responseHandler = handler;
+                if (messageType == MessageTypes.RpcResponse)
+                {
+                    responseRegistrations++;
+                    responseHandler = handler;
+                }
                 return new TestRegistration();
             });
 
@@ -129,8 +131,8 @@ public sealed class RpcClientTests
             },
             registerNotificationHandler: (messageType, _) =>
             {
-                Assert.Equal(MessageTypes.RpcRequest, messageType);
-                Interlocked.Increment(ref handlerRegistrations);
+                if (messageType == MessageTypes.RpcRequest)
+                    Interlocked.Increment(ref handlerRegistrations);
                 return new TestRegistration();
             });
 
@@ -155,14 +157,17 @@ public sealed class RpcClientTests
         using var rpc = new RpcClient(
             (messageType, payload, _) =>
             {
-                seenMessageType = messageType;
-                seenPayload = payload;
+                if (messageType == MessageTypes.RpcRequest)
+                {
+                    seenMessageType = messageType;
+                    seenPayload = payload;
+                }
                 return Task.FromResult(Array.Empty<byte>());
             },
             registerNotificationHandler: (messageType, handler) =>
             {
-                Assert.Equal(MessageTypes.RpcResponse, messageType);
-                responseHandler = handler;
+                if (messageType == MessageTypes.RpcResponse)
+                    responseHandler = handler;
                 return new TestRegistration();
             });
 
@@ -202,6 +207,7 @@ public sealed class RpcClientTests
         Assert.Equal("rpc://prod/app/echo", reader.ReadString());
         Assert.Equal((uint)4, reader.ReadU32());
         Assert.Equal("ping", System.Text.Encoding.UTF8.GetString(reader.ReadBytes(4)));
+        Assert.Equal((byte)0, reader.ReadU8());
         Assert.True(reader.IsEof);
     }
 
@@ -224,7 +230,7 @@ public sealed class RpcClientTests
 
                 using var errorBody = new BinaryBufferWriter();
                 errorBody.WriteU8(1);
-                errorBody.WriteU32(6002);
+                TestErrorEnvelope.Write(errorBody, 6050);
                 errorBody.WriteString("worker missing");
 
                 notification.WriteU32((uint)errorBody.WrittenMemory.Length);
@@ -233,9 +239,10 @@ public sealed class RpcClientTests
 
                 return Task.FromResult(Array.Empty<byte>());
             },
-            registerNotificationHandler: (_, handler) =>
+            registerNotificationHandler: (messageType, handler) =>
             {
-                responseHandler = handler;
+                if (messageType == MessageTypes.RpcResponse)
+                    responseHandler = handler;
                 return new TestRegistration();
             });
 
@@ -249,24 +256,24 @@ public sealed class RpcClientTests
         // Assert
         Assert.Equal("WORKER_NOT_FOUND", ex.Code);
         Assert.Equal((byte)1, ex.Status);
-        Assert.Equal((uint)6002, ex.DomainCode);
+        Assert.Equal((uint)6050, ex.DomainCode);
         Assert.Contains("worker missing", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
-    [InlineData(6001u, "TIMEOUT", true)]
-    [InlineData(6002u, "WORKER_NOT_FOUND", true)]
-    [InlineData(6003u, "BACKPRESSURE", true)]
-    [InlineData(6004u, "ROUTE_NOT_REGISTERED", true)]
-    [InlineData(6005u, "CORRELATION_NOT_FOUND", false)]
-    [InlineData(6006u, "INVALID_SEQUENCE", false)]
-    [InlineData(6007u, "DUPLICATE_CORRELATION", false)]
-    [InlineData(6008u, "WRONG_WORKER", false)]
-    [InlineData(6009u, "UNAUTHORIZED", false)]
-    [InlineData(6010u, "BACKEND_ERROR", false)]
-    [InlineData(6011u, "INVALID_ROUTE", false)]
-    [InlineData(6012u, "INVALID_SUBSCRIPTION_PATTERN", false)]
-    [InlineData(6013u, "SUBSCRIPTION_LIMIT", false)]
+    [InlineData(6007u, "TIMEOUT", false)]
+    [InlineData(6050u, "WORKER_NOT_FOUND", false)]
+    [InlineData(6005u, "BUSY", true)]
+    [InlineData(6051u, "ROUTE_NOT_REGISTERED", true)]
+    [InlineData(6052u, "CORRELATION_NOT_FOUND", false)]
+    [InlineData(6053u, "INVALID_SEQUENCE", false)]
+    [InlineData(6054u, "DUPLICATE_CORRELATION", false)]
+    [InlineData(6055u, "WRONG_WORKER", false)]
+    [InlineData(6001u, "UNAUTHORIZED", false)]
+    [InlineData(6006u, "BACKEND_ERROR", false)]
+    [InlineData(6002u, "INVALID_ROUTE", false)]
+    [InlineData(6003u, "INVALID_SUBSCRIPTION_PATTERN", false)]
+    [InlineData(6004u, "SUBSCRIPTION_LIMIT", false)]
     public async Task ShouldMapCanonicalErrorGivenRpcDomainCodeWhenCallTerminates(
         uint domainCode,
         string expectedCode,
@@ -282,7 +289,7 @@ public sealed class RpcClientTests
 
                 using var errorBody = new BinaryBufferWriter();
                 errorBody.WriteU8(1);
-                errorBody.WriteU32(domainCode);
+                TestErrorEnvelope.Write(errorBody, domainCode);
                 errorBody.WriteString(expectedCode);
 
                 using var response = new BinaryBufferWriter();
@@ -294,9 +301,10 @@ public sealed class RpcClientTests
                 responseHandler!(response.Build());
                 return Task.FromResult(Array.Empty<byte>());
             },
-            registerNotificationHandler: (_, handler) =>
+            registerNotificationHandler: (messageType, handler) =>
             {
-                responseHandler = handler;
+                if (messageType == MessageTypes.RpcResponse)
+                    responseHandler = handler;
                 return new TestRegistration();
             });
 
@@ -319,7 +327,7 @@ public sealed class RpcClientTests
     {
         // Arrange
         using var rpc = new RpcClient(
-            (_, _, _) => Task.FromResult(new byte[] { 0 }),
+            (_, _, _) => Task.FromResult(new byte[] { 0, 0 }),
             registerNotificationHandler: (_, _) => new TestRegistration());
 
         // Act
@@ -354,8 +362,8 @@ public sealed class RpcClientTests
             (_, _, _) => Task.CompletedTask,
             (messageType, handler) =>
             {
-                Assert.Equal(MessageTypes.RpcRequest, messageType);
-                incomingHandler = handler;
+                if (messageType == MessageTypes.RpcRequest)
+                    incomingHandler = handler;
                 return new TestRegistration();
             });
 
@@ -377,6 +385,7 @@ public sealed class RpcClientTests
         incoming.WriteString("rpc://prod/app/echo");
         incoming.WriteU32(4);
         incoming.WriteBytes("ping"u8);
+        incoming.WriteU8(0);
         incomingHandler!(incoming.Build());
 
         var request = await requestTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
@@ -390,6 +399,7 @@ public sealed class RpcClientTests
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("rpc://prod/app/echo", reader.ReadString());
         Assert.Equal((uint)7, reader.ReadU32());
+        Assert.Equal((byte)1, reader.ReadU8());
         Assert.True(reader.IsEof);
     }
 
@@ -408,9 +418,10 @@ public sealed class RpcClientTests
                 response.TrySetResult(payload.ToArray());
                 return ValueTask.CompletedTask;
             },
-            registerNotificationHandler: (_, handler) =>
+            registerNotificationHandler: (kind, handler) =>
             {
-                incomingHandler = handler;
+                if (kind == MessageTypes.RpcRequest)
+                    incomingHandler = handler;
                 return new TestRegistration();
             },
             onWorkerError: exception => reported.TrySetResult(exception));
@@ -422,6 +433,7 @@ public sealed class RpcClientTests
         incoming.WriteBytes(new byte[16]);
         incoming.WriteString("rpc://prod/app/failing");
         incoming.WriteU32(0);
+        incoming.WriteU8(0);
         incomingHandler!(incoming.Build());
 
 
@@ -437,7 +449,7 @@ public sealed class RpcClientTests
         Assert.Equal((byte)1, reply.ReadU8());
         var body = new BinaryBufferReader(reply.ReadBytes(reply.ReadU32()));
         Assert.Equal((byte)1, body.ReadU8());
-        Assert.Equal(FitzErrorCodes.RpcBackendError, body.ReadU32());
+        Assert.Equal(FitzErrorCodes.RpcBackendError, body.ReadU16());
     }
 
     [Fact]
@@ -466,9 +478,10 @@ public sealed class RpcClientTests
                 }
                 Interlocked.Decrement(ref activeSends);
             },
-            registerNotificationHandler: (_, handler) =>
+            registerNotificationHandler: (kind, handler) =>
             {
-                incomingHandler = handler;
+                if (kind == MessageTypes.RpcRequest)
+                    incomingHandler = handler;
                 return new TestRegistration();
             });
         await using var registration = await rpc.RegisterWorkerAsync(
@@ -487,6 +500,7 @@ public sealed class RpcClientTests
         incoming.WriteBytes(new byte[16]);
         incoming.WriteString("rpc://prod/app/stream");
         incoming.WriteU32(0);
+        incoming.WriteU8(0);
         incomingHandler!(incoming.Build());
 
 
@@ -565,6 +579,7 @@ public sealed class RpcClientTests
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("rpc://prod/app/echo", reader.ReadString());
         Assert.Equal(maxConcurrency, reader.ReadU32());
+        Assert.Equal((byte)1, reader.ReadU8());
         Assert.True(reader.IsEof);
     }
 
@@ -678,7 +693,6 @@ public sealed class RpcClientTests
         Assert.Equal("rpc://prod/app/cancel", requestReader.ReadString());
         _ = requestReader.ReadBytes(requestReader.ReadU32());
         Assert.Equal((byte)1, requestReader.ReadU8());
-        Assert.Equal((byte)1, requestReader.ReadU8());
         Assert.InRange(requestReader.ReadU32(), 1u, 5000u);
         Assert.True(requestReader.IsEof);
         Assert.Equal((byte)1, cancellationPayload[0]);
@@ -740,7 +754,6 @@ public sealed class RpcClientTests
         incoming.WriteU32(4);
         incoming.WriteBytes("work"u8);
         incoming.WriteU8(1);
-        incoming.WriteU8(1);
         incoming.WriteU32(3000);
 
         // Act
@@ -759,7 +772,6 @@ public sealed class RpcClientTests
         var subscriptionReader = new BinaryBufferReader(registrationPayload!);
         Assert.Equal("rpc://prod/app/worker", subscriptionReader.ReadString());
         Assert.Equal(1u, subscriptionReader.ReadU32());
-        Assert.Equal((byte)1, subscriptionReader.ReadU8());
         Assert.Equal((byte)1, subscriptionReader.ReadU8());
         Assert.True(subscriptionReader.IsEof);
         Assert.Equal((byte)3, ack[0]);

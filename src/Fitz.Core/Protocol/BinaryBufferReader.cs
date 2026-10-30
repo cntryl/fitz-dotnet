@@ -45,6 +45,15 @@ sealed class BinaryBufferReader
         return _data.Span[_offset++];
     }
 
+    /// <summary>Reads a big-endian 16-bit unsigned integer.</summary>
+    public ushort ReadU16()
+    {
+        EnsureAvailable(2);
+        var value = BinaryPrimitives.ReadUInt16BigEndian(_data.Span.Slice(_offset, 2));
+        _offset += 2;
+        return value;
+    }
+
     /// <summary>Reads a big-endian 32-bit unsigned integer.</summary>
     /// <returns>The value read.</returns>
     public uint ReadU32()

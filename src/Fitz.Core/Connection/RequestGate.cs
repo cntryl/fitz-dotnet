@@ -6,7 +6,7 @@ sealed class RequestGate
 {
     readonly object _gate = new();
     readonly Queue<RequestWaiter> _waiters = new();
-    readonly int _maxConcurrency;
+    int _maxConcurrency;
     readonly int _maxQueueSize;
     int _activeCount;
     bool _closed;
@@ -43,6 +43,30 @@ sealed class RequestGate
             var waiter = new RequestWaiter(this, ct);
             _waiters.Enqueue(waiter);
             return new ValueTask<Releaser>(waiter.Task);
+        }
+    }
+
+    internal void SetMaxConcurrency(int maxConcurrency)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxConcurrency);
+        List<RequestWaiter> granted = [];
+        lock (_gate)
+        {
+            _maxConcurrency = maxConcurrency;
+            while (!_closed && _activeCount < _maxConcurrency && _waiters.Count > 0)
+            {
+                var next = _waiters.Dequeue();
+                if (next.IsCanceled)
+                {
+                    continue;
+                }
+                _activeCount++;
+                granted.Add(next);
+            }
+        }
+        foreach (var waiter in granted)
+        {
+            waiter.Grant(new Releaser(this));
         }
     }
 

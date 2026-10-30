@@ -50,9 +50,9 @@ uint[] rpcErrorCodes =
     FitzErrorCodes.RpcInvalidSubscriptionPattern,
     FitzErrorCodes.RpcSubscriptionLimit,
 ];
-if (!rpcErrorCodes.SequenceEqual(Enumerable.Range(6001, 13).Select(static code => (uint)code)))
+if (!rpcErrorCodes.SequenceEqual(new uint[] { 6007, 6050, 6005, 6051, 6052, 6053, 6054, 6055, 6001, 6006, 6002, 6003, 6004 }))
 {
-    throw new InvalidOperationException("RPC error code constants must cover the canonical 6001-6013 range.");
+    throw new InvalidOperationException("RPC error code constants must match the Wire 2 catalog.");
 }
 
 uint[] streamWriteContentionCodes =
@@ -60,9 +60,9 @@ uint[] streamWriteContentionCodes =
     FitzErrorCodes.StreamConcurrencyConflict,
     FitzErrorCodes.StreamSessionAlreadyActive,
 ];
-if (!streamWriteContentionCodes.SequenceEqual(Enumerable.Range(2001, 2).Select(static code => (uint)code)))
+if (!streamWriteContentionCodes.SequenceEqual(new uint[] { 2050, 2051 }))
 {
-    throw new InvalidOperationException("Stream write-contention error code constants must cover the canonical 2001-2002 range.");
+    throw new InvalidOperationException("Stream write-contention error code constants must match the Wire 2 catalog.");
 }
 
 

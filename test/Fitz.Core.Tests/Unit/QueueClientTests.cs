@@ -251,6 +251,7 @@ public sealed class QueueClientTests
             else
             {
                 writer.WriteU8(1);
+                TestErrorEnvelope.Write(writer, 4050);
                 writer.WriteString("InvalidToken");
             }
             return Task.FromResult(writer.Build());
@@ -263,7 +264,7 @@ public sealed class QueueClientTests
         // Assert
         var error = await Assert.ThrowsAsync<QueueException>(act);
         Assert.Contains("InvalidToken", error.Message, StringComparison.Ordinal);
-        Assert.Null(error.DomainCode);
+        Assert.Equal(4050u, error.DomainCode);
     }
 
     [Fact]
@@ -276,7 +277,7 @@ public sealed class QueueClientTests
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
-            writer.WriteU32(4008);
+            TestErrorEnvelope.Write(writer, 4008);
             writer.WriteString("queue backend unavailable");
             return Task.FromResult(writer.Build());
         });
@@ -528,7 +529,7 @@ public sealed class QueueClientTests
             reserveCallCount++;
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
-            writer.WriteU32(4008);
+            TestErrorEnvelope.Write(writer, 4008);
             writer.WriteString("Trailing data after RESERVE request");
             return Task.FromResult(writer.Build());
         });
@@ -722,7 +723,7 @@ public sealed class QueueClientTests
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             }
             else if (sentFrameCount == 2)
             {
@@ -733,7 +734,7 @@ public sealed class QueueClientTests
                 reserveWriter.WriteU64(777);
                 reserveWriter.WriteU32(5);
                 reserveWriter.WriteBytes("job-1"u8);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueReserve, reserveWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.QueueReserve, reserveWriter.WrittenSpan);
             }
         };
 
@@ -746,7 +747,7 @@ public sealed class QueueClientTests
 
             using var authProbeWriter = new BinaryBufferWriter();
             authProbeWriter.WriteU8(0);
-            secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+            secondTransport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             reconnected.TrySetResult();
         };
 
@@ -794,7 +795,7 @@ public sealed class QueueClientTests
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             }
             else if (sentFrameCount == 2)
             {
@@ -802,7 +803,7 @@ public sealed class QueueClientTests
                 subscribeWriter.WriteU8(0);
                 subscribeWriter.WriteU8(1);
                 subscribeWriter.WriteU64(555);
-                firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueSubscribe, subscribeWriter.WrittenSpan));
+                firstTransport.QueueResponse(MessageTypes.QueueSubscribe, subscribeWriter.WrittenSpan);
             }
         };
 
@@ -812,7 +813,7 @@ public sealed class QueueClientTests
             {
                 using var authProbeWriter = new BinaryBufferWriter();
                 authProbeWriter.WriteU8(0);
-                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan));
+                secondTransport.QueueResponse(MessageTypes.LeaseQuery, authProbeWriter.WrittenSpan);
             }
             else if (sentFrameCount == 2)
             {
@@ -820,7 +821,7 @@ public sealed class QueueClientTests
                 subscribeWriter.WriteU8(0);
                 subscribeWriter.WriteU8(1);
                 subscribeWriter.WriteU64(777);
-                secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueSubscribe, subscribeWriter.WrittenSpan));
+                secondTransport.QueueResponse(MessageTypes.QueueSubscribe, subscribeWriter.WrittenSpan);
 
                 _ = Task.Run(async () =>
                 {
@@ -830,7 +831,7 @@ public sealed class QueueClientTests
                     notification.WriteString("queue://prod/app/tasks");
                     notification.WriteU32(8);
                     notification.WriteBytes("restored"u8);
-                    secondTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueNotify, notification.WrittenSpan));
+                    secondTransport.QueueResponse(MessageTypes.QueueNotify, notification.WrittenSpan);
                 });
             }
         };
@@ -866,7 +867,7 @@ public sealed class QueueClientTests
             notification.WriteString("queue://prod/app/tasks");
             notification.WriteU32(7);
             notification.WriteBytes("initial"u8);
-            firstTransport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.QueueNotify, notification.WrittenSpan));
+            firstTransport.QueueResponse(MessageTypes.QueueNotify, notification.WrittenSpan);
         }
 
         // Act

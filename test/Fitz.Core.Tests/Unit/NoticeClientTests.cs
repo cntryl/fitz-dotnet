@@ -182,7 +182,7 @@ public sealed class NoticeClientTests
             {
                 using var response = new BinaryBufferWriter();
                 response.WriteU8(1);
-                response.WriteU32(FitzErrorCodes.NoticeInvalidPattern);
+                TestErrorEnvelope.Write(response, FitzErrorCodes.NoticeInvalidPattern);
                 response.WriteString("invalid pattern");
                 return Task.FromResult(response.Build());
             },

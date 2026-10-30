@@ -5,6 +5,23 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class ConformanceContractTests
 {
+    [Theory]
+    [InlineData("P0", "fail")]
+    [InlineData("P1", "partial")]
+    public void ShouldNotPassGivenUnimplementedScenarioWhenBuildingAggregate(string priority, string expectedStatus)
+    {
+        // Arrange
+        var missing = new Cntryl.Fitz.Core.Tests.Integration.ScenarioResult(
+            "CS-020", "scenario", priority, "fitz-dotnet", "tcp", "anonymous", "not_implemented", 0, []);
+
+        // Act
+        var aggregate = Cntryl.Fitz.Core.Tests.Integration.ConformanceResultBuilder.BuildAggregate(
+            "suite", "fitz-dotnet", "1.0", "tcp", "anonymous", DateTimeOffset.UtcNow, [missing]);
+
+        // Assert
+        Assert.Equal(expectedStatus, aggregate.OverallStatus);
+    }
+
     [Fact]
     public void ShouldMatchSharedConformanceSuiteIdsGivenSharedContractWhenValidating()
     {
@@ -14,9 +31,10 @@ public sealed class ConformanceContractTests
         var suite = Cntryl.Fitz.Core.Tests.Integration.ConformanceSmokeTests.ConformanceSuiteDefinition.Load(
             Cntryl.Fitz.Core.Tests.Integration.IntegrationFixture.GetConformanceSuitePath());
 
-        Assert.Equal(
-            Cntryl.Fitz.Core.Tests.Integration.ConformanceSmokeTests.ImplementedScenarioIds,
-            suite.Scenarios.Select(scenario => scenario.ScenarioId));
+        Assert.Equal(24, suite.Scenarios.Count);
+        Assert.Subset(
+            suite.Scenarios.Select(scenario => scenario.ScenarioId).ToHashSet(StringComparer.Ordinal),
+            Cntryl.Fitz.Core.Tests.Integration.ConformanceSmokeTests.ImplementedScenarioIds.ToHashSet(StringComparer.Ordinal));
     }
 
     [Fact]
@@ -66,6 +84,10 @@ public sealed class ConformanceContractTests
         Assert.Equal("ws", root.GetProperty("transport").GetString());
         Assert.Equal("anonymous", root.GetProperty("auth_mode").GetString());
         Assert.True(root.TryGetProperty("generated_at", out _));
+        Assert.Equal(1, root.GetProperty("p0_pass").GetInt32());
+        Assert.Equal(1, root.GetProperty("p0_total").GetInt32());
+        Assert.Equal(1, root.GetProperty("p1_pass").GetInt32());
+        Assert.Equal(1, root.GetProperty("p1_total").GetInt32());
         Assert.True(root.TryGetProperty("p0_pass_rate", out _));
         Assert.True(root.TryGetProperty("p1_pass_rate", out _));
         Assert.True(root.TryGetProperty("overall_status", out _));

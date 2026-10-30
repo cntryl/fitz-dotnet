@@ -35,6 +35,14 @@ sealed class BinaryBufferWriter : IDisposable
         _buffer![_position++] = value;
     }
 
+    /// <summary>Writes a big-endian 16-bit unsigned integer.</summary>
+    public void WriteU16(ushort value)
+    {
+        EnsureCapacity(2);
+        BinaryPrimitives.WriteUInt16BigEndian(_buffer!.AsSpan(_position, 2), value);
+        _position += 2;
+    }
+
     /// <summary>Writes a big-endian 32-bit unsigned integer.</summary>
     /// <param name="value">Value to write.</param>
     public void WriteU32(uint value)

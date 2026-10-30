@@ -14,15 +14,13 @@ namespace Cntryl.Fitz;
 public static class FitzLimits
 {
     /// <summary>
-    /// Smallest accepted <see cref="ClientConfig.MaxFrameSize"/>: a frame header on its own,
-    /// being a 16-bit opcode plus a length prefix.
+    /// Smallest accepted <see cref="ClientConfig.MaxFrameSize"/>: the fixed 15-byte Wire-2 header.
     /// </summary>
     public const int MinFrameSize = FrameCodec.MaxHeaderSize;
 
     /// <summary>
-    /// Largest accepted <see cref="ClientConfig.MaxFrameSize"/>, and its default. The Fitz
-    /// payload length is 16-bit, and a correlated transport frame additionally carries its
-    /// correlation record, so the ceiling is the sum of the two plus a header.
+    /// Largest accepted <see cref="ClientConfig.MaxFrameSize"/>, and its default: 1 MiB including
+    /// the fixed header.
     /// </summary>
     public const int MaxFrameSize = FrameCodec.MaxTransportFrameSize;
 }

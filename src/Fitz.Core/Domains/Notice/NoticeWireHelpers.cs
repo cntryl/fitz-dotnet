@@ -20,14 +20,10 @@ static class NoticeWireHelpers
                 throw new NoticeException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
             }
 
-            var domainCode = reader.ReadU32();
-            var message = reader.ReadString();
-            if (!reader.IsEof)
-            {
-                throw new NoticeException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE");
-            }
-
-            throw new NoticeException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
+            var error = ResponseError.Read(response);
+            var domainError = new NoticeException($"{operation} failed: {error.Message}", $"{operation}_FAILED", status, error.Code);
+            domainError.SetWireError(error.Class, error.Effect);
+            throw domainError;
         }
         catch (ProtocolException)
         {

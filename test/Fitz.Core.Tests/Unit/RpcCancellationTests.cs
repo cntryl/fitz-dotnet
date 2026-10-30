@@ -47,7 +47,7 @@ public sealed class RpcCancellationTests
     }
 
     [Fact]
-    public async Task ShouldPreserveLegacyCallerFramingGivenLocalTimeout()
+    public async Task ShouldIncludeBudgetWithoutOptionalCapabilitiesGivenLocalTimeout()
     {
         // Arrange
         byte[]? payload = null;
@@ -69,8 +69,8 @@ public sealed class RpcCancellationTests
 
         // Assert
         Assert.IsAssignableFrom<OperationCanceledException>(error);
-        Assert.Equal(RpcCancellationOutcome.Unsupported, outcome);
-        Assert.Equal(16 + 4 + "rpc://prod/app/work".Length + 4 + 4, payload!.Length);
+        Assert.Equal(RpcCancellationOutcome.Unconfirmed, outcome);
+        Assert.Equal(16 + 4 + "rpc://prod/app/work".Length + 4 + 4 + 5, payload!.Length);
     }
 
     [Fact]
@@ -219,7 +219,6 @@ public sealed class RpcCancellationTests
         writer.WriteBytes(correlation);
         writer.WriteString("rpc://prod/app/work");
         writer.WriteU32(0);
-        writer.WriteU8(1);
         writer.WriteU8(1);
         writer.WriteU32(budget);
         return writer.Build();

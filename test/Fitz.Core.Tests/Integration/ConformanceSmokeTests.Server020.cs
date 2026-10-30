@@ -5,7 +5,7 @@ namespace Cntryl.Fitz.Core.Tests.Integration;
 public sealed partial class ConformanceSmokeTests
 {
     [Fact]
-    public async Task ShouldAdvertiseServer020CapabilitiesGivenBrokerWhenConnected()
+    public async Task ShouldAdvertiseWire2CapabilitiesGivenBrokerWhenConnected()
     {
         // Arrange
         await using var client = IntegrationFixture.CreateClientForMode(
@@ -23,10 +23,11 @@ public sealed partial class ConformanceSmokeTests
         var capabilities = connection.Capabilities;
 
         // Assert
-        Assert.Equal(1, capabilities.ProtocolVersion);
-        Assert.True(capabilities.SupportsCorrelation, "server 0.2.0 requires correlation");
-        Assert.True(capabilities.SupportsSessionMetadata, "server 0.2.0 requires session metadata");
-        Assert.True(capabilities.SupportsKvScanExclusive, "server 0.2.0 requires exclusive KV scan");
+        Assert.Equal(2, capabilities.ProtocolVersion);
+        Assert.Equal(0u, capabilities.CapabilityBits);
+        Assert.True(capabilities.SupportsCorrelation);
+        Assert.False(Cntryl.Fitz.Protocol.ServerCapabilities.SupportsSessionMetadata);
+        Assert.True(capabilities.SupportsKvScanExclusive);
     }
 
     [Theory]

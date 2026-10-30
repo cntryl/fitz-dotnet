@@ -2,209 +2,132 @@ using System.Buffers.Binary;
 
 namespace Cntryl.Fitz.Protocol;
 
-/// <summary>
-/// Encodes and decodes Fitz wire frames.
-/// </summary>
+/// <summary>Encodes and decodes Wire-2 Fitz frames.</summary>
 static class FrameCodec
 {
-    /// <summary>Size in bytes of a frame header: a 16-bit opcode plus a length prefix.</summary>
-    public const int MaxHeaderSize = 5;
-
-    const byte ExtendedMessageTypeMarker = 0xFF;
+    public const int MaxHeaderSize = 15;
+    internal const int MaxTransportFrameSize = 1024 * 1024;
+    // Kept as an internal source-compatibility name; correlation now occupies the frame header.
+    public const int CorrelationRecordSize = MaxHeaderSize;
+    public const byte AckRequestedFlag = 1;
+    public const byte ResponseFinalFlag = 2;
+    const byte KnownFlags = AckRequestedFlag | ResponseFinalFlag;
 
     /// <summary>Largest encoded size for a payload of the given length.</summary>
-    /// <param name="payloadLength">Payload length in bytes.</param>
-    /// <returns>The encoded frame size, header included.</returns>
     public static int MaxEncodedSize(int payloadLength)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(payloadLength);
-
-        return checked(MaxHeaderSize + payloadLength);
+        var encodedLength = checked(MaxHeaderSize + payloadLength);
+        if (encodedLength > MaxTransportFrameSize)
+        {
+            throw new ProtocolException($"Encoded frame length {encodedLength} exceeds the 1 MiB Wire-2 limit.");
+        }
+        return encodedLength;
     }
 
-    /// <summary>Encodes a frame into a caller-supplied buffer, without allocating.</summary>
-    /// <param name="messageType">Opcode from <see cref="MessageTypes"/>.</param>
-    /// <param name="payload">Payload to encode.</param>
-    /// <param name="destination">Buffer to write into; at least <see cref="MaxEncodedSize"/> bytes.</param>
-    /// <returns>Number of bytes written.</returns>
-    public static int EncodeInto(ushort messageType, ReadOnlySpan<byte> payload, Span<byte> destination)
+    /// <summary>Encodes a frame into a caller-supplied buffer without allocating.</summary>
+    public static int EncodeInto(
+        ushort messageType,
+        ReadOnlySpan<byte> payload,
+        Span<byte> destination,
+        byte flags = 0,
+        ulong correlationId = 0)
     {
-        if (payload.Length > ushort.MaxValue)
-        {
-            throw new ProtocolException($"Payload length {payload.Length} exceeds the 65535-byte Fitz wire limit.");
-        }
-
-        var typeLength = GetTypeLength(messageType);
-        var required = typeLength + 2 + payload.Length;
+        ValidateFlags(flags);
+        var required = MaxEncodedSize(payload.Length);
         if (destination.Length < required)
         {
             throw new ArgumentException("Destination too small.", nameof(destination));
         }
 
-        var offset = 0;
-        if (typeLength == 1)
-        {
-            destination[offset++] = (byte)messageType;
-        }
-        else
-        {
-            destination[offset++] = ExtendedMessageTypeMarker;
-            destination[offset++] = (byte)(messageType >> 8);
-            destination[offset++] = (byte)(messageType & 0xFF);
-        }
-
-        BinaryPrimitives.WriteUInt16BigEndian(destination.Slice(offset, 2), (ushort)payload.Length);
-        offset += 2;
-        payload.CopyTo(destination.Slice(offset));
+        BinaryPrimitives.WriteUInt16BigEndian(destination[..2], messageType);
+        destination[2] = flags;
+        BinaryPrimitives.WriteUInt64BigEndian(destination.Slice(3, 8), correlationId);
+        BinaryPrimitives.WriteUInt32BigEndian(destination.Slice(11, 4), (uint)payload.Length);
+        payload.CopyTo(destination[MaxHeaderSize..]);
         return required;
     }
 
     /// <summary>Encodes a frame into a new array.</summary>
-    /// <param name="messageType">Opcode from <see cref="MessageTypes"/>.</param>
-    /// <param name="payload">Payload to encode.</param>
-    /// <returns>The encoded frame.</returns>
-    /// <remarks>Prefer <see cref="EncodeInto"/> on hot paths; this allocates.</remarks>
-    public static byte[] Encode(ushort messageType, ReadOnlySpan<byte> payload)
+    public static byte[] Encode(ushort messageType, ReadOnlySpan<byte> payload, byte flags = 0, ulong correlationId = 0)
     {
-        if (payload.Length > ushort.MaxValue)
-        {
-            throw new ProtocolException($"Payload length {payload.Length} exceeds the 65535-byte Fitz wire limit.");
-        }
-
-        var output = GC.AllocateUninitializedArray<byte>(GetTypeLength(messageType) + 2 + payload.Length);
-        EncodeInto(messageType, payload, output);
+        var output = GC.AllocateUninitializedArray<byte>(MaxEncodedSize(payload.Length));
+        EncodeInto(messageType, payload, output, flags, correlationId);
         return output;
     }
 
-    /// <summary>
-    /// Length of a <c>CORRELATE</c>/<c>CORRELATED</c> record: a 1-byte type, a 2-byte length, and an
-    /// 8-byte big-endian identifier.
-    /// </summary>
-    public const int CorrelationRecordSize = 11;
-
-    /// <summary>
-    /// Largest legal transport frame: a correlation record followed by an extended-type record
-    /// carrying the maximum 16-bit payload.
-    /// </summary>
-    internal const int MaxTransportFrameSize = CorrelationRecordSize + MaxHeaderSize + ushort.MaxValue;
-
-    /// <summary>
-    /// Encodes a <c>CORRELATE</c> record immediately followed by the request it labels, as the two
-    /// records of a single transport frame.
-    /// </summary>
-    /// <remarks>
-    /// The spec requires the label to precede its request in the same transport frame, so the two
-    /// records are built together and handed to the transport as one send.
-    /// </remarks>
-    public static byte[] EncodeCorrelated(ulong correlationId, ushort messageType, ReadOnlySpan<byte> payload)
+    internal static byte[] EncodeCorrelated(ulong correlationId, ushort messageType, ReadOnlySpan<byte> payload)
     {
         if (correlationId == 0)
         {
-            throw new ProtocolException("Correlation identifier zero is reserved and must not be sent.");
+            throw new ProtocolException("Correlation identifier zero is reserved for notifications.");
         }
-
-        if (payload.Length > ushort.MaxValue)
-        {
-            throw new ProtocolException($"Payload length {payload.Length} exceeds the 65535-byte Fitz wire limit.");
-        }
-
-        var requestLength = GetTypeLength(messageType) + 2 + payload.Length;
-        var output = GC.AllocateUninitializedArray<byte>(CorrelationRecordSize + requestLength);
-
-        output[0] = (byte)MessageTypes.Correlate;
-        BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(1, 2), sizeof(ulong));
-        BinaryPrimitives.WriteUInt64BigEndian(output.AsSpan(3, 8), correlationId);
-        EncodeInto(messageType, payload, output.AsSpan(CorrelationRecordSize));
-        return output;
+        return Encode(messageType, payload, correlationId: correlationId);
     }
 
-    /// <summary>
-    /// Reads the identifier from a <c>CORRELATE</c>/<c>CORRELATED</c> record payload.
-    /// </summary>
-    public static ulong ReadCorrelationId(ReadOnlySpan<byte> payload)
+    internal static ulong ReadCorrelationId(ReadOnlySpan<byte> payload)
     {
         if (payload.Length != sizeof(ulong))
         {
-            throw new ProtocolException($"Correlation record carries {payload.Length} bytes; expected 8.");
+            throw new ProtocolException($"Correlation value carries {payload.Length} bytes; expected 8.");
         }
-
-        var correlationId = BinaryPrimitives.ReadUInt64BigEndian(payload);
-        if (correlationId == 0)
-        {
-            throw new ProtocolException("Correlation identifier zero is reserved.");
-        }
-
-        return correlationId;
+        return BinaryPrimitives.ReadUInt64BigEndian(payload);
     }
 
-    /// <summary>Decodes a frame, rejecting anything malformed.</summary>
-    /// <param name="frameBytes">The encoded frame.</param>
-    /// <returns>The decoded frame.</returns>
-    /// <exception cref="ProtocolException">
-    /// The frame is truncated, over-long, or its length prefix disagrees with its content.
-    /// </exception>
+    /// <summary>Decodes one complete frame, rejecting truncation and trailing bytes.</summary>
     public static Frame DecodeStrict(ReadOnlyMemory<byte> frameBytes)
     {
-        var span = frameBytes.Span;
-        ReadHeader(span, out var messageType, out var payloadLength, out var headerLength);
+        if (!TryReadHeader(frameBytes.Span, out var messageType, out var flags, out var correlationId, out var payloadLength))
+        {
+            throw new ProtocolException("Frame header is incomplete.");
+        }
 
-        var expectedLength = headerLength + payloadLength;
-        if (span.Length < expectedLength)
+        var expectedLength = checked(MaxHeaderSize + (int)payloadLength);
+        if (frameBytes.Length < expectedLength)
         {
             throw new ProtocolException("Frame payload is incomplete.");
         }
-
-        if (span.Length != expectedLength)
+        if (frameBytes.Length != expectedLength)
         {
             throw new ProtocolException("Frame has trailing bytes.");
         }
 
-        return new Frame(messageType, frameBytes.Slice(headerLength, payloadLength));
+        return new Frame(messageType, flags, correlationId, frameBytes[MaxHeaderSize..]);
     }
 
-    internal static bool TryReadHeader(ReadOnlySpan<byte> frameBytes, out ushort messageType, out ushort payloadLength, out int headerLength)
+    internal static bool TryReadHeader(
+        ReadOnlySpan<byte> frameBytes,
+        out ushort messageType,
+        out byte flags,
+        out ulong correlationId,
+        out uint payloadLength)
     {
-        if (frameBytes.Length < 3)
+        if (frameBytes.Length < MaxHeaderSize)
         {
             messageType = default;
+            flags = default;
+            correlationId = default;
             payloadLength = default;
-            headerLength = default;
             return false;
         }
 
-        if (frameBytes[0] == ExtendedMessageTypeMarker)
+        messageType = BinaryPrimitives.ReadUInt16BigEndian(frameBytes[..2]);
+        flags = frameBytes[2];
+        ValidateFlags(flags);
+        correlationId = BinaryPrimitives.ReadUInt64BigEndian(frameBytes.Slice(3, 8));
+        payloadLength = BinaryPrimitives.ReadUInt32BigEndian(frameBytes.Slice(11, 4));
+        if (payloadLength > MaxTransportFrameSize - MaxHeaderSize)
         {
-            if (frameBytes.Length < MaxHeaderSize)
-            {
-                messageType = default;
-                payloadLength = default;
-                headerLength = default;
-                return false;
-            }
-
-            messageType = BinaryPrimitives.ReadUInt16BigEndian(frameBytes.Slice(1, 2));
-            payloadLength = BinaryPrimitives.ReadUInt16BigEndian(frameBytes.Slice(3, 2));
-            headerLength = MaxHeaderSize;
-            return true;
+            throw new ProtocolException($"Payload length {payloadLength} exceeds the 1 MiB Wire-2 frame limit.");
         }
-
-        messageType = frameBytes[0];
-        payloadLength = BinaryPrimitives.ReadUInt16BigEndian(frameBytes.Slice(1, 2));
-        headerLength = 3;
         return true;
     }
 
-    static int GetTypeLength(ushort messageType) => messageType <= 0xFE ? 1 : 3;
-
-    static void ReadHeader(ReadOnlySpan<byte> frameBytes, out ushort messageType, out ushort payloadLength, out int headerLength)
+    static void ValidateFlags(byte flags)
     {
-        if (TryReadHeader(frameBytes, out messageType, out payloadLength, out headerLength))
+        if ((flags & ~KnownFlags) != 0)
         {
-            return;
+            throw new ProtocolException($"Frame contains unknown flags 0x{flags:X2}.");
         }
-
-        throw frameBytes.Length < 3
-            ? new ProtocolException("Frame is too short.")
-            : new ProtocolException("Extended frame header is incomplete.");
     }
 }

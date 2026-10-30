@@ -34,6 +34,10 @@ sealed record AggregateResult(
     [property: JsonPropertyName("client")] string Client,
     [property: JsonPropertyName("transport")] string Transport,
     [property: JsonPropertyName("auth_mode")] string AuthMode,
+    [property: JsonPropertyName("p0_pass")] int P0Pass,
+    [property: JsonPropertyName("p0_total")] int P0Total,
+    [property: JsonPropertyName("p1_pass")] int P1Pass,
+    [property: JsonPropertyName("p1_total")] int P1Total,
     [property: JsonPropertyName("p0_pass_rate")] double P0PassRate,
     [property: JsonPropertyName("p1_pass_rate")] double P1PassRate,
     [property: JsonPropertyName("overall_status")] string OverallStatus,
@@ -68,7 +72,7 @@ static class ConformanceResultBuilder
 
         var p0PassRate = PassRate(p0);
         var p1PassRate = PassRate(p1);
-        var overall = p0.Any(r => r.Verdict != "pass") ? "fail" : (p1.Any(r => r.Verdict is "partial" or "fail") ? "partial" : "pass");
+        var overall = p0.Any(r => r.Verdict != "pass") ? "fail" : (p1.Any(r => r.Verdict != "pass") ? "partial" : "pass");
 
         return new AggregateResult(
             suite,
@@ -77,6 +81,10 @@ static class ConformanceResultBuilder
             client,
             transport,
             authMode,
+            p0.Count(r => r.Verdict == "pass"),
+            p0.Count,
+            p1.Count(r => r.Verdict == "pass"),
+            p1.Count,
             p0PassRate,
             p1PassRate,
             overall,

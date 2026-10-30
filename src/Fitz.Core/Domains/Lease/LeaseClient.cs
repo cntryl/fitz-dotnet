@@ -191,7 +191,13 @@ sealed class LeaseClient : ILeaseClient, IDisposable
             throw new LeaseException("ACQUIRE response has trailing bytes", "ACQUIRE_INVALID_RESPONSE");
         }
 
-        if (responseType is 2 or 3)
+        if (responseType == 3)
+        {
+            RemoveQueuedAcquisition(deferred);
+            throw new LeaseException("ACQUIRE request is already queued", "ALREADY_QUEUED");
+        }
+
+        if (responseType == 2)
         {
             if (deferred is null)
                 throw new LeaseException("ACQUIRE queued without a wait request", "ACQUIRE_INVALID_RESPONSE");

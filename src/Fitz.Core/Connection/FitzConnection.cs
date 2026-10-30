@@ -2,9 +2,8 @@ using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
-using System.Net.WebSockets;
+using System.Reflection;
 using System.Security.Cryptography;
-using System.Text;
 using Cntryl.Fitz.Observability;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
@@ -20,6 +19,7 @@ namespace Cntryl.Fitz.Connection;
 /// </remarks>
 sealed class FitzConnection : IAsyncDisposable
 {
+    const ushort VersionMismatchCode = 50;
     static readonly TaskCompletionSource<bool> CompletedStateSignal = CreateCompletedStateSignal();
     static readonly CancellationToken ClosedConnectionToken = new(canceled: true);
 
@@ -27,7 +27,6 @@ sealed class FitzConnection : IAsyncDisposable
     readonly ClientConfig _config;
     readonly Func<ITransport> _transportFactory;
     readonly Multiplexer _multiplexer;
-    readonly FrameParser _frameParser;
     readonly Dictionary<long, Func<CancellationToken, ValueTask>> _reconnectListeners = [];
     readonly Dictionary<long, Action> _disconnectListeners = [];
     readonly List<CancellationTokenSource> _retiredConnectionClosedTokens = [];
@@ -38,6 +37,7 @@ sealed class FitzConnection : IAsyncDisposable
     TaskCompletionSource<bool> _stateChanged = CompletedStateSignal;
 
     ITransport? _transport;
+    ITransport? _goAwayTransport;
     Task? _receiveLoop;
     CancellationTokenSource? _receiveLoopCts;
     TaskCompletionSource<bool>? _authFailure;
@@ -57,10 +57,8 @@ sealed class FitzConnection : IAsyncDisposable
     long _readyWaiterCount;
     volatile ConnectionState _state = ConnectionState.Disconnected;
     int _disposed;
-    // Capabilities are per-session: a reconnect must observe a fresh SERVER_HELLO before the client
-    // may correlate again, because the peer may not be the broker that answered last time. Packed
-    // into a long so the receive loop can publish it atomically to request threads.
-    long _capabilityState;
+    // Negotiated limits and session identifiers are per-session and published as one immutable object.
+    ServerCapabilities? _capabilities;
     long _nextCorrelationId;
 
     /// <summary>Creates a connection that builds its transport on demand.</summary>
@@ -72,7 +70,6 @@ sealed class FitzConnection : IAsyncDisposable
         _config.Validate();
         _transportFactory = transportFactory ?? throw new ArgumentNullException(nameof(transportFactory));
         _multiplexer = new Multiplexer(OnMultiplexerError, exception => ScheduleConnectionLoss(exception));
-        _frameParser = new FrameParser(config.MaxFrameSize);
         _requestGate = CreateRequestGate();
     }
 
@@ -80,94 +77,58 @@ sealed class FitzConnection : IAsyncDisposable
     public ConnectionState State => _state;
 
     /// <summary>
-    /// Whether the broker advertised <c>CAP_CORRELATION</c> for the current session.
+    /// Whether the Wire-2 handshake completed for the current session.
     /// </summary>
     /// <remarks>
-    /// False until a <c>SERVER_HELLO</c> arrives, and false for the whole session against a broker
-    /// that never sends one. Requests issued before the advertisement are simply uncorrelated.
+    /// False until the broker sends its Wire-2 <c>HELLO</c> frame.
     /// </remarks>
     public bool CorrelationEnabled => Capabilities.SupportsCorrelation;
 
     /// <summary>The capabilities advertised for the current session.</summary>
-    public ServerCapabilities Capabilities => UnpackCapabilities(Interlocked.Read(ref _capabilityState));
-
-    static ServerCapabilities UnpackCapabilities(long packed) =>
-        new((ushort)(packed >> 32), unchecked((uint)packed));
-
-    static long PackCapabilities(ServerCapabilities capabilities) =>
-        ((long)capabilities.ProtocolVersion << 32) | capabilities.CapabilityBits;
+    public ServerCapabilities Capabilities => Volatile.Read(ref _capabilities) ?? ServerCapabilities.None;
 
     /// <summary>
-    /// Records a broker capability advertisement. An unparseable or unrecognised advertisement is
-    /// ignored rather than rejected: it must never be more disruptive than a missing one.
+    /// Validates the broker HELLO and completes authentication for its transport generation.
     /// </summary>
-    async ValueTask<bool> ApplyServerHelloAsync(
-        ReadOnlyMemory<byte> payload,
-        ITransport sessionTransport,
-        bool serviceMetadataSent)
+    ValueTask ApplyHelloAsync(ReadOnlyMemory<byte> payload, ITransport sessionTransport)
     {
         if (!ServerCapabilities.TryParse(payload.Span, out var capabilities))
         {
-            return serviceMetadataSent;
+            throw new ProtocolException("HELLO payload is truncated or contains invalid negotiated limits.");
         }
 
-        bool sendMetadata;
-        string? serviceName;
+        TaskCompletionSource<bool>? authentication;
         lock (_gate)
         {
             if (!ReferenceEquals(Volatile.Read(ref _transport), sessionTransport))
             {
-                return serviceMetadataSent;
+                return ValueTask.CompletedTask;
             }
 
-            Interlocked.Exchange(ref _capabilityState, PackCapabilities(capabilities));
-            serviceName = _config.ServiceName;
-            sendMetadata = capabilities.SupportsSessionMetadata && serviceName is not null && !serviceMetadataSent;
+            Volatile.Write(ref _capabilities, capabilities);
+            var inFlightLimit = Math.Min(capabilities.MaxInFlightRequests, (uint)_config.MaxInFlightRequests);
+            _requestGate.SetMaxConcurrency((int)inFlightLimit);
+            authentication = _authFailure;
         }
-        Log(FitzLogLevel.Debug, "fitz.connection.server_hello", new Dictionary<string, object?>
+        authentication?.TrySetResult(true);
+        Log(FitzLogLevel.Debug, "fitz.connection.hello", new Dictionary<string, object?>
         {
             ["protocol_version"] = capabilities.ProtocolVersion,
-            ["correlation"] = capabilities.SupportsCorrelation,
+            ["max_message_bytes"] = capabilities.MaxMessageBytes,
+            ["max_in_flight"] = capabilities.MaxInFlightRequests,
+            ["session_id"] = capabilities.SessionId,
         });
-        if (sendMetadata)
-        {
-            await SendSessionMetadataAsync(serviceName!, sessionTransport).ConfigureAwait(false);
-            return true;
-        }
-        return serviceMetadataSent;
-    }
-
-    async Task SendSessionMetadataAsync(string serviceName, ITransport sessionTransport)
-    {
-        try
-        {
-            var name = new System.Text.UTF8Encoding(false, true).GetBytes(serviceName.Trim());
-            var payload = new byte[sizeof(uint) + name.Length];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(payload, (uint)name.Length);
-            name.CopyTo(payload.AsSpan(sizeof(uint)));
-            await sessionTransport.SendAsync(
-                FrameCodec.Encode(MessageTypes.SessionMetadata, payload),
-                CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is IOException or WebSocketException or System.Net.Sockets.SocketException or
-            ObjectDisposedException or InvalidOperationException or OperationCanceledException)
-        {
-            ScheduleConnectionLoss(exception, sessionTransport);
-        }
+        return ValueTask.CompletedTask;
     }
 
     /// <summary>
-    /// Whether a message type may carry a <c>CORRELATE</c> label.
+    /// Whether an outbound message carries its own asynchronous RPC routing semantics.
     /// </summary>
     /// <remarks>
-    /// RPC <c>REQUEST</c>/<c>RESPONSE</c> carry their own end-to-end 16-byte UUID and the broker
-    /// does not additionally frame-correlate them, so labelling one would leave the caller waiting
-    /// for a <c>CORRELATED</c> record that never arrives. They travel through
-    /// <see cref="SendAsync"/> today and so never reach this path; the guard keeps that true if
-    /// they are ever routed through a request instead.
+    /// RPC protocol messages are sent without awaiting a client-side response, but still carry a
+    /// nonzero Wire-2 frame correlation identifier.
     /// </remarks>
-    static bool IsFrameCorrelatable(ushort messageType) =>
-        messageType is not (MessageTypes.RpcRequest or MessageTypes.RpcResponse);
+    static bool IsRpcMessage(ushort messageType) => messageType is >= 300 and <= 305;
 
     /// <summary>
     /// Allocates an identifier that is unique among this connection's in-flight requests.
@@ -177,11 +138,14 @@ sealed class FitzConnection : IAsyncDisposable
     {
         while (true)
         {
-            var next = unchecked((ulong)Interlocked.Increment(ref _nextCorrelationId));
-            if (next != 0)
+            var current = Volatile.Read(ref _nextCorrelationId);
+            if (current == -1)
             {
-                return next;
+                throw new ProtocolException("Correlation identifiers exhausted; reconnect before another request.");
             }
+            var next = unchecked(current + 1);
+            if (Interlocked.CompareExchange(ref _nextCorrelationId, next, current) == current)
+                return unchecked((ulong)next);
         }
     }
 
@@ -397,21 +361,22 @@ sealed class FitzConnection : IAsyncDisposable
     }
 
     /// <summary>Sends a request and awaits its correlated response.</summary>
-    public async ValueTask<ReadOnlyMemory<byte>> RequestAsync(
+    public ValueTask<ReadOnlyMemory<byte>> RequestAsync(
         ushort messageType,
         ReadOnlyMemory<byte> payload,
+        CancellationToken ct = default) => RequestWithFlagsAsync(messageType, payload, 0, ct);
+
+    /// <summary>Sends a request with Wire-2 frame flags and awaits its correlated response.</summary>
+    internal async ValueTask<ReadOnlyMemory<byte>> RequestWithFlagsAsync(
+        ushort messageType,
+        ReadOnlyMemory<byte> payload,
+        byte flags,
         CancellationToken ct = default)
     {
         await WaitForRequestReadyAsync(ct).ConfigureAwait(false);
 
-        // Read the capability once: if the advertisement lands mid-request the decision must stay
-        // consistent between the frame we encode and the way we register the request.
-        var correlationId = CorrelationEnabled && IsFrameCorrelatable(messageType)
-            ? NextCorrelationId()
-            : 0UL;
-        var frame = correlationId == 0
-            ? FrameCodec.Encode(messageType, payload.Span)
-            : FrameCodec.EncodeCorrelated(correlationId, messageType, payload.Span);
+        var correlationId = NextCorrelationId();
+        var frame = EncodeFrame(messageType, payload.Span, flags, correlationId);
         ITransport? requestTransport = null;
 
         try
@@ -438,11 +403,6 @@ sealed class FitzConnection : IAsyncDisposable
         catch (RequestTimeoutException)
         {
             RecordRequestTimeout(messageType);
-            if (correlationId == 0)
-            {
-                ScheduleConnectionLoss(new ConnectionException(
-                    $"Response lane {messageType} timed out and was reset to prevent response misdelivery."), requestTransport);
-            }
             throw;
         }
         catch (RequestQueueFullException)
@@ -468,7 +428,12 @@ sealed class FitzConnection : IAsyncDisposable
         CancellationToken ct = default)
     {
         await WaitForRequestReadyAsync(ct).ConfigureAwait(false);
-        var frame = FrameCodec.Encode(messageType, payload.Span);
+        var rpcResponseWithoutRequestCorrelation = messageType is 303 or 305 ||
+            (messageType == 304 && (payload.IsEmpty || payload.Span[0] != 1));
+        var correlationId = IsRpcMessage(messageType) && !rpcResponseWithoutRequestCorrelation
+            ? NextCorrelationId()
+            : 0UL;
+        var frame = EncodeFrame(messageType, payload.Span, 0, correlationId);
         ITransport? sendTransport = null;
 
         try
@@ -485,6 +450,28 @@ sealed class FitzConnection : IAsyncDisposable
         {
             ScheduleConnectionLoss(ex, sendTransport);
             throw;
+        }
+    }
+
+    byte[] EncodeFrame(ushort messageType, ReadOnlySpan<byte> payload, byte flags, ulong correlationId)
+    {
+        var frame = FrameCodec.Encode(messageType, payload, flags, correlationId);
+        var negotiatedLimit = EffectiveFrameLimit;
+        if (frame.Length > negotiatedLimit)
+        {
+            throw new ProtocolException($"Encoded frame length {frame.Length} exceeds configured or negotiated limit {negotiatedLimit}.");
+        }
+        return frame;
+    }
+
+    int EffectiveFrameLimit
+    {
+        get
+        {
+            var capabilities = Capabilities;
+            return capabilities.ProtocolVersion == 2
+                ? Math.Min(_config.MaxFrameSize, checked((int)capabilities.MaxMessageBytes))
+                : _config.MaxFrameSize;
         }
     }
 
@@ -732,7 +719,9 @@ sealed class FitzConnection : IAsyncDisposable
         ITransport? previousTransport;
         lock (_gate)
         {
-            Interlocked.Exchange(ref _capabilityState, 0L);
+            Volatile.Write(ref _capabilities, null);
+            _authFailure = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _goAwayTransport = null;
             previousTransport = Interlocked.Exchange(ref _transport, transport);
         }
         if (previousTransport is not null && !ReferenceEquals(previousTransport, transport))
@@ -751,27 +740,38 @@ sealed class FitzConnection : IAsyncDisposable
         {
             await transport.ConnectAsync(ct).ConfigureAwait(false);
             SetState(ConnectionState.Connected);
+            Interlocked.Exchange(ref _nextCorrelationId, 0);
             _multiplexer.BeginSession();
-            _frameParser.Reset();
             StartReceiveLoop();
 
             SetState(ConnectionState.Authenticating);
             _authAttemptIsReconnect = isReconnect;
-            _authFailure = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             var tokenProvider = _config.TokenProvider;
             var token = tokenProvider is null
                 ? string.Empty
                 : await tokenProvider(ct).ConfigureAwait(false);
-            var tokenBytes = Encoding.UTF8.GetBytes(token);
-            var connectFrame = FrameCodec.Encode(MessageTypes.Connect, tokenBytes);
+            var clientVersion = typeof(FitzConnection).Assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown";
+            byte[] connectPayload;
+            using (var writer = new BinaryBufferWriter())
+            {
+                writer.WriteU16(2);
+                writer.WriteU16(2);
+                writer.WriteU32(0);
+                writer.WriteString(token);
+                writer.WriteString(_config.ServiceName?.Trim() ?? string.Empty);
+                writer.WriteString($"fitz-dotnet/{clientVersion}");
+                connectPayload = writer.Build();
+            }
+            var connectFrame = EncodeFrame(MessageTypes.Connect, connectPayload, 0, 0);
             try
             {
                 await transport.SendAsync(connectFrame, ct).ConfigureAwait(false);
             }
             finally
             {
-                CryptographicOperations.ZeroMemory(tokenBytes);
+                CryptographicOperations.ZeroMemory(connectPayload);
                 CryptographicOperations.ZeroMemory(connectFrame);
             }
 
@@ -865,30 +865,15 @@ sealed class FitzConnection : IAsyncDisposable
 
     async Task WaitForAuthSettlementAsync(CancellationToken ct)
     {
-        var settleDelay = _config.AuthSettleDelay is { } configured && configured >= TimeSpan.Zero
-            ? configured
-            : GetDefaultAuthSettleDelay();
-
-        if (_authFailure is null)
+        var authentication = _authFailure
+            ?? throw new ConnectionException("Connection closed during the Wire-2 handshake.");
+        try
         {
-            return;
+            await authentication.Task.WaitAsync(Timeout, ct).ConfigureAwait(false);
         }
-
-        if (settleDelay == TimeSpan.Zero)
+        catch (TimeoutException exception)
         {
-            if (_authFailure.Task.IsCompleted)
-            {
-                await _authFailure.Task.ConfigureAwait(false);
-            }
-
-            return;
-        }
-
-        var delayTask = Task.Delay(settleDelay, ct);
-        var completed = await Task.WhenAny(_authFailure.Task, delayTask).ConfigureAwait(false);
-        if (completed == _authFailure.Task)
-        {
-            await _authFailure.Task.ConfigureAwait(false);
+            throw new RequestTimeoutException("Timed out waiting for the broker HELLO.", exception);
         }
     }
 
@@ -916,7 +901,6 @@ sealed class FitzConnection : IAsyncDisposable
 
         _receiveLoop = Task.Run(async () =>
         {
-            var serviceMetadataSent = false;
             while (!token.IsCancellationRequested && !_closeRequested)
             {
                 try
@@ -934,11 +918,13 @@ sealed class FitzConnection : IAsyncDisposable
 
                     if (!data.Memory.IsEmpty)
                     {
-                        _frameParser.Append(data.Memory.Span);
+                        if (data.Memory.Length > EffectiveFrameLimit)
+                        {
+                            throw new ProtocolException($"Received frame length {data.Memory.Length} exceeds configured or negotiated limit {EffectiveFrameLimit}.");
+                        }
+                        var frame = FrameCodec.DecodeStrict(data.Memory);
+                        await DispatchFrameAsync(frame, receiveTransport).ConfigureAwait(false);
                     }
-
-                    serviceMetadataSent = await DrainParsedFramesAsync(receiveTransport, serviceMetadataSent)
-                        .ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested || _closeRequested)
                 {
@@ -953,63 +939,97 @@ sealed class FitzConnection : IAsyncDisposable
         }, token);
     }
 
-    /// <summary>
-    /// Reads every complete record the parser holds and routes it.
-    /// </summary>
-    /// <remarks>
-    /// A <c>CORRELATED</c> record labels the record that immediately follows it in the same
-    /// transport frame, so the two are read as a pair. A label with nothing after it is a protocol
-    /// violation: the client's request-to-response mapping would be ambiguous, and there is no
-    /// caller left to answer, so the session is torn down rather than guessed at.
-    /// </remarks>
-    async Task<bool> DrainParsedFramesAsync(ITransport sessionTransport, bool serviceMetadataSent)
+    async ValueTask DispatchFrameAsync(Frame frame, ITransport sessionTransport)
     {
-        while (_frameParser.TryReadFrame(out var frame))
+        if (frame.MessageType is MessageTypes.Hello or MessageTypes.ConnectRejected or MessageTypes.GoAway)
         {
-            if (frame.MessageType != MessageTypes.Correlated)
+            if (frame.CorrelationId != 0 || frame.Flags != 0)
             {
-                serviceMetadataSent = await DispatchFrameAsync(
-                    frame.MessageType, frame.Payload, sessionTransport, serviceMetadataSent).ConfigureAwait(false);
-                continue;
+                throw new ProtocolException("Wire-2 control frames must have zero flags and correlation.");
             }
 
-            var correlationId = FrameCodec.ReadCorrelationId(frame.Payload.Span);
-            if (!_frameParser.TryReadFrame(out var labelled))
+            if (frame.MessageType == MessageTypes.Hello)
             {
-                throw new ProtocolException(
-                    $"Transport frame ended after a CORRELATED record for identifier {correlationId}.");
+                await ApplyHelloAsync(frame.Payload, sessionTransport).ConfigureAwait(false);
+                return;
             }
 
-            if (labelled.MessageType is MessageTypes.Correlated or MessageTypes.ServerHello)
+            if (frame.MessageType == MessageTypes.ConnectRejected)
             {
-                throw new ProtocolException("A CORRELATED record cannot label a control record.");
+                var rejected = new BinaryBufferReader(frame.Payload);
+                var code = rejected.ReadU16();
+                var message = rejected.ReadString();
+                if (!rejected.IsEof)
+                {
+                    throw new ProtocolException("CONNECT_REJECTED contains trailing bytes.");
+                }
+                if (code == VersionMismatchCode)
+                {
+                    throw new ProtocolException($"Wire version mismatch ({code}): {message}", code);
+                }
+                throw new AuthenticationException($"Broker rejected CONNECT ({code}): {message}");
             }
 
-            if (!_multiplexer.DispatchCorrelated(correlationId, labelled.MessageType, labelled.Payload))
+            var goAway = new BinaryBufferReader(frame.Payload);
+            var goAwayCode = goAway.ReadU16();
+            var graceMs = goAway.ReadU32();
+            var reason = goAway.ReadString();
+            if (!goAway.IsEof)
             {
-                // A domain may emit more than one frame for one correlation (for example a queued
-                // Lease ACQUIRE followed later by its grant). Once the request has completed, route
-                // any later phase normally so a registered push handler can observe it.
-                serviceMetadataSent = await DispatchFrameAsync(
-                    labelled.MessageType, labelled.Payload, sessionTransport, serviceMetadataSent).ConfigureAwait(false);
+                throw new ProtocolException("GOAWAY contains trailing bytes.");
             }
+            Log(FitzLogLevel.Info, "fitz.connection.goaway", new Dictionary<string, object?>
+            {
+                ["code"] = goAwayCode,
+                ["grace_ms"] = graceMs,
+                ["reason"] = reason,
+            });
+            EmitLifecycleEvent("goaway", code: goAwayCode, graceMs: graceMs);
+            var startGoAway = false;
+            lock (_gate)
+            {
+                if (!ReferenceEquals(_goAwayTransport, sessionTransport))
+                {
+                    _goAwayTransport = sessionTransport;
+                    startGoAway = true;
+                }
+            }
+            if (startGoAway && (goAwayCode == 55 || graceMs == 0))
+            {
+                ScheduleConnectionLoss(new ConnectionException($"Broker sent GOAWAY ({goAwayCode}): {reason}"), sessionTransport);
+            }
+            else if (startGoAway)
+            {
+                var drainToken = _receiveLoopCts?.Token ?? CancellationToken.None;
+                _ = EndAfterGoAwayGraceAsync(sessionTransport, graceMs, goAwayCode, reason, drainToken);
+            }
+            return;
         }
-        return serviceMetadataSent;
+
+        if (frame.CorrelationId != 0)
+        {
+            _multiplexer.DispatchCorrelated(
+                frame.CorrelationId,
+                frame.MessageType,
+                frame.Payload,
+                (frame.Flags & FrameCodec.ResponseFinalFlag) != 0);
+            return;
+        }
+
+        _multiplexer.Dispatch(frame.MessageType, frame.Payload);
     }
 
-    async ValueTask<bool> DispatchFrameAsync(
-        ushort messageType,
-        ReadOnlyMemory<byte> payload,
-        ITransport sessionTransport,
-        bool serviceMetadataSent)
+    async Task EndAfterGoAwayGraceAsync(ITransport sessionTransport, uint graceMs, ushort code, string reason, CancellationToken ct)
     {
-        if (messageType == MessageTypes.ServerHello)
+        try
         {
-            return await ApplyServerHelloAsync(payload, sessionTransport, serviceMetadataSent).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromMilliseconds(graceMs), ct).ConfigureAwait(false);
         }
-
-        _multiplexer.Dispatch(messageType, payload);
-        return serviceMetadataSent;
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return;
+        }
+        ScheduleConnectionLoss(new ConnectionException($"Broker sent GOAWAY ({code}): {reason}"), sessionTransport);
     }
 
     void ScheduleConnectionLoss(Exception exception, ITransport? failedTransport = null)
@@ -1077,7 +1097,11 @@ sealed class FitzConnection : IAsyncDisposable
 
         var stateAtLoss = State;
 
-        if (_authAttemptIsReconnect)
+        if (exception is ProtocolException { RejectionCode: VersionMismatchCode })
+        {
+            _authFailure?.TrySetException(exception);
+        }
+        else if (_authAttemptIsReconnect)
         {
             _authFailure?.TrySetException(new ConnectionException(DescribeConnectionLoss(exception), exception));
         }
@@ -1156,6 +1180,10 @@ sealed class FitzConnection : IAsyncDisposable
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
                     return;
+                }
+                catch (ProtocolException error) when (error.RejectionCode == VersionMismatchCode)
+                {
+                    break;
                 }
                 catch when (!_closeRequested && !_authRejected)
                 {
@@ -1558,7 +1586,7 @@ sealed class FitzConnection : IAsyncDisposable
     };
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Observability callbacks must not alter connection lifecycle behavior.")]
-    void EmitLifecycleEvent(string eventName, Exception? exception = null, int? attempt = null)
+    void EmitLifecycleEvent(string eventName, Exception? exception = null, int? attempt = null, ushort? code = null, uint? graceMs = null)
     {
         try
         {
@@ -1568,7 +1596,9 @@ sealed class FitzConnection : IAsyncDisposable
                 _transport?.TransportName,
                 _transport?.Url ?? _config.Url,
                 attempt,
-                exception?.Message));
+                exception?.Message,
+                code,
+                graceMs));
         }
         catch
         {
@@ -1670,7 +1700,6 @@ sealed class FitzConnection : IAsyncDisposable
             : "connection closed during CONNECT";
     }
 
-    static TimeSpan GetDefaultAuthSettleDelay() => TimeSpan.FromMilliseconds(100);
 
     static TimeSpan Min(TimeSpan left, TimeSpan right) => left <= right ? left : right;
 
