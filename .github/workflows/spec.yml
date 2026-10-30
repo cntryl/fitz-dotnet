@@ -6,8 +6,8 @@ on:
       broker_tag:
         description: Fitz broker image tag
         type: choice
-        options: [main, develop]
-        default: main
+        options: [0.3.0, main, develop]
+        default: 0.3.0
   push:
     branches: [main]
   pull_request:
@@ -24,9 +24,9 @@ concurrency:
 
 env:
   NuGetPackageSourceCredentials_cntryl: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }}
-  # Next-server acceptance must fail on main until the 0.2.0 contracts arrive.
-  # Manual develop runs are diagnostic; they do not qualify the main image.
-  FITZ_BROKER_IMAGE: ghcr.io/cntryl/fitz:${{ inputs.broker_tag || 'develop' }}
+  # Automatic acceptance uses the published Wire 2 release.
+  # Manual main/develop runs are diagnostic; they do not change release tags.
+  FITZ_BROKER_IMAGE: ghcr.io/cntryl/fitz:${{ inputs.broker_tag || '0.3.0' }}
 
 jobs:
   spec:
@@ -79,8 +79,8 @@ jobs:
           CONFORMANCE_AUTH_MODE: anonymous
         run: dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~ShouldRejectAuthenticationGivenInvalidJwtWhenConnectCalled
 
-      - name: Run cancellation chains against candidate broker
-        if: github.event_name == 'workflow_dispatch' && inputs.broker_tag == 'develop'
+      - name: Run cancellation chains against selected broker
+        if: github.event_name == 'workflow_dispatch' && inputs.broker_tag == '0.3.0'
         shell: bash
         run: |
           case "${{ matrix.transport }}/${{ matrix.auth_mode }}" in
