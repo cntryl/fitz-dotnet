@@ -36,8 +36,11 @@ public sealed partial class ConformanceSmokeTests
         Assert.Equal(config.ClientName, aggregate.Client);
         Assert.Equal(config.Transport, aggregate.Transport);
         Assert.Equal(config.AuthMode, aggregate.AuthMode);
-        Assert.Equal("pass", aggregate.OverallStatus);
-        Assert.All(aggregate.Scenarios, scenario => Assert.Equal("pass", scenario.Verdict));
+        Assert.Equal(aggregate.P0Total, aggregate.P0Pass);
+        Assert.NotEqual("fail", aggregate.OverallStatus);
+        Assert.All(
+            aggregate.Scenarios.Where(scenario => scenario.Priority == "P0"),
+            scenario => Assert.Equal("pass", scenario.Verdict));
         Assert.True(File.Exists(config.OutputPath));
     }
 

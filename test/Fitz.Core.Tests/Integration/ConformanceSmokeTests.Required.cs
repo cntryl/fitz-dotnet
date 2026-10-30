@@ -1,3 +1,5 @@
+using Cntryl.Fitz.Connection;
+
 namespace Cntryl.Fitz.Core.Tests.Integration;
 
 public sealed partial class ConformanceSmokeTests
@@ -62,6 +64,34 @@ public sealed partial class ConformanceSmokeTests
         {
             evidence.Add($"Stream boundary failed: {error.GetType().Name}: {error.Message}");
             return Result("CS-024", transport, authMode, "fail", stopwatch.ElapsedMilliseconds, evidence, error.Message);
+        }
+    }
+
+    static async Task<ScenarioResult> RunCs020HandshakeNegotiation(string transport, string authMode)
+    {
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        var evidence = new List<string>();
+        try
+        {
+            await using var client = IntegrationFixture.CreateClientForMode(transport, authMode);
+            var config = client.Config;
+            await using var connection = new FitzConnection(config, () => TransportResolver.Resolve(config));
+            await connection.ConnectAsync();
+            var capabilities = connection.Capabilities;
+            Assert.Equal(2, capabilities.ProtocolVersion);
+            Assert.Equal(0u, capabilities.CapabilityBits);
+            Assert.True(capabilities.MaxMessageBytes > 0);
+            Assert.True(capabilities.MaxInFlightRequests > 0);
+            evidence.Add($"protocol_version={capabilities.ProtocolVersion}");
+            evidence.Add($"broker_caps={capabilities.CapabilityBits}");
+            evidence.Add($"max_message_bytes={capabilities.MaxMessageBytes}");
+            evidence.Add($"max_in_flight={capabilities.MaxInFlightRequests}");
+            return Result("CS-020", transport, authMode, "pass", stopwatch.ElapsedMilliseconds, evidence);
+        }
+        catch (Exception error)
+        {
+            evidence.Add($"handshake negotiation failed: {error.GetType().Name}: {error.Message}");
+            return Result("CS-020", transport, authMode, "fail", stopwatch.ElapsedMilliseconds, evidence, error.Message);
         }
     }
 }

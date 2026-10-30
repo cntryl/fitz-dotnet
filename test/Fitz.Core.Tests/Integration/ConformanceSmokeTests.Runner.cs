@@ -22,6 +22,7 @@ public sealed partial class ConformanceSmokeTests
         "CS-016",
         "CS-017",
         "CS-019",
+        "CS-020",
         "CS-024",
     ];
 
@@ -72,6 +73,7 @@ public sealed partial class ConformanceSmokeTests
             "CS-017" => await RunCs017GlobalFilteredMultiPageReplay(transport, authMode),
             "CS-016" => await RunCs016FilteredStreamReplay(transport, authMode),
             "CS-019" => await RunCs019SameTypeRequests(transport, authMode),
+            "CS-020" => await RunCs020HandshakeNegotiation(transport, authMode),
             "CS-024" => await RunCs024StreamBoundary(transport, authMode),
             _ => Result(scenarioId, transport, authMode, "not_implemented", 0, ["Scenario is not implemented by this runner."]),
         };
