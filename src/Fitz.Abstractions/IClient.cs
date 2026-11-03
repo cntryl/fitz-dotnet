@@ -43,6 +43,9 @@ public interface IClient : IAsyncDisposable
     /// </summary>
     bool IsConnected { get; }
 
+    /// <summary>Numeric capabilities negotiated for the current live session; empty while disconnected.</summary>
+    IReadOnlyList<uint> CapabilityIds { get; }
+
     /// <summary>
     /// The current connection lifecycle state.
     /// </summary>

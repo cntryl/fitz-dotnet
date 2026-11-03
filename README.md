@@ -1,6 +1,8 @@
 # fitz-dotnet
 
-`fitz-dotnet` is the .NET Fitz client SDK. The repo now tracks the same shared 17-scenario conformance suite as `fitz-ts`, runs against both WebSocket and TCP, and includes a repo-owned broker baseline in [compose.yml](compose.yml).
+Current release candidate: **4.0.0**, requiring Fitz **0.4.0 / Wire 3**. See [Wire 3 migration](WIRE3_MIGRATION.md) for Queue TTL, NACK, negotiation, and coordinated upgrade guidance.
+
+`fitz-dotnet` is the .NET Fitz client SDK. The repo now tracks the same shared 24-scenario conformance suite as `fitz-ts`, runs against both WebSocket and TCP, and includes a repo-owned broker baseline in [compose.yml](compose.yml).
 
 ## Packages
 
@@ -85,9 +87,9 @@ await tx.PutAsync("user-1"u8.ToArray(), """{"name":"Alice"}"""u8.ToArray());
 await tx.CommitAsync(KvDurability.Sync);
 ```
 
-`ClientConfig.ServiceName` is optional and is sent in the Wire-2 `CONNECT`
+`ClientConfig.ServiceName` is optional and is sent in the Wire 3 `CONNECT`
 payload with the client build identity. Capability bits are reserved as zero in
-Wire 2.
+Wire 3.
 
 Generic Host consumers can register the same client through DI. The hosted
 lifecycle connects during host startup and closes asynchronously during host

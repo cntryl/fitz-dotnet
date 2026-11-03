@@ -5,6 +5,13 @@ namespace Cntryl.Fitz;
 /// </summary>
 public interface IQueueClient
 {
+    /// <summary>Enqueues with optional visibility delay and message lifetime in hours.</summary>
+    /// <param name="route">Concrete queue route.</param>
+    /// <param name="body">Opaque payload.</param>
+    /// <param name="options">Publication controls.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The broker-assigned message identifier.</returns>
+    Task<ulong> EnqueueWithOptionsAsync(string route, ReadOnlyMemory<byte> body, QueueEnqueueOptions options, CancellationToken ct = default);
     /// <summary>
     /// Appends a message to a queue.
     /// </summary>
@@ -72,10 +79,15 @@ public interface IQueueClient
 /// </summary>
 /// <remarks>
 /// Complete the item or dispose it asynchronously. Disposal releases local lifecycle resources;
-/// the current Fitz wire protocol does not provide a queue nack operation.
+/// call NackAsync explicitly to relinquish a live reservation.
 /// </remarks>
 public interface IQueueReservedItem : IAsyncDisposable
 {
+    /// <summary>Relinquishes this reservation, optionally delaying the next visibility.</summary>
+    /// <param name="visibilityDelay">Nonnegative delay in whole seconds; zero makes it ready immediately.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>A task completing after the broker acknowledges NACK.</returns>
+    Task NackAsync(TimeSpan visibilityDelay = default, CancellationToken ct = default);
     /// <summary>The concrete route this message was reserved from, never the request pattern.</summary>
     string Route { get; }
 

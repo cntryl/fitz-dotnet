@@ -78,7 +78,7 @@ public sealed partial class ConformanceSmokeTests
             await using var connection = new FitzConnection(config, () => TransportResolver.Resolve(config));
             await connection.ConnectAsync();
             var capabilities = connection.Capabilities;
-            Assert.Equal(2, capabilities.ProtocolVersion);
+            Assert.Equal(3, capabilities.ProtocolVersion);
             Assert.Equal(0u, capabilities.CapabilityBits);
             Assert.True(capabilities.MaxMessageBytes > 0);
             Assert.True(capabilities.MaxInFlightRequests > 0);

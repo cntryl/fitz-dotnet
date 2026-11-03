@@ -4,7 +4,7 @@ using Cntryl.Fitz.Protocol;
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
 /// <summary>
-/// Covers the Wire 2 request correlation header, HELLO negotiation,
+/// Covers the Wire 3 request correlation header, HELLO negotiation,
 /// and the concurrency regimes either side of it.
 /// </summary>
 public sealed class CorrelationTests
@@ -92,19 +92,15 @@ public sealed class CorrelationTests
     }
 
     [Fact]
-    public void ShouldParseGivenServerHelloWithTrailingBytesWhenAdvertising()
+    public void ShouldRejectTrailingCoreBytesGivenHelloWhenParsing()
     {
-        // Arrange: a later protocol version may append fields; readers ignore the tail.
-        var payload = new byte[24];
-        ConnectionNegotiationTests.HelloFrame().AsSpan(FrameCodec.MaxHeaderSize).CopyTo(payload);
-
+        // Arrange
+        var core = ExtensionCodec.Decode(FrameCodec.DecodeStrict(ConnectionNegotiationTests.HelloFrame())).Core.ToArray();
+        var payload = core.Concat(new byte[] { 0, 0 }).ToArray();
         // Act
-        var parsed = ServerCapabilities.TryParse(payload, out var capabilities);
-
+        var parsed = ServerCapabilities.TryParse(payload, out _);
         // Assert
-        Assert.True(parsed);
-        Assert.Equal(2, capabilities.ProtocolVersion);
-        Assert.True(capabilities.SupportsCorrelation);
+        Assert.False(parsed);
     }
 
     [Fact]

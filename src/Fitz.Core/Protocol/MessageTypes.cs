@@ -129,6 +129,9 @@ static class MessageTypes
     /// </summary>
     public const ushort QueueNotify = 209;
 
+    /// <summary>Relinquishes a Queue reservation with a visibility delay in seconds.</summary>
+    public const ushort QueueNack = 210;
+
     /// <summary>
     /// Registers this session as a worker for routes matching a pattern.
     /// </summary>

@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 
 namespace Cntryl.Fitz.Protocol;
 
-/// <summary>Encodes and decodes Wire-2 Fitz frames.</summary>
+/// <summary>Encodes and decodes Wire 3 Fitz frames.</summary>
 static class FrameCodec
 {
     public const int MaxHeaderSize = 15;
@@ -11,7 +11,7 @@ static class FrameCodec
     public const int CorrelationRecordSize = MaxHeaderSize;
     public const byte AckRequestedFlag = 1;
     public const byte ResponseFinalFlag = 2;
-    const byte KnownFlags = AckRequestedFlag | ResponseFinalFlag;
+    const byte KnownFlags = AckRequestedFlag | ResponseFinalFlag | ExtensionCodec.PresentFlag;
 
     /// <summary>Largest encoded size for a payload of the given length.</summary>
     public static int MaxEncodedSize(int payloadLength)
@@ -20,7 +20,7 @@ static class FrameCodec
         var encodedLength = checked(MaxHeaderSize + payloadLength);
         if (encodedLength > MaxTransportFrameSize)
         {
-            throw new ProtocolException($"Encoded frame length {encodedLength} exceeds the 1 MiB Wire-2 limit.");
+            throw new ProtocolException($"Encoded frame length {encodedLength} exceeds the 1 MiB Wire 3 limit.");
         }
         return encodedLength;
     }
@@ -118,7 +118,7 @@ static class FrameCodec
         payloadLength = BinaryPrimitives.ReadUInt32BigEndian(frameBytes.Slice(11, 4));
         if (payloadLength > MaxTransportFrameSize - MaxHeaderSize)
         {
-            throw new ProtocolException($"Payload length {payloadLength} exceeds the 1 MiB Wire-2 frame limit.");
+            throw new ProtocolException($"Payload length {payloadLength} exceeds the 1 MiB Wire 3 frame limit.");
         }
         return true;
     }

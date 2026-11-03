@@ -267,9 +267,9 @@ public sealed class ClientTests
         Assert.Single(transport.SentFrames);
         var frame = FrameCodec.DecodeStrict(transport.SentFrames[0]);
         Assert.Equal(MessageTypes.Connect, frame.MessageType);
-        var connect = new BinaryBufferReader(frame.Payload.ToArray());
-        Assert.Equal((ushort)2, connect.ReadU16());
-        Assert.Equal((ushort)2, connect.ReadU16());
+        var connect = new BinaryBufferReader(ExtensionCodec.Decode(frame).Core);
+        Assert.Equal((ushort)3, connect.ReadU16());
+        Assert.Equal((ushort)3, connect.ReadU16());
         Assert.Equal(0u, connect.ReadU32());
         Assert.Equal("token-123", connect.ReadString());
     }
@@ -668,13 +668,19 @@ public sealed class ClientTests
         };
         await using var restoredTransport = CreateConfirmingTransport();
         var factoryCalls = 0;
-        var lifecycleEvents = new List<string>();
+        var lifecycleEvents = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var reconnected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var client = new Client(new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
             AuthSettleDelay: TimeSpan.FromMilliseconds(25),
             Reconnect: new ReconnectOptions(true, MaxAttempts: 3, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
-            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt => lifecycleEvents.Add(evt.Event)),
-            TransportFactory: _ => factoryCalls++ switch
+            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>
+            {
+                lifecycleEvents.Enqueue(evt.Event);
+                if (evt.Event == "reconnect_succeeded" && Volatile.Read(ref factoryCalls) >= 3)
+                    reconnected.TrySetResult(true);
+            }),
+            TransportFactory: _ => (Interlocked.Increment(ref factoryCalls) - 1) switch
             {
                 0 => firstTransport,
                 1 => interruptedReconnect,
@@ -682,17 +688,14 @@ public sealed class ClientTests
             }));
 
         await client.ConnectAsync();
-        firstTransport.QueueClosed();
-
-
         // Act
-        await WaitForConditionAsync(
-            () => client.IsConnected && factoryCalls >= 3,
-            TimeSpan.FromSeconds(1));
+        firstTransport.QueueClosed();
+        await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
 
         // Assert
-        Assert.Equal(3, factoryCalls);
+        Assert.Equal(3, Volatile.Read(ref factoryCalls));
+        Assert.True(client.IsConnected);
         Assert.Contains("reconnect_succeeded", lifecycleEvents, StringComparer.Ordinal);
     }
 

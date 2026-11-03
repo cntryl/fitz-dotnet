@@ -3,7 +3,7 @@ using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
-/// <summary>Wire-2 negotiation and correlated routing through the real receive loop.</summary>
+/// <summary>Wire 3 negotiation and correlated routing through the real receive loop.</summary>
 public sealed class CorrelationConnectionTests
 {
     static ClientConfig Config(TimeSpan? timeout = null) => new(
@@ -37,7 +37,7 @@ public sealed class CorrelationConnectionTests
     }
 
     [Fact]
-    public async Task ShouldEnableCorrelationGivenWire2HelloWithoutOptionalBitsWhenConnected()
+    public async Task ShouldEnableCorrelationGivenWire3HelloWithoutOptionalBitsWhenConnected()
     {
         // Arrange
         await using var transport = new TestQueuedTransport();
@@ -46,7 +46,7 @@ public sealed class CorrelationConnectionTests
         await connection.ConnectAsync();
         // Assert
         Assert.True(connection.CorrelationEnabled);
-        Assert.Equal(2, connection.Capabilities.ProtocolVersion);
+        Assert.Equal(3, connection.Capabilities.ProtocolVersion);
         Assert.Equal(0u, connection.Capabilities.CapabilityBits);
     }
 
@@ -59,12 +59,12 @@ public sealed class CorrelationConnectionTests
         // Act
         await connection.ConnectAsync();
         var frame = FrameCodec.DecodeStrict(Assert.Single(transport.SentFrames));
-        var reader = new BinaryBufferReader(frame.Payload.ToArray());
+        var reader = new BinaryBufferReader(ExtensionCodec.Decode(frame).Core);
         // Assert
         Assert.Equal(MessageTypes.Connect, frame.MessageType);
         Assert.Equal(0UL, frame.CorrelationId);
-        Assert.Equal(2, reader.ReadU16());
-        Assert.Equal(2, reader.ReadU16());
+        Assert.Equal(3, reader.ReadU16());
+        Assert.Equal(3, reader.ReadU16());
         Assert.Equal(0u, reader.ReadU32());
         Assert.Equal(string.Empty, reader.ReadString());
         Assert.Equal("orders-worker", reader.ReadString());
@@ -84,7 +84,7 @@ public sealed class CorrelationConnectionTests
     }
 
     [Fact]
-    public async Task ShouldIgnoreUnknownCapabilityBitsGivenValidWire2HelloWhenConnecting()
+    public async Task ShouldIgnoreUnknownCapabilityIdsGivenValidWire3HelloWhenConnecting()
     {
         // Arrange
         await using var transport = new TestQueuedTransport { AutoHello = false };

@@ -258,6 +258,11 @@ public sealed class Client : IClient, IDisposable
     /// <inheritdoc />
     public bool IsConnected => _connection.State == ConnectionState.Authenticated;
 
+    /// <summary>Numeric capabilities negotiated for the current live session.</summary>
+    public IReadOnlyList<uint> CapabilityIds => IsConnected
+        ? Array.AsReadOnly(new uint[] { 1, 2 }.Where(id => _connection.Capabilities.SupportsCapability(id)).ToArray())
+        : Array.Empty<uint>();
+
     /// <inheritdoc />
     public ConnectionState State => Volatile.Read(ref _disposed) != 0 ? ConnectionState.Closed : _connection.State;
 

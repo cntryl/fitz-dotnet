@@ -22,6 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="Fixtures/wire3_vectors.txt" CopyToOutputDirectory="PreserveNewest" />
     <Using Include="Xunit" />
   </ItemGroup>
 
