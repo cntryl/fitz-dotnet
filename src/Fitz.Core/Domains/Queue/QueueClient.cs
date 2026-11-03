@@ -31,6 +31,8 @@ sealed class QueueClient : IQueueClient, IDisposable
     bool _notificationHandlerInitialized;
     long _nextHandleId;
     readonly IDisposable? _reconnectRegistration;
+    readonly Func<ushort, ReadOnlyMemory<byte>, byte, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _requestWithFlags;
+    readonly Func<uint, bool>? _supportsCapability;
 
     internal QueueClient(FitzConnection connection)
         : this(
@@ -41,6 +43,8 @@ sealed class QueueClient : IQueueClient, IDisposable
             connection.SubscriptionBufferCapacity)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
+        _requestWithFlags = connection.RequestWithFlagsAsync;
+        _supportsCapability = id => connection.Capabilities.SupportsCapability(id);
     }
 
     /// <summary>
@@ -71,11 +75,21 @@ sealed class QueueClient : IQueueClient, IDisposable
     }
 
     /// <inheritdoc />
-    public async Task<ulong> EnqueueAsync(
+    public Task<ulong> EnqueueAsync(
         string route,
         ReadOnlyMemory<byte> body,
         TimeSpan? delay = null,
         CancellationToken ct = default)
+        => EnqueueCoreAsync(route, body, delay, null, ct);
+
+    /// <inheritdoc />
+    public Task<ulong> EnqueueWithOptionsAsync(string route, ReadOnlyMemory<byte> body, QueueEnqueueOptions options, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        return EnqueueCoreAsync(route, body, options.Delay, options.TtlHours, ct);
+    }
+
+    async Task<ulong> EnqueueCoreAsync(string route, ReadOnlyMemory<byte> body, TimeSpan? delay, uint? configuredTtlHours, CancellationToken ct)
     {
         ThrowIfDisposed();
         if (!RouteValidation.IsFixedRoute(route, "queue", 3))
@@ -95,7 +109,21 @@ sealed class QueueClient : IQueueClient, IDisposable
             writer.WriteU64(delaySeconds);
         }
 
-        var response = await _request(MessageTypes.QueueEnqueue, writer.WrittenMemory, ct).ConfigureAwait(false);
+        ReadOnlyMemory<byte> response;
+        if (configuredTtlHours is { } ttlHours)
+        {
+            ArgumentOutOfRangeException.ThrowIfZero(ttlHours, nameof(configuredTtlHours));
+            if (_supportsCapability?.Invoke(1) != true || _requestWithFlags is null)
+                throw new NotSupportedException("Queue TTL capability was not negotiated.");
+            var ttl = new byte[4];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(ttl, ttlHours);
+            var extended = ExtensionCodec.Encode(writer.WrittenMemory.Span, 1, ttl);
+            response = await _requestWithFlags(MessageTypes.QueueEnqueue, extended, ExtensionCodec.PresentFlag, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            response = await _request(MessageTypes.QueueEnqueue, writer.WrittenMemory, ct).ConfigureAwait(false);
+        }
         var reader = QueueWireHelpers.ReadResponse(response, "ENQUEUE");
         var status = reader.ReadU8();
         if (status != 0)
@@ -196,7 +224,8 @@ sealed class QueueClient : IQueueClient, IDisposable
                 itemId,
                 itemToken,
                 _request,
-                _registerOnDisconnect);
+                _registerOnDisconnect,
+                _supportsCapability);
         }
 
         if (!reader.IsEof)

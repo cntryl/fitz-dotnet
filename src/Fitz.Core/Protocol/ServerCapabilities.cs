@@ -2,7 +2,7 @@ using System.Buffers.Binary;
 
 namespace Cntryl.Fitz.Protocol;
 
-/// <summary>Limits and session data negotiated by the Wire-2 HELLO frame.</summary>
+/// <summary>Limits and session data negotiated by the Wire 3 HELLO frame.</summary>
 sealed record ServerCapabilities(
     ushort ProtocolVersion,
     uint CapabilityBits,
@@ -10,6 +10,8 @@ sealed record ServerCapabilities(
     uint MaxInFlightRequests,
     ulong SessionId)
 {
+    internal uint CapabilityMask { get; init; }
+    internal bool SupportsCapability(uint id) => id is 1 or 2 && (CapabilityMask & (1u << (int)id)) != 0;
     public const uint CorrelationBit = 0;
     public const uint SessionMetadataBit = 0;
     public const uint KvScanExclusiveBit = 0;
@@ -20,10 +22,10 @@ sealed record ServerCapabilities(
     public bool SupportsKvScanExclusive => ProtocolVersion >= 2;
     public bool SupportsRpcCancellation => ProtocolVersion >= 2;
 
-    /// <summary>Parses the fixed HELLO fields and permits forward-compatible trailing bytes.</summary>
+    /// <summary>Parses the frozen HELLO core; optional values belong in registered extensions.</summary>
     public static bool TryParse(ReadOnlySpan<byte> payload, out ServerCapabilities capabilities)
     {
-        if (payload.Length < 22)
+        if (payload.Length != 22)
         {
             capabilities = None;
             return false;
@@ -34,6 +36,6 @@ sealed record ServerCapabilities(
             BinaryPrimitives.ReadUInt32BigEndian(payload.Slice(6, 4)),
             BinaryPrimitives.ReadUInt32BigEndian(payload.Slice(10, 4)),
             BinaryPrimitives.ReadUInt64BigEndian(payload.Slice(14, 8)));
-        return capabilities.ProtocolVersion == 2 && capabilities.MaxMessageBytes >= 15 && capabilities.MaxMessageBytes <= FrameCodec.MaxTransportFrameSize && capabilities.MaxInFlightRequests > 0;
+        return capabilities.ProtocolVersion == 3 && capabilities.CapabilityBits == 0 && capabilities.MaxMessageBytes >= 15 && capabilities.MaxMessageBytes <= FrameCodec.MaxTransportFrameSize && capabilities.MaxInFlightRequests > 0;
     }
 }

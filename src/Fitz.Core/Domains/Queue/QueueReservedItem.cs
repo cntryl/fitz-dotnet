@@ -10,6 +10,7 @@ sealed class QueueReservedItem : QueueItem
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _requestFn;
     IDisposable? _disconnectRegistration;
     int _state;
+    readonly Func<uint, bool>? _supportsNack;
 
     internal QueueReservedItem(
         string route,
@@ -18,12 +19,14 @@ sealed class QueueReservedItem : QueueItem
         ulong id,
         ulong token,
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> requestFn,
-        Func<Action, IDisposable>? registerOnDisconnect = null)
+        Func<Action, IDisposable>? registerOnDisconnect = null,
+        Func<uint, bool>? supportsNack = null)
         : base(route, body, attempt)
     {
         _id = id;
         _token = token;
         _requestFn = requestFn;
+        _supportsNack = supportsNack;
         var disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
         if (disconnectRegistration is not null)
         {
@@ -64,6 +67,35 @@ sealed class QueueReservedItem : QueueItem
     public override Task CompleteAsync(CancellationToken ct = default) => CompleteCoreAsync(_token, ct);
 
     public override Task CompleteWithTokenAsync(ulong token, CancellationToken ct = default) => CompleteCoreAsync(token, ct);
+
+    public override async Task NackAsync(TimeSpan visibilityDelay = default, CancellationToken ct = default)
+    {
+        ThrowIfClosed();
+        var seconds = WireDuration.ToSeconds(visibilityDelay, nameof(visibilityDelay));
+        if (_supportsNack?.Invoke(2) != true)
+            throw new NotSupportedException("Queue NACK capability was not negotiated.");
+        BeginCompletion();
+        try
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteString(Route);
+            writer.WriteU64(_id);
+            writer.WriteU64(_token);
+            writer.WriteU64(seconds);
+            var response = await _requestFn(MessageTypes.QueueNack, writer.WrittenMemory, ct).ConfigureAwait(false);
+            var reader = QueueWireHelpers.ReadResponse(response, "NACK");
+            var status = reader.ReadU8();
+            if (status != 0)
+                throw QueueWireHelpers.ReadError(response, "NACK", status);
+            if (!reader.IsEof)
+                throw new QueueException("NACK response has trailing bytes", "NACK_INVALID_RESPONSE");
+            MarkClosed();
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _state, 0, 1);
+        }
+    }
 
     public override ValueTask DisposeAsync()
     {

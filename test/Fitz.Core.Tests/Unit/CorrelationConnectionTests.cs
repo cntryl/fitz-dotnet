@@ -46,7 +46,7 @@ public sealed class CorrelationConnectionTests
         await connection.ConnectAsync();
         // Assert
         Assert.True(connection.CorrelationEnabled);
-        Assert.Equal(2, connection.Capabilities.ProtocolVersion);
+        Assert.Equal(3, connection.Capabilities.ProtocolVersion);
         Assert.Equal(0u, connection.Capabilities.CapabilityBits);
     }
 
@@ -59,12 +59,12 @@ public sealed class CorrelationConnectionTests
         // Act
         await connection.ConnectAsync();
         var frame = FrameCodec.DecodeStrict(Assert.Single(transport.SentFrames));
-        var reader = new BinaryBufferReader(frame.Payload.ToArray());
+        var reader = new BinaryBufferReader(ExtensionCodec.Decode(frame).Core);
         // Assert
         Assert.Equal(MessageTypes.Connect, frame.MessageType);
         Assert.Equal(0UL, frame.CorrelationId);
-        Assert.Equal(2, reader.ReadU16());
-        Assert.Equal(2, reader.ReadU16());
+        Assert.Equal(3, reader.ReadU16());
+        Assert.Equal(3, reader.ReadU16());
         Assert.Equal(0u, reader.ReadU32());
         Assert.Equal(string.Empty, reader.ReadString());
         Assert.Equal("orders-worker", reader.ReadString());

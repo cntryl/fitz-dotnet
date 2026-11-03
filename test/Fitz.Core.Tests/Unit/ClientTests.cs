@@ -267,9 +267,9 @@ public sealed class ClientTests
         Assert.Single(transport.SentFrames);
         var frame = FrameCodec.DecodeStrict(transport.SentFrames[0]);
         Assert.Equal(MessageTypes.Connect, frame.MessageType);
-        var connect = new BinaryBufferReader(frame.Payload.ToArray());
-        Assert.Equal((ushort)2, connect.ReadU16());
-        Assert.Equal((ushort)2, connect.ReadU16());
+        var connect = new BinaryBufferReader(ExtensionCodec.Decode(frame).Core);
+        Assert.Equal((ushort)3, connect.ReadU16());
+        Assert.Equal((ushort)3, connect.ReadU16());
         Assert.Equal(0u, connect.ReadU32());
         Assert.Equal("token-123", connect.ReadString());
     }

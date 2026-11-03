@@ -1,5 +1,13 @@
 # Changelog
 
+
+## 4.0.0 (unreleased)
+
+- Requires Fitz 0.4.0 / Wire 3 with bounded extension envelopes and numeric capability negotiation.
+- Adds capability-gated per-message Queue TTL in hours and explicit Queue NACK with visibility delay.
+- Preserves core domain semantics, response correlation, ephemeral sessions, and best-effort Queue persistence.
+- Qualifies all SDKs against the latest broker container, recording its digest for qualification; no package publication or release tag.
+
 All notable changes to the Fitz .NET client packages are recorded here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 

@@ -5,11 +5,16 @@ namespace Cntryl.Fitz;
 /// </summary>
 /// <remarks>
 /// Complete the item once handled, or dispose it to release local lifecycle resources.
-/// Disposal is not a nack: the current Fitz wire protocol has no nack operation, so an
-/// uncompleted item becomes visible again only when its lease expires.
+/// Disposal releases local resources. Call NackAsync explicitly to relinquish a live reservation;
+/// otherwise an uncompleted item becomes visible again when its lease expires.
 /// </remarks>
 public abstract class QueueItem : IQueueReservedItem
 {
+    /// <summary>Relinquishes the reservation with a nonnegative whole-second visibility delay.</summary>
+    /// <param name="visibilityDelay">Delay before the next reservation, or zero for immediate visibility.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>A task completing after the broker acknowledges NACK.</returns>
+    public abstract Task NackAsync(TimeSpan visibilityDelay = default, CancellationToken ct = default);
     /// <summary>Sentinel used when the current wire protocol does not provide an attempt count.</summary>
     public const uint AttemptUnavailable = 0;
 

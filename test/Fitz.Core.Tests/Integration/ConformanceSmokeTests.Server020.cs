@@ -23,7 +23,7 @@ public sealed partial class ConformanceSmokeTests
         var capabilities = connection.Capabilities;
 
         // Assert
-        Assert.Equal(2, capabilities.ProtocolVersion);
+        Assert.Equal(3, capabilities.ProtocolVersion);
         Assert.Equal(0u, capabilities.CapabilityBits);
         Assert.True(capabilities.SupportsCorrelation);
         Assert.False(Cntryl.Fitz.Protocol.ServerCapabilities.SupportsSessionMetadata);

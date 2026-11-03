@@ -77,10 +77,10 @@ sealed class FitzConnection : IAsyncDisposable
     public ConnectionState State => _state;
 
     /// <summary>
-    /// Whether the Wire-2 handshake completed for the current session.
+    /// Whether the Wire 3 handshake completed for the current session.
     /// </summary>
     /// <remarks>
-    /// False until the broker sends its Wire-2 <c>HELLO</c> frame.
+    /// False until the broker sends its Wire 3 <c>HELLO</c> frame.
     /// </remarks>
     public bool CorrelationEnabled => Capabilities.SupportsCorrelation;
 
@@ -90,12 +90,13 @@ sealed class FitzConnection : IAsyncDisposable
     /// <summary>
     /// Validates the broker HELLO and completes authentication for its transport generation.
     /// </summary>
-    ValueTask ApplyHelloAsync(ReadOnlyMemory<byte> payload, ITransport sessionTransport)
+    ValueTask ApplyHelloAsync(ReadOnlyMemory<byte> payload, uint capabilityMask, ITransport sessionTransport)
     {
         if (!ServerCapabilities.TryParse(payload.Span, out var capabilities))
         {
             throw new ProtocolException("HELLO payload is truncated or contains invalid negotiated limits.");
         }
+        capabilities = capabilities with { CapabilityMask = capabilityMask };
 
         TaskCompletionSource<bool>? authentication;
         lock (_gate)
@@ -126,7 +127,7 @@ sealed class FitzConnection : IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// RPC protocol messages are sent without awaiting a client-side response, but still carry a
-    /// nonzero Wire-2 frame correlation identifier.
+    /// nonzero Wire 3 frame correlation identifier.
     /// </remarks>
     static bool IsRpcMessage(ushort messageType) => messageType is >= 300 and <= 305;
 
@@ -366,7 +367,7 @@ sealed class FitzConnection : IAsyncDisposable
         ReadOnlyMemory<byte> payload,
         CancellationToken ct = default) => RequestWithFlagsAsync(messageType, payload, 0, ct);
 
-    /// <summary>Sends a request with Wire-2 frame flags and awaits its correlated response.</summary>
+    /// <summary>Sends a request with Wire 3 frame flags and awaits its correlated response.</summary>
     internal async ValueTask<ReadOnlyMemory<byte>> RequestWithFlagsAsync(
         ushort messageType,
         ReadOnlyMemory<byte> payload,
@@ -469,7 +470,7 @@ sealed class FitzConnection : IAsyncDisposable
         get
         {
             var capabilities = Capabilities;
-            return capabilities.ProtocolVersion == 2
+            return capabilities.ProtocolVersion >= 2
                 ? Math.Min(_config.MaxFrameSize, checked((int)capabilities.MaxMessageBytes))
                 : _config.MaxFrameSize;
         }
@@ -756,15 +757,16 @@ sealed class FitzConnection : IAsyncDisposable
             byte[] connectPayload;
             using (var writer = new BinaryBufferWriter())
             {
-                writer.WriteU16(2);
-                writer.WriteU16(2);
+                writer.WriteU16(3);
+                writer.WriteU16(3);
                 writer.WriteU32(0);
                 writer.WriteString(token);
                 writer.WriteString(_config.ServiceName?.Trim() ?? string.Empty);
                 writer.WriteString($"fitz-dotnet/{clientVersion}");
                 connectPayload = writer.Build();
             }
-            var connectFrame = EncodeFrame(MessageTypes.Connect, connectPayload, 0, 0);
+            connectPayload = ExtensionCodec.Encode(connectPayload, 1, ExtensionCodec.ClientCapabilities);
+            var connectFrame = EncodeFrame(MessageTypes.Connect, connectPayload, ExtensionCodec.PresentFlag, 0);
             try
             {
                 await transport.SendAsync(connectFrame, ct).ConfigureAwait(false);
@@ -866,7 +868,7 @@ sealed class FitzConnection : IAsyncDisposable
     async Task WaitForAuthSettlementAsync(CancellationToken ct)
     {
         var authentication = _authFailure
-            ?? throw new ConnectionException("Connection closed during the Wire-2 handshake.");
+            ?? throw new ConnectionException("Connection closed during the Wire 3 handshake.");
         try
         {
             await authentication.Task.WaitAsync(Timeout, ct).ConfigureAwait(false);
@@ -941,16 +943,18 @@ sealed class FitzConnection : IAsyncDisposable
 
     async ValueTask DispatchFrameAsync(Frame frame, ITransport sessionTransport)
     {
+        var decoded = ExtensionCodec.Decode(frame);
+        frame = frame with { Payload = decoded.Core };
         if (frame.MessageType is MessageTypes.Hello or MessageTypes.ConnectRejected or MessageTypes.GoAway)
         {
-            if (frame.CorrelationId != 0 || frame.Flags != 0)
+            if (frame.CorrelationId != 0 || (frame.Flags & ~ExtensionCodec.PresentFlag) != 0)
             {
-                throw new ProtocolException("Wire-2 control frames must have zero flags and correlation.");
+                throw new ProtocolException("Wire 3 control frames must have zero flags and correlation.");
             }
 
             if (frame.MessageType == MessageTypes.Hello)
             {
-                await ApplyHelloAsync(frame.Payload, sessionTransport).ConfigureAwait(false);
+                await ApplyHelloAsync(frame.Payload, decoded.CapabilityMask, sessionTransport).ConfigureAwait(false);
                 return;
             }
 

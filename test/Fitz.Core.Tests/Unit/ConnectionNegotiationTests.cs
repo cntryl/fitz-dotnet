@@ -10,12 +10,18 @@ public sealed class ConnectionNegotiationTests
     internal static byte[] HelloFrame(uint capabilities = 0, ulong sessionId = 1)
     {
         var payload = new byte[22];
-        BinaryPrimitives.WriteUInt16BigEndian(payload, 2);
-        BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(2), capabilities);
+        BinaryPrimitives.WriteUInt16BigEndian(payload, 3);
+
         BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(6), 1024 * 1024);
         BinaryPrimitives.WriteUInt32BigEndian(payload.AsSpan(10), 64);
         BinaryPrimitives.WriteUInt64BigEndian(payload.AsSpan(14), sessionId);
-        return FrameCodec.Encode(MessageTypes.Hello, payload);
+        using var list = new BinaryBufferWriter();
+        list.WriteU16((ushort)(capabilities > 2 ? 3 : 2));
+        list.WriteU32(1);
+        list.WriteU32(2);
+        if (capabilities > 2)
+            list.WriteU32(capabilities);
+        return FrameCodec.Encode(MessageTypes.Hello, ExtensionCodec.Encode(payload, 1, list.WrittenMemory.Span), ExtensionCodec.PresentFlag);
     }
 
     [Fact]
@@ -37,7 +43,7 @@ public sealed class ConnectionNegotiationTests
         // Assert
         Assert.False(completedBeforeHello);
         Assert.True(connection.CorrelationEnabled);
-        Assert.Equal(2, connection.Capabilities.ProtocolVersion);
+        Assert.Equal(3, connection.Capabilities.ProtocolVersion);
         Assert.Equal(64u, connection.Capabilities.MaxInFlightRequests);
     }
 

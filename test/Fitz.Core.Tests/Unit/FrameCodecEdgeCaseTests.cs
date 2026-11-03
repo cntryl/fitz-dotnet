@@ -214,6 +214,6 @@ public sealed class FrameCodecEdgeCaseTests
 
         var ex = Assert.Throws<ProtocolException>(() => FrameCodec.Encode(100, payload));
 
-        Assert.Contains("1 MiB Wire-2 limit", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("1 MiB Wire 3 limit", ex.Message, StringComparison.Ordinal);
     }
 }
