@@ -4,7 +4,7 @@ using Cntryl.Fitz.Protocol;
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
 /// <summary>
-/// Covers the Wire 2 request correlation header, HELLO negotiation,
+/// Covers the Wire 3 request correlation header, HELLO negotiation,
 /// and the concurrency regimes either side of it.
 /// </summary>
 public sealed class CorrelationTests

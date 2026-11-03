@@ -106,6 +106,11 @@ sealed class FitzConnection : IAsyncDisposable
                 return ValueTask.CompletedTask;
             }
 
+            if (Volatile.Read(ref _capabilities) is not null)
+            {
+                throw new ProtocolException("Repeated HELLO cannot renegotiate an established session.");
+            }
+
             Volatile.Write(ref _capabilities, capabilities);
             var inFlightLimit = Math.Min(capabilities.MaxInFlightRequests, (uint)_config.MaxInFlightRequests);
             _requestGate.SetMaxConcurrency((int)inFlightLimit);

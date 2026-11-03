@@ -3,7 +3,7 @@ using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
-/// <summary>Wire-2 negotiation and correlated routing through the real receive loop.</summary>
+/// <summary>Wire 3 negotiation and correlated routing through the real receive loop.</summary>
 public sealed class CorrelationConnectionTests
 {
     static ClientConfig Config(TimeSpan? timeout = null) => new(
@@ -37,7 +37,7 @@ public sealed class CorrelationConnectionTests
     }
 
     [Fact]
-    public async Task ShouldEnableCorrelationGivenWire2HelloWithoutOptionalBitsWhenConnected()
+    public async Task ShouldEnableCorrelationGivenWire3HelloWithoutOptionalBitsWhenConnected()
     {
         // Arrange
         await using var transport = new TestQueuedTransport();
@@ -84,7 +84,7 @@ public sealed class CorrelationConnectionTests
     }
 
     [Fact]
-    public async Task ShouldIgnoreUnknownCapabilityBitsGivenValidWire2HelloWhenConnecting()
+    public async Task ShouldIgnoreUnknownCapabilityIdsGivenValidWire3HelloWhenConnecting()
     {
         // Arrange
         await using var transport = new TestQueuedTransport { AutoHello = false };

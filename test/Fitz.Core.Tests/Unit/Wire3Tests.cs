@@ -163,4 +163,47 @@ public sealed class Wire3Tests
         // Assert
         Assert.Empty(((IClient)client).CapabilityIds);
     }
+
+    [Fact]
+    public async Task ShouldCloseSessionGivenRepeatedHello()
+    {
+        // Arrange
+        await using var transport = new TestQueuedTransport();
+        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"), Reconnect: new ReconnectOptions(Enabled: false)), () => transport);
+        await connection.ConnectAsync();
+        var disconnected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = connection.OnDisconnect(() => disconnected.TrySetResult(true));
+        // Act
+        transport.QueueIncomingFrame(ConnectionNegotiationTests.HelloFrame());
+        await disconnected.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
+        // Assert
+        Assert.NotEqual(ConnectionState.Authenticated, connection.State);
+    }
+
+    [Fact]
+    public void ShouldRejectEveryTruncatedPrefixGivenWire3Hello()
+    {
+        // Arrange
+        var line = File.ReadLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "wire3_vectors.txt"))
+            .Single(line => line.StartsWith("hello_wire3_queue_capabilities ", StringComparison.Ordinal));
+        var frame = FrameCodec.DecodeStrict(Convert.FromHexString(line.Split(' ')[1]));
+        // Act
+        for (var size = 0; size < frame.Payload.Length; size++)
+        {
+            var prefix = frame with { Payload = frame.Payload[..size] };
+            // Assert
+            Assert.Throws<ProtocolException>(() => ExtensionCodec.Decode(prefix));
+        }
+    }
+
+    [Fact]
+    public void ShouldSkipRepeatedUnknownFieldsGivenAnyFieldOrder()
+    {
+        // Arrange
+        var frame = new Frame(104, 4, 0, Convert.FromHexString("000000026869100100000000100000000000100000000000"));
+        // Act
+        var decoded = ExtensionCodec.Decode(frame);
+        // Assert
+        Assert.Equal("hi"u8.ToArray(), decoded.Core.ToArray());
+    }
 }
