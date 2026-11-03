@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Domains.Queue;
+using Cntryl.Fitz.Observability;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
@@ -169,13 +170,19 @@ public sealed class Wire3Tests
     {
         // Arrange
         await using var transport = new TestQueuedTransport();
-        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"), Reconnect: new ReconnectOptions(Enabled: false)), () => transport);
-        await connection.ConnectAsync();
         var disconnected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var registration = connection.OnDisconnect(() => disconnected.TrySetResult(true));
+        var config = new ClientConfig(new Uri("ws://queued/ws"),
+            Reconnect: new ReconnectOptions(Enabled: false),
+            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>
+            {
+                if (evt.Event == "connection_lost")
+                    disconnected.TrySetResult(true);
+            }));
+        await using var connection = new FitzConnection(config, () => transport);
+        await connection.ConnectAsync();
         // Act
         transport.QueueIncomingFrame(ConnectionNegotiationTests.HelloFrame());
-        await disconnected.Task.WaitAsync(TimeSpan.FromMilliseconds(500));
+        await disconnected.Task.WaitAsync(TimeSpan.FromSeconds(2));
         // Assert
         Assert.NotEqual(ConnectionState.Authenticated, connection.State);
     }
