@@ -1,5 +1,9 @@
 # Changelog
 
+## 4.1.1 (unreleased)
+
+- Enables .NET 11 runtime-async compilation across projects.
+
 ## 4.1.0 (unreleased)
 
 - Targets .NET 11 and adopts `Fitz.slnx`.
