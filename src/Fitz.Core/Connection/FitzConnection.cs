@@ -748,10 +748,9 @@ sealed class FitzConnection : IAsyncDisposable
             SetState(ConnectionState.Connected);
             Interlocked.Exchange(ref _nextCorrelationId, 0);
             _multiplexer.BeginSession();
-            StartReceiveLoop();
-
             SetState(ConnectionState.Authenticating);
             _authAttemptIsReconnect = isReconnect;
+            StartReceiveLoop();
 
             var tokenProvider = _config.TokenProvider;
             var token = tokenProvider is null
