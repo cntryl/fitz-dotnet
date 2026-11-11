@@ -30,7 +30,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         new Dictionary<string, LeaseListItem>(StringComparer.Ordinal);
     volatile bool _isReady;
     bool _bootstrapDirty;
-    readonly HashSet<string> _pendingRoutes = new(StringComparer.Ordinal);
+    readonly HashSet<string> _pendingRoutes = [with(StringComparer.Ordinal)];
     int _disposed;
 
     internal LeaseInventoryObserver(LeaseClient client, string pattern, LeaseObserveOptions options)

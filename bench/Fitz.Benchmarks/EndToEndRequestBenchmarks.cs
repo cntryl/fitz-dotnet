@@ -75,7 +75,7 @@ public class EndToEndRequestBenchmarks : IAsyncDisposable
 
     public ValueTask DisposeAsync() => _connection.DisposeAsync();
 
-    /// <summary>Sequential request latency. Target from PERF_GUIDELINES: &lt;10 us.</summary>
+    /// <summary>Sequential request latency for the in-memory request path.</summary>
     [Benchmark(Baseline = true)]
     public async Task SequentialRequests()
     {

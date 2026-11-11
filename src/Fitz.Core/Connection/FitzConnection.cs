@@ -30,7 +30,7 @@ sealed class FitzConnection : IAsyncDisposable
     readonly Dictionary<long, Func<CancellationToken, ValueTask>> _reconnectListeners = [];
     readonly Dictionary<long, Action> _disconnectListeners = [];
     readonly List<CancellationTokenSource> _retiredConnectionClosedTokens = [];
-    readonly Dictionary<string, AsyncHandlerDispatcher> _asyncHandlerDispatchers = new(StringComparer.Ordinal);
+    readonly Dictionary<string, AsyncHandlerDispatcher> _asyncHandlerDispatchers = [with(StringComparer.Ordinal)];
     readonly AsyncLocal<int> _restoreRequestDepth = new();
     CancellationTokenSource _connectionClosedCts = new();
     RequestGate _requestGate;

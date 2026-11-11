@@ -1,8 +1,8 @@
 # Trimming, Native AOT, and zero runtime reflection
 
-This document is the standing contract for `Cntryl.Fitz`, `Cntryl.Fitz.Abstractions`,
-and `Cntryl.Fitz.DependencyInjection`. It states what the packages guarantee, how the
-guarantee is enforced mechanically, and what a contributor must not reintroduce.
+This document is the standing contract for the shipped Fitz runtime packages. It states
+what they guarantee, how the guarantee is enforced, and what contributors must not
+reintroduce.
 
 The Roslyn analyzers and code fixes ship inside `Cntryl.Fitz.Core` as build-time
 components. They run in the compiler, never load into a consumer's application, and are
@@ -20,7 +20,7 @@ outside this contract.
    Nothing in the libraries asks the trimmer to preserve members it would otherwise
    remove.
 3. **Zero `IL2xxx`/`IL3xxx` diagnostics under whole-program analysis**, with every
-   method of all three assemblies rooted — not only the subset a sample application
+   method of each shipped assembly rooted — not only the subset a sample application
    happens to call.
 
 There are no documented exceptions. Telemetry naming was the last one: transports now
@@ -29,15 +29,14 @@ constant `"custom"`. The built-in transports override it with `nameof`, and an
 application supplying its own transport through `ClientConfig.TransportFactory` can do
 the same. Nothing in the client calls `GetType()`.
 
-Adding `TransportName` as a default interface member keeps every existing `ITransport`
-implementation compiling and binary-compatible, consistent with `PKG-8` in the
-[sharp-edges evidence ledger](sharp-edges-evidence-ledger.md).
+`TransportName` is a default interface member, so existing `ITransport` implementations
+remain source- and binary-compatible.
 
 ## How it is enforced
 
 ### Build time
 
-All three packages set `IsAotCompatible=true`, which turns on the trim, AOT, and
+All shipped runtime packages set `IsAotCompatible=true`, which turns on the trim, AOT, and
 single-file Roslyn analyzers. `Directory.Build.props` sets `TreatWarningsAsErrors=true`,
 so any analyzer-visible violation fails the build.
 
@@ -58,6 +57,8 @@ That project configures the proof:
   <TrimmerRootAssembly Include="Cntryl.Fitz.Core" />
   <TrimmerRootAssembly Include="Cntryl.Fitz.Abstractions" />
   <TrimmerRootAssembly Include="Cntryl.Fitz.DependencyInjection" />
+  <TrimmerRootAssembly Include="Cntryl.Fitz.Extensions" />
+  <TrimmerRootAssembly Include="Cntryl.Fitz.Testing" />
 </ItemGroup>
 ```
 
@@ -77,7 +78,7 @@ Four steps, matching what the `package` CI job runs. Substitute your own runtime
 identifier for `linux-x64`:
 
 ```bash
-dotnet pack Fitz.sln -c Release --output artifacts/packages
+dotnet pack Fitz.slnx -c Release --output artifacts/packages
 rm -rf artifacts/consumer-package-cache
 dotnet publish test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj \
   -c Release -r linux-x64 -p:PublishAot=true --output artifacts/native-aot
@@ -194,7 +195,7 @@ serializer. If JSON is ever required, use a source-generated
 
 ## Audit result
 
-Whole-program ILC analysis with all three assemblies rooted reports zero trim and zero
+Whole-program ILC analysis with all shipped assemblies rooted reports zero trim and zero
 AOT diagnostics, and the published Native AOT executable runs correctly. The
 remediations that produced that result:
 

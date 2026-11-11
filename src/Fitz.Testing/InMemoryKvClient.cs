@@ -13,7 +13,7 @@ namespace Cntryl.Fitz.Testing;
 public sealed class InMemoryKvClient : IKvClient
 {
     readonly object _gate = new();
-    readonly Dictionary<string, RouteState> _routes = new(StringComparer.Ordinal);
+    readonly Dictionary<string, RouteState> _routes = [with(StringComparer.Ordinal)];
     readonly List<OperationEntry> _operations = [];
     readonly List<FaultEntry> _faults = [];
     readonly Dictionary<long, SubscriptionEntry> _subscriptions = [];
@@ -492,7 +492,7 @@ public sealed class InMemoryKvClient : IKvClient
 
     sealed class RouteState
     {
-        internal SortedDictionary<byte[], byte[]> Values { get; set; } = new(ByteArrayComparer.Instance);
+        internal SortedDictionary<byte[], byte[]> Values { get; set; } = [with(ByteArrayComparer.Instance)];
         internal long Version { get; set; }
     }
 

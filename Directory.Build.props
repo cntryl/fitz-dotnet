@@ -32,6 +32,10 @@
 
   <ItemGroup Condition="'$(IsPackable)' != 'false'">
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.403" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="11.0.100" PrivateAssets="All" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Cntryl.Conventions.Testing.Analyzers" Version="1.0.1" PrivateAssets="all" />
+    <PackageReference Include="Cntryl.Conventions.Testing.CodeFixes" Version="1.0.1" PrivateAssets="all" />
   </ItemGroup>
 </Project>

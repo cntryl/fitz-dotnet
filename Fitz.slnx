@@ -1,0 +1,18 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Fitz.Abstractions/Fitz.Abstractions.csproj" />
+    <Project Path="src/Fitz.Analyzers/Fitz.Analyzers.csproj" />
+    <Project Path="src/Fitz.CodeFixes/Fitz.CodeFixes.csproj" />
+    <Project Path="src/Fitz.Core/Fitz.Core.csproj" />
+    <Project Path="src/Fitz.DependencyInjection/Fitz.DependencyInjection.csproj" />
+    <Project Path="src/Fitz.Extensions/Fitz.Extensions.csproj" />
+    <Project Path="src/Fitz.Testing/Fitz.Testing.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/Fitz.Analyzers.Tests/Fitz.Analyzers.Tests.csproj" />
+    <Project Path="test/Fitz.Core.Tests/Fitz.Core.Tests.csproj" />
+    <Project Path="test/Fitz.Extensions.Tests/Fitz.Extensions.Tests.csproj" />
+    <Project Path="test/Fitz.Testing.Tests/Fitz.Testing.Tests.csproj" />
+  </Folder>
+  <Project Path="bench/Fitz.Benchmarks/Fitz.Benchmarks.csproj" />
+</Solution>

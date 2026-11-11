@@ -1,6 +1,6 @@
 # fitz-dotnet
 
-Current release candidate: **4.0.0**, requiring Fitz **0.4.0 / Wire 3**. See [Wire 3 migration](WIRE3_MIGRATION.md) for Queue TTL, NACK, negotiation, and coordinated upgrade guidance.
+Current release candidate: **4.0.0**, requiring Fitz **0.4.0 / Wire 3**. See [Wire 3 migration](docs/wire3-migration.md) for Queue TTL, NACK, negotiation, and coordinated upgrade guidance.
 
 `fitz-dotnet` is the .NET Fitz client SDK. The repo now tracks the same shared 24-scenario conformance suite as `fitz-ts`, runs against both WebSocket and TCP, and includes a repo-owned broker baseline in [compose.yml](compose.yml).
 
@@ -274,8 +274,8 @@ release.
 Fast local checks:
 
 ```bash
-dotnet restore Fitz.sln
-dotnet build Fitz.sln -c Release --no-restore
+dotnet restore Fitz.slnx
+dotnet build Fitz.slnx -c Release --no-restore
 dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter "FullyQualifiedName!~Integration"
 ```
 
@@ -283,7 +283,7 @@ Verify the packed packages publish and run as a Native AOT executable with every
 shipped assembly rooted (substitute your own runtime identifier):
 
 ```bash
-dotnet pack Fitz.sln -c Release --output artifacts/packages
+dotnet pack Fitz.slnx -c Release --output artifacts/packages
 rm -rf artifacts/consumer-package-cache
 dotnet publish test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj \
   -c Release -r linux-x64 -p:PublishAot=true --output artifacts/native-aot
@@ -333,14 +333,12 @@ The conformance artifact uses the shared schema:
 ## Documentation
 
 - [docs/guide.md](docs/guide.md) — the consumer guide: every domain, with working examples
-- [docs/README.md](docs/README.md) — index of the standing contracts and status documents
+- [docs/README.md](docs/README.md) — index of the user and engineering guides
 - [CHANGELOG.md](CHANGELOG.md) — release history and every breaking change
 - [CONTRIBUTING.md](CONTRIBUTING.md) — enforced standards, and where the normative client
   protocol specification lives (the Fitz server repository, not this one)
 - [docs/aot-and-reflection.md](docs/aot-and-reflection.md) — the trim and AOT guarantee
-- [PERF_GUIDELINES.md](PERF_GUIDELINES.md) — performance patterns and budgets
-- [docs/spec-parity-gap-matrix.md](docs/spec-parity-gap-matrix.md) — capability status
-- [docs/sharp-edges-evidence-ledger.md](docs/sharp-edges-evidence-ledger.md) — audit dispositions
+- [performance guidance](docs/performance.md) — performance guidance
 
 ## Managed leases
 

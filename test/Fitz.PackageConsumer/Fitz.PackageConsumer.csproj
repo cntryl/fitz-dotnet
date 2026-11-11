@@ -1,11 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <NoWarn>$(NoWarn);CA2007</NoWarn>
     <!-- Report every trim/AOT finding individually and fail on it, rather than emitting a
          single per-assembly summary warning that a passing publish would hide. -->
@@ -18,7 +13,6 @@
          "Clear consumer package cache" step before publishing the consumer. -->
     <RestorePackagesPath>$(MSBuildThisFileDirectory)../../artifacts/consumer-package-cache</RestorePackagesPath>
   </PropertyGroup>
-
   <!-- The Native AOT publish is this repo's whole-program reflection proof. Rooting each
        shipped assembly makes ILC analyze every method, including paths this sample never
        calls; without it the analysis only covers what Main happens to reach. -->
@@ -29,7 +23,6 @@
     <TrimmerRootAssembly Include="Cntryl.Fitz.Extensions" />
     <TrimmerRootAssembly Include="Cntryl.Fitz.Testing" />
   </ItemGroup>
-
   <!-- Deliberately no analyzer reference: Cntryl.Fitz.Core ships the Roslyn components, so
        this build also proves a plain consumer receives them. -->
   <ItemGroup>
@@ -39,5 +32,4 @@
     <PackageReference Include="Cntryl.Fitz.Extensions" Version="$(PackageVersion)" />
     <PackageReference Include="Cntryl.Fitz.Testing" Version="$(PackageVersion)" />
   </ItemGroup>
-
 </Project>

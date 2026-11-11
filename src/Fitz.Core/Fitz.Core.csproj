@@ -1,9 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
-
   <ItemGroup>
     <ProjectReference Include="..\Fitz.Abstractions\Fitz.Abstractions.csproj" />
   </ItemGroup>
-
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
       <_Parameter1>Cntryl.Fitz.Core.Tests</_Parameter1>
@@ -13,7 +11,6 @@
       <_Parameter1>Fitz.Benchmarks</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
-
   <!-- Build the Roslyn components first and pack them into this package. Neither is
        referenced as an assembly, and neither analyses this project's own source. -->
   <ItemGroup>
@@ -24,7 +21,6 @@
                       ReferenceOutputAssembly="false"
                       PrivateAssets="all" />
   </ItemGroup>
-
   <!-- Shipping the analyzers inside the client package is what makes them automatic: a
        consumer who installs Cntryl.Fitz.Core gets the diagnostics and their fixes without
        knowing a second package exists. -->
@@ -40,9 +36,7 @@
           PackagePath="analyzers/dotnet/cs"
           Visible="false" />
   </ItemGroup>
-
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
     <IsAotCompatible>true</IsAotCompatible>
     <!-- Ship IntelliSense docs; a missing public doc comment fails the build. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -52,9 +46,5 @@
          packages, so the root namespace does not follow the assembly name. -->
     <RootNamespace>Cntryl.Fitz</RootNamespace>
     <Description>Core .NET client library for Fitz.</Description>
-    <Authors>Cntryl</Authors>
-    <RepositoryUrl>https://github.com/cntryl/fitz-dotnet</RepositoryUrl>
-    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
   </PropertyGroup>
-
 </Project>

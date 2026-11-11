@@ -1,30 +1,16 @@
 # fitz-dotnet documentation
 
-Start here if you are using the client in an application:
+## Using the client
 
-- [guide.md](guide.md) — install, connect, routes, errors and retry, subscriptions, reconnect,
-  all seven domains, dependency injection, and observability. Its samples were compiled against
-  the `1.0.0` packages when written, but nothing in CI keeps them compiling: treat a sample that
-  disagrees with the XML documentation as the sample being stale.
+- [guide.md](guide.md) — install, connect, configure retries, and use the client domains.
+- [wire3-migration.md](wire3-migration.md) — broker compatibility, capability negotiation,
+  Queue TTL, and NACK behavior.
 
-Standing contracts — these define rules that current and future work must keep true:
+## Engineering contracts
 
-- [aot-and-reflection.md](aot-and-reflection.md) — the trimming and Native AOT guarantee,
-  how CI enforces it whole-program, and the rules for keeping it true.
-- [../PERF_GUIDELINES.md](../PERF_GUIDELINES.md) — mandatory performance patterns,
-  latency and allocation budgets, and the review checklist.
-- [../CONTRIBUTING.md](../CONTRIBUTING.md) — enforced standards, test layout, and where the
-  normative client protocol specification lives.
+- [aot-and-reflection.md](aot-and-reflection.md) — trimming and Native AOT guarantees.
+- [performance.md](performance.md) — async, buffering, and measurement guidance.
+- [../CONTRIBUTING.md](../CONTRIBUTING.md) — repository standards and local workflow.
 
-Current status and evidence:
-
-- [spec-parity-gap-matrix.md](spec-parity-gap-matrix.md) — capability-by-capability status
-  against the shared client suite.
-- [sharp-edges-evidence-ledger.md](sharp-edges-evidence-ledger.md) — disposition for all 80
-  sharp-edges findings, including the tradeoffs accepted by design and the ones that cannot
-  be fixed client-side without a wire-protocol change.
-- [../conformance/cross-language-conformance-suite.yaml](../conformance/cross-language-conformance-suite.yaml)
-  and [../compose.yml](../compose.yml) — the shared suite and the broker baseline CI runs it against.
-
-Release history, including every breaking change and the API shape of each preview, is in
-[../CHANGELOG.md](../CHANGELOG.md).
+Release history is in [../CHANGELOG.md](../CHANGELOG.md). The normative protocol
+specification is maintained in the [Fitz server repository](https://github.com/cntryl/fitz/tree/main/docs/clients/spec).

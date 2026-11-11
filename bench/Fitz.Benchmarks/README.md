@@ -77,22 +77,11 @@ TLV encode and decode across payload sizes, including the extended message-type 
 Domain clients (KV, queue, lease, notice, schedule) against stub responders, covering request
 serialization and response parsing per domain.
 
-## Targets
+## Interpreting results
 
-From [PERF_GUIDELINES.md](../../PERF_GUIDELINES.md):
-
-| Operation | Target | Covered by |
-|-----------|--------|------------|
-| Frame encode | <100 ns | `FrameCodecBenchmarks` |
-| Frame decode | <200 ns | `FrameCodecBenchmarks`, `HotPathComponentBenchmarks` |
-| RPC dispatch per frame | <5 µs | `DispatchScanBenchmarks` |
-| Request-response round trip | <10 µs | `EndToEndRequestBenchmarks` (`RoundTripMs=0`) |
-| Allocation per request | <150 B | `EndToEndRequestBenchmarks` |
-
-The concurrency targets in that document (5,000 concurrent RPC streams, <2 µs correlation lookup at
-that load) apply only when the broker advertises `CAP_CORRELATION`. Against a legacy broker a request
-still holds its message-type lane until its response arrives, and no amount of client concurrency
-changes that.
+There is no automated performance gate. Treat latency and allocation goals as hypotheses until
+repeatable runs support them; record the runtime, hardware, and BenchmarkDotNet job with any
+reported result. See [performance guidance](../../docs/performance.md).
 
 ## Adding a benchmark
 

@@ -25,13 +25,13 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: "11.0.x"
 
       - name: Restore
-        run: dotnet restore Fitz.sln
+        run: dotnet restore Fitz.slnx
 
       - name: Pack NuGet packages
-        run: dotnet pack Fitz.sln -c Release --no-restore --output artifacts/packages
+        run: dotnet pack Fitz.slnx -c Release --no-restore --output artifacts/packages
 
       # NuGet caches by package id and version. Remove copies from an earlier pack so the
       # consumer restores the packages built in this run.

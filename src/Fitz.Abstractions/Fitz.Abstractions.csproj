@@ -1,7 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
     <IsAotCompatible>true</IsAotCompatible>
     <!-- Ship IntelliSense docs; a missing public doc comment fails the build. -->
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
@@ -9,9 +7,5 @@
     <AssemblyName>Cntryl.Fitz.Abstractions</AssemblyName>
     <RootNamespace>Cntryl.Fitz.Abstractions</RootNamespace>
     <Description>Public contracts for Fitz .NET client abstractions.</Description>
-    <Authors>Cntryl</Authors>
-    <RepositoryUrl>https://github.com/cntryl/fitz-dotnet</RepositoryUrl>
-    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
   </PropertyGroup>
-
 </Project>
