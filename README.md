@@ -1,6 +1,6 @@
 # fitz-dotnet
 
-Current release candidate: **4.0.0**, requiring Fitz **0.4.0 / Wire 3**. See [Wire 3 migration](docs/wire3-migration.md) for Queue TTL, NACK, negotiation, and coordinated upgrade guidance.
+Current release candidate: **4.1.0**, requiring Fitz **0.4.0 / Wire 3**. See [Wire 3 migration](docs/wire3-migration.md) for Queue TTL, NACK, negotiation, and coordinated upgrade guidance.
 
 `fitz-dotnet` is the .NET Fitz client SDK. The repo now tracks the same shared 24-scenario conformance suite as `fitz-ts`, runs against both WebSocket and TCP, and includes a repo-owned broker baseline in [compose.yml](compose.yml).
 

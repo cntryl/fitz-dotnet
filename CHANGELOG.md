@@ -1,7 +1,11 @@
 # Changelog
 
 
-## 4.0.0 (unreleased)
+## 4.1.0 (unreleased)
+
+- Targets .NET 11 and uses the XML solution format.
+- Updates NuGet dependencies and applies Cntryl conventions across all projects.
+- Centralizes project settings and streamlines engineering documentation.
 
 - Requires Fitz 0.4.0 / Wire 3 with bounded extension envelopes and numeric capability negotiation.
 - Adds capability-gated per-message Queue TTL in hours and explicit Queue NACK with visibility delay.
