@@ -26,7 +26,7 @@
     <DebugType>portable</DebugType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>fitz distributed-systems kv queue rpc lease notice stream schedule</PackageTags>
-    <PackageReleaseNotes>Breaking: requires Fitz 0.4.0 / Wire 3. Adds bounded extension envelopes, numeric capability negotiation, per-message Queue TTL in hours, and Queue NACK. AssemblyVersion remains 1.0.0.0. See CHANGELOG.md.</PackageReleaseNotes>
+    <PackageReleaseNotes>Targets .NET 11; updates dependencies and conventions. Requires Fitz 0.4.0 / Wire 3. See CHANGELOG.md and docs/wire3-migration.md.</PackageReleaseNotes>
     <PackageOutputPath>$(MSBuildThisFileDirectory)artifacts\packages</PackageOutputPath>
   </PropertyGroup>
 

@@ -37,10 +37,7 @@ Enforcement is mechanical, not aspirational:
   every shipped method rather than only what the sample reaches, reports each
   finding individually, and fails the build on any of them
 
-Rooting the whole assembly is the part that matters. Analyzers reason one method
-at a time and miss cases that whole-program analysis catches — that gap hid an
-`IL2091` in `0.1.3` until this audit. Details, reproduction steps, and the rules
-for keeping it true: [docs/aot-and-reflection.md](docs/aot-and-reflection.md).
+See [AOT and reflection](docs/aot-and-reflection.md) for the requirements and local verification commands.
 
 Supplying your own transport through `ClientConfig.TransportFactory`? Override
 `ITransport.TransportName` with a constant to label it in telemetry; it defaults
@@ -258,17 +255,6 @@ and `Schedule.ListV2Async()` expose Schedule CREATE_BATCH (706) and cursor LIST
 unsupported. RPC worker handler failures
 send a terminal 6010 response to the caller and invoke the worker error hook.
 
-## Upgrading from 0.1.x
-
-`1.0.0` is the release that settles the public surface, so it carries the breaking
-changes the pinned `AssemblyVersion` would otherwise have frozen. The largest are the
-single `Cntryl.Fitz` namespace, `TimeSpan` for every duration, and the connection and
-protocol internals becoming `internal`. [CHANGELOG.md](CHANGELOG.md) lists each one with
-the reason; [docs/guide.md](docs/guide.md) documents the resulting API.
-
-From `1.0.0` onward the public surface is a commitment: breaking changes require a major
-release.
-
 ## Local Verification
 
 Fast local checks:
@@ -334,7 +320,7 @@ The conformance artifact uses the shared schema:
 
 - [docs/guide.md](docs/guide.md) — the consumer guide: every domain, with working examples
 - [docs/README.md](docs/README.md) — index of the user and engineering guides
-- [CHANGELOG.md](CHANGELOG.md) — release history and every breaking change
+- [CHANGELOG.md](CHANGELOG.md) — current release notes
 - [CONTRIBUTING.md](CONTRIBUTING.md) — enforced standards, and where the normative client
   protocol specification lives (the Fitz server repository, not this one)
 - [docs/aot-and-reflection.md](docs/aot-and-reflection.md) — the trim and AOT guarantee

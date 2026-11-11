@@ -42,8 +42,7 @@ so any analyzer-visible violation fails the build.
 
 ### Publish time
 
-Roslyn analyzers reason one method at a time and **do not catch everything** — see the
-worked example below. The authoritative check is the whole-program ILC analysis run by
+Roslyn analyzers reason one method at a time and **do not catch everything**. The authoritative check is the whole-program ILC analysis run by
 the `package` CI job, which publishes `test/Fitz.PackageConsumer` as a Native AOT
 executable against the freshly packed NuGet artifacts.
 
@@ -92,44 +91,11 @@ A clean run prints `Generating native code` and emits no `IL` diagnostics.
 but `PackageVersion` is intentionally fixed across rebuilds, and NuGet keys its extracted
 cache on package id and version alone. A copy of that version left from an earlier pack
 therefore shadows the one just produced, and the verification passes against stale bits
-with no indication anything is wrong. This is not hypothetical: it happened during this
-audit.
+with no indication anything is wrong. Clear this cache before each publish.
 
 The consumer sets `RestorePackagesPath` to `artifacts/consumer-package-cache` so it never
 reads the shared global package cache. That is what makes the `rm -rf` both safe — it
 cannot touch packages other projects depend on — and cheap.
-
-## Why whole-assembly rooting is the requirement
-
-The audit that produced this document found `IL2091` in `Client.GetDomain<T>(Lazy<T>)`:
-
-```csharp
-T GetDomain<T>(Lazy<T> domain)   // removed
-{
-    ThrowIfDisposed();
-    return domain.Value;
-}
-```
-
-`Lazy<T>` annotates its type parameter with
-`DynamicallyAccessedMemberTypes.PublicParameterlessConstructor`, because its
-parameterless overload constructs `T` through `Activator.CreateInstance<T>()`. Passing
-an unannotated `T` into that position propagates a reflection contract. No call site
-used the reflecting overload — every domain client is created by an explicit value
-factory — but the trimmer must assume the annotation is meaningful.
-
-This shipped in `0.1.3`. It was invisible to the in-build analyzers and invisible to the
-CI AOT publish, because the sample never read a domain property. Rooting every method
-surfaced it immediately.
-
-The fix removed the generic hop rather than annotating it. Adding
-`[DynamicallyAccessedMembers]` would have silenced the warning while making the
-reflection contract permanent and forcing the trimmer to preserve constructors nothing
-calls. Each domain property now guards and dereferences its own `Lazy<T>` field, whose
-type argument is concrete.
-
-**Prefer deleting a reflection contract over annotating it.** Reach for an annotation
-only when the reflection is real and necessary; in this codebase, it never has been.
 
 ## Rules for contributors
 
@@ -192,19 +158,3 @@ serialization constructors, and the wire protocol is hand-written binary
 (`BinaryBufferReader`/`BinaryBufferWriter`). Do not introduce a reflection-based
 serializer. If JSON is ever required, use a source-generated
 `JsonSerializerContext` — never the reflection-based `JsonSerializer` overloads.
-
-## Audit result
-
-Whole-program ILC analysis with all shipped assemblies rooted reports zero trim and zero
-AOT diagnostics, and the published Native AOT executable runs correctly. The
-remediations that produced that result:
-
-| Area | Change |
-|---|---|
-| `Client` | Removed `GetDomain<T>(Lazy<T>)`; each domain property guards and reads its own field. Clears `IL2091`. |
-| `ClientConfig`, `KvClient`, `StreamWireHelpers` | Replaced `Enum.IsDefined` with explicit membership tests. |
-| `TransportResolver`, `FitzConnection` | Replaced enum interpolation with `nameof` maps. |
-| `ITransport`, `FitzConnection` | Transports self-report a constant `TransportName`; the last `GetType()` call is gone. |
-| `ServiceCollectionExtensions` | Replaced container type activation with explicit factories. |
-| `Fitz.PackageConsumer` | Roots all shipped assemblies, expands per-finding warnings, promotes trim/AOT warnings to errors, and restores into a dedicated package cache. |
-| CI | Clears the consumer package cache before the AOT publish, which would otherwise verify stale bits. |
