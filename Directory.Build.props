@@ -11,7 +11,7 @@
 
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
     <!-- Assembly identity stays fixed permanently; release only by advancing PackageVersion. -->
-    <PackageVersion>4.0.0</PackageVersion>
+    <PackageVersion>4.1.0</PackageVersion>
     <Version>$(PackageVersion)</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <InformationalVersion>$(PackageVersion)</InformationalVersion>
@@ -26,12 +26,16 @@
     <DebugType>portable</DebugType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>fitz distributed-systems kv queue rpc lease notice stream schedule</PackageTags>
-    <PackageReleaseNotes>Breaking: requires Fitz 0.4.0 / Wire 3. Adds bounded extension envelopes, numeric capability negotiation, per-message Queue TTL in hours, and Queue NACK. AssemblyVersion remains 1.0.0.0. See CHANGELOG.md.</PackageReleaseNotes>
+    <PackageReleaseNotes>Targets .NET 11; updates dependencies and conventions. Requires Fitz 0.4.0 / Wire 3. See CHANGELOG.md and docs/wire3-migration.md.</PackageReleaseNotes>
     <PackageOutputPath>$(MSBuildThisFileDirectory)artifacts\packages</PackageOutputPath>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(IsPackable)' != 'false'">
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.403" PrivateAssets="All" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="11.0.100" PrivateAssets="All" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Cntryl.Conventions.Testing.Analyzers" Version="1.0.1" PrivateAssets="all" />
+    <PackageReference Include="Cntryl.Conventions.Testing.CodeFixes" Version="1.0.1" PrivateAssets="all" />
   </ItemGroup>
 </Project>

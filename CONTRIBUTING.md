@@ -2,8 +2,7 @@
 
 ## Prerequisites
 
-- .NET SDK 10.0 or later. `10.0.100` is the minimum supported SDK and CI verifies the
-  shipped analyzers load on it.
+- .NET 11 SDK. CI uses the .NET 11 SDK.
 - Docker, for the broker-backed integration and conformance suites.
 
 ## Before you open a pull request
@@ -11,9 +10,9 @@
 CI runs all of these. Running them locally first is faster than a round trip.
 
 ```bash
-dotnet restore Fitz.sln
-dotnet format Fitz.sln --verify-no-changes --severity warn
-dotnet build Fitz.sln -c Release --no-restore
+dotnet restore Fitz.slnx
+dotnet format Fitz.slnx --verify-no-changes --severity warn
+dotnet build Fitz.slnx -c Release --no-restore
 dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter "FullyQualifiedName!~Integration"
 dotnet test test/Fitz.Analyzers.Tests/Fitz.Analyzers.Tests.csproj -c Release --no-build
 ```
@@ -41,7 +40,7 @@ guaranteed, how CI proves it, and the specific patterns to avoid. Read it before
 enum validation, diagnostics, or dependency injection registration. The whole-program
 Native AOT publish will fail the build on a regression.
 
-**Performance patterns.** [PERF_GUIDELINES.md](PERF_GUIDELINES.md) is binding for
+**Performance patterns.** [docs/performance.md](docs/performance.md) is binding for
 hot-path code. Its numeric targets are only as good as the benchmark behind them: do not
 quote a performance figure that `bench/Fitz.Benchmarks` does not produce.
 
@@ -74,10 +73,8 @@ are normative for this SDK. This repository deliberately keeps no second copy of
 fork would drift, and a stale protocol document is worse than no local one. Consult the
 server repository directly when you need the wire contract.
 
-What this repository owns is evidence that the .NET client satisfies that contract —
-[docs/spec-parity-gap-matrix.md](docs/spec-parity-gap-matrix.md) for capability status and
-[conformance/cross-language-conformance-suite.yaml](conformance/cross-language-conformance-suite.yaml)
-for the shared 17-scenario suite that CI runs against a live broker.
+The shared suite in [conformance/cross-language-conformance-suite.yaml](conformance/cross-language-conformance-suite.yaml)
+and the broker-backed CI runs provide executable compatibility checks.
 
 ## Wire compatibility and versioning
 
@@ -85,9 +82,8 @@ for the shared 17-scenario suite that CI runs against a live broker.
 releases advance `PackageVersion` only. Do not change `AssemblyVersion`.
 
 The client must not silently emulate a protocol capability the broker does not have. When
-a change requires the wire protocol to move, record it as `protocol-deferred` in
-[docs/sharp-edges-evidence-ledger.md](docs/sharp-edges-evidence-ledger.md) rather than
-working around it client-side.
+a change requires a wire protocol update, coordinate it with the Fitz server contract rather
+than working around it client-side.
 
 Record every user-visible change in [CHANGELOG.md](CHANGELOG.md) under `Unreleased`, and
 label breaking changes explicitly — including source-breaking ones such as a renamed

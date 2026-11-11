@@ -443,7 +443,7 @@ static class IntegrationFixture
         var current = new DirectoryInfo(AppContext.BaseDirectory);
         while (current is not null)
         {
-            if (File.Exists(Path.Combine(current.FullName, "Fitz.sln")))
+            if (File.Exists(Path.Combine(current.FullName, "Fitz.slnx")))
             {
                 return current.FullName;
             }

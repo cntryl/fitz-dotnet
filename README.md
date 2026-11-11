@@ -1,6 +1,6 @@
 # fitz-dotnet
 
-Current release candidate: **4.0.0**, requiring Fitz **0.4.0 / Wire 3**. See [Wire 3 migration](WIRE3_MIGRATION.md) for Queue TTL, NACK, negotiation, and coordinated upgrade guidance.
+Current release candidate: **4.1.0**, requiring Fitz **0.4.0 / Wire 3**. See [Wire 3 migration](docs/wire3-migration.md) for Queue TTL, NACK, negotiation, and coordinated upgrade guidance.
 
 `fitz-dotnet` is the .NET Fitz client SDK. The repo now tracks the same shared 24-scenario conformance suite as `fitz-ts`, runs against both WebSocket and TCP, and includes a repo-owned broker baseline in [compose.yml](compose.yml).
 
@@ -37,10 +37,7 @@ Enforcement is mechanical, not aspirational:
   every shipped method rather than only what the sample reaches, reports each
   finding individually, and fails the build on any of them
 
-Rooting the whole assembly is the part that matters. Analyzers reason one method
-at a time and miss cases that whole-program analysis catches — that gap hid an
-`IL2091` in `0.1.3` until this audit. Details, reproduction steps, and the rules
-for keeping it true: [docs/aot-and-reflection.md](docs/aot-and-reflection.md).
+See [AOT and reflection](docs/aot-and-reflection.md) for the requirements and local verification commands.
 
 Supplying your own transport through `ClientConfig.TransportFactory`? Override
 `ITransport.TransportName` with a constant to label it in telemetry; it defaults
@@ -258,24 +255,13 @@ and `Schedule.ListV2Async()` expose Schedule CREATE_BATCH (706) and cursor LIST
 unsupported. RPC worker handler failures
 send a terminal 6010 response to the caller and invoke the worker error hook.
 
-## Upgrading from 0.1.x
-
-`1.0.0` is the release that settles the public surface, so it carries the breaking
-changes the pinned `AssemblyVersion` would otherwise have frozen. The largest are the
-single `Cntryl.Fitz` namespace, `TimeSpan` for every duration, and the connection and
-protocol internals becoming `internal`. [CHANGELOG.md](CHANGELOG.md) lists each one with
-the reason; [docs/guide.md](docs/guide.md) documents the resulting API.
-
-From `1.0.0` onward the public surface is a commitment: breaking changes require a major
-release.
-
 ## Local Verification
 
 Fast local checks:
 
 ```bash
-dotnet restore Fitz.sln
-dotnet build Fitz.sln -c Release --no-restore
+dotnet restore Fitz.slnx
+dotnet build Fitz.slnx -c Release --no-restore
 dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter "FullyQualifiedName!~Integration"
 ```
 
@@ -283,7 +269,7 @@ Verify the packed packages publish and run as a Native AOT executable with every
 shipped assembly rooted (substitute your own runtime identifier):
 
 ```bash
-dotnet pack Fitz.sln -c Release --output artifacts/packages
+dotnet pack Fitz.slnx -c Release --output artifacts/packages
 rm -rf artifacts/consumer-package-cache
 dotnet publish test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj \
   -c Release -r linux-x64 -p:PublishAot=true --output artifacts/native-aot
@@ -333,14 +319,12 @@ The conformance artifact uses the shared schema:
 ## Documentation
 
 - [docs/guide.md](docs/guide.md) — the consumer guide: every domain, with working examples
-- [docs/README.md](docs/README.md) — index of the standing contracts and status documents
-- [CHANGELOG.md](CHANGELOG.md) — release history and every breaking change
+- [docs/README.md](docs/README.md) — index of the user and engineering guides
+- [CHANGELOG.md](CHANGELOG.md) — current release notes
 - [CONTRIBUTING.md](CONTRIBUTING.md) — enforced standards, and where the normative client
   protocol specification lives (the Fitz server repository, not this one)
 - [docs/aot-and-reflection.md](docs/aot-and-reflection.md) — the trim and AOT guarantee
-- [PERF_GUIDELINES.md](PERF_GUIDELINES.md) — performance patterns and budgets
-- [docs/spec-parity-gap-matrix.md](docs/spec-parity-gap-matrix.md) — capability status
-- [docs/sharp-edges-evidence-ledger.md](docs/sharp-edges-evidence-ledger.md) — audit dispositions
+- [performance guidance](docs/performance.md) — performance guidance
 
 ## Managed leases
 

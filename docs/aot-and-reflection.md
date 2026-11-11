@@ -1,8 +1,8 @@
 # Trimming, Native AOT, and zero runtime reflection
 
-This document is the standing contract for `Cntryl.Fitz`, `Cntryl.Fitz.Abstractions`,
-and `Cntryl.Fitz.DependencyInjection`. It states what the packages guarantee, how the
-guarantee is enforced mechanically, and what a contributor must not reintroduce.
+This document is the standing contract for the shipped Fitz runtime packages. It states
+what they guarantee, how the guarantee is enforced, and what contributors must not
+reintroduce.
 
 The Roslyn analyzers and code fixes ship inside `Cntryl.Fitz.Core` as build-time
 components. They run in the compiler, never load into a consumer's application, and are
@@ -20,7 +20,7 @@ outside this contract.
    Nothing in the libraries asks the trimmer to preserve members it would otherwise
    remove.
 3. **Zero `IL2xxx`/`IL3xxx` diagnostics under whole-program analysis**, with every
-   method of all three assemblies rooted — not only the subset a sample application
+   method of each shipped assembly rooted — not only the subset a sample application
    happens to call.
 
 There are no documented exceptions. Telemetry naming was the last one: transports now
@@ -29,22 +29,20 @@ constant `"custom"`. The built-in transports override it with `nameof`, and an
 application supplying its own transport through `ClientConfig.TransportFactory` can do
 the same. Nothing in the client calls `GetType()`.
 
-Adding `TransportName` as a default interface member keeps every existing `ITransport`
-implementation compiling and binary-compatible, consistent with `PKG-8` in the
-[sharp-edges evidence ledger](sharp-edges-evidence-ledger.md).
+`TransportName` is a default interface member, so existing `ITransport` implementations
+remain source- and binary-compatible.
 
 ## How it is enforced
 
 ### Build time
 
-All three packages set `IsAotCompatible=true`, which turns on the trim, AOT, and
+All shipped runtime packages set `IsAotCompatible=true`, which turns on the trim, AOT, and
 single-file Roslyn analyzers. `Directory.Build.props` sets `TreatWarningsAsErrors=true`,
 so any analyzer-visible violation fails the build.
 
 ### Publish time
 
-Roslyn analyzers reason one method at a time and **do not catch everything** — see the
-worked example below. The authoritative check is the whole-program ILC analysis run by
+Roslyn analyzers reason one method at a time and **do not catch everything**. The authoritative check is the whole-program ILC analysis run by
 the `package` CI job, which publishes `test/Fitz.PackageConsumer` as a Native AOT
 executable against the freshly packed NuGet artifacts.
 
@@ -58,6 +56,8 @@ That project configures the proof:
   <TrimmerRootAssembly Include="Cntryl.Fitz.Core" />
   <TrimmerRootAssembly Include="Cntryl.Fitz.Abstractions" />
   <TrimmerRootAssembly Include="Cntryl.Fitz.DependencyInjection" />
+  <TrimmerRootAssembly Include="Cntryl.Fitz.Extensions" />
+  <TrimmerRootAssembly Include="Cntryl.Fitz.Testing" />
 </ItemGroup>
 ```
 
@@ -77,7 +77,7 @@ Four steps, matching what the `package` CI job runs. Substitute your own runtime
 identifier for `linux-x64`:
 
 ```bash
-dotnet pack Fitz.sln -c Release --output artifacts/packages
+dotnet pack Fitz.slnx -c Release --output artifacts/packages
 rm -rf artifacts/consumer-package-cache
 dotnet publish test/Fitz.PackageConsumer/Fitz.PackageConsumer.csproj \
   -c Release -r linux-x64 -p:PublishAot=true --output artifacts/native-aot
@@ -91,44 +91,11 @@ A clean run prints `Generating native code` and emits no `IL` diagnostics.
 but `PackageVersion` is intentionally fixed across rebuilds, and NuGet keys its extracted
 cache on package id and version alone. A copy of that version left from an earlier pack
 therefore shadows the one just produced, and the verification passes against stale bits
-with no indication anything is wrong. This is not hypothetical: it happened during this
-audit.
+with no indication anything is wrong. Clear this cache before each publish.
 
 The consumer sets `RestorePackagesPath` to `artifacts/consumer-package-cache` so it never
 reads the shared global package cache. That is what makes the `rm -rf` both safe — it
 cannot touch packages other projects depend on — and cheap.
-
-## Why whole-assembly rooting is the requirement
-
-The audit that produced this document found `IL2091` in `Client.GetDomain<T>(Lazy<T>)`:
-
-```csharp
-T GetDomain<T>(Lazy<T> domain)   // removed
-{
-    ThrowIfDisposed();
-    return domain.Value;
-}
-```
-
-`Lazy<T>` annotates its type parameter with
-`DynamicallyAccessedMemberTypes.PublicParameterlessConstructor`, because its
-parameterless overload constructs `T` through `Activator.CreateInstance<T>()`. Passing
-an unannotated `T` into that position propagates a reflection contract. No call site
-used the reflecting overload — every domain client is created by an explicit value
-factory — but the trimmer must assume the annotation is meaningful.
-
-This shipped in `0.1.3`. It was invisible to the in-build analyzers and invisible to the
-CI AOT publish, because the sample never read a domain property. Rooting every method
-surfaced it immediately.
-
-The fix removed the generic hop rather than annotating it. Adding
-`[DynamicallyAccessedMembers]` would have silenced the warning while making the
-reflection contract permanent and forcing the trimmer to preserve constructors nothing
-calls. Each domain property now guards and dereferences its own `Lazy<T>` field, whose
-type argument is concrete.
-
-**Prefer deleting a reflection contract over annotating it.** Reach for an annotation
-only when the reflection is real and necessary; in this codebase, it never has been.
 
 ## Rules for contributors
 
@@ -191,19 +158,3 @@ serialization constructors, and the wire protocol is hand-written binary
 (`BinaryBufferReader`/`BinaryBufferWriter`). Do not introduce a reflection-based
 serializer. If JSON is ever required, use a source-generated
 `JsonSerializerContext` — never the reflection-based `JsonSerializer` overloads.
-
-## Audit result
-
-Whole-program ILC analysis with all three assemblies rooted reports zero trim and zero
-AOT diagnostics, and the published Native AOT executable runs correctly. The
-remediations that produced that result:
-
-| Area | Change |
-|---|---|
-| `Client` | Removed `GetDomain<T>(Lazy<T>)`; each domain property guards and reads its own field. Clears `IL2091`. |
-| `ClientConfig`, `KvClient`, `StreamWireHelpers` | Replaced `Enum.IsDefined` with explicit membership tests. |
-| `TransportResolver`, `FitzConnection` | Replaced enum interpolation with `nameof` maps. |
-| `ITransport`, `FitzConnection` | Transports self-report a constant `TransportName`; the last `GetType()` call is gone. |
-| `ServiceCollectionExtensions` | Replaced container type activation with explicit factories. |
-| `Fitz.PackageConsumer` | Roots all shipped assemblies, expands per-finding warnings, promotes trim/AOT warnings to errors, and restores into a dedicated package cache. |
-| CI | Clears the consumer package cache before the AOT publish, which would otherwise verify stale bits. |

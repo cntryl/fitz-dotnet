@@ -23,7 +23,7 @@ sealed class QueueClient : IQueueClient, IDisposable
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     readonly object _gate = new();
-    readonly Dictionary<string, QueueSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
+    readonly Dictionary<string, QueueSubscriptionState> _subscriptionsByPattern = [with(StringComparer.Ordinal)];
     readonly Dictionary<ulong, string> _patternsBySubscriptionId = [];
     IDisposable? _notificationRegistration;
     int _disposed;
@@ -505,7 +505,7 @@ sealed class QueueClient : IQueueClient, IDisposable
                     return;
                 }
 
-                snapshot = new List<(string Pattern, QueueSubscriptionState Subscription)>(_subscriptionsByPattern.Count);
+                snapshot = [with(_subscriptionsByPattern.Count)];
                 foreach (var entry in _subscriptionsByPattern)
                 {
                     snapshot.Add((entry.Key, entry.Value.Clone()));

@@ -315,8 +315,7 @@ public sealed class LeaseInventoryObserverTests
         listGate.SetResult();
 
         var both = Task.WhenAll(reconnectTask, disposeTask);
-        var raced = await Task.WhenAny(both, Task.Delay(TimeSpan.FromSeconds(5)));
-        Assert.Same(both, raced);
+        await both.WaitAsync(TimeSpan.FromSeconds(5));
 
         // Assert: neither the reconnect callback nor DisposeAsync throws (no unhandled
         // ObjectDisposedException from a torn-down _refreshGate/_subscription).

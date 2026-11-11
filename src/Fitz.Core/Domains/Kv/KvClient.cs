@@ -25,7 +25,7 @@ sealed class KvClient : IKvClient, IDisposable
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     readonly object _gate = new();
-    readonly Dictionary<string, KvSubscriptionState> _subscriptionsByPattern = new(StringComparer.Ordinal);
+    readonly Dictionary<string, KvSubscriptionState> _subscriptionsByPattern = [with(StringComparer.Ordinal)];
     readonly Dictionary<ulong, string> _patternsBySubscriptionId = [];
     IDisposable? _notificationRegistration;
     int _disposed;

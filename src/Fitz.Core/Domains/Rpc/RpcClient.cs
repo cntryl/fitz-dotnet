@@ -54,9 +54,9 @@ sealed partial class RpcClient : IRpcClient, IDisposable
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly Action<Exception>? _onWorkerError;
     readonly TimeSpan _responseTimeout;
-    readonly Dictionary<string, Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask>> _workers = new(StringComparer.Ordinal);
-    readonly Dictionary<string, uint> _workerConcurrency = new(StringComparer.Ordinal);
-    readonly Dictionary<string, SemaphoreSlim> _workerGates = new(StringComparer.Ordinal);
+    readonly Dictionary<string, Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask>> _workers = [with(StringComparer.Ordinal)];
+    readonly Dictionary<string, uint> _workerConcurrency = [with(StringComparer.Ordinal)];
+    readonly Dictionary<string, SemaphoreSlim> _workerGates = [with(StringComparer.Ordinal)];
     readonly object _workerSync = new();
     readonly Dictionary<Guid, ActiveRpcInvocation> _activeWorkerCalls = [];
     readonly HashSet<Guid> _cancelledWorkerCalls = [];

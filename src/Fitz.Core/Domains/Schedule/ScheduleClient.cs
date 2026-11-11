@@ -23,7 +23,7 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     readonly object _gate = new();
-    readonly Dictionary<string, ScheduleSubscriptionState> _subscriptionsByRoute = new(StringComparer.Ordinal);
+    readonly Dictionary<string, ScheduleSubscriptionState> _subscriptionsByRoute = [with(StringComparer.Ordinal)];
     readonly Dictionary<ulong, string> _routesBySubscriptionId = [];
     IDisposable? _notificationRegistration;
     int _disposed;
@@ -531,7 +531,7 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
                     return;
                 }
 
-                snapshot = new List<(string Route, ScheduleSubscriptionState Subscription)>(_subscriptionsByRoute.Count);
+                snapshot = [with(_subscriptionsByRoute.Count)];
                 foreach (var entry in _subscriptionsByRoute)
                 {
                     snapshot.Add((entry.Key, entry.Value.Clone()));
