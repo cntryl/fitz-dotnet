@@ -7,13 +7,13 @@ using Microsoft.Extensions.DependencyInjection;
 var services = new ServiceCollection();
 services.AddFitzClient(new ClientConfig(new Uri("ws://localhost:4190/ws")));
 
-Console.WriteLine(typeof(Client).FullName);
+Console.WriteLine(typeof(FitzClient).FullName);
 Console.WriteLine(typeof(IKvClient).FullName);
 Console.WriteLine(typeof(ServiceCollectionExtensions).FullName);
 Console.WriteLine(typeof(KvDirectoryOptions).FullName);
 Console.WriteLine(typeof(InMemoryKvClient).FullName);
 
-foreach (var assembly in new[] { typeof(Client).Assembly, typeof(IKvClient).Assembly, typeof(ServiceCollectionExtensions).Assembly, typeof(KvDirectoryOptions).Assembly, typeof(InMemoryKvClient).Assembly })
+foreach (var assembly in new[] { typeof(FitzClient).Assembly, typeof(IKvClient).Assembly, typeof(ServiceCollectionExtensions).Assembly, typeof(KvDirectoryOptions).Assembly, typeof(InMemoryKvClient).Assembly })
 {
     var name = assembly.GetName();
     if (name.Version != new Version(1, 0, 0, 0))
@@ -52,7 +52,7 @@ uint[] rpcErrorCodes =
 ];
 if (!rpcErrorCodes.SequenceEqual(new uint[] { 6007, 6050, 6005, 6051, 6052, 6053, 6054, 6055, 6001, 6006, 6002, 6003, 6004 }))
 {
-    throw new InvalidOperationException("RPC error code constants must match the Wire 2 catalog.");
+    throw new InvalidOperationException("RPC error code constants must match the Wire 3 catalog.");
 }
 
 uint[] streamWriteContentionCodes =
@@ -62,7 +62,7 @@ uint[] streamWriteContentionCodes =
 ];
 if (!streamWriteContentionCodes.SequenceEqual(new uint[] { 2050, 2051 }))
 {
-    throw new InvalidOperationException("Stream write-contention error code constants must match the Wire 2 catalog.");
+    throw new InvalidOperationException("Stream write-contention error code constants must match the Wire 3 catalog.");
 }
 
 
@@ -84,7 +84,7 @@ static async Task CompilePreviewApiAsync(
     }
 
     var result = await schedule.ListAsync(ct: ct).ConfigureAwait(false);
-    Console.WriteLine($"{result.Entries.Count}/{result.TotalCount}");
+    Console.WriteLine($"{result.Entries.Count}/{result.HasMore}");
 }
 
 Func<INoticeClient, IScheduleClient, CancellationToken, Task> previewApi = CompilePreviewApiAsync;

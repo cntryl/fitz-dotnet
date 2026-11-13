@@ -10,7 +10,7 @@ namespace Cntryl.Fitz;
 /// on first access and share the connection. Dispose the client to close the connection and
 /// release every subscription and registration it owns.
 /// </remarks>
-public interface IClient : IAsyncDisposable
+public interface IFitzClient : IAsyncDisposable
 {
     /// <summary>
     /// Opens the transport connection and authenticates, failing if the attempt does not succeed.

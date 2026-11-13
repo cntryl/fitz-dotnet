@@ -12,6 +12,36 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class PublicSurfaceTests
 {
     [Fact]
+    public async Task ShouldThrowNonRetryableDisposedErrorGivenClosedClientWhenConnecting()
+    {
+        // Arrange
+        await using var client = new FitzClient(new ClientConfig(new Uri("ws://closed/ws")));
+        await client.CloseAsync();
+
+        // Act
+        var error = await Record.ExceptionAsync(() => client.ConnectAsync());
+
+        // Assert
+        Assert.IsType<ObjectDisposedException>(error);
+        Assert.False(Retryability.IsRetryable(error));
+    }
+
+    [Theory]
+    [InlineData(typeof(SubscriptionBackpressureException))]
+    [InlineData(typeof(AsyncHandlerOverflowException))]
+    public void ShouldDeriveFromFitzExceptionGivenSubscriptionDeliveryFailureWhenCatching(Type exceptionType)
+    {
+        // Arrange
+        var expected = typeof(FitzException);
+
+        // Act
+        var isFitzException = expected.IsAssignableFrom(exceptionType);
+
+        // Assert
+        Assert.True(isFitzException);
+    }
+
+    [Fact]
     public async Task ShouldRejectOperationsGivenDisposedPublicDomainClientsWhenBeforeTransport()
     {
         // Arrange
@@ -29,15 +59,15 @@ public sealed class PublicSurfaceTests
         var rpc = new RpcClient(Request);
         var schedule = new ScheduleClient(Request);
         var stream = new StreamClient(Request);
-        kv.Dispose();
-        lease.Dispose();
-        notice.Dispose();
-        queue.Dispose();
+        await kv.DisposeAsync();
+        await lease.DisposeAsync();
+        await notice.DisposeAsync();
+        await queue.DisposeAsync();
         rpc.Dispose();
-        schedule.Dispose();
+        await schedule.DisposeAsync();
 
         // Act
-        stream.Dispose();
+        await stream.DisposeAsync();
 
 
         // Assert

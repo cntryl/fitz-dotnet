@@ -5,10 +5,10 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.11.1" />
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.9.0" />
-    <PackageReference Include="xunit" Version="2.9.3" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="4.0.1" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
   <ItemGroup>
     <Using Include="Xunit" />
@@ -18,5 +18,12 @@
     <ProjectReference Include="../../src/Fitz.Analyzers/Fitz.Analyzers.csproj" />
     <ProjectReference Include="../../src/Fitz.CodeFixes/Fitz.CodeFixes.csproj" />
     <ProjectReference Include="../../src/Fitz.Core/Fitz.Core.csproj" />
+    <ProjectReference Include="../../src/Fitz.Testing/Fitz.Testing.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Core's validator is internal. Compiling its source here (it builds on the grammar the
+         analyzer assembly shares through InternalsVisibleTo) lets the parity tests ask it for
+         verdicts without widening Core's InternalsVisibleTo list. -->
+    <Compile Include="../../src/Fitz.Core/RouteValidation.cs" Link="Linked/RouteValidation.cs" />
   </ItemGroup>
 </Project>

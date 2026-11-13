@@ -1,12 +1,14 @@
 namespace Cntryl.Fitz;
 
 /// <summary>
-/// Queue notification received for a subscribed route pattern. Payload contents are broker-defined.
+/// Message counts for a queue matched by a subscription, reported when they change.
 /// </summary>
-/// <remarks>
-/// Wire 3 payloads contain three big-endian <see cref="ulong"/> counters in order:
-/// ready, delayed, and inflight messages (24 bytes total), without a length prefix.
-/// </remarks>
+/// <param name="Route">Concrete queue route the counts describe.</param>
+/// <param name="Ready">Messages available to reserve now.</param>
+/// <param name="Delayed">Messages waiting for their delivery delay to elapse.</param>
+/// <param name="InFlight">Messages reserved and awaiting completion.</param>
 public sealed record QueueAvailabilityEvent(
     string Route,
-    ReadOnlyMemory<byte> Payload);
+    ulong Ready,
+    ulong Delayed,
+    ulong InFlight);

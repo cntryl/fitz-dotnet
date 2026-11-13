@@ -101,10 +101,10 @@ public sealed class RpcClientTests
         // Assert
         using var rpc = new RpcClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
 
-        var exception = Assert.Throws<RpcException>(() =>
+        var exception = Assert.Throws<ArgumentException>(() =>
             rpc.CallAsync("not-a-route", ReadOnlyMemory<byte>.Empty));
 
-        Assert.Equal("INVALID_ROUTE", exception.Code);
+        Assert.Equal("route", exception.ParamName);
     }
 
     [Fact]
@@ -407,7 +407,7 @@ public sealed class RpcClientTests
     public async Task ShouldReportErrorGivenWorkerHandlerFailureWhenDispatchingRequest()
     {
         // Arrange
-        Action<byte[]>? incomingHandler = null;
+        Action<ReadOnlyMemory<byte>>? incomingHandler = null;
         var reported = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
         var response = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var rpc = new RpcClient(
@@ -456,7 +456,7 @@ public sealed class RpcClientTests
     public async Task ShouldSerializeResponsesGivenConcurrentSendsWhenWorkerEndsStream()
     {
         // Arrange
-        Action<byte[]>? incomingHandler = null;
+        Action<ReadOnlyMemory<byte>>? incomingHandler = null;
         var sentPayloads = new List<byte[]>();
         var sentSync = new object();
         var activeSends = 0;
@@ -664,8 +664,7 @@ public sealed class RpcClientTests
                     lifecycleHandler = handler;
                 }
                 return new TestRegistration();
-            },
-            getCapabilityBits: () => ServerCapabilities.RpcCancellationBit);
+            });
         using var cts = new CancellationTokenSource();
         var call = rpc.CallAsync("rpc://prod/app/cancel", "ping"u8.ToArray(), TimeSpan.FromSeconds(5), cts.Token);
 
@@ -737,8 +736,7 @@ public sealed class RpcClientTests
                     lifecycleHandler = handler;
                 }
                 return new TestRegistration();
-            },
-            getCapabilityBits: () => ServerCapabilities.RpcCancellationBit);
+            });
         await using var registration = await rpc.RegisterWorkerAsync(
             "rpc://prod/app/worker",
             async (request, _, ct) =>

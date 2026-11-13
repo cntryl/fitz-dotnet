@@ -15,7 +15,7 @@ public sealed class ManagedLeaseLifecycleTests
         var disconnects = new DisconnectRegistry();
         var renewCalls = 0;
         var releaseCalls = 0;
-        using var leaseClient = new LeaseClient(
+        await using var leaseClient = new LeaseClient(
             (messageType, _, _) =>
             {
                 if (messageType == MessageTypes.LeaseAcquire)
@@ -113,7 +113,7 @@ public sealed class ManagedLeaseLifecycleTests
     {
         // Arrange
         var disconnects = new DisconnectRegistry();
-        using var leaseClient = new LeaseClient(
+        await using var leaseClient = new LeaseClient(
             (messageType, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(
                 messageType == MessageTypes.LeaseAcquire
                     ? AcquireResponse(77)
@@ -205,7 +205,7 @@ public sealed class ManagedLeaseLifecycleTests
     {
         // Arrange
         var registrationDisposals = 0;
-        using var leaseClient = new LeaseClient(
+        await using var leaseClient = new LeaseClient(
             (messageType, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(
                 messageType == MessageTypes.LeaseAcquire
                     ? AcquireResponse(77)
@@ -234,7 +234,7 @@ public sealed class ManagedLeaseLifecycleTests
         var cancellationHookFailure = new InvalidOperationException("cancellation hook failed");
         var renewCalls = 0;
         var releaseCalls = 0;
-        using var leaseClient = new LeaseClient(
+        await using var leaseClient = new LeaseClient(
             (messageType, _, _) =>
             {
                 if (messageType == MessageTypes.LeaseAcquire)

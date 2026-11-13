@@ -11,19 +11,17 @@ public sealed class MultiplexerCleanupTests
         using var mux = new Multiplexer();
         mux.SetConnected();
 
-
         // Act
         var act = () => mux.RequestAsync(
             100,
             [1, 2, 3],
-            async (data, _) =>
+            static async (_, _) =>
             {
                 await Task.CompletedTask;
                 throw new InvalidOperationException("Send failed");
             },
-            TimeSpan.FromSeconds(5)
-        );
-
+            TimeSpan.FromSeconds(5),
+            correlationId: 1);
 
         // Assert
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(act);
@@ -36,34 +34,29 @@ public sealed class MultiplexerCleanupTests
         // Arrange
         using var mux = new Multiplexer();
         mux.SetConnected();
-
-
-        // Act
         var firstTask = mux.RequestAsync(
             101,
             [0x1],
-            async (data, _) =>
+            static async (_, _) =>
             {
                 await Task.CompletedTask;
                 throw new InvalidOperationException("First failed");
             },
-            TimeSpan.FromSeconds(1)
-        );
-
-
-        // Assert
+            TimeSpan.FromSeconds(1),
+            correlationId: 1);
         await Assert.ThrowsAsync<InvalidOperationException>(() => firstTask);
 
+        // Act
         var secondTask = mux.RequestAsync(
             101,
             [0x2],
-            async (data, _) => await Task.CompletedTask,
-            TimeSpan.FromSeconds(1)
-        );
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromSeconds(1),
+            correlationId: 1);
+        mux.DispatchCorrelated(1, new byte[] { 0xA });
 
-        mux.Dispatch(101, [0xA]);
-        var result = await secondTask;
-        Assert.Equal([0xA], result);
+        // Assert
+        Assert.Equal([0xA], await secondTask);
     }
 
     [Fact]
@@ -72,63 +65,19 @@ public sealed class MultiplexerCleanupTests
         // Arrange
         using var mux = new Multiplexer();
         mux.SetConnected();
-
-
-        // Act
         var requestTask = mux.RequestAsync(
             102,
             [0x1],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromMilliseconds(50)
-        );
-
-
-        // Assert
+            TimeSpan.FromMilliseconds(50),
+            correlationId: 1);
         await Assert.ThrowsAsync<RequestTimeoutException>(() => requestTask);
 
-        // Dispatch after timeout should not throw
-        mux.Dispatch(102, [0xB]);
-    }
-
-    [Fact]
-    public async Task ShouldRequireANewSessionAfterUncorrelatedRequestTimeoutGivenActiveMultiplexerWhenRequestCompletes()
-    {
-        // Arrange
-        using var mux = new Multiplexer();
-        mux.SetConnected();
-
-
         // Act
-        var timedOutRequest = mux.RequestAsync(
-            108,
-            [0x1],
-            static (_, _) => Task.CompletedTask,
-            TimeSpan.FromMilliseconds(20)
-        );
-
+        var lateReply = Record.Exception(() => mux.DispatchCorrelated(1, new byte[] { 0xB }));
 
         // Assert
-        await Assert.ThrowsAnyAsync<RequestTimeoutException>(() => timedOutRequest);
-
-        var followUp = mux.RequestAsync(
-            108,
-            [0x2],
-            static (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(1)
-        );
-
-        await Assert.ThrowsAsync<ConnectionException>(() => followUp);
-
-        mux.BeginSession();
-        mux.SetConnected();
-        var afterReconnect = mux.RequestAsync(
-            108,
-            [0x3],
-            static (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(1));
-        mux.Dispatch(108, [0xBB]);
-
-        Assert.Equal([0xBB], await afterReconnect);
+        Assert.Null(lateReply);
     }
 
     [Fact]
@@ -139,19 +88,14 @@ public sealed class MultiplexerCleanupTests
         mux.SetConnected();
         using var cts = new CancellationTokenSource();
 
-
         // Act
         var requestTask = mux.RequestAsync(
             103,
             [0x1],
-            async (_, _) =>
-            {
-                await cts.CancelAsync();
-            },
+            async (_, _) => await cts.CancelAsync(),
             TimeSpan.FromSeconds(5),
-            ct: cts.Token
-        );
-
+            correlationId: 1,
+            ct: cts.Token);
 
         // Assert
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => requestTask);
@@ -164,34 +108,30 @@ public sealed class MultiplexerCleanupTests
         using var mux = new Multiplexer();
         mux.SetConnected();
         using var cts = new CancellationTokenSource();
-
         var requestTask = mux.RequestAsync(
             104,
             [0x1],
             static async (_, token) => await Task.Delay(100, token),
             TimeSpan.FromSeconds(5),
-            ct: cts.Token
-        );
-
+            correlationId: 1,
+            ct: cts.Token);
         await Task.Delay(50);
 
         // Act
         await cts.CancelAsync();
-
 
         // Assert
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => requestTask);
     }
 
     [Fact]
-    public async Task ShouldRequireNewSessionGivenUncorrelatedRequestWhenCanceledAfterSend()
+    public async Task ShouldKeepSessionGivenCorrelatedRequestWhenCanceledAfterSend()
     {
         // Arrange
         using var mux = new Multiplexer();
         mux.SetConnected();
         using var cancellation = new CancellationTokenSource();
         var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
         var canceledRequest = mux.RequestAsync(
             109,
             [0x1],
@@ -201,65 +141,24 @@ public sealed class MultiplexerCleanupTests
                 return Task.CompletedTask;
             },
             Timeout.InfiniteTimeSpan,
+            correlationId: 1,
             ct: cancellation.Token);
-
         await sent.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         // Act
         await cancellation.CancelAsync();
-
-        // Assert
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceledRequest);
-
         var nextRequest = mux.RequestAsync(
             109,
             [0x2],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(1));
-        mux.Dispatch(109, [0xAA]);
-
-        await Assert.ThrowsAsync<ConnectionException>(() => nextRequest);
-    }
-
-    [Fact]
-    public async Task ShouldFailQueuedSameLaneRequestGivenSentRequestWhenCanceled()
-    {
-        // Arrange
-        using var mux = new Multiplexer();
-        mux.SetConnected();
-        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        using var firstCts = new CancellationTokenSource();
-        var first = mux.RequestAsync(
-            105,
-            [0x1],
-            static (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(5),
-            ct: firstCts.Token
-        );
-
-        await Task.Delay(10);
-
-        var second = mux.RequestAsync(
-            105,
-            [0x2],
-            (_, _) =>
-            {
-                secondStarted.TrySetResult();
-                return Task.CompletedTask;
-            },
-            TimeSpan.FromSeconds(5)
-        );
-
-
-        // Act
-        await firstCts.CancelAsync();
+            TimeSpan.FromSeconds(1),
+            correlationId: 2);
+        mux.DispatchCorrelated(1, new byte[] { 0xA });
+        mux.DispatchCorrelated(2, new byte[] { 0xB });
 
         // Assert
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
-        await Assert.ThrowsAsync<ConnectionException>(() =>
-            second.WaitAsync(TimeSpan.FromSeconds(1)));
-        Assert.False(secondStarted.Task.IsCompleted);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceledRequest);
+        Assert.Equal([0xB], await nextRequest);
     }
 
     [Fact]
@@ -268,90 +167,52 @@ public sealed class MultiplexerCleanupTests
         // Arrange
         using var mux = new Multiplexer();
         mux.SetConnected();
-
-        // Use short timeout combined with disconnect to ensure shutdown message wins
         var first = mux.RequestAsync(
             106,
             [0x1],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromMilliseconds(500)
-        );
-
+            TimeSpan.FromSeconds(5),
+            correlationId: 1);
         var second = mux.RequestAsync(
             106,
             [0x2],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromMilliseconds(500)
-        );
-
-        mux.SetDisconnected();
-
-        // Both should fail - with either ConnectionException or timeout
-        // depending on timing/ordering
-        var firstFailed = false;
-        var secondFailed = false;
-
-        try
-        {
-            await first;
-        }
-        catch (ConnectionException)
-        {
-            firstFailed = true;
-        }
-        catch (RequestTimeoutException)
-        {
-            firstFailed = true;
-        }
+            TimeSpan.FromSeconds(5),
+            correlationId: 2);
 
         // Act
-        try
-        {
-            await second;
-        }
-        catch (ConnectionException)
-        {
-            secondFailed = true;
-        }
-        catch (RequestTimeoutException)
-        {
-            secondFailed = true;
-        }
+        mux.SetDisconnected();
 
         // Assert
-        Assert.True(firstFailed && secondFailed, "Both requests should have failed");
+        await Assert.ThrowsAsync<ConnectionException>(() => first);
+        await Assert.ThrowsAsync<ConnectionException>(() => second);
     }
 
     [Fact]
-    public async Task ShouldHandleMixedTimeoutDurationsGivenActiveMultiplexerWhenRequestCompletes()
+    public async Task ShouldKeepLongRequestGivenShortRequestWhenShortTimesOut()
     {
         // Arrange
         using var mux = new Multiplexer();
         mux.SetConnected();
-
         var shortTimeout = mux.RequestAsync(
             107,
             [0x1],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromMilliseconds(50)
-        );
-
-        await Task.Delay(10);
-
-
-        // Act
+            TimeSpan.FromMilliseconds(50),
+            correlationId: 1);
         var longTimeout = mux.RequestAsync(
             108,
             [0x2],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(5)
-        );
+            TimeSpan.FromSeconds(5),
+            correlationId: 2);
 
+        // Act
+        await Assert.ThrowsAsync<RequestTimeoutException>(() => shortTimeout);
+        mux.DispatchCorrelated(2, new byte[] { 0xC });
 
         // Assert
-        await Assert.ThrowsAsync<RequestTimeoutException>(() => shortTimeout);
-
-        await Assert.ThrowsAsync<ConnectionException>(() => longTimeout);
+        Assert.Equal([0xC], await longTimeout);
     }
 
     [Fact]
@@ -359,35 +220,28 @@ public sealed class MultiplexerCleanupTests
     {
         // Arrange
         using var mux = new Multiplexer();
-
-        // Act
         mux.SetConnected();
-
-
-        // Assert
-        for (var i = 0; i < 10; i++)
+        for (ulong i = 1; i <= 10; i++)
         {
             var task = mux.RequestAsync(
                 (ushort)(200 + i),
                 [0x1],
                 static (_, _) => Task.CompletedTask,
-                TimeSpan.FromMilliseconds(10)
-            );
-
+                TimeSpan.FromMilliseconds(10),
+                correlationId: i);
             await Assert.ThrowsAsync<RequestTimeoutException>(() => task);
-            mux.BeginSession();
-            mux.SetConnected();
         }
 
+        // Act
         var finalTask = mux.RequestAsync(
             210,
             [0x1],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(1)
-        );
+            TimeSpan.FromSeconds(1),
+            correlationId: 11);
+        mux.DispatchCorrelated(11, new byte[] { 0xD });
 
-        mux.Dispatch(210, [0xD]);
-        var result = await finalTask;
-        Assert.Equal([0xD], result);
+        // Assert
+        Assert.Equal([0xD], await finalTask);
     }
 }

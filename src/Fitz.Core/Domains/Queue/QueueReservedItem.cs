@@ -1,5 +1,5 @@
-using System.Threading;
 using Cntryl.Fitz.Protocol;
+using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Queue;
 
@@ -8,34 +8,25 @@ sealed class QueueReservedItem : QueueItem
     readonly ulong _id;
     readonly ulong _token;
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _requestFn;
-    IDisposable? _disconnectRegistration;
-    int _state;
+    readonly SessionLatch _session;
+    int _completing;
     readonly Func<uint, bool>? _supportsNack;
 
     internal QueueReservedItem(
         string route,
         ReadOnlyMemory<byte> body,
-        uint attempt,
         ulong id,
         ulong token,
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> requestFn,
         Func<Action, IDisposable>? registerOnDisconnect = null,
         Func<uint, bool>? supportsNack = null)
-        : base(route, body, attempt)
+        : base(route, body)
     {
         _id = id;
         _token = token;
         _requestFn = requestFn;
         _supportsNack = supportsNack;
-        var disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
-        if (disconnectRegistration is not null)
-        {
-            Interlocked.Exchange(ref _disconnectRegistration, disconnectRegistration)?.Dispose();
-            if (Volatile.Read(ref _state) != 0)
-            {
-                Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
-            }
-        }
+        _session = new SessionLatch(registerOnDisconnect);
     }
 
     public override async Task ExtendAsync(TimeSpan lease, CancellationToken ct = default)
@@ -51,12 +42,7 @@ sealed class QueueReservedItem : QueueItem
         writer.WriteU64(leaseSeconds);
 
         var response = await _requestFn(MessageTypes.QueueExtend, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = QueueWireHelpers.ReadResponse(response, "EXTEND");
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw QueueWireHelpers.ReadError(response, "EXTEND", status);
-        }
+        var reader = QueueWireHelpers.ReadSuccess(response, "EXTEND");
 
         if (!reader.IsEof)
         {
@@ -83,17 +69,14 @@ sealed class QueueReservedItem : QueueItem
             writer.WriteU64(_token);
             writer.WriteU64(seconds);
             var response = await _requestFn(MessageTypes.QueueNack, writer.WrittenMemory, ct).ConfigureAwait(false);
-            var reader = QueueWireHelpers.ReadResponse(response, "NACK");
-            var status = reader.ReadU8();
-            if (status != 0)
-                throw QueueWireHelpers.ReadError(response, "NACK", status);
+            var reader = QueueWireHelpers.ReadSuccess(response, "NACK");
             if (!reader.IsEof)
                 throw new QueueException("NACK response has trailing bytes", "NACK_INVALID_RESPONSE");
             MarkClosed();
         }
         finally
         {
-            Interlocked.CompareExchange(ref _state, 0, 1);
+            Volatile.Write(ref _completing, 0);
         }
     }
 
@@ -115,12 +98,7 @@ sealed class QueueReservedItem : QueueItem
             writer.WriteU64(token);
 
             var response = await _requestFn(MessageTypes.QueueComplete, writer.WrittenMemory, ct).ConfigureAwait(false);
-            var reader = QueueWireHelpers.ReadResponse(response, "COMPLETE");
-            var status = reader.ReadU8();
-            if (status != 0)
-            {
-                throw QueueWireHelpers.ReadError(response, "COMPLETE", status);
-            }
+            var reader = QueueWireHelpers.ReadSuccess(response, "COMPLETE");
 
             if (!reader.IsEof)
             {
@@ -131,13 +109,13 @@ sealed class QueueReservedItem : QueueItem
         }
         finally
         {
-            Interlocked.CompareExchange(ref _state, 0, 1);
+            Volatile.Write(ref _completing, 0);
         }
     }
 
     void ThrowIfClosed()
     {
-        if (Volatile.Read(ref _state) == 0)
+        if (!_session.IsClosed && Volatile.Read(ref _completing) == 0)
         {
             return;
         }
@@ -145,19 +123,11 @@ sealed class QueueReservedItem : QueueItem
         throw new QueueException("Queue item is no longer valid after disconnect", "ITEM_CLOSED");
     }
 
-    void MarkClosed()
-    {
-        if (Interlocked.Exchange(ref _state, 2) == 2)
-        {
-            return;
-        }
-
-        Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
-    }
+    void MarkClosed() => _session.TryClose();
 
     void BeginCompletion()
     {
-        if (Interlocked.CompareExchange(ref _state, 1, 0) == 0)
+        if (!_session.IsClosed && Interlocked.CompareExchange(ref _completing, 1, 0) == 0)
         {
             return;
         }

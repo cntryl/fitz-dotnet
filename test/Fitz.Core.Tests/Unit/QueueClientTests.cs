@@ -12,7 +12,7 @@ public sealed class QueueClientTests
         // Arrange
         // Act
         // Assert
-        using var queue = new QueueClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+        await using var queue = new QueueClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
 
         var error = await Assert.ThrowsAsync<QueueException>(() =>
             queue.EnqueueAsync("queue://prod/app/tasks", ReadOnlyMemory<byte>.Empty));
@@ -30,7 +30,6 @@ public sealed class QueueClientTests
         await using var item = new QueueReservedItem(
             "queue://prod/app/tasks",
             ReadOnlyMemory<byte>.Empty,
-            QueueItem.AttemptUnavailable,
             7,
             11,
             (_, _, _) =>
@@ -51,7 +50,7 @@ public sealed class QueueClientTests
     {
         // Arrange
         var unsubscribeAttempts = 0;
-        using var queue = new QueueClient(
+        await using var queue = new QueueClient(
             (messageType, _, _) =>
             {
                 using var writer = new BinaryBufferWriter();
@@ -93,7 +92,7 @@ public sealed class QueueClientTests
         var requestCalled = false;
 
         // Act
-        using var queue = new QueueClient((_, _, _) =>
+        await using var queue = new QueueClient((_, _, _) =>
         {
             requestCalled = true;
             return Task.FromResult(Array.Empty<byte>());
@@ -119,7 +118,7 @@ public sealed class QueueClientTests
         var requestCalled = false;
 
         // Act
-        using var queue = new QueueClient((_, _, _) =>
+        await using var queue = new QueueClient((_, _, _) =>
         {
             requestCalled = true;
             return Task.FromResult(Array.Empty<byte>());
@@ -140,7 +139,7 @@ public sealed class QueueClientTests
         var registrations = 0;
 
         // Act
-        using var queue = new QueueClient(
+        await using var queue = new QueueClient(
             (_, _, _) =>
             {
                 using var writer = new BinaryBufferWriter();
@@ -176,7 +175,7 @@ public sealed class QueueClientTests
         // Arrange
         // Act
         // Assert
-        using var queue = new QueueClient((_, _, _) =>
+        await using var queue = new QueueClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -197,7 +196,7 @@ public sealed class QueueClientTests
         var completeCalls = 0;
 
         // Act
-        using var queue = new QueueClient((messageType, _, _) =>
+        await using var queue = new QueueClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             if (messageType == MessageTypes.QueueReserve)
@@ -236,7 +235,7 @@ public sealed class QueueClientTests
     public async Task ShouldPreserveBrokerMessageGivenInvalidTokenWhenCompletingItem()
     {
         // Arrange
-        using var queue = new QueueClient((messageType, _, _) =>
+        await using var queue = new QueueClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             if (messageType == MessageTypes.QueueReserve)
@@ -273,7 +272,7 @@ public sealed class QueueClientTests
         // Arrange
         // Act
         // Assert
-        using var queue = new QueueClient((_, _, _) =>
+        await using var queue = new QueueClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
@@ -286,7 +285,7 @@ public sealed class QueueClientTests
             queue.EnqueueAsync("queue://prod/app/tasks", "job"u8.ToArray()));
 
         Assert.Equal((uint)4008, error.DomainCode);
-        Assert.Equal("queue backend unavailable", error.Message);
+        Assert.Equal("ENQUEUE failed: queue backend unavailable", error.Message);
     }
 
     [Fact]
@@ -296,7 +295,7 @@ public sealed class QueueClientTests
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        using var queue = new QueueClient((messageType, payload, _) =>
+        await using var queue = new QueueClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -326,7 +325,7 @@ public sealed class QueueClientTests
     {
         // Arrange
         byte[]? seenPayload = null;
-        using var queue = new QueueClient((_, payload, _) =>
+        await using var queue = new QueueClient((_, payload, _) =>
         {
             seenPayload = payload;
             using var writer = new BinaryBufferWriter();
@@ -355,7 +354,7 @@ public sealed class QueueClientTests
     {
         // Arrange
         byte[]? seenPayload = null;
-        using var queue = new QueueClient((_, payload, _) =>
+        await using var queue = new QueueClient((_, payload, _) =>
         {
             seenPayload = payload;
             return Task.FromResult(new byte[] { 0 });
@@ -374,7 +373,7 @@ public sealed class QueueClientTests
     {
         // Arrange
         byte[]? seenPayload = null;
-        using var queue = new QueueClient((_, payload, _) =>
+        await using var queue = new QueueClient((_, payload, _) =>
         {
             seenPayload = payload;
 
@@ -408,7 +407,7 @@ public sealed class QueueClientTests
     {
         // Arrange
         byte[]? seenPayload = null;
-        using var queue = new QueueClient((messageType, payload, _) =>
+        await using var queue = new QueueClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.QueueReserve, messageType);
             seenPayload = payload;
@@ -431,7 +430,6 @@ public sealed class QueueClientTests
         Assert.Single(items);
         Assert.Equal("queue://prod/app/tasks", items[0].Route);
         Assert.Equal("job-1", System.Text.Encoding.UTF8.GetString(items[0].Body.Span));
-        Assert.Equal(QueueItem.AttemptUnavailable, items[0].Attempt);
 
         var reader = new BinaryBufferReader(seenPayload!);
         Assert.Equal("queue://prod/app/tasks", reader.ReadString());
@@ -447,7 +445,7 @@ public sealed class QueueClientTests
     public async Task ShouldReturnConcreteRoutesGivenWildcardQueueReserveWhenQueueOperationRuns()
     {
         // Arrange
-        using var queue = new QueueClient((messageType, _, _) =>
+        await using var queue = new QueueClient((messageType, _, _) =>
         {
             Assert.Equal(MessageTypes.QueueReserve, messageType);
 
@@ -475,7 +473,7 @@ public sealed class QueueClientTests
     public async Task ShouldRejectWildcardRouteGivenQueueReserveResponseWhenQueueOperationRuns()
     {
         // Arrange
-        using var queue = new QueueClient((_, _, _) =>
+        await using var queue = new QueueClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -499,7 +497,7 @@ public sealed class QueueClientTests
     {
         // Arrange
         var reserveCallCount = 0;
-        using var queue = new QueueClient((messageType, payload, _) =>
+        await using var queue = new QueueClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.QueueReserve, messageType);
             reserveCallCount++;
@@ -524,7 +522,7 @@ public sealed class QueueClientTests
     {
         // Arrange
         var reserveCallCount = 0;
-        using var queue = new QueueClient((_, _, _) =>
+        await using var queue = new QueueClient((_, _, _) =>
         {
             reserveCallCount++;
             using var writer = new BinaryBufferWriter();
@@ -555,7 +553,7 @@ public sealed class QueueClientTests
         CancellationToken seenCancellationToken = default;
         var receivedTcs = new TaskCompletionSource<QueueAvailabilityEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        using var queue = new QueueClient(
+        await using var queue = new QueueClient(
             (messageType, payload, _) =>
             {
                 seenMessageType = messageType;
@@ -601,11 +599,9 @@ public sealed class QueueClientTests
         Assert.Equal(MessageTypes.QueueSubscribe, seenMessageType);
         Assert.NotNull(seenPayload);
         Assert.Equal("queue://prod/app/tasks", evt!.Route);
-        var counters = new BinaryBufferReader(evt.Payload);
-        Assert.Equal(1UL, counters.ReadU64());
-        Assert.Equal(2UL, counters.ReadU64());
-        Assert.Equal(3UL, counters.ReadU64());
-        Assert.True(counters.IsEof);
+        Assert.Equal(1UL, evt.Ready);
+        Assert.Equal(2UL, evt.Delayed);
+        Assert.Equal(3UL, evt.InFlight);
         Assert.Same(received, evt);
         Assert.NotEqual(default, seenCancellationToken);
         Assert.False(seenCancellationToken.IsCancellationRequested);
@@ -621,7 +617,7 @@ public sealed class QueueClientTests
     {
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
-        using var queue = new QueueClient((messageType, payload, _) =>
+        await using var queue = new QueueClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -680,7 +676,7 @@ public sealed class QueueClientTests
         // Arrange
         var disconnects = new List<Action>();
 
-        using var queue = new QueueClient(
+        await using var queue = new QueueClient(
             (messageType, payload, _) =>
             {
                 using var writer = new BinaryBufferWriter();
@@ -764,7 +760,7 @@ public sealed class QueueClientTests
                 new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        using var queue = new QueueClient(connection);
+        await using var queue = new QueueClient(connection);
 
         await connection.ConnectAsync();
 
@@ -850,7 +846,7 @@ public sealed class QueueClientTests
                 new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        using var queue = new QueueClient(connection);
+        await using var queue = new QueueClient(connection);
 
         await connection.ConnectAsync();
         var subscription = await queue.SubscribeAsync("queue://prod/app/*", (evt, _) =>
@@ -882,13 +878,13 @@ public sealed class QueueClientTests
         var initialEvent = await firstNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         // Assert
-        Assert.Equal(1UL, new BinaryBufferReader(initialEvent.Payload).ReadU64());
+        Assert.Equal(1UL, initialEvent.Ready);
 
         firstTransport.QueueClosed();
 
         var restoredEvent = await secondNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
         Assert.Equal("queue://prod/app/tasks", restoredEvent.Route);
-        Assert.Equal(2UL, new BinaryBufferReader(restoredEvent.Payload).ReadU64());
+        Assert.Equal(2UL, restoredEvent.Ready);
 
         await connection.CloseAsync();
     }

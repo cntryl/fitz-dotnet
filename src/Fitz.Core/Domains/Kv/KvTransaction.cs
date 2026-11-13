@@ -1,5 +1,6 @@
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Protocol;
+using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Kv;
 
@@ -12,17 +13,19 @@ namespace Cntryl.Fitz.Domains.Kv;
 /// </remarks>
 sealed class KvTransaction : IKvTransaction
 {
+    static readonly TimeSpan CleanupBudget = TimeSpan.FromSeconds(5);
+
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
     readonly Func<bool> _supportsExclusiveScan;
+    readonly TimeProvider _time;
     readonly string _route;
     readonly ulong _txId;
-    IDisposable? _disconnectRegistration;
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Disposal may race active operations; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
+    readonly SessionLatch _session;
     readonly SemaphoreSlim _finalizationGate = new(1, 1);
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Disposal may race active operations; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _operationGate = new(1, 1);
-    int _closed;
+    readonly CancellationTokenSource _closing = new();
+    readonly CancellationToken _closingToken;
     int _disposed;
 
     internal KvTransaction(
@@ -31,22 +34,17 @@ sealed class KvTransaction : IKvTransaction
         ulong txId,
         Func<Action, IDisposable>? registerOnDisconnect = null,
         Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null,
-        Func<bool>? supportsExclusiveScan = null)
+        Func<bool>? supportsExclusiveScan = null,
+        TimeProvider? timeProvider = null)
     {
         _request = request;
+        _time = timeProvider ?? TimeProvider.System;
+        _closingToken = _closing.Token;
         _route = route;
         _txId = txId;
         _retryRequest = retryRequest;
         _supportsExclusiveScan = supportsExclusiveScan ?? (() => true);
-        var disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
-        if (disconnectRegistration is not null)
-        {
-            Interlocked.Exchange(ref _disconnectRegistration, disconnectRegistration)?.Dispose();
-            if (Volatile.Read(ref _closed) != 0)
-            {
-                Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
-            }
-        }
+        _session = new SessionLatch(registerOnDisconnect);
     }
 
     /// <inheritdoc />
@@ -59,11 +57,8 @@ sealed class KvTransaction : IKvTransaction
     public async Task<KvGetResult> GetAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
     {
         ThrowIfClosed();
-        using var writer = new BinaryBufferWriter();
-        writer.WriteU64(_txId);
-        writer.WriteString(_route);
-        writer.WriteU32((uint)key.Length);
-        writer.WriteBytes(key.Span);
+        using var writer = Payload();
+        writer.WriteLengthPrefixed(key.Span);
 
         var response = await RequestWithRetryAsync(
             RetryOperations.KvGet,
@@ -133,29 +128,22 @@ sealed class KvTransaction : IKvTransaction
     }
 
     /// <inheritdoc />
-    public Task DeleteAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
+    public async Task DeleteAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
     {
         ThrowIfClosed();
-        var writer = new BinaryBufferWriter();
-        writer.WriteU64(_txId);
-        writer.WriteString(_route);
-        writer.WriteU32((uint)key.Length);
-        writer.WriteBytes(key.Span);
-        return ExpectStatusAsync(MessageTypes.KvDelete, writer, "DELETE", ct);
+        using var writer = Payload();
+        writer.WriteLengthPrefixed(key.Span);
+        await ExpectStatusAsync(MessageTypes.KvDelete, writer.WrittenMemory, "DELETE", ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public Task DeleteRangeAsync(ReadOnlyMemory<byte> startKey, ReadOnlyMemory<byte> endKey, CancellationToken ct = default)
+    public async Task DeleteRangeAsync(ReadOnlyMemory<byte> startKey, ReadOnlyMemory<byte> endKey, CancellationToken ct = default)
     {
         ThrowIfClosed();
-        var writer = new BinaryBufferWriter();
-        writer.WriteU64(_txId);
-        writer.WriteString(_route);
-        writer.WriteU32((uint)startKey.Length);
-        writer.WriteBytes(startKey.Span);
-        writer.WriteU32((uint)endKey.Length);
-        writer.WriteBytes(endKey.Span);
-        return ExpectStatusAsync(MessageTypes.KvDeleteRange, writer, "DELETE_RANGE", ct);
+        using var writer = Payload();
+        writer.WriteLengthPrefixed(startKey.Span);
+        writer.WriteLengthPrefixed(endKey.Span);
+        await ExpectStatusAsync(MessageTypes.KvDeleteRange, writer.WrittenMemory, "DELETE_RANGE", ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -163,42 +151,16 @@ sealed class KvTransaction : IKvTransaction
     {
         ArgumentNullException.ThrowIfNull(query);
         ThrowIfClosed();
-        using var writer = new BinaryBufferWriter();
-        writer.WriteU64(_txId);
-        writer.WriteString(_route);
-
-        // Encode optional start key
-        if (query.StartKey.HasValue)
-        {
-            writer.WriteU8(1);
-            writer.WriteU32((uint)query.StartKey.Value.Length);
-            writer.WriteBytes(query.StartKey.Value.Span);
-        }
-        else
-        {
-            writer.WriteU8(0);
-        }
-
-        // Encode optional end key
-        if (query.EndKey.HasValue)
-        {
-            writer.WriteU8(1);
-            writer.WriteU32((uint)query.EndKey.Value.Length);
-            writer.WriteBytes(query.EndKey.Value.Span);
-        }
-        else
-        {
-            writer.WriteU8(0);
-        }
-
-        // Encode optional limit
+        using var writer = Payload();
+        writer.WriteOptionalLengthPrefixed(query.StartKey);
+        writer.WriteOptionalLengthPrefixed(query.EndKey);
         writer.WriteU8(query.Limit.HasValue ? (byte)1 : (byte)0);
-        if (query.Limit.HasValue)
+        if (query.Limit is { } limit)
         {
-            writer.WriteU32(query.Limit.Value);
+            writer.WriteU32(limit);
         }
 
-        // Wire-2 combines reverse and exclusive-start into the final options byte.
+        // Wire 3 combines reverse and exclusive-start into the final options byte.
         writer.WriteU8((byte)((query.Reverse ? 1 : 0) | (query.StartExclusive ? 2 : 0)));
 
         var response = await RequestWithRetryAsync(
@@ -217,8 +179,8 @@ sealed class KvTransaction : IKvTransaction
         for (var i = 0; i < pairCount; i++)
         {
             ct.ThrowIfCancellationRequested();
-            var keyPath = reader.ReadBytes(reader.ReadU32());
-            var value = reader.ReadBytes(reader.ReadU32());
+            var keyPath = reader.ReadLengthPrefixed();
+            var value = reader.ReadLengthPrefixed();
             pairs.Add(new KvPair(keyPath, value));
         }
 
@@ -252,7 +214,7 @@ sealed class KvTransaction : IKvTransaction
     /// <inheritdoc />
     public Task RollbackAsync(CancellationToken ct = default)
     {
-        if (Volatile.Read(ref _closed) != 0)
+        if (_session.IsClosed)
         {
             return Task.CompletedTask;
         }
@@ -262,7 +224,10 @@ sealed class KvTransaction : IKvTransaction
 
     /// <summary>Rolls the transaction back if it has not been committed.</summary>
     /// <returns>A task that completes once cleanup finishes.</returns>
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Transaction disposal is bounded best-effort cleanup and must not replace an exception leaving an await-using scope.")]
+    /// <remarks>
+    /// Waits for in-progress operations to finish first. Queued operations fail as closed,
+    /// except a queued rollback, which returns because disposal rolls back.
+    /// </remarks>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -270,53 +235,52 @@ sealed class KvTransaction : IKvTransaction
             return;
         }
 
+        await _closing.CancelAsync().ConfigureAwait(false);
+        await _finalizationGate.DrainAndDisposeAsync().ConfigureAwait(false);
+        await _operationGate.DrainAndDisposeAsync().ConfigureAwait(false);
+        _closing.Dispose();
         try
         {
-            if (Volatile.Read(ref _closed) == 0)
+            if (!_session.IsClosed)
             {
-                try
-                {
-                    using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    await RollbackAsync(cleanupDeadline.Token).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Best-effort cleanup must not replace an exception leaving an await-using scope.
-                }
+                using var cleanupDeadline = new CancellationTokenSource(CleanupBudget, _time);
+                using var writer = FinalizationPayload(durability: null);
+                await SendStatusAsync(MessageTypes.KvRollback, writer.WrittenMemory, "ROLLBACK", cleanupDeadline.Token).ConfigureAwait(false);
             }
+        }
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
+        {
+            // Best-effort cleanup must not replace an exception leaving an await-using scope.
         }
         finally
         {
             MarkClosed();
-            GC.SuppressFinalize(this);
         }
     }
 
     async Task WriteAsync(ushort messageType, ReadOnlyMemory<byte> key, ReadOnlyMemory<byte> value, string operation, CancellationToken ct)
     {
-        using var writer = new BinaryBufferWriter();
-        writer.WriteU64(_txId);
-        writer.WriteString(_route);
-        writer.WriteU32((uint)key.Length);
-        writer.WriteBytes(key.Span);
-        writer.WriteU32((uint)value.Length);
-        writer.WriteBytes(value.Span);
+        using var writer = Payload();
+        writer.WriteLengthPrefixed(key.Span);
+        writer.WriteLengthPrefixed(value.Span);
         await ExpectStatusAsync(messageType, writer.WrittenMemory, operation, ct).ConfigureAwait(false);
     }
 
     async Task FinalizeAsync(ushort messageType, string operation, CancellationToken ct, KvDurability? durability = null)
     {
-        await _finalizationGate.WaitAsync(ct).ConfigureAwait(false);
+        if (!await _finalizationGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
+        {
+            // Disposal is rolling the transaction back, which is what a rollback asked for.
+            if (messageType == MessageTypes.KvRollback)
+                return;
+
+            throw ClosedException();
+        }
+
         try
         {
             ThrowIfClosed();
-            using var writer = new BinaryBufferWriter();
-            writer.WriteU64(_txId);
-            writer.WriteString(_route);
-            if (durability is { } persistence)
-            {
-                writer.WriteU8((byte)persistence);
-            }
+            using var writer = FinalizationPayload(durability);
             await ExpectStatusAsync(messageType, writer.WrittenMemory, operation, ct, ensureOpen: false).ConfigureAwait(false);
             MarkClosed();
         }
@@ -326,22 +290,26 @@ sealed class KvTransaction : IKvTransaction
         }
     }
 
+    BinaryBufferWriter FinalizationPayload(KvDurability? durability)
+    {
+        var writer = Payload();
+        if (durability is { } persistence)
+        {
+            writer.WriteU8((byte)persistence);
+        }
+        return writer;
+    }
+
     async Task ExpectStatusAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct, bool ensureOpen = true)
     {
-        await _operationGate.WaitAsync(ct).ConfigureAwait(false);
+        await EnterOperationAsync(ct).ConfigureAwait(false);
         try
         {
             if (ensureOpen)
             {
                 ThrowIfClosed();
             }
-            var response = await _request(messageType, payload, ct).ConfigureAwait(false);
-            var reader = KvWireHelpers.ReadSuccess(response, operation);
-
-            if (!reader.IsEof)
-            {
-                throw new KvException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
-            }
+            await SendStatusAsync(messageType, payload, operation, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -349,18 +317,21 @@ sealed class KvTransaction : IKvTransaction
         }
     }
 
-    Task ExpectStatusAsync(ushort messageType, BinaryBufferWriter writer, string operation, CancellationToken ct)
+    // Callers hold the operation gate, or have drained it during disposal.
+    async Task SendStatusAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(writer);
-        return ExpectStatusWithOwnedWriterAsync(messageType, writer, operation, ct);
+        var response = await _request(messageType, payload, ct).ConfigureAwait(false);
+        var reader = KvWireHelpers.ReadSuccess(response, operation);
+        if (!reader.IsEof)
+        {
+            throw new KvException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
+        }
     }
 
-    async Task ExpectStatusWithOwnedWriterAsync(ushort messageType, BinaryBufferWriter writer, string operation, CancellationToken ct)
+    async Task EnterOperationAsync(CancellationToken ct)
     {
-        using (writer)
-        {
-            await ExpectStatusAsync(messageType, writer.WrittenMemory, operation, ct).ConfigureAwait(false);
-        }
+        if (!await _operationGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
+            throw ClosedException();
     }
 
     async ValueTask<ReadOnlyMemory<byte>> RequestWithRetryAsync(
@@ -369,7 +340,7 @@ sealed class KvTransaction : IKvTransaction
         ReadOnlyMemory<byte> payload,
         CancellationToken ct)
     {
-        await _operationGate.WaitAsync(ct).ConfigureAwait(false);
+        await EnterOperationAsync(ct).ConfigureAwait(false);
         try
         {
             ThrowIfClosed();
@@ -386,23 +357,22 @@ sealed class KvTransaction : IKvTransaction
         }
     }
 
+    // Every transaction request starts with the transaction id and route.
+    BinaryBufferWriter Payload()
+    {
+        var writer = new BinaryBufferWriter();
+        writer.WriteU64(_txId);
+        writer.WriteString(_route);
+        return writer;
+    }
+
     void ThrowIfClosed()
     {
-        if (Volatile.Read(ref _closed) == 0)
-        {
-            return;
-        }
-
-        throw new KvException("Transaction is no longer valid after disconnect", "TX_CLOSED");
+        if (_session.IsClosed)
+            throw ClosedException();
     }
 
-    void MarkClosed()
-    {
-        if (Interlocked.Exchange(ref _closed, 1) != 0)
-        {
-            return;
-        }
+    static KvException ClosedException() => new("Transaction is no longer valid after disconnect", "TX_CLOSED");
 
-        Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
-    }
+    void MarkClosed() => _session.TryClose();
 }

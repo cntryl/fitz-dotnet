@@ -56,7 +56,7 @@ public sealed class RpcCancellationTests
             if (kind == MessageTypes.RpcRequest)
                 payload = request;
             return Task.CompletedTask;
-        }, capabilityBits: 0);
+        });
         var call = rpc.CallAsync("rpc://prod/app/work", "work"u8.ToArray(), TimeSpan.FromMilliseconds(20));
 
         // Act
@@ -65,11 +65,9 @@ public sealed class RpcCancellationTests
             await foreach (var _ in call)
             { }
         });
-        var outcome = await call.Cancellation;
 
         // Assert
         Assert.IsAssignableFrom<OperationCanceledException>(error);
-        Assert.Equal(RpcCancellationOutcome.Unconfirmed, outcome);
         Assert.Equal(16 + 4 + "rpc://prod/app/work".Length + 4 + 4 + 5, payload!.Length);
     }
 
@@ -195,7 +193,6 @@ public sealed class RpcCancellationTests
         Func<ushort, byte[], CancellationToken, Task>? send = null,
         Func<Func<CancellationToken, ValueTask>, bool>? dispatchAsyncHandler = null,
         Func<CancellationToken>? getConnectionClosedToken = null,
-        uint capabilityBits = ServerCapabilities.RpcCancellationBit,
         Action<Action<byte[]>>? lifecycle = null) => new(
         (_, _, _) => Task.FromResult(new byte[] { 0, 0, 0, 0, 0 }),
         send: send ?? ((_, _, _) => Task.CompletedTask),
@@ -208,8 +205,7 @@ public sealed class RpcCancellationTests
             return new Registration();
         },
         dispatchAsyncHandler: dispatchAsyncHandler,
-        getConnectionClosedToken: getConnectionClosedToken,
-        getCapabilityBits: () => capabilityBits);
+        getConnectionClosedToken: getConnectionClosedToken);
 
     static byte[] RequestFrame(uint budget, byte correlationByte = 0)
     {

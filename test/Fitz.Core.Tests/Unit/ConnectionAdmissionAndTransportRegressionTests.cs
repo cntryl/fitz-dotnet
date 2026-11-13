@@ -33,7 +33,7 @@ public sealed class ConnectionAdmissionAndTransportRegressionTests
     {
         // Arrange
         var reset = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var mux = new Multiplexer(onSessionDesynchronized: error => reset.TrySetResult(error), maxCorrelationTombstones: 2);
+        using var mux = new Multiplexer(onSessionReset: error => reset.TrySetResult(error), maxCorrelationTombstones: 2);
         mux.SetConnected();
         var unrelated = mux.RequestAsync(
             MessageTypes.KvGet, [], (_, _) => Task.CompletedTask,
@@ -73,13 +73,13 @@ public sealed class ConnectionAdmissionAndTransportRegressionTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
 
         // Act
-        var intermediate = mux.DispatchCorrelated(77, MessageTypes.LeaseAcquire, new byte[] { 0, 2 }, responseFinal: false);
-        var terminal = mux.DispatchCorrelated(77, MessageTypes.LeaseAcquire, new byte[] { 0 }, responseFinal: true);
+        var intermediate = Record.Exception(() => mux.DispatchCorrelated(77, new byte[] { 0, 2 }, responseFinal: false));
+        var terminal = Record.Exception(() => mux.DispatchCorrelated(77, new byte[] { 0 }, responseFinal: true));
 
         // Assert
-        Assert.True(intermediate);
-        Assert.True(terminal);
-        Assert.Throws<ProtocolException>(() => mux.DispatchCorrelated(77, MessageTypes.LeaseAcquire, new byte[] { 0 }));
+        Assert.Null(intermediate);
+        Assert.Null(terminal);
+        Assert.Throws<ProtocolException>(() => mux.DispatchCorrelated(77, new byte[] { 0 }));
     }
 
     [Fact]

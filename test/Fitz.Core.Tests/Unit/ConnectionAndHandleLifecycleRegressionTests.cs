@@ -145,7 +145,7 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
     {
         // Arrange
         var renewals = 0;
-        using var client = new LeaseClient((type, _, _) =>
+        await using var client = new LeaseClient((type, _, _) =>
         {
             if (type == MessageTypes.LeaseAcquire)
             {
@@ -180,7 +180,7 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
         // Arrange
         using var response = new PausedResponse();
         var listeners = new List<Action>();
-        using var client = new StreamClient((_, _, _) => response.Task,
+        await using var client = new StreamClient((_, _, _) => response.Task,
             registerOnDisconnect: action =>
             {
                 listeners.Add(action);

@@ -1,0 +1,11 @@
+# Test-only analyzer configuration. Each entry resolves a conflict between the .NET analyzers
+# and the xUnit analyzers, where satisfying one would violate the other.
+
+[*.cs]
+# xUnit1030 forbids ConfigureAwait(false) in tests, and test code has no synchronization
+# context to avoid, so CA2007 can only be satisfied with ConfigureAwait(true) noise.
+dotnet_diagnostic.CA2007.severity = none
+
+# xUnit1027 requires collection definitions to be public; CA1515 asks for internal.
+[Fitz.Core.Tests/Integration/BrokerRestartCollection.cs]
+dotnet_diagnostic.CA1515.severity = none

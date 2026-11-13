@@ -14,7 +14,7 @@ namespace Cntryl.Fitz;
 public static class FitzLimits
 {
     /// <summary>
-    /// Smallest accepted <see cref="ClientConfig.MaxFrameSize"/>: the fixed 15-byte Wire-2 header.
+    /// Smallest accepted <see cref="ClientConfig.MaxFrameSize"/>: the fixed 15-byte Wire 3 header.
     /// </summary>
     public const int MinFrameSize = FrameCodec.MaxHeaderSize;
 

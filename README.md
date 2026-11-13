@@ -1,6 +1,6 @@
 # fitz-dotnet
 
-Current release candidate: **4.1.0**, requiring Fitz **0.4.0 / Wire 3**. See [Wire 3 migration](docs/wire3-migration.md) for Queue TTL, NACK, negotiation, and coordinated upgrade guidance.
+Current release: **4.2.0** (unreleased; see [CHANGELOG](CHANGELOG.md) for breaking changes), requiring Fitz **0.4.0 / Wire 3**. See [Wire 3 migration](docs/wire3-migration.md) for Queue TTL, NACK, negotiation, and coordinated upgrade guidance.
 
 `fitz-dotnet` is the .NET Fitz client SDK. The repo now tracks the same shared 24-scenario conformance suite as `fitz-ts`, runs against both WebSocket and TCP, and includes a repo-owned broker baseline in [compose.yml](compose.yml).
 
@@ -69,7 +69,7 @@ in `Cntryl.Fitz.Testing`.
 ```csharp
 using Cntryl.Fitz;
 
-await using var client = new Client(
+await using var client = new FitzClient(
     new ClientConfig(
         new Uri("ws://127.0.0.1:4190/ws"),
         TokenProvider: _ => ValueTask.FromResult("your-jwt-token"),
@@ -214,9 +214,7 @@ The queue `wait` duration uses the broker-native RESERVE wait field. A broker th
 rejects that field fails the request directly; the client does not downgrade
 to polling.
 
-The current queue wire does not include an attempt count, so
-`QueueItem.Attempt` is `QueueItem.AttemptUnavailable` (`0`). Every duration in
-the API is a `TimeSpan`, and one finer than the wire can carry is rejected
+Every duration in the API is a `TimeSpan`, and one finer than the wire can carry is rejected
 rather than silently rounded — see [docs/guide.md](docs/guide.md#durations).
 
 `Stream.ReadAsync` follows validated continuation cursors until `HasMore` is
@@ -253,9 +251,8 @@ effect.
 
 `Notice.UnsubscribeAllAsync()` sends broker message 503 and completes this
 client's local subscriptions after acknowledgment. `Schedule.CreateBatchAsync()`
-and `Schedule.ListV2Async()` expose Schedule CREATE_BATCH (706) and cursor LIST
-(702). `Schedule.ListAsync()` reads the first cursor page; nonzero offsets are
-unsupported. RPC worker handler failures
+creates several schedules in one request, and `Schedule.ListAsync(continuation, limit)`
+pages through schedules by cursor. RPC worker handler failures
 send a terminal 6010 response to the caller and invoke the worker error hook.
 
 ## Local Verification
@@ -265,8 +262,11 @@ Fast local checks:
 ```bash
 dotnet restore Fitz.slnx
 dotnet build Fitz.slnx -c Release --no-restore
-dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter "FullyQualifiedName!~Integration"
+dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter "Category!=Integration"
 ```
+
+Restore needs credentials for the private `cntryl` NuGet feed; see
+[CONTRIBUTING.md](CONTRIBUTING.md#the-private-nuget-feed).
 
 Verify the packed packages publish and run as a Native AOT executable with every
 shipped assembly rooted (substitute your own runtime identifier):
@@ -287,6 +287,7 @@ Broker-backed integration and conformance run:
 
 ```bash
 docker compose up -d
+.github/scripts/wait-for-broker.sh   # compose.yml disables healthchecks; this waits until the brokers answer
 dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build
 docker compose down --volumes
 ```
@@ -295,10 +296,11 @@ Run a single conformance matrix leg and write the normalized artifact:
 
 ```bash
 docker compose up -d
+.github/scripts/wait-for-broker.sh
 CONFORMANCE_TRANSPORT=websocket \
 CONFORMANCE_AUTH_MODE=anonymous \
 CONFORMANCE_OUTPUT=artifacts/conformance-results.json \
-dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter FullyQualifiedName~Conformance
+dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter "Category=Conformance"
 docker compose down --volumes
 ```
 
@@ -313,7 +315,8 @@ The conformance artifact uses the shared schema:
 
 [compose.yml](compose.yml) is the repo-owned local broker stack used by CI and local verification.
 
-- both brokers use `ghcr.io/cntryl/fitz:latest`, local storage volumes, and loopback-only ports
+- both brokers use `ghcr.io/cntryl/fitz` pinned by digest (not a floating tag, so a broker release cannot change results on its own; Dependabot proposes bumps), local storage volumes, and loopback-only ports
+- healthchecks are disabled, so `docker compose up -d` returns before the brokers listen; run `.github/scripts/wait-for-broker.sh` before testing
 - `fitz-anon`: `ws://127.0.0.1:4190/ws` and `127.0.0.1:4191`
 - `fitz-auth`: `ws://127.0.0.1:4090/ws` and `127.0.0.1:4091`
 - default JWT secret: `dev-test-secret`

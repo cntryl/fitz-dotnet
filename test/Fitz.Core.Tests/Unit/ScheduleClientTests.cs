@@ -10,7 +10,7 @@ public sealed class ScheduleClientTests
     {
         // Arrange
         var calls = new List<ushort>();
-        using var schedule = new ScheduleClient((type, payload, _) =>
+        await using var schedule = new ScheduleClient((type, payload, _) =>
         {
             calls.Add(type);
             var request = new BinaryBufferReader(payload);
@@ -24,7 +24,7 @@ public sealed class ScheduleClientTests
                 Assert.True(request.IsEof);
                 return Task.FromResult(new byte[] { 0 });
             }
-            Assert.Equal(MessageTypes.ScheduleListV2, type);
+            Assert.Equal(MessageTypes.ScheduleList, type);
             Assert.Equal((byte)1, request.ReadU8());
             Assert.Equal("next", request.ReadString());
             Assert.Equal((byte)1, request.ReadU8());
@@ -48,10 +48,10 @@ public sealed class ScheduleClientTests
 
         // Act
         await schedule.CreateBatchAsync([new ScheduleEntry(null, "schedule://prod/app/jobs/run", "*/5 * * * *", ScheduleDeliveryMode.Once, "ping"u8.ToArray())]);
-        var page = await schedule.ListV2Async("next", 2);
+        var page = await schedule.ListAsync("next", 2);
 
         // Assert
-        Assert.Equal([MessageTypes.ScheduleCreateBatch, MessageTypes.ScheduleListV2], calls);
+        Assert.Equal([MessageTypes.ScheduleCreateBatch, MessageTypes.ScheduleList], calls);
         Assert.True(page.HasMore);
         Assert.Equal("last", page.Continuation);
         Assert.Single(page.Entries);
@@ -63,7 +63,7 @@ public sealed class ScheduleClientTests
     public async Task ShouldDecodeCodedAndPlainErrorsGivenScheduleBatchFailure(bool coded, uint? expectedCode)
     {
         // Arrange
-        using var schedule = new ScheduleClient((_, _, _) =>
+        await using var schedule = new ScheduleClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
@@ -90,11 +90,11 @@ public sealed class ScheduleClientTests
         // Arrange
         // Act
         // Assert
-        using var schedule = new ScheduleClient((_, _, _) => Task.FromResult(new byte[] { 0 }));
+        await using var schedule = new ScheduleClient((_, _, _) => Task.FromResult(new byte[] { 0 }));
 
         var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.ListAsync());
 
-        Assert.Equal("LIST_V2_INVALID_RESPONSE", error.Code);
+        Assert.Equal("LIST_INVALID_RESPONSE", error.Code);
     }
 
     [Fact]
@@ -103,7 +103,7 @@ public sealed class ScheduleClientTests
         // Arrange
         // Act
         // Assert
-        using var schedule = new ScheduleClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+        await using var schedule = new ScheduleClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
 
         var error = await Assert.ThrowsAsync<ScheduleException>(() =>
             schedule.CancelAsync("schedule://prod/app/jobs/run"));
@@ -117,7 +117,7 @@ public sealed class ScheduleClientTests
         // Arrange
         // Act
         // Assert
-        using var schedule = new ScheduleClient((_, _, _) =>
+        await using var schedule = new ScheduleClient((_, _, _) =>
             Task.FromResult(new byte[] { 0, 2 }));
 
         var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.CreateAsync(
@@ -135,12 +135,12 @@ public sealed class ScheduleClientTests
         // Arrange
         // Act
         // Assert
-        using var schedule = new ScheduleClient((_, _, _) =>
+        await using var schedule = new ScheduleClient((_, _, _) =>
             Task.FromResult(new byte[] { 1 }));
 
         var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.ListAsync());
 
-        Assert.Equal("LIST_V2_INVALID_RESPONSE", error.Code);
+        Assert.Equal("LIST_INVALID_RESPONSE", error.Code);
         Assert.Equal((byte)1, error.Status);
         Assert.Null(error.DomainCode);
     }
@@ -151,12 +151,12 @@ public sealed class ScheduleClientTests
         // Arrange
         // Act
         // Assert
-        using var schedule = new ScheduleClient((_, _, _) =>
+        await using var schedule = new ScheduleClient((_, _, _) =>
             Task.FromResult(new byte[] { 1, 42 }));
 
         var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.ListAsync());
 
-        Assert.Equal("LIST_V2_INVALID_RESPONSE", error.Code);
+        Assert.Equal("LIST_INVALID_RESPONSE", error.Code);
     }
 
     [Fact]
@@ -165,7 +165,7 @@ public sealed class ScheduleClientTests
         // Arrange
         // Act
         // Assert
-        using var schedule = new ScheduleClient((_, _, _) =>
+        await using var schedule = new ScheduleClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
@@ -186,7 +186,7 @@ public sealed class ScheduleClientTests
         // Arrange
         // Act
         // Assert
-        using var schedule = new ScheduleClient((_, _, _) =>
+        await using var schedule = new ScheduleClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
@@ -208,7 +208,7 @@ public sealed class ScheduleClientTests
         // Arrange
         // Act
         // Assert
-        using var schedule = new ScheduleClient((_, _, _) =>
+        await using var schedule = new ScheduleClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
@@ -235,7 +235,7 @@ public sealed class ScheduleClientTests
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        using var schedule = new ScheduleClient((messageType, payload, _) =>
+        await using var schedule = new ScheduleClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -267,7 +267,7 @@ public sealed class ScheduleClientTests
     public async Task ShouldEncodeRouteGivenScheduleRouteWhenCancelingSchedule()
     {
         // Arrange
-        using var schedule = new ScheduleClient((messageType, payload, _) =>
+        await using var schedule = new ScheduleClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.ScheduleCancel, messageType);
 
@@ -296,7 +296,7 @@ public sealed class ScheduleClientTests
         CancellationToken seenCancellationToken = default;
         var receivedTcs = new TaskCompletionSource<ScheduleNotification>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        using var schedule = new ScheduleClient(
+        await using var schedule = new ScheduleClient(
             (messageType, payload, _) =>
             {
                 seenMessageType = messageType;
@@ -357,13 +357,13 @@ public sealed class ScheduleClientTests
     }
 
     [Fact]
-    public async Task ShouldReturnEntriesAndNoTotalCountGivenCanonicalListResponseWhenScheduleOperationRuns()
+    public async Task ShouldReturnEntriesGivenCanonicalListResponseWhenScheduleOperationRuns()
     {
         // Arrange
         byte[]? seenPayload = null;
-        using var schedule = new ScheduleClient((messageType, payload, _) =>
+        await using var schedule = new ScheduleClient((messageType, payload, _) =>
         {
-            Assert.Equal(MessageTypes.ScheduleListPage, messageType);
+            Assert.Equal(MessageTypes.ScheduleList, messageType);
             seenPayload = payload;
 
             using var writer = new BinaryBufferWriter();
@@ -382,10 +382,9 @@ public sealed class ScheduleClientTests
         });
 
         // Act
-        var page = await schedule.ListAsync(offset: 0, limit: 25);
+        var page = await schedule.ListAsync(limit: 25);
 
         // Assert
-        Assert.Null(page.TotalCount);
         Assert.Single(page.Entries);
         Assert.Null(page.Entries[0].Id);
         Assert.Equal("schedule://prod/app/jobs/run", page.Entries[0].Route);
@@ -403,9 +402,9 @@ public sealed class ScheduleClientTests
     public async Task ShouldRejectInvalidDeliveryModeGivenMalformedListResponseWhenScheduleOperationRuns()
     {
         // Arrange
-        using var schedule = new ScheduleClient((messageType, _, _) =>
+        await using var schedule = new ScheduleClient((messageType, _, _) =>
         {
-            Assert.Equal(MessageTypes.ScheduleListPage, messageType);
+            Assert.Equal(MessageTypes.ScheduleList, messageType);
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -425,7 +424,7 @@ public sealed class ScheduleClientTests
         var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.ListAsync());
 
         // Assert
-        Assert.Equal("LIST_V2_INVALID_RESPONSE", error.Code);
+        Assert.Equal("LIST_INVALID_RESPONSE", error.Code);
         Assert.Contains("invalid delivery mode", error.Message, StringComparison.Ordinal);
     }
 }

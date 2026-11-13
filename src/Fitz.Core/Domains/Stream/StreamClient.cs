@@ -1,6 +1,4 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
-using System.Threading.Channels;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
@@ -11,46 +9,32 @@ namespace Cntryl.Fitz.Domains.Stream;
 /// The default <see cref="IStreamClient"/>: stream append sessions, reads, and commit subscriptions.
 /// </summary>
 /// <remarks>
-/// Obtained from <see cref="Client"/> rather than constructed directly. The public
+/// Obtained from <see cref="FitzClient"/> rather than constructed directly. The public
 /// constructors exist for testing against a transport delegate.
 /// </remarks>
-sealed class StreamClient : IStreamClient, IDisposable
+sealed class StreamClient : IStreamClient, IAsyncDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
-    readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     readonly Func<Action, IDisposable>? _registerOnDisconnect;
-    readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
-    readonly int _subscriptionBufferCapacity;
-    readonly NotificationActivationBuffer _activationBuffer;
     readonly FitzConnection? _connection;
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
-    readonly SemaphoreSlim _subscriptionGate = new(1, 1);
-    readonly object _gate = new();
-    readonly Dictionary<string, StreamSubscriptionState> _subscriptionsByPattern = [with(StringComparer.Ordinal)];
-    readonly Dictionary<ulong, string> _patternsBySubscriptionId = [];
-    IDisposable? _notificationRegistration;
+    readonly TimeProvider _time;
+    readonly SubscriptionTable<StreamCommitEvent> _subscriptions;
+    readonly IDisposable? _connectionBinding;
     int _disposed;
-    bool _notificationHandlerInitialized;
-    long _nextHandleId;
-    readonly IDisposable? _reconnectRegistration;
 
     internal StreamClient(FitzConnection connection)
         : this(
             connection.RequestAsync,
-            connection.RegisterBorrowedNotificationHandler,
+            connection.RegisterNotificationHandler,
             connection.OnDisconnect,
             (handler, rejected) => connection.TryDispatchAsyncHandler("stream", handler, rejected),
-            (operation, messageType, payload, ct) =>
-                connection.ExecuteWithRetryAsync(
-                    operation,
-                    innerToken => connection.RequestAsync(messageType, payload, innerToken),
-                    ct),
-            connection.SubscriptionBufferCapacity)
+            connection.RequestWithRetryAsync,
+            connection.SubscriptionBufferCapacity,
+            connection.Time)
     {
-        _reconnectRegistration = connection.OnReconnect(HandleReconnect);
         _connection = connection;
-        connection.NotificationDeliveryFailed += FailNotificationDelivery;
+        _connectionBinding = _subscriptions.AttachTo(connection);
     }
 
     /// <summary>
@@ -72,15 +56,24 @@ sealed class StreamClient : IStreamClient, IDisposable
         Func<Action, IDisposable>? registerOnDisconnect = null,
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
         Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null,
-        int subscriptionBufferCapacity = SubscriptionRegistration<StreamCommitEvent>.DefaultCapacity)
+        int subscriptionBufferCapacity = SubscriptionRegistration<StreamCommitEvent>.DefaultCapacity,
+        TimeProvider? timeProvider = null)
     {
         _request = request;
-        _registerNotificationHandler = registerNotificationHandler;
+        _time = timeProvider ?? TimeProvider.System;
         _registerOnDisconnect = registerOnDisconnect;
-        _dispatchAsyncHandler = dispatchAsyncHandler;
         _retryRequest = retryRequest;
-        _subscriptionBufferCapacity = subscriptionBufferCapacity;
-        _activationBuffer = new NotificationActivationBuffer(subscriptionBufferCapacity);
+        _subscriptions = new SubscriptionTable<StreamCommitEvent>(
+            this,
+            "stream",
+            MessageTypes.StreamNotify,
+            registerNotificationHandler,
+            dispatchAsyncHandler,
+            subscriptionBufferCapacity,
+            SubscribeWireAsync,
+            UnsubscribeWireAsync,
+            DecodeNotification,
+            _time);
     }
 
     /// <inheritdoc />
@@ -94,8 +87,7 @@ sealed class StreamClient : IStreamClient, IDisposable
         if (ingestMetadata.HasValue && ingestMetadata.Value.Length > 0)
         {
             writer.WriteU8(1);
-            writer.WriteU32((uint)ingestMetadata.Value.Length);
-            writer.WriteBytes(ingestMetadata.Value.Span);
+            writer.WriteLengthPrefixed(ingestMetadata.Value.Span);
         }
         else
         {
@@ -106,23 +98,39 @@ sealed class StreamClient : IStreamClient, IDisposable
         var response = await session.RequestAsync(MessageTypes.StreamBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
         var sessionId = StreamWireHelpers.ReadBeginSessionId(response);
         session.EnsureValid();
-        return new StreamSession(session.BoundRequest, sessionId, session.RegisterOnDisconnect);
+        return new StreamSession(session.BoundRequest, sessionId, session.RegisterOnDisconnect, _time);
     }
 
     /// <inheritdoc />
-    public async IAsyncEnumerable<StreamRecord> ReadAsync(
+    public IAsyncEnumerable<StreamRecord> ReadAsync(
         string route,
         ulong startOffset,
         ulong limit = 100,
         StreamFilterSet? filter = null,
         ulong? maxBytes = null,
-        ulong? cursorFingerprint = null, ulong? capturedWatermark = null,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        ulong? cursorFingerprint = null,
+        ulong? capturedWatermark = null,
+        CancellationToken ct = default)
     {
+        // Validate at the call site, not on the first MoveNextAsync.
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(route);
         ValidateStreamSelector(route);
         _ = RouteValidation.TryGetStreamSelectorScope(route, out var scope);
+        return ReadCoreAsync(route, scope, startOffset, limit, filter, maxBytes, cursorFingerprint, capturedWatermark, ct);
+    }
+
+    async IAsyncEnumerable<StreamRecord> ReadCoreAsync(
+        string route,
+        StreamSelectorScope scope,
+        ulong startOffset,
+        ulong limit,
+        StreamFilterSet? filter,
+        ulong? maxBytes,
+        ulong? cursorFingerprint,
+        ulong? capturedWatermark,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
         var nextOffset = startOffset;
         var fingerprint = cursorFingerprint;
         var watermark = capturedWatermark;
@@ -195,8 +203,7 @@ sealed class StreamClient : IStreamClient, IDisposable
         writer.WriteU8((byte)(filterBytes.Length > 0 ? 1 : 0));
         if (filterBytes.Length > 0)
         {
-            writer.WriteU32((uint)filterBytes.Length);
-            writer.WriteBytes(filterBytes);
+            writer.WriteLengthPrefixed(filterBytes);
         }
 
         writer.WriteU8((byte)(cursorFingerprint.HasValue ? 1 : 0));
@@ -288,23 +295,17 @@ sealed class StreamClient : IStreamClient, IDisposable
     }
 
     /// <inheritdoc />
-    public async Task<StreamSubscription> SubscribeAsync(
+    public Task<StreamSubscription> SubscribeAsync(
         string pattern,
         CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        var buffer = new AsyncSubscriptionBuffer<StreamCommitEvent>(pattern, _subscriptionBufferCapacity);
-        var registration = await SubscribeAsync(pattern, (notification, _) =>
-        {
-            buffer.Write(notification);
-            return ValueTask.CompletedTask;
-        }, ct).ConfigureAwait(false);
-        buffer.ObserveCompletion(registration.Completion);
-        return new StreamSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
-        {
-            await registration.UnsubscribeAsync(token).ConfigureAwait(false);
-            buffer.Complete();
-        }, registration.Completion);
+        EnsureSubscriptionPattern(pattern);
+        return _subscriptions.SubscribeBufferedAsync(
+            pattern,
+            static (pattern, notifications, unsubscribe, completion, time) => new StreamSubscription(pattern, notifications, unsubscribe, completion, time),
+            preDispatch: null,
+            ct);
     }
 
     internal async Task<StreamSubscription> SubscribeAsync(
@@ -312,89 +313,17 @@ sealed class StreamClient : IStreamClient, IDisposable
         Func<StreamCommitEvent, CancellationToken, ValueTask> handler,
         CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(handler);
-        if (!RouteValidation.IsStreamSelector(pattern))
-        {
-            throw new StreamException($"pattern '{pattern}' must use whole-segment wildcards and match a three-segment stream route", "INVALID_ROUTE");
-        }
-
-        if (_registerNotificationHandler == null)
-        {
-            throw new InvalidOperationException("Notification handlers not configured for subscription support");
-        }
-
-        EnsureNotificationHandlerInitialized();
-
-        var channel = SubscriptionRegistration<StreamCommitEvent>.CreateChannel(_subscriptionBufferCapacity);
-        SubscriptionRegistration<StreamCommitEvent>? registration = null;
-        var handleId = Interlocked.Increment(ref _nextHandleId);
-        var gateAcquired = false;
-
-        try
-        {
-            registration = new SubscriptionRegistration<StreamCommitEvent>(
-                channel,
-                "stream",
-                pattern,
-                token => UnsubscribeAsync(pattern, handleId, token));
-            await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-            gateAcquired = true;
-            ThrowIfDisposed();
-
-            var existing = false;
-            lock (_gate)
-            {
-                ThrowIfDisposed();
-                if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
-                {
-                    existingSubscription.Registrations[handleId] = registration;
-                    existing = true;
-                }
-            }
-
-            if (existing)
-            {
-                SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
-                var completion = registration.Completion;
-                registration = null;
-                return CreateSubscription(pattern, handleId, completion);
-            }
-
-            using var activation = _activationBuffer.Begin(pattern);
-            var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
-            var subscription = new StreamSubscriptionState(subscriptionId);
-            lock (_gate)
-            {
-                ThrowIfDisposed();
-                subscription.Registrations[handleId] = registration;
-                _subscriptionsByPattern[pattern] = subscription;
-                _patternsBySubscriptionId[subscriptionId] = pattern;
-                if (_activationBuffer.Replay(subscriptionId, HandleNotification) is { } activationError)
-                    _ = registration.FailAsync(activationError);
-            }
-
-            var handle = CreateSubscription(pattern, handleId, registration.Completion);
-            SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
-            registration = null;
-            return handle;
-        }
-        finally
-        {
-            if (gateAcquired)
-            {
-                _subscriptionGate.Release();
-            }
-
-            registration?.Dispose();
-        }
+        EnsureSubscriptionPattern(pattern);
+        var binding = await _subscriptions.SubscribeAsync(pattern, handler, preDispatch: null, ct).ConfigureAwait(false);
+        return new StreamSubscription(pattern, binding.Unsubscribe, binding.Completion, _subscriptions.Time);
     }
 
-    StreamSubscription CreateSubscription(string pattern, long handleId, Task completion)
+    static void EnsureSubscriptionPattern(string pattern)
     {
-        return new StreamSubscription(
-            pattern,
-            ct => UnsubscribeAsync(pattern, handleId, ct),
-            completion);
+        if (!RouteValidation.IsStreamSelector(pattern))
+        {
+            throw new ArgumentException($"pattern '{pattern}' must use whole-segment wildcards and match a three-segment stream route", nameof(pattern));
+        }
     }
 
     async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken ct)
@@ -406,7 +335,7 @@ sealed class StreamClient : IStreamClient, IDisposable
         return StreamWireHelpers.ReadSubscriptionId(response);
     }
 
-    async Task UnsubscribeWireAsync(string pattern, CancellationToken ct)
+    async Task UnsubscribeWireAsync(string pattern, ulong subscriptionId, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
@@ -415,133 +344,23 @@ sealed class StreamClient : IStreamClient, IDisposable
         StreamWireHelpers.EnsureSuccessStatusOnly(response, "UNSUBSCRIBE");
     }
 
-    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Ownership intentionally remains in the subscription table when the wire unsubscribe fails.")]
-    async ValueTask UnsubscribeAsync(string pattern, long handleId, CancellationToken ct)
+    static DecodedNotification<StreamCommitEvent>? DecodeNotification(ReadOnlyMemory<byte> payload)
     {
-        SubscriptionRegistration<StreamCommitEvent>? registration = null;
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-        try
+        var reader = new BinaryBufferReader(payload);
+        var subscriptionId = reader.ReadU64();
+        var route = reader.ReadString();
+        var bodyLength = reader.ReadU32();
+        var body = reader.ReadSpan(bodyLength);
+        if (!reader.IsEof)
+            return null;
+
+        var commitOffset = StreamWireHelpers.ParseCommitOffset(body);
+        var notification = new StreamCommitEvent(route, commitOffset.Offset)
         {
-            var shouldUnsubscribe = false;
-            lock (_gate)
-            {
-                if (!_subscriptionsByPattern.TryGetValue(pattern, out var subscription) ||
-                    !subscription.Registrations.TryGetValue(handleId, out registration))
-                {
-                    return;
-                }
-
-                shouldUnsubscribe = subscription.Registrations.Count == 1;
-            }
-
-            if (shouldUnsubscribe)
-            {
-                await UnsubscribeWireAsync(pattern, ct).ConfigureAwait(false);
-            }
-
-            lock (_gate)
-            {
-                if (!_subscriptionsByPattern.TryGetValue(pattern, out var subscription) ||
-                    !subscription.Registrations.Remove(handleId, out registration))
-                {
-                    return;
-                }
-
-                if (subscription.Registrations.Count == 0)
-                {
-                    _subscriptionsByPattern.Remove(pattern);
-                    _patternsBySubscriptionId.Remove(subscription.SubscriptionId);
-                    shouldUnsubscribe = true;
-                }
-            }
-        }
-        finally
-        {
-            _subscriptionGate.Release();
-        }
-
-        registration?.Dispose();
-
+            CommitOffsetStatus = commitOffset.Status,
+        };
+        return new DecodedNotification<StreamCommitEvent>(subscriptionId, route, notification);
     }
-
-    void FailNotificationDelivery(Exception error)
-    {
-        lock (_gate)
-        {
-            _activationBuffer.Fail(error);
-            var registrations = _subscriptionsByPattern.Values.SelectMany(subscription => subscription.Registrations.Values).ToArray();
-            _subscriptionsByPattern.Clear();
-            _patternsBySubscriptionId.Clear();
-            foreach (var registration in registrations)
-                _ = registration.FailAsync(error);
-        }
-    }
-
-    void EnsureNotificationHandlerInitialized()
-    {
-        lock (_gate)
-        {
-            ThrowIfDisposed();
-            if (_notificationHandlerInitialized)
-            {
-                return;
-            }
-
-            if (_registerNotificationHandler is null)
-            {
-                throw new InvalidOperationException("Notification handlers not configured for subscription support");
-            }
-
-            _notificationRegistration = _registerNotificationHandler(MessageTypes.StreamNotify, HandleNotification);
-            _notificationHandlerInitialized = true;
-        }
-    }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Malformed broker notifications are dropped without disrupting the receive loop.")]
-    void HandleNotification(ReadOnlyMemory<byte> payload)
-    {
-        try
-        {
-            var notifyReader = new BinaryBufferReader(payload);
-            var subscriptionId = notifyReader.ReadU64();
-            var route = notifyReader.ReadString();
-            var bodyLength = notifyReader.ReadU32();
-            var body = notifyReader.ReadSpan(bodyLength);
-            if (!notifyReader.IsEof)
-            {
-                return;
-            }
-            var commitOffset = StreamWireHelpers.ParseCommitOffset(body);
-            var notification = new StreamCommitEvent(route, commitOffset.Offset)
-            {
-                CommitOffsetStatus = commitOffset.Status,
-            };
-
-            SubscriptionRegistration<StreamCommitEvent>[] registrations;
-            lock (_gate)
-            {
-                if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
-                    !_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
-                {
-                    _activationBuffer.Buffer(subscriptionId, route, payload);
-                    return;
-                }
-
-                registrations = [.. subscription.Registrations.Values];
-            }
-
-            foreach (var registration in registrations)
-            {
-                if (!registration.Channel.Writer.TryWrite(notification))
-                    _ = registration.FailOverflowAsync();
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    async ValueTask HandleReconnect(CancellationToken ct) => await RestoreSubscriptionsAsync(ct).ConfigureAwait(false);
 
     static void ValidateExactStreamRoute(string route)
     {
@@ -560,7 +379,7 @@ sealed class StreamClient : IStreamClient, IDisposable
             return;
         }
 
-        throw new StreamException($"stream selector '{route}' must use the canonical resource, area, realm, or global selector shape", "INVALID_ROUTE");
+        throw new ArgumentException($"stream selector '{route}' must use the canonical resource, area, realm, or global selector shape", nameof(route));
     }
 
     static void ThrowInvalidExactRoute(string route, RouteValidationFailure failure)
@@ -572,79 +391,7 @@ sealed class StreamClient : IStreamClient, IDisposable
             _ => $"stream route '{route}' must be stream://{{realm}}/{{area}}/{{resource}}",
         };
 
-        throw new StreamException(message, "INVALID_ROUTE");
-    }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
-    async ValueTask RestoreSubscriptionsAsync(CancellationToken ct)
-    {
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            List<(string Pattern, StreamSubscriptionState Subscription)> snapshot;
-            lock (_gate)
-            {
-                if (_subscriptionsByPattern.Count == 0)
-                {
-                    return;
-                }
-
-                snapshot = [with(_subscriptionsByPattern.Count)];
-                foreach (var entry in _subscriptionsByPattern)
-                {
-                    snapshot.Add((entry.Key, entry.Value.Clone()));
-                }
-            }
-
-            var restoredSubscriptions = new Dictionary<string, StreamSubscriptionState>(StringComparer.Ordinal);
-            var restoredPatternsById = new Dictionary<ulong, string>();
-
-            try
-            {
-                foreach (var entry in snapshot)
-                {
-                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, ct).ConfigureAwait(false);
-                    restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
-                    restoredPatternsById[subscriptionId] = entry.Pattern;
-                }
-            }
-            catch
-            {
-                foreach (var pattern in restoredSubscriptions.Keys)
-                {
-                    try
-                    {
-                        await UnsubscribeWireAsync(pattern, CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        // Best effort rollback. Local state remains unchanged so a later reconnect can retry.
-                    }
-                }
-
-                throw;
-            }
-
-            lock (_gate)
-            {
-                _subscriptionsByPattern.Clear();
-                _patternsBySubscriptionId.Clear();
-
-                foreach (var entry in restoredSubscriptions)
-                {
-                    _subscriptionsByPattern[entry.Key] = entry.Value;
-                }
-
-                foreach (var entry in restoredPatternsById)
-                {
-                    _patternsBySubscriptionId[entry.Key] = entry.Value;
-                }
-            }
-        }
-        finally
-        {
-            _subscriptionGate.Release();
-        }
+        throw new ArgumentException(message, nameof(route));
     }
 
     ValueTask<ReadOnlyMemory<byte>> RequestWithRetryAsync(
@@ -662,58 +409,19 @@ sealed class StreamClient : IStreamClient, IDisposable
     }
 
     /// <summary>Releases local resources and ends any registrations this client owns.</summary>
-    public void Dispose()
+    /// <returns>A task that completes once an in-progress subscription change has finished.</returns>
+    /// <remarks>Queued and later subscription changes fail with <see cref="ObjectDisposedException"/>;
+    /// unsubscribes and reconnect restoration become no-ops.</remarks>
+    public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
 
-        _connection?.NotificationDeliveryFailed -= FailNotificationDelivery;
-        _activationBuffer.Dispose();
-        _notificationRegistration?.Dispose();
-        _reconnectRegistration?.Dispose();
-        lock (_gate)
-        {
-            foreach (var subscription in _subscriptionsByPattern.Values)
-            {
-                foreach (var registration in subscription.Registrations.Values)
-                {
-                    registration.Dispose();
-                }
-            }
-
-            _subscriptionsByPattern.Clear();
-            _patternsBySubscriptionId.Clear();
-        }
-
+        _connectionBinding?.Dispose();
+        await _subscriptions.DisposeAsync().ConfigureAwait(false);
     }
 
     void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-
-    sealed class StreamSubscriptionState
-    {
-        public StreamSubscriptionState(ulong subscriptionId)
-        {
-            SubscriptionId = subscriptionId;
-        }
-
-        public ulong SubscriptionId { get; init; }
-
-        public Dictionary<long, SubscriptionRegistration<StreamCommitEvent>> Registrations { get; } = [];
-
-        public StreamSubscriptionState Clone() => Clone(SubscriptionId);
-
-        public StreamSubscriptionState Clone(ulong subscriptionId)
-        {
-            var clone = new StreamSubscriptionState(subscriptionId);
-            foreach (var entry in Registrations)
-            {
-                clone.Registrations.Add(entry.Key, entry.Value);
-            }
-
-            return clone;
-        }
-    }
-
 }

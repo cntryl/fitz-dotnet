@@ -137,10 +137,10 @@ overloads:
 
 ```csharp
 // No — the container selects and invokes the constructor reflectively.
-services.AddSingleton<Client>();
+services.AddSingleton<FitzClient>();
 
 // Yes
-services.AddSingleton(static sp => new Client(sp.GetRequiredService<ClientConfig>()));
+services.AddSingleton(static sp => new FitzClient(sp.GetRequiredService<ClientConfig>()));
 ```
 
 The type-based overloads are trim-*compatible* — `Microsoft.Extensions.DependencyInjection.Abstractions`

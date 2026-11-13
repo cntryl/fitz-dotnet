@@ -41,7 +41,7 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
         IInvocationOperation invocation,
         FitzRouteRules.ApiSymbols apiSymbols)
     {
-        if (!FitzRouteRules.TryGetRule(invocation.TargetMethod, apiSymbols, out var rule))
+        if (!FitzRouteRules.TryGetRule(invocation, apiSymbols, out var rule))
         {
             return;
         }
@@ -88,18 +88,13 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
         IInvocationOperation invocation,
         FitzRouteRules.ApiSymbols apiSymbols)
     {
-        if (invocation.Parent is not IAwaitOperation { Parent: IExpressionStatementOperation })
+        if (invocation.Parent is not IAwaitOperation awaited || !IsResultDiscarded(awaited))
         {
             return;
         }
 
-        if (invocation.Type is not INamedTypeSymbol { Name: "Task", TypeArguments.Length: 1 } taskType)
-        {
-            return;
-        }
-
-        var handleType = taskType.TypeArguments[0];
-        if (!apiSymbols.IsLifecycleHandle(handleType))
+        if (!apiSymbols.TryGetAwaitedResultType(invocation.Type, out var handleType) ||
+            !apiSymbols.TryGetLifecycleHandleName(handleType, out var handleName))
         {
             return;
         }
@@ -107,19 +102,20 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
         context.ReportDiagnostic(Diagnostic.Create(
             FitzDiagnostics.DiscardedHandle,
             invocation.Syntax.GetLocation(),
-            properties: ImmutableDictionary<string, string?>.Empty.Add("HandleName", GetHandleName(handleType)),
+            properties: ImmutableDictionary<string, string?>.Empty.Add("HandleName", handleName),
             handleType.Name,
             invocation.TargetMethod.Name));
     }
 
-    static string GetHandleName(ITypeSymbol type) => type.Name switch
+    /// <summary>
+    /// Whether the awaited value is dropped: either a bare <c>await x;</c> statement or an
+    /// explicit discard assignment, <c>_ = await x;</c>.
+    /// </summary>
+    static bool IsResultDiscarded(IAwaitOperation awaited) => awaited.Parent switch
     {
-        "IKvTransaction" => "transaction",
-        "ILease" => "lease",
-        "ILeaseInventoryObserver" => "observer",
-        "RpcWorkerRegistration" => "registration",
-        "IStreamSession" => "session",
-        _ => "subscription",
+        IExpressionStatementOperation => true,
+        ISimpleAssignmentOperation { Target: IDiscardOperation, Parent: IExpressionStatementOperation } => true,
+        _ => false,
     };
 
     static void AnalyzeArguments(
@@ -127,7 +123,7 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
         IInvocationOperation invocation,
         FitzRouteRules.ApiSymbols apiSymbols)
     {
-        if (!FitzRouteRules.IsFitzMethod(invocation.TargetMethod, apiSymbols))
+        if (!FitzRouteRules.IsFitzMethod(invocation, apiSymbols))
         {
             return;
         }
@@ -155,7 +151,7 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
             else
             {
                 var constant = GetConstantValue(argument.Value);
-                if (!IsInvalidConstant(invocation.TargetMethod, apiSymbols, argument.Parameter.Name, constant))
+                if (!IsInvalidConstant(invocation, apiSymbols, argument.Parameter.Name, constant))
                 {
                     continue;
                 }
@@ -184,7 +180,7 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
     }
 
     static bool IsInvalidConstant(
-        IMethodSymbol method,
+        IInvocationOperation invocation,
         FitzRouteRules.ApiSymbols apiSymbols,
         string parameterName,
         Optional<object?> constant)
@@ -195,8 +191,8 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
         }
 
         if (parameterName == "limit" &&
-            method.Name == "ListAsync" &&
-            apiSymbols.TryGetClientName(method, out var clientName) &&
+            invocation.TargetMethod.Name == "ListAsync" &&
+            apiSymbols.TryGetClientName(invocation, out var clientName) &&
             clientName == "ILeaseClient")
         {
             return ToInt64(constant.Value) <= 0;

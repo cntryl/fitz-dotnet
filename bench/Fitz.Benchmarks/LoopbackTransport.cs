@@ -1,12 +1,13 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Threading.Channels;
 using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Benchmarks;
 
 /// <summary>
-/// In-memory transport that echoes a canned response for every request frame.
-/// Removes network cost so benchmarks measure only client-side work.
+/// In-memory Wire 3 transport: answers CONNECT with HELLO and every request with a canned final
+/// response on the same correlation. Removes network cost so benchmarks measure only client work.
 /// </summary>
 public sealed class LoopbackTransport : ITransport
 {
@@ -15,82 +16,36 @@ public sealed class LoopbackTransport : ITransport
 
     readonly byte[] _responsePayload;
     readonly TimeSpan _roundTripLatency;
-    readonly bool _correlationEnabled;
 
-    public LoopbackTransport(
-        int responsePayloadSize = 64,
-        TimeSpan roundTripLatency = default,
-        bool correlationEnabled = false)
+    public LoopbackTransport(int responsePayloadSize = 64, TimeSpan roundTripLatency = default)
     {
         _responsePayload = new byte[responsePayloadSize];
         _roundTripLatency = roundTripLatency;
-        _correlationEnabled = correlationEnabled;
     }
 
     public Uri Url { get; } = new("ws://loopback/ws");
 
-    public Task ConnectAsync(CancellationToken ct = default)
-    {
-        if (_correlationEnabled)
-        {
-            var hello = new byte[6];
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(hello.AsSpan(0, 2), 1);
-            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(
-                hello.AsSpan(2, 4),
-                ServerCapabilities.CorrelationBit);
-            _inbound.Writer.TryWrite(FrameCodec.Encode(MessageTypes.ServerHello, hello));
-        }
-
-        return Task.CompletedTask;
-    }
+    public Task ConnectAsync(CancellationToken ct = default) => Task.CompletedTask;
 
     public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
-        var span = data.Span;
-        var offset = 0;
-        ulong pendingCorrelation = 0;
-        while (offset + 3 <= span.Length)
+        var remaining = data.Span;
+        while (FrameCodec.TryReadHeader(remaining, out var messageType, out _, out var correlationId, out var payloadLength))
         {
-            ushort messageType;
-            int headerLength;
-            if (span[offset] == 0xFF)
-            {
-                if (offset + 5 > span.Length)
-                {
-                    break;
-                }
-
-                messageType = (ushort)((span[offset + 1] << 8) | span[offset + 2]);
-                headerLength = 5;
-            }
-            else
-            {
-                messageType = span[offset];
-                headerLength = 3;
-            }
-
-            var payloadLength = (span[offset + headerLength - 2] << 8) | span[offset + headerLength - 1];
-            var payloadStart = offset + headerLength;
-            offset = payloadStart + payloadLength;
-
-            // A CORRELATE record labels the request in the next record of this same frame.
-            if (messageType == MessageTypes.Correlate)
-            {
-                pendingCorrelation = System.Buffers.Binary.BinaryPrimitives.ReadUInt64BigEndian(
-                    span.Slice(payloadStart, payloadLength));
-                continue;
-            }
-
+            remaining = remaining[(FrameCodec.MaxHeaderSize + (int)payloadLength)..];
             if (messageType == MessageTypes.Connect)
             {
-                pendingCorrelation = 0;
+                _inbound.Writer.TryWrite(HelloFrame());
                 continue;
             }
 
-            var response = pendingCorrelation == 0
-                ? FrameCodec.Encode(messageType, _responsePayload)
-                : BuildCorrelatedResponse(pendingCorrelation, messageType);
-            pendingCorrelation = 0;
+            if (correlationId == 0)
+            {
+                // Fire-and-forget frames get no response.
+                continue;
+            }
+
+            var response = FrameCodec.Encode(messageType, _responsePayload, FrameCodec.ResponseFinalFlag, correlationId);
             if (_roundTripLatency <= TimeSpan.Zero)
             {
                 _inbound.Writer.TryWrite(response);
@@ -104,11 +59,21 @@ public sealed class LoopbackTransport : ITransport
         return Task.CompletedTask;
     }
 
-    byte[] BuildCorrelatedResponse(ulong correlationId, ushort messageType)
+    static byte[] HelloFrame()
     {
-        var frame = FrameCodec.EncodeCorrelated(correlationId, messageType, _responsePayload);
-        frame[0] = (byte)MessageTypes.Correlated;
-        return frame;
+        var core = new byte[22];
+        BinaryPrimitives.WriteUInt16BigEndian(core, 3);
+        BinaryPrimitives.WriteUInt32BigEndian(core.AsSpan(6), FrameCodec.MaxTransportFrameSize);
+        BinaryPrimitives.WriteUInt32BigEndian(core.AsSpan(10), 1024);
+        BinaryPrimitives.WriteUInt64BigEndian(core.AsSpan(14), 1);
+        using var capabilities = new BinaryBufferWriter();
+        capabilities.WriteU16(2);
+        capabilities.WriteU32(1);
+        capabilities.WriteU32(2);
+        return FrameCodec.Encode(
+            MessageTypes.Hello,
+            ExtensionCodec.Encode(core, 1, capabilities.WrittenMemory.Span),
+            ExtensionCodec.PresentFlag);
     }
 
     async Task RespondAfterLatencyAsync(byte[] response)

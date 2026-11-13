@@ -45,7 +45,6 @@ public sealed class CorrelationConnectionTests
         // Act
         await connection.ConnectAsync();
         // Assert
-        Assert.True(connection.CorrelationEnabled);
         Assert.Equal(3, connection.Capabilities.ProtocolVersion);
         Assert.Equal(0u, connection.Capabilities.CapabilityBits);
     }
@@ -93,7 +92,6 @@ public sealed class CorrelationConnectionTests
         // Act
         await connection.ConnectAsync();
         // Assert
-        Assert.True(connection.CorrelationEnabled);
         Assert.Equal(ConnectionState.Authenticated, connection.State);
     }
 

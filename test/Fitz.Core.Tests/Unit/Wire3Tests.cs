@@ -73,10 +73,10 @@ public sealed class Wire3Tests
         await using var transport = new TestQueuedTransport();
         await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws")), () => transport);
         await connection.ConnectAsync();
-        using var queue = new QueueClient(connection);
+        await using var queue = new QueueClient(connection);
         transport.QueueResponse(MessageTypes.QueueEnqueue, [0, 0, 0, 0, 0, 0, 0, 0, 1]);
         // Act
-        var id = await queue.EnqueueWithOptionsAsync("queue://acme/jobs/q", "job"u8.ToArray(), new QueueEnqueueOptions(TtlHours: 2));
+        var id = await queue.EnqueueAsync("queue://acme/jobs/q", "job"u8.ToArray(), new QueueEnqueueOptions(TimeToLive: TimeSpan.FromHours(2)));
         // Assert
         Assert.Equal(1UL, id);
         var frame = FrameCodec.DecodeStrict(transport.SentFrames[1]);
@@ -85,13 +85,35 @@ public sealed class Wire3Tests
         Assert.Equal("queue://acme/jobs/q", new BinaryBufferReader(ExtensionCodec.Decode(frame).Core).ReadString());
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-60)]
+    [InlineData(90)]
+    public async Task ShouldRejectTimeToLiveGivenNonPositiveOrFractionalHoursWhenEnqueueing(int minutes)
+    {
+        // Arrange
+        await using var transport = new TestQueuedTransport();
+        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws")), () => transport);
+        await connection.ConnectAsync();
+        await using var queue = new QueueClient(connection);
+        var options = new QueueEnqueueOptions(TimeToLive: TimeSpan.FromMinutes(minutes));
+
+        // Act
+        var error = await Record.ExceptionAsync(() => queue.EnqueueAsync("queue://acme/jobs/q", "job"u8.ToArray(), options));
+
+        // Assert
+        var argumentError = Assert.IsType<ArgumentOutOfRangeException>(error);
+        Assert.Equal("options", argumentError.ParamName);
+        Assert.Single(transport.SentFrames);
+    }
+
     [Fact]
     public async Task ShouldCloseReservationGivenSuccessfulNack()
     {
         // Arrange
         ushort sentType = 0;
         ReadOnlyMemory<byte> sentPayload = default;
-        var item = new QueueReservedItem("queue://acme/jobs/q", default, 0, 1, 9, (type, payload, _) =>
+        var item = new QueueReservedItem("queue://acme/jobs/q", default, 1, 9, (type, payload, _) =>
         {
             sentType = type;
             sentPayload = payload.ToArray();
@@ -111,7 +133,7 @@ public sealed class Wire3Tests
     {
         // Arrange
         var sent = false;
-        await using var item = new QueueReservedItem("queue://acme/jobs/q", default, 0, 1, 9, (_, _, _) =>
+        await using var item = new QueueReservedItem("queue://acme/jobs/q", default, 1, 9, (_, _, _) =>
         {
             sent = true;
             return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
@@ -145,11 +167,11 @@ public sealed class Wire3Tests
     {
         // Arrange
         await using var transport = new TestQueuedTransport();
-        await using var client = new Client(new ClientConfig(new Uri("ws://queued/ws"), TransportFactory: _ => transport));
+        await using var client = new FitzClient(new ClientConfig(new Uri("ws://queued/ws"), TransportFactory: _ => transport));
         // Act
         await client.ConnectAsync();
         // Assert
-        Assert.Equal(new uint[] { 1, 2 }, ((IClient)client).CapabilityIds);
+        Assert.Equal(new uint[] { 1, 2 }, ((IFitzClient)client).CapabilityIds);
     }
 
     [Fact]
@@ -157,12 +179,12 @@ public sealed class Wire3Tests
     {
         // Arrange
         await using var transport = new TestQueuedTransport();
-        await using var client = new Client(new ClientConfig(new Uri("ws://queued/ws"), TransportFactory: _ => transport));
+        await using var client = new FitzClient(new ClientConfig(new Uri("ws://queued/ws"), TransportFactory: _ => transport));
         await client.ConnectAsync();
         // Act
         await client.CloseAsync();
         // Assert
-        Assert.Empty(((IClient)client).CapabilityIds);
+        Assert.Empty(((IFitzClient)client).CapabilityIds);
     }
 
     [Fact]

@@ -14,7 +14,7 @@ public sealed class CommitPersistenceTests
         const string route = "kv://r/a/x";
         byte[] beginPayload = [];
         byte[] commitPayload = [];
-        using var client = new KvClient((kind, payload, _) =>
+        await using var client = new KvClient((kind, payload, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);

@@ -8,12 +8,16 @@ namespace Cntryl.Fitz;
 /// exception already leaving an <c>await using</c> scope. The registration is restored
 /// automatically after a reconnect.
 /// </remarks>
-[System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The small semaphore remains valid for concurrent callers racing terminal disposal.")]
 public sealed class RpcWorkerRegistration : IAsyncDisposable
 {
+    static readonly TimeSpan CleanupBudget = TimeSpan.FromSeconds(5);
+
     readonly Func<CancellationToken, ValueTask> _unregister;
     readonly SemaphoreSlim _unregisterGate = new(1, 1);
+    readonly CancellationTokenSource _closing = new();
+    readonly CancellationToken _closingToken;
     int _unregistered;
+    int _disposed;
 
     /// <summary>
     /// Initializes the registration.
@@ -26,6 +30,7 @@ public sealed class RpcWorkerRegistration : IAsyncDisposable
     {
         Pattern = pattern;
         _unregister = unregister;
+        _closingToken = _closing.Token;
     }
 
     /// <summary>The route or pattern this worker serves.</summary>
@@ -36,46 +41,62 @@ public sealed class RpcWorkerRegistration : IAsyncDisposable
     /// </summary>
     /// <param name="ct">Cancellation token bounding the unregister request.</param>
     /// <returns>A task that completes once the broker accepts the withdrawal.</returns>
-    public ValueTask UnregisterAsync(CancellationToken ct = default) => UnregisterCoreAsync(ct);
-
-    /// <summary>
-    /// Unregisters on a best-effort basis, bounded to five seconds, and swallows failures.
-    /// </summary>
-    /// <returns>A task that completes once cleanup finishes.</returns>
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Worker disposal is bounded best-effort cleanup and must not replace an exception leaving an await-using scope.")]
-    public async ValueTask DisposeAsync()
-    {
-        try
-        {
-            using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await UnregisterCoreAsync(cleanupDeadline.Token).ConfigureAwait(false);
-        }
-        catch
-        {
-        }
-    }
-
-    async ValueTask UnregisterCoreAsync(CancellationToken ct)
+    /// <remarks>
+    /// Once the registration is disposed this returns without contacting the broker, because
+    /// disposal already unregistered.
+    /// </remarks>
+    public async ValueTask UnregisterAsync(CancellationToken ct = default)
     {
         if (Volatile.Read(ref _unregistered) != 0)
-        {
             return;
-        }
 
-        await _unregisterGate.WaitAsync(ct).ConfigureAwait(false);
+        if (!await _unregisterGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
+            return;
+
         try
         {
-            if (Volatile.Read(ref _unregistered) != 0)
-            {
-                return;
-            }
-
-            await _unregister(ct).ConfigureAwait(false);
-            Volatile.Write(ref _unregistered, 1);
+            await UnregisterOnceAsync(ct).ConfigureAwait(false);
         }
         finally
         {
             _unregisterGate.Release();
         }
+    }
+
+    /// <summary>
+    /// Unregisters on a best-effort basis, bounded to five seconds, and swallows failures.
+    /// </summary>
+    /// <returns>A task that completes once cleanup finishes.</returns>
+    /// <remarks>
+    /// Waits for an in-progress <see cref="UnregisterAsync"/> to finish first. Calls that are
+    /// still queued, or that start afterwards, return without contacting the broker.
+    /// </remarks>
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        await _closing.CancelAsync().ConfigureAwait(false);
+        await _unregisterGate.DrainAndDisposeAsync().ConfigureAwait(false);
+        _closing.Dispose();
+        try
+        {
+            using var cleanupDeadline = new CancellationTokenSource(CleanupBudget);
+            await UnregisterOnceAsync(cleanupDeadline.Token).ConfigureAwait(false);
+        }
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
+        {
+            // Best-effort cleanup must not replace an exception leaving an await-using scope.
+        }
+    }
+
+    // Callers hold the gate, or have drained it during disposal.
+    async ValueTask UnregisterOnceAsync(CancellationToken ct)
+    {
+        if (Volatile.Read(ref _unregistered) != 0)
+            return;
+
+        await _unregister(ct).ConfigureAwait(false);
+        Volatile.Write(ref _unregistered, 1);
     }
 }

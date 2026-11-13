@@ -1,14 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
     <RootNamespace>Cntryl.Fitz.Benchmarks</RootNamespace>
-    <Description>Performance benchmarks for Fitz .NET client using BenchmarkDotNet.</Description>
+    <Description>Performance benchmark classes for Fitz .NET client using BenchmarkDotNet.</Description>
     <IsPackable>false</IsPackable>
-    <!-- BenchmarkDotNet requires public, non-sealed benchmark classes. -->
-    <NoWarn>$(NoWarn);CA1063;CA1515;CA1812;CA1816;CA1822</NoWarn>
+    <!-- BenchmarkDotNet generates a subclass of each benchmark and references it from a
+         generated host project, so benchmarks must be public, non-sealed classes. They live
+         in this library, and bench/Fitz.Benchmarks.Runner is the executable that runs them,
+         so the public types are not an application's API (CA1515). The assembly name must stay
+         Fitz.Benchmarks: Fitz.Core grants it InternalsVisibleTo, and BenchmarkDotNet locates
+         this project file by assembly name. -->
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
+    <PackageReference Include="BenchmarkDotNet" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Fitz.Core\Fitz.Core.csproj" />

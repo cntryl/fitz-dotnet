@@ -5,6 +5,6 @@ public sealed record LeaseListItem(
     string Route,
     string OwnerId,
     ulong HolderIncarnation,
-    string AcquiredAt,
+    DateTimeOffset AcquiredAt,
     TimeSpan ExpiresIn,
     uint Renewals);

@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 
 namespace Cntryl.Fitz.Runtime;
 
@@ -14,6 +13,7 @@ sealed class AsyncHandlerDispatcher
     readonly int _maxConcurrency;
     readonly int _queueCapacity;
     readonly TimeSpan _timeout;
+    readonly TimeProvider _time;
     int _activeCount;
     bool _closed;
 
@@ -23,8 +23,10 @@ sealed class AsyncHandlerDispatcher
         int queueCapacity,
         Action<Exception> onError,
         Action<int, int>? onMetricsChanged = null,
-        Action<int, int>? onSaturated = null)
+        Action<int, int>? onSaturated = null,
+        TimeProvider? timeProvider = null)
     {
+        _time = timeProvider ?? TimeProvider.System;
         _maxConcurrency = maxConcurrency ?? Math.Max(1, Environment.ProcessorCount);
         _timeout = timeout;
         _queueCapacity = queueCapacity < 0 ? 0 : queueCapacity;
@@ -121,12 +123,11 @@ sealed class AsyncHandlerDispatcher
         _ = task.ContinueWith(static (completed, state) => ((AsyncHandlerDispatcher)state!).OnTaskCompleted(completed), this, TaskScheduler.Default);
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The dispatcher isolates arbitrary user callback failures and reports them through the configured error sink.")]
     async Task RunAsync(Func<CancellationToken, ValueTask> handler)
     {
         using var timeoutCts = _timeout == System.Threading.Timeout.InfiniteTimeSpan
             ? null
-            : new CancellationTokenSource(_timeout);
+            : new CancellationTokenSource(_timeout, _time);
         var token = timeoutCts?.Token ?? CancellationToken.None;
 
         try
@@ -137,7 +138,7 @@ sealed class AsyncHandlerDispatcher
         {
             _onError(new TimeoutException($"Async handler timed out after {_timeout.TotalMilliseconds}ms."));
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             _onError(ex);
         }
@@ -167,7 +168,6 @@ sealed class AsyncHandlerDispatcher
         ReportMetrics(activeCount, queuedCount, saturated: false);
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Observability callbacks must not corrupt dispatcher state.")]
     void ReportMetrics(int activeCount, int queuedCount, bool saturated)
     {
         try
@@ -178,7 +178,7 @@ sealed class AsyncHandlerDispatcher
             }
             _onMetricsChanged?.Invoke(activeCount, queuedCount);
         }
-        catch
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
         {
         }
     }
@@ -187,14 +187,13 @@ sealed class AsyncHandlerDispatcher
         Func<CancellationToken, ValueTask> Handler,
         Action<Exception>? Rejection)
     {
-        [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A rejection callback must not interrupt dispatcher shutdown.")]
         internal void Reject(Exception exception)
         {
             try
             {
                 Rejection?.Invoke(exception);
             }
-            catch
+            catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
             {
             }
         }

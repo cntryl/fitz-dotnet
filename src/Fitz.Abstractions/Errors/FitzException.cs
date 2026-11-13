@@ -6,10 +6,10 @@ namespace Cntryl.Fitz;
 public class FitzException : Exception
 {
     /// <summary>Structured error class supplied by the broker, when present.</summary>
-    public byte? ErrorClass { get; private set; }
+    public byte? ErrorClass { get; init; }
 
     /// <summary>Application-effect value supplied by the broker, when present.</summary>
-    public byte? ErrorEffect { get; private set; }
+    public byte? ErrorEffect { get; init; }
 
     /// <summary>Initializes the exception with a message.</summary>
     /// <param name="message">Description of the failure.</param>
@@ -29,11 +29,5 @@ public class FitzException : Exception
     /// <summary>Initializes the exception with a default message.</summary>
     public FitzException()
     {
-    }
-
-    internal void SetWireError(byte errorClass, byte effect)
-    {
-        ErrorClass = errorClass;
-        ErrorEffect = effect;
     }
 }

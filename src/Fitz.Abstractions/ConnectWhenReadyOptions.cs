@@ -1,7 +1,7 @@
 namespace Cntryl.Fitz;
 
 /// <summary>
-/// Bounds the retry loop used by <c>IClient.ConnectWhenReadyAsync</c>.
+/// Bounds the retry loop used by <c>IFitzClient.ConnectWhenReadyAsync</c>.
 /// </summary>
 /// <param name="Timeout">
 /// Total time to keep retrying before giving up. Defaults to the client's configured timeout.

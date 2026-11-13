@@ -1,6 +1,5 @@
 using System.Buffers;
 using System.Buffers.Binary;
-using System.Diagnostics.CodeAnalysis;
 using System.Net.Sockets;
 
 namespace Cntryl.Fitz;
@@ -54,7 +53,6 @@ public sealed class TcpTransport : ITransport
     public Uri Url => _uri;
 
     /// <inheritdoc />
-    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Ownership transfers to the transport only after a successful connection; every failure path disposes the local client.")]
     public async Task ConnectAsync(CancellationToken ct = default)
     {
         if (_client is { Connected: true })
@@ -62,43 +60,36 @@ public sealed class TcpTransport : ITransport
             return;
         }
 
-        var client = new TcpClient
-        {
-            NoDelay = true,
-        };
-
         using var timeoutCts = new CancellationTokenSource(_timeout);
         using var cancellationRegistration = ct.CanBeCanceled
             ? ct.Register(static state => ((CancellationTokenSource)state!).Cancel(), timeoutCts)
             : default;
 
+        // Disposed in finally unless ownership moves to the transport.
+        TcpClient? pending = null;
         try
         {
-            await client.ConnectAsync(_uri.Host, _uri.Port, timeoutCts.Token).ConfigureAwait(false);
-            ConfigureKeepAlive(client.Client);
+            pending = new TcpClient { NoDelay = true };
+            await pending.ConnectAsync(_uri.Host, _uri.Port, timeoutCts.Token).ConfigureAwait(false);
+            ConfigureKeepAlive(pending.Client);
 
-            var previousClient = Interlocked.Exchange(ref _client, client);
-            var previousStream = Interlocked.Exchange(ref _stream, client.GetStream());
+            var stream = pending.GetStream();
+            var previousClient = Interlocked.Exchange(ref _client, pending);
+            pending = null;
+            var previousStream = Interlocked.Exchange(ref _stream, stream);
             if (previousStream is not null)
             {
                 await previousStream.DisposeAsync().ConfigureAwait(false);
             }
             previousClient?.Dispose();
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (OperationCanceledException exception) when (!ct.IsCancellationRequested)
         {
-            client.Dispose();
-            throw;
-        }
-        catch (OperationCanceledException exception)
-        {
-            client.Dispose();
             throw new TimeoutException($"TCP connect exceeded {_timeout}.", exception);
         }
-        catch
+        finally
         {
-            client.Dispose();
-            throw;
+            pending?.Dispose();
         }
     }
 
@@ -317,7 +308,3 @@ public sealed class TcpTransport : ITransport
         }
     }
 }
-
-[SuppressMessage("Design", "CA1032:Implement standard exception constructors", Justification = "This internal transport signal must carry the original cancellation and its caller token.")]
-sealed class TransportSendCanceledException(OperationCanceledException innerException, CancellationToken cancellationToken)
-    : OperationCanceledException("TCP frame write was canceled; the transport is no longer usable.", innerException, cancellationToken);

@@ -1,35 +1,45 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
-using Cntryl.Fitz;
-using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Connection;
 
 /// <summary>
-/// Routes framed responses and notifications to pending requests and handlers.
+/// Routes correlated responses to the requests waiting on them and notification frames to the
+/// handlers registered for their message type.
 /// </summary>
+/// <remarks>
+/// Every request carries a non-zero correlation identifier that the broker echoes on its
+/// response, so any number of requests of the same message type may be in flight at once.
+/// Notifications are copied out of the transport buffer once and fanned out on a dedicated
+/// pump, so a slow handler never stalls the receive loop.
+/// </remarks>
 sealed class Multiplexer : IDisposable
 {
+    /// <summary>Canceled-request identifiers retained before the session is reset instead.</summary>
     internal const int DefaultMaxCorrelationTombstones = 1024;
-    readonly object _gate = new();
-    readonly Dictionary<ushort, LinkedList<PendingRequest>> _pending = [];
-    // Correlated requests are keyed by their identifier, so dispatch is O(1) and independent of how
-    // many requests of the same message type are in flight.
+
+    /// <summary>Notification frames queued for the dispatch pump before delivery fails.</summary>
+    internal const int NotificationQueueCapacity = 1024;
+
+    /// <summary>Notification frames buffered while reconnect state is being restored.</summary>
+    internal const int RestoreBufferCapacity = 1024;
+
+    readonly Lock _gate = new();
     readonly Dictionary<ulong, PendingRequest> _correlated = [];
+    // A canceled or timed-out request's identifier is remembered until its late response
+    // arrives, so that response is recognised and dropped rather than treated as a protocol error.
     readonly HashSet<ulong> _correlationTombstones = [];
     readonly int _maxCorrelationTombstones;
-    readonly Dictionary<ushort, SemaphoreSlim> _requestLanes = [];
-    readonly Dictionary<ushort, Dictionary<long, NotificationHandler>> _notificationHandlers = [];
-    // Handler registration is rare and dispatch is per-frame, so the fan-out array is built once
-    // per registration change instead of once per notification.
-    readonly Dictionary<ushort, NotificationHandler[]> _notificationHandlerSnapshots = [];
+    readonly Dictionary<ushort, Dictionary<long, Action<ReadOnlyMemory<byte>>>> _notificationHandlers = [];
+    // Registration is rare and dispatch is per frame, so the fan-out array is rebuilt on
+    // registration changes rather than on every notification.
+    readonly Dictionary<ushort, Action<ReadOnlyMemory<byte>>[]> _notificationHandlerSnapshots = [];
     readonly Queue<NotificationDispatch> _restoringNotifications = [];
-    readonly Action<Exception>? _onDispatchError;
-    readonly Action<Exception>? _onSessionDesynchronized;
+    readonly Action<Exception> _onDispatchError;
+    readonly Action<Exception> _onSessionReset;
     readonly Channel<NotificationDispatch> _notificationQueue;
     readonly Task _notificationPump;
-    ConnectionState _state = ConnectionState.Disconnected;
-    CancellationTokenSource _laneStateCts = new();
+    readonly TimeProvider _time;
+    bool _connected;
     long _sessionEpoch;
     long _nextHandlerId;
     Exception? _notificationRestoreFailure;
@@ -37,61 +47,41 @@ sealed class Multiplexer : IDisposable
     bool _disposed;
 
     /// <summary>Creates a multiplexer.</summary>
-    /// <param name="onDispatchError">Invoked when dispatching a notification throws.</param>
-    /// <param name="onSessionDesynchronized">
-    /// Invoked when a response cannot be correlated, indicating the session lost sync.
+    /// <param name="onDispatchError">
+    /// Receives a notification handler's failure, or a delivery failure. Must not throw.
+    /// </param>
+    /// <param name="onSessionReset">
+    /// Invoked when the multiplexer abandons the session, so the owner can reconnect. Must not throw.
     /// </param>
     /// <param name="maxCorrelationTombstones">Maximum canceled request identifiers retained before resetting the session.</param>
+    /// <param name="timeProvider">The clock that times out requests; the system clock by default.</param>
     public Multiplexer(
         Action<Exception>? onDispatchError = null,
-        Action<Exception>? onSessionDesynchronized = null,
-        int maxCorrelationTombstones = DefaultMaxCorrelationTombstones)
+        Action<Exception>? onSessionReset = null,
+        int maxCorrelationTombstones = DefaultMaxCorrelationTombstones,
+        TimeProvider? timeProvider = null)
     {
+        _time = timeProvider ?? TimeProvider.System;
         ArgumentOutOfRangeException.ThrowIfNegative(maxCorrelationTombstones);
         _maxCorrelationTombstones = maxCorrelationTombstones;
-        _onDispatchError = onDispatchError;
-        _onSessionDesynchronized = onSessionDesynchronized;
-        _notificationQueue = Channel.CreateBounded<NotificationDispatch>(new BoundedChannelOptions(1024)
+        _onDispatchError = onDispatchError ?? (static _ => { });
+        _onSessionReset = onSessionReset ?? (static _ => { });
+        // Writers use TryWrite, so a full queue fails delivery instead of blocking the receive loop.
+        _notificationQueue = Channel.CreateBounded<NotificationDispatch>(new BoundedChannelOptions(NotificationQueueCapacity)
         {
-            FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,
             SingleWriter = false,
         });
         _notificationPump = Task.Run(PumpNotificationsAsync);
-        _ = _notificationPump.ContinueWith(
-            static task => _ = task.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
     }
 
-    /// <summary>
-    /// Resets request-lane state for a new transport session before auth completes.
-    /// </summary>
-    public void BeginSession()
+    /// <summary>Marks the session authenticated, so requests and frames are accepted.</summary>
+    public void SetConnected()
     {
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (!_laneStateCts.IsCancellationRequested)
-            {
-                return;
-            }
-
-            _laneStateCts = new CancellationTokenSource();
-            _sessionEpoch++;
-        }
-    }
-
-    /// <summary>
-    /// Marks the connection as authenticated and ready to dispatch frames.
-    /// </summary>
-    public void SetConnected()
-    {
-        BeginSession();
-        lock (_gate)
-        {
-            _state = ConnectionState.Authenticated;
+            _connected = true;
         }
     }
 
@@ -112,6 +102,9 @@ sealed class Multiplexer : IDisposable
     /// <summary>
     /// Publishes notifications received while reconnect listeners were restoring new-session state.
     /// </summary>
+    /// <exception cref="SubscriptionBackpressureException">
+    /// The restore buffer or dispatch queue overflowed, so notifications were lost.
+    /// </exception>
     internal void CompleteNotificationRestore()
     {
         Exception? failure;
@@ -123,22 +116,16 @@ sealed class Multiplexer : IDisposable
             }
 
             failure = _notificationRestoreFailure;
-            if (failure is null)
+            while (failure is null && _restoringNotifications.TryDequeue(out var buffered))
             {
-                while (_restoringNotifications.Count > 0)
+                if (!_notificationQueue.Writer.TryWrite(buffered))
                 {
-                    if (!_notificationQueue.Writer.TryWrite(_restoringNotifications.Dequeue()))
-                    {
-                        failure = new SubscriptionBackpressureException(
-                            "The multiplexer notification dispatch queue filled while reconnect state was being restored.");
-                        break;
-                    }
+                    failure = new SubscriptionBackpressureException(
+                        "The multiplexer notification dispatch queue filled while reconnect state was being restored.");
                 }
             }
 
-            _restoringNotifications.Clear();
-            _notificationRestoreFailure = null;
-            _notificationRestoreActive = false;
+            ClearRestoreUnsafe();
         }
 
         if (failure is not null)
@@ -147,62 +134,37 @@ sealed class Multiplexer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Discards notifications owned by an unsuccessful reconnect attempt.
-    /// </summary>
+    /// <summary>Discards notifications owned by an unsuccessful reconnect attempt.</summary>
     internal void AbortNotificationRestore()
     {
         lock (_gate)
         {
-            _restoringNotifications.Clear();
-            _notificationRestoreFailure = null;
-            _notificationRestoreActive = false;
+            ClearRestoreUnsafe();
         }
     }
 
-    /// <summary>
-    /// Marks the connection as disconnected and cancels all pending requests.
-    /// </summary>
+    /// <summary>Marks the session lost and fails every pending request.</summary>
     public void SetDisconnected()
     {
-        CancellationTokenSource? laneStateCts = null;
+        List<PendingRequest> pending;
         lock (_gate)
         {
-            _state = ConnectionState.Disconnected;
-            _restoringNotifications.Clear();
-            _notificationRestoreFailure = null;
-            _notificationRestoreActive = false;
-            if (!_laneStateCts.IsCancellationRequested)
-            {
-                laneStateCts = _laneStateCts;
-            }
+            pending = ResetSessionUnsafe();
         }
 
-        laneStateCts?.Cancel();
-        CancelAll();
+        FailAll(pending, new ConnectionException("Connection closed or reset"));
     }
 
-    /// <summary>
-    /// Registers an owned notification handler for a message type.
-    /// </summary>
-    public IDisposable RegisterNotificationHandler(ushort messageType, Action<byte[]> handler)
-    {
-        ArgumentNullException.ThrowIfNull(handler);
-        return RegisterNotificationHandlerCore(messageType, NotificationHandler.FromOwned(handler));
-    }
-
-    /// <summary>
-    /// Registers a borrowed notification handler for a message type.
-    /// </summary>
-    internal IDisposable RegisterBorrowedNotificationHandler(ushort messageType, Action<ReadOnlyMemory<byte>> handler)
+    /// <summary>Registers a handler for one notification message type.</summary>
+    /// <param name="messageType">Notification message type to receive.</param>
+    /// <param name="handler">
+    /// Receives each payload. The memory is a copy owned by the handler, so it may be retained.
+    /// </param>
+    /// <returns>A registration that stops delivery when disposed.</returns>
+    public IDisposable RegisterNotificationHandler(ushort messageType, Action<ReadOnlyMemory<byte>> handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
 
-        return RegisterNotificationHandlerCore(messageType, NotificationHandler.FromBorrowed(handler));
-    }
-
-    NotificationRegistration RegisterNotificationHandlerCore(ushort messageType, NotificationHandler handler)
-    {
         long handlerId;
         lock (_gate)
         {
@@ -221,23 +183,23 @@ sealed class Multiplexer : IDisposable
         return new NotificationRegistration(this, messageType, handlerId);
     }
 
-    /// <summary>
-    /// Dispatches a response using the correlation identifier from its Wire-2 frame header.
-    /// </summary>
-    /// <returns>
-    /// <see langword="false"/> when no request is waiting on the identifier, which happens when the
-    /// caller already gave up. The frame is then dropped rather than handed to an unrelated waiter.
-    /// </returns>
-    public bool DispatchCorrelated(
-        ulong correlationId,
-        ushort messageType,
-        ReadOnlyMemory<byte> payload,
-        bool responseFinal = true)
+    /// <summary>Completes the request waiting on a correlated response frame.</summary>
+    /// <param name="correlationId">Identifier echoed from the request header.</param>
+    /// <param name="payload">Response payload; copied before the request observes it.</param>
+    /// <param name="responseFinal">
+    /// Whether this is the terminal frame for the identifier. Earlier frames are consumed
+    /// without completing the request.
+    /// </param>
+    /// <exception cref="ProtocolException">
+    /// No request is waiting on the identifier and it was never canceled locally, so the broker
+    /// answered something this session did not ask.
+    /// </exception>
+    public void DispatchCorrelated(ulong correlationId, ReadOnlyMemory<byte> payload, bool responseFinal = true)
     {
         PendingRequest? pending;
         lock (_gate)
         {
-            if (_state != ConnectionState.Authenticated)
+            if (!_connected)
             {
                 throw new ProtocolException($"Unexpected response correlation {correlationId}.");
             }
@@ -245,249 +207,122 @@ sealed class Multiplexer : IDisposable
             if (!_correlated.TryGetValue(correlationId, out pending))
             {
                 if (!_correlationTombstones.Contains(correlationId))
+                {
                     throw new ProtocolException($"Unexpected response correlation {correlationId}.");
+                }
 
                 if (responseFinal)
+                {
                     _correlationTombstones.Remove(correlationId);
-                return true;
+                }
+
+                return;
             }
 
             if (!responseFinal)
             {
-                return true;
+                // Wire 3 deferred response: the broker accepted the request and owes a final
+                // frame on this correlation, so the response timeout no longer applies.
+                pending.Acknowledge();
+                return;
             }
 
             _correlated.Remove(correlationId);
         }
 
-        pending.CompleteResponse(payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray());
-        return true;
+        pending.CompleteResponse(payload.IsEmpty ? [] : payload.ToArray());
     }
 
-    /// <summary>
-    /// Dispatches a frame payload to a pending request or notification handlers.
-    /// </summary>
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Notification handlers are user callbacks and must not break frame dispatch.")]
-    public void Dispatch(ushort messageType, ReadOnlyMemory<byte> payload)
+    /// <summary>Queues a notification frame for every handler registered for its message type.</summary>
+    /// <param name="messageType">Notification message type.</param>
+    /// <param name="payload">Frame payload; copied once before queuing.</param>
+    public void DispatchNotification(ushort messageType, ReadOnlyMemory<byte> payload)
     {
-        PendingRequest? pending = null;
-        NotificationHandler[]? handlers = null;
-        long sessionEpoch;
-
+        NotificationDispatch dispatch;
         lock (_gate)
         {
-            if (_state != ConnectionState.Authenticated)
-            {
-                return;
-            }
-            sessionEpoch = _sessionEpoch;
-
-            if (_pending.TryGetValue(messageType, out var pendingQueue) && pendingQueue.Count > 0)
-            {
-                pending = FindPendingRequestByPayload(pendingQueue, payload);
-                if (pending is null)
-                {
-                    _notificationHandlerSnapshots.TryGetValue(messageType, out handlers);
-                }
-                else
-                {
-                    pendingQueue.Remove(pending.QueueNode!);
-                    if (pendingQueue.Count == 0)
-                    {
-                        _pending.Remove(messageType);
-                    }
-                }
-            }
-
-            if (pending is null && handlers is null)
-            {
-                _notificationHandlerSnapshots.TryGetValue(messageType, out handlers);
-            }
-
-            if (pending is null && handlers is null)
+            if (!_connected || !_notificationHandlerSnapshots.TryGetValue(messageType, out var handlers))
             {
                 return;
             }
 
-            if (pending is null && handlers is not null && _notificationRestoreActive)
+            dispatch = new NotificationDispatch(handlers, payload.IsEmpty ? [] : payload.ToArray(), _sessionEpoch);
+            if (_notificationRestoreActive)
             {
-                if (_restoringNotifications.Count >= 1024)
+                if (_restoringNotifications.Count >= RestoreBufferCapacity)
                 {
                     _notificationRestoreFailure ??= new SubscriptionBackpressureException(
                         "The reconnect notification buffer is full.");
                     return;
                 }
 
-                var restoringPayload = payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray();
-                _restoringNotifications.Enqueue(new NotificationDispatch(handlers, restoringPayload, sessionEpoch));
+                _restoringNotifications.Enqueue(dispatch);
                 return;
             }
         }
 
-        if (pending is not null)
+        if (!_notificationQueue.Writer.TryWrite(dispatch))
         {
-            pending.CompleteResponse(payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray());
-            return;
-        }
-
-        if (handlers is null)
-        {
-            return;
-        }
-
-        var ownedPayload = payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray();
-        if (!_notificationQueue.Writer.TryWrite(new NotificationDispatch(handlers, ownedPayload, sessionEpoch)))
-        {
-            ReportDispatchError(new SubscriptionBackpressureException(
+            _onDispatchError(new SubscriptionBackpressureException(
                 "The multiplexer notification dispatch queue is full."));
         }
     }
 
-    /// <summary>
-    /// Dispatches a buffered payload to a pending request or notification handlers.
-    /// </summary>
-    public void Dispatch(ushort messageType, byte[] payload)
-    {
-        ArgumentNullException.ThrowIfNull(payload);
-        Dispatch(messageType, payload.AsMemory());
-    }
-
-    /// <summary>
-    /// Sends a request frame and awaits the matching response.
-    /// </summary>
+    /// <summary>Sends a correlated request frame and awaits its response.</summary>
+    /// <param name="messageType">Request message type, used in diagnostics.</param>
+    /// <param name="frameData">The encoded frame, already carrying <paramref name="correlationId"/>.</param>
+    /// <param name="send">Writes the frame to the transport.</param>
+    /// <param name="timeout">
+    /// Deadline for the first response frame, or <see cref="Timeout.InfiniteTimeSpan"/>. Once a
+    /// non-final frame arrives, only <paramref name="ct"/> and connection loss end the wait.
+    /// </param>
+    /// <param name="correlationId">Non-zero identifier the broker echoes on the response.</param>
+    /// <param name="ct">Cancellation token for the request.</param>
+    /// <returns>The response payload.</returns>
     public async Task<byte[]> RequestAsync(
         ushort messageType,
         byte[] frameData,
         Func<ReadOnlyMemory<byte>, CancellationToken, Task> send,
         TimeSpan timeout,
-        Func<ReadOnlyMemory<byte>, bool>? responseMatcher = null,
-        ulong correlationId = 0,
+        ulong correlationId,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(send);
+        ArgumentOutOfRangeException.ThrowIfZero(correlationId);
 
-        SemaphoreSlim? lane = null;
-        CancellationTokenSource? laneWaitCts = null;
-
-        // A correlated request needs no lane: its response carries the identifier back, so any
-        // number of the same message type may be in flight at once.
-        if (responseMatcher is null && correlationId == 0)
+        var request = new PendingRequest(this, messageType, correlationId, timeout, ct);
+        lock (_gate)
         {
-            lane = GetLane(messageType);
-
-            // Fast path: an uncontended lane needs no linked token source. Building one costs an
-            // allocation plus two cancellation registrations on every request, and nothing can
-            // cancel a wait that never happens.
-            if (!lane.Wait(0, CancellationToken.None))
+            if (_disposed || !_connected)
             {
-                ct.ThrowIfCancellationRequested();
-                laneWaitCts = CancellationTokenSource.CreateLinkedTokenSource(ct, GetLaneWaitToken());
-                try
-                {
-                    await lane.WaitAsync(laneWaitCts.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (OperationCanceledException)
-                {
-                    throw new ConnectionException("Connection closed or reset");
-                }
+                throw new ConnectionException("Connection closed or reset");
+            }
+
+            if (_correlationTombstones.Contains(correlationId) || !_correlated.TryAdd(correlationId, request))
+            {
+                throw new ProtocolException(
+                    $"Correlation identifier {correlationId} is already in flight on this connection.");
             }
         }
 
-        var tcs = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var request = new PendingRequest(this, messageType, timeout, tcs, responseMatcher, ct)
-        {
-            CorrelationId = correlationId,
-        };
+        using var timeoutCts = timeout == Timeout.InfiniteTimeSpan ? null : new CancellationTokenSource(timeout, _time);
+        using var cancellationRegistration = ct.CanBeCanceled
+            ? ct.Register(static state => ((PendingRequest)state!).Cancel(), request)
+            : default;
+        using var timeoutRegistration = timeoutCts?.Token.Register(static state => ((PendingRequest)state!).Timeout(), request) ?? default;
 
         try
         {
-            lock (_gate)
-            {
-                if (_disposed || _state != ConnectionState.Authenticated || _laneStateCts.IsCancellationRequested)
-                {
-                    throw new ConnectionException("Connection closed or reset");
-                }
-
-                if (correlationId != 0)
-                {
-                    if (_correlationTombstones.Contains(correlationId) || !_correlated.TryAdd(correlationId, request))
-                    {
-                        throw new ProtocolException(
-                            $"Correlation identifier {correlationId} is already in flight on this connection.");
-                    }
-                }
-                else
-                {
-                    if (!_pending.TryGetValue(messageType, out var pendingQueue))
-                    {
-                        pendingQueue = new LinkedList<PendingRequest>();
-                        _pending[messageType] = pendingQueue;
-                    }
-
-                    request.QueueNode = pendingQueue.AddLast(request);
-                }
-
-                request.SessionEpoch = _sessionEpoch;
-            }
-
-            using var timeoutCts = timeout == Timeout.InfiniteTimeSpan ? null : new CancellationTokenSource(timeout);
-            using var cancellationRegistration = ct.CanBeCanceled
-                ? ct.Register(static state => ((PendingRequest)state!).Cancel(), request)
-                : default;
-            using var timeoutRegistration = timeoutCts?.Token.Register(static state => ((PendingRequest)state!).Timeout(), request) ?? default;
-
-            try
-            {
-                ct.ThrowIfCancellationRequested();
-                await send(frameData, ct).ConfigureAwait(false);
-            }
-            catch
-            {
-                request.FailSend();
-                throw;
-            }
-
-            request.MarkSent();
-            return await tcs.Task.ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            await send(frameData, ct).ConfigureAwait(false);
         }
-        finally
+        catch
         {
-            laneWaitCts?.Dispose();
-            lane?.Release();
-        }
-    }
-
-    /// <summary>
-    /// Fails all pending requests with a connection-closed error.
-    /// </summary>
-    public void CancelAll()
-    {
-        List<PendingRequest> pending;
-        lock (_gate)
-        {
-            pending = [];
-            foreach (var queue in _pending.Values)
-            {
-                for (var node = queue.First; node is not null; node = node.Next)
-                {
-                    pending.Add(node.Value);
-                }
-            }
-
-            pending.AddRange(_correlated.Values);
-            _pending.Clear();
-            _correlated.Clear();
-            _correlationTombstones.Clear();
+            request.FailSend();
+            throw;
         }
 
-        foreach (var request in pending)
-        {
-            request.FailConnection(new ConnectionException("Connection closed or reset"));
-        }
+        return await request.Response.ConfigureAwait(false);
     }
 
     /// <summary>Fails every pending request and releases dispatch resources.</summary>
@@ -499,22 +334,17 @@ sealed class Multiplexer : IDisposable
         lock (_gate)
         {
             _disposed = true;
-            _laneStateCts.Dispose();
-            _requestLanes.Clear();
             _notificationHandlers.Clear();
             _notificationHandlerSnapshots.Clear();
-            _correlated.Clear();
-            _correlationTombstones.Clear();
         }
     }
 
     internal async Task CompleteNotificationDispatchAsync(TimeSpan timeout, CancellationToken ct)
     {
         _notificationQueue.Writer.TryComplete();
-        await _notificationPump.WaitAsync(timeout, ct).ConfigureAwait(false);
+        await _notificationPump.WaitAsync(timeout, _time, ct).ConfigureAwait(false);
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Notification callbacks are isolated from the receive loop and reported through the configured diagnostic sink.")]
     async Task PumpNotificationsAsync()
     {
         await foreach (var notification in _notificationQueue.Reader.ReadAllAsync().ConfigureAwait(false))
@@ -523,234 +353,104 @@ sealed class Multiplexer : IDisposable
             {
                 lock (_gate)
                 {
-                    if (_state != ConnectionState.Authenticated || notification.SessionEpoch != _sessionEpoch)
+                    if (!_connected || notification.SessionEpoch != _sessionEpoch)
+                    {
                         break;
+                    }
                 }
+
                 try
                 {
-                    handler.Invoke(notification.Payload);
+                    handler(notification.Payload);
                 }
-                catch (Exception exception)
+                catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
                 {
-                    // One failing subscriber must not stop the others on this frame.
-                    ReportDispatchError(exception);
+                    // Isolation boundary: one failing subscriber must not stop delivery to the
+                    // others, nor end the pump for every later frame.
+                    _onDispatchError(error);
                 }
             }
-        }
-    }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A diagnostic callback must not break notification dispatch.")]
-    void ReportDispatchError(Exception exception)
-    {
-        try
-        {
-            _onDispatchError?.Invoke(exception);
-        }
-        catch
-        {
         }
     }
 
     void RemoveRequest(PendingRequest request)
     {
-        List<PendingRequest>? resetRequests = null;
-        CancellationTokenSource? resetLanes = null;
-        ConnectionException? resetFailure = null;
+        List<PendingRequest>? reset = null;
         lock (_gate)
         {
-            if (request.CorrelationId != 0)
-            {
-                // Only drop the entry if it is still this request's: a late duplicate response must
-                // not evict a newer request that reused the identifier.
-                if (_correlated.TryGetValue(request.CorrelationId, out var registered)
-                    && ReferenceEquals(registered, request))
-                {
-                    _correlated.Remove(request.CorrelationId);
-                    if (request.RetainCorrelationTombstone)
-                    {
-                        if (_correlationTombstones.Count < _maxCorrelationTombstones)
-                        {
-                            _correlationTombstones.Add(request.CorrelationId);
-                        }
-                        else
-                        {
-                            // An arbitrary eviction could turn a valid late reply into an
-                            // unknown response. Reset atomically instead of retaining full
-                            // request objects or unbounded cancellation history.
-                            _state = ConnectionState.Disconnected;
-                            resetFailure = new ConnectionException("The canceled-request correlation history is full; the connection was reset.");
-                            if (!_laneStateCts.IsCancellationRequested)
-                                resetLanes = _laneStateCts;
-                            resetRequests = [];
-                            foreach (var affectedQueue in _pending.Values)
-                                resetRequests.AddRange(affectedQueue);
-                            resetRequests.AddRange(_correlated.Values);
-                            _pending.Clear();
-                            _correlated.Clear();
-                            _correlationTombstones.Clear();
-                            _restoringNotifications.Clear();
-                            _notificationRestoreFailure = null;
-                            _notificationRestoreActive = false;
-                        }
-                    }
-                }
-            }
-
-            if (_pending.TryGetValue(request.MessageType, out var queue))
-            {
-                if (request.QueueNode is not null)
-                {
-                    if (request.QueueNode.List == queue)
-                    {
-                        queue.Remove(request.QueueNode);
-                    }
-
-                    request.QueueNode = null;
-                }
-
-                if (queue.Count == 0)
-                {
-                    _pending.Remove(request.MessageType);
-                }
-            }
-
-            request.QueueNode = null;
-        }
-
-        if (resetFailure is not null)
-        {
-            resetLanes?.Cancel();
-            foreach (var affected in resetRequests!)
-                affected.FailConnection(resetFailure);
-            ReportSessionDesynchronized(resetFailure);
-        }
-    }
-
-    SemaphoreSlim GetLane(ushort messageType)
-    {
-        lock (_gate)
-        {
-            if (_disposed)
-            {
-                throw new ConnectionException("Connection multiplexer is closed");
-            }
-
-            if (_requestLanes.TryGetValue(messageType, out var lane))
-            {
-                return lane;
-            }
-
-            lane = new SemaphoreSlim(1, 1);
-            _requestLanes[messageType] = lane;
-            return lane;
-        }
-    }
-
-    CancellationToken GetLaneWaitToken()
-    {
-        lock (_gate)
-        {
-            if (_disposed)
-            {
-                throw new ConnectionException("Connection multiplexer is closed");
-            }
-
-            return _laneStateCts.Token;
-        }
-    }
-
-    void Desynchronize(PendingRequest abandonedRequest, ConnectionException failure)
-    {
-        List<PendingRequest> affected;
-        CancellationTokenSource? laneStateCts = null;
-        var transitioned = false;
-        lock (_gate)
-        {
-            RemoveRequest(abandonedRequest);
-            if (abandonedRequest.SessionEpoch != _sessionEpoch || _state != ConnectionState.Authenticated)
+            // Only drop the entry if it is still this request's: a late duplicate response must
+            // not evict a newer request that reused the identifier.
+            if (!_correlated.TryGetValue(request.CorrelationId, out var registered) || !ReferenceEquals(registered, request))
             {
                 return;
             }
 
-            _state = ConnectionState.Disconnected;
-            transitioned = true;
-            if (!_laneStateCts.IsCancellationRequested)
+            _correlated.Remove(request.CorrelationId);
+            if (!request.RetainCorrelationTombstone)
             {
-                laneStateCts = _laneStateCts;
+                return;
             }
 
-            affected = [];
-            foreach (var queue in _pending.Values)
+            if (_correlationTombstones.Count < _maxCorrelationTombstones)
             {
-                for (var node = queue.First; node is not null; node = node.Next)
-                {
-                    affected.Add(node.Value);
-                }
+                _correlationTombstones.Add(request.CorrelationId);
+                return;
             }
 
-            affected.AddRange(_correlated.Values);
-            _pending.Clear();
-            _correlated.Clear();
-            _correlationTombstones.Clear();
+            // Evicting an arbitrary identifier could turn a valid late reply into an unknown
+            // response, so reset the session rather than keep unbounded cancellation history.
+            reset = ResetSessionUnsafe();
         }
 
-        laneStateCts?.Cancel();
-        foreach (var request in affected)
-        {
-            request.FailConnection(new ConnectionException(
-                $"Connection reset after response lane {abandonedRequest.MessageType} became desynchronized."));
-        }
-
-        if (transitioned)
-        {
-            ReportSessionDesynchronized(failure);
-        }
+        var failure = new ConnectionException("The canceled-request correlation history is full; the connection was reset.");
+        FailAll(reset, failure);
+        _onSessionReset(failure);
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A session-reset callback must not break request completion.")]
-    void ReportSessionDesynchronized(Exception exception)
+    List<PendingRequest> ResetSessionUnsafe()
     {
-        try
+        // Advancing the epoch makes the pump drop notifications queued for the ended session.
+        _connected = false;
+        _sessionEpoch++;
+        ClearRestoreUnsafe();
+        List<PendingRequest> pending = [.. _correlated.Values];
+        _correlated.Clear();
+        _correlationTombstones.Clear();
+        return pending;
+    }
+
+    void ClearRestoreUnsafe()
+    {
+        _restoringNotifications.Clear();
+        _notificationRestoreFailure = null;
+        _notificationRestoreActive = false;
+    }
+
+    static void FailAll(List<PendingRequest> pending, ConnectionException failure)
+    {
+        foreach (var request in pending)
         {
-            _onSessionDesynchronized?.Invoke(exception);
-        }
-        catch
-        {
+            request.FailConnection(failure);
         }
     }
 
-    /// <summary>
-    /// Rebuilds the immutable fan-out array for a message type. Callers must hold <see cref="_gate"/>.
-    /// </summary>
-    void RebuildHandlerSnapshotUnsafe(ushort messageType, Dictionary<long, NotificationHandler> registrations)
+    void RebuildHandlerSnapshotUnsafe(ushort messageType, Dictionary<long, Action<ReadOnlyMemory<byte>>> registrations)
     {
         if (registrations.Count == 0)
         {
+            _notificationHandlers.Remove(messageType);
             _notificationHandlerSnapshots.Remove(messageType);
             return;
         }
 
-        var snapshot = new NotificationHandler[registrations.Count];
-        registrations.Values.CopyTo(snapshot, 0);
-        _notificationHandlerSnapshots[messageType] = snapshot;
+        _notificationHandlerSnapshots[messageType] = [.. registrations.Values];
     }
 
     void RemoveNotificationHandler(ushort messageType, long handlerId)
     {
         lock (_gate)
         {
-            if (!_notificationHandlers.TryGetValue(messageType, out var handlers))
-            {
-                return;
-            }
-
-            handlers.Remove(handlerId);
-            if (handlers.Count == 0)
-            {
-                _notificationHandlers.Remove(messageType);
-                _notificationHandlerSnapshots.Remove(messageType);
-            }
-            else
+            if (_notificationHandlers.TryGetValue(messageType, out var handlers) && handlers.Remove(handlerId))
             {
                 RebuildHandlerSnapshotUnsafe(messageType, handlers);
             }
@@ -769,42 +469,32 @@ sealed class Multiplexer : IDisposable
             ConnectionFailed,
         }
 
-        readonly object _stateGate = new();
+        readonly Lock _stateGate = new();
         readonly Multiplexer _owner;
         readonly ushort _messageType;
         readonly TimeSpan _timeout;
         readonly CancellationToken _cancellationToken;
-        readonly Func<ReadOnlyMemory<byte>, bool>? _responseMatcher;
+        readonly TaskCompletionSource<byte[]> _promise = new(TaskCreationOptions.RunContinuationsAsynchronously);
         CompletionKind _completionKind;
-        bool _sent;
+        bool _acknowledged;
 
-        internal PendingRequest(
-            Multiplexer owner,
-            ushort messageType,
-            TimeSpan timeout,
-            TaskCompletionSource<byte[]> promise,
-            Func<ReadOnlyMemory<byte>, bool>? responseMatcher,
-            CancellationToken ct)
+        internal PendingRequest(Multiplexer owner, ushort messageType, ulong correlationId, TimeSpan timeout, CancellationToken ct)
         {
             _owner = owner;
             _messageType = messageType;
+            CorrelationId = correlationId;
             _timeout = timeout;
             _cancellationToken = ct;
-            _responseMatcher = responseMatcher;
-            Promise = promise;
         }
 
-        internal LinkedListNode<PendingRequest>? QueueNode { get; set; }
+        internal ulong CorrelationId { get; }
 
-        /// <summary>Non-zero when this request has a Wire-2 header correlation identifier.</summary>
-        internal ulong CorrelationId { get; init; }
+        internal Task<byte[]> Response => _promise.Task;
 
         /// <summary>
-        /// A request with a header correlation is matched by identifier, so cancelling or timing it
-        /// out cannot desynchronize a response lane.
+        /// The broker may still answer a request abandoned after it was sent, so its identifier
+        /// must be remembered.
         /// </summary>
-        internal bool IsIdentified => _responseMatcher is not null || CorrelationId != 0;
-
         internal bool RetainCorrelationTombstone
         {
             get
@@ -816,249 +506,98 @@ sealed class Multiplexer : IDisposable
             }
         }
 
-        internal long SessionEpoch { get; set; }
-
-        internal ushort MessageType => _messageType;
-
-        internal TimeSpan TimeoutDuration => _timeout;
-
-        internal TaskCompletionSource<byte[]> Promise { get; }
-
-        [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A user-supplied response matcher must not break frame dispatch.")]
-        internal bool MatchesResponse(ReadOnlyMemory<byte> payload)
+        internal void Cancel()
         {
-            if (_responseMatcher is null)
+            if (TryComplete(CompletionKind.Canceled))
             {
-                return false;
-            }
-
-            try
-            {
-                return _responseMatcher(payload);
-            }
-            catch
-            {
-                return false;
+                _promise.TrySetCanceled(_cancellationToken);
+                _owner.RemoveRequest(this);
             }
         }
 
-        internal bool IsCorrelated => _responseMatcher is not null;
-
-        internal void Cancel()
+        // A non-final frame arrived; the final one may legitimately take longer than the timeout.
+        internal void Acknowledge()
         {
-            bool desynchronize;
             lock (_stateGate)
             {
-                if (_completionKind != CompletionKind.Active)
-                {
-                    return;
-                }
-
-                _completionKind = CompletionKind.Canceled;
-                desynchronize = _sent && !IsIdentified;
-            }
-
-            Promise.TrySetCanceled(_cancellationToken);
-            if (desynchronize)
-            {
-                _owner.Desynchronize(this, new ConnectionException(
-                    $"Response lane {_messageType} was reset after a sent request was canceled."));
-            }
-            else
-            {
-                _owner.RemoveRequest(this);
+                _acknowledged = true;
             }
         }
 
         internal void Timeout()
         {
-            bool desynchronize;
             lock (_stateGate)
             {
-                if (_completionKind != CompletionKind.Active)
-                {
+                if (_acknowledged)
                     return;
-                }
-
-                _completionKind = CompletionKind.TimedOut;
-                desynchronize = _sent && !IsIdentified;
             }
 
-            var suffix = desynchronize ? "; the response lane was reset to prevent response misdelivery." : string.Empty;
-            Promise.TrySetException(new RequestTimeoutException(
-                $"Request timeout for message type {_messageType} after {_timeout.TotalMilliseconds}ms{suffix}"));
-            if (desynchronize)
+            if (TryComplete(CompletionKind.TimedOut))
             {
-                _owner.Desynchronize(this, new ConnectionException(
-                    $"Response lane {_messageType} timed out and was reset to prevent response misdelivery."));
-            }
-            else
-            {
+                _promise.TrySetException(new RequestTimeoutException(
+                    $"Request timeout for message type {_messageType} after {_timeout.TotalMilliseconds}ms"));
                 _owner.RemoveRequest(this);
             }
         }
 
-        internal void MarkSent()
-        {
-            CompletionKind completionKind;
-            lock (_stateGate)
-            {
-                _sent = true;
-                completionKind = _completionKind;
-            }
-
-            if (IsIdentified || completionKind is not (CompletionKind.Canceled or CompletionKind.TimedOut))
-            {
-                return;
-            }
-
-            var reason = completionKind == CompletionKind.Canceled
-                ? $"Response lane {_messageType} was reset after a sent request was canceled."
-                : $"Response lane {_messageType} timed out and was reset to prevent response misdelivery.";
-            _owner.Desynchronize(this, new ConnectionException(reason));
-        }
-
         internal void CompleteResponse(byte[] payload)
         {
-            lock (_stateGate)
+            if (TryComplete(CompletionKind.Response))
             {
-                if (_completionKind != CompletionKind.Active)
-                {
-                    return;
-                }
-
-                _completionKind = CompletionKind.Response;
+                _promise.TrySetResult(payload);
             }
-
-            Promise.TrySetResult(payload);
         }
 
         internal void FailSend()
         {
-            lock (_stateGate)
-            {
-                if (_completionKind == CompletionKind.Active)
-                {
-                    _completionKind = CompletionKind.SendFailed;
-                }
-            }
-
+            TryComplete(CompletionKind.SendFailed);
             _owner.RemoveRequest(this);
+
+            // A timeout or cancellation can fault the promise while the send is still running.
+            // The caller sees the send failure instead, so observe the promise's own outcome here.
+            _ = _promise.Task.Exception;
         }
 
         internal void FailConnection(ConnectionException failure)
+        {
+            if (TryComplete(CompletionKind.ConnectionFailed))
+            {
+                _promise.TrySetException(failure);
+            }
+        }
+
+        bool TryComplete(CompletionKind kind)
         {
             lock (_stateGate)
             {
                 if (_completionKind != CompletionKind.Active)
                 {
-                    return;
+                    return false;
                 }
 
-                _completionKind = CompletionKind.ConnectionFailed;
+                _completionKind = kind;
+                return true;
             }
-
-            Promise.TrySetException(failure);
-        }
-    }
-
-    static PendingRequest? FindPendingRequestByPayload(
-        LinkedList<PendingRequest> pendingQueue,
-        ReadOnlyMemory<byte> payload)
-    {
-        if (pendingQueue.Count <= 0)
-        {
-            return null;
-        }
-
-        var hasCorrelatedRequest = false;
-        for (var node = pendingQueue.First; node is not null; node = node.Next)
-        {
-            if (node.Value.IsCorrelated)
-            {
-                hasCorrelatedRequest = true;
-                break;
-            }
-        }
-
-        if (!hasCorrelatedRequest)
-        {
-            return pendingQueue.First!.Value;
-        }
-
-        for (var candidateNode = pendingQueue.First; candidateNode is not null; candidateNode = candidateNode.Next)
-        {
-            var candidate = candidateNode.Value;
-            if (!candidate.IsCorrelated)
-            {
-                continue;
-            }
-
-            if (candidate.MatchesResponse(payload))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
-    }
-
-    readonly struct NotificationHandler
-    {
-        readonly Action<byte[]>? _ownedHandler;
-        readonly Action<ReadOnlyMemory<byte>>? _borrowedHandler;
-
-        NotificationHandler(Action<byte[]>? ownedHandler, Action<ReadOnlyMemory<byte>>? borrowedHandler)
-        {
-            _ownedHandler = ownedHandler;
-            _borrowedHandler = borrowedHandler;
-        }
-
-        internal static NotificationHandler FromOwned(Action<byte[]> handler) => new(handler, null);
-
-        internal static NotificationHandler FromBorrowed(Action<ReadOnlyMemory<byte>> handler) => new(null, handler);
-
-        internal void Invoke(byte[] payload)
-        {
-            if (_borrowedHandler is not null)
-            {
-                _borrowedHandler(payload);
-                return;
-            }
-
-            _ownedHandler!(payload);
         }
     }
 
     /// <summary>
     /// One received notification frame and the handlers it fans out to. Queuing per frame rather
     /// than per handler keeps the pump queue's capacity a count of frames, so a burst to many
-    /// subscribers no longer consumes capacity proportional to the subscriber count.
+    /// subscribers does not consume capacity proportional to the subscriber count.
     /// </summary>
-    readonly record struct NotificationDispatch(NotificationHandler[] Handlers, byte[] Payload, long SessionEpoch);
+    readonly record struct NotificationDispatch(Action<ReadOnlyMemory<byte>>[] Handlers, byte[] Payload, long SessionEpoch);
 
-    sealed class NotificationRegistration : IDisposable
+    sealed class NotificationRegistration(Multiplexer owner, ushort messageType, long handlerId) : IDisposable
     {
-        readonly Multiplexer _owner;
-        readonly ushort _messageType;
-        readonly long _handlerId;
         int _disposed;
-
-        internal NotificationRegistration(Multiplexer owner, ushort messageType, long handlerId)
-        {
-            _owner = owner;
-            _messageType = messageType;
-            _handlerId = handlerId;
-        }
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
-                return;
+                owner.RemoveNotificationHandler(messageType, handlerId);
             }
-
-            _owner.RemoveNotificationHandler(_messageType, _handlerId);
         }
     }
 }

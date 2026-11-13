@@ -16,10 +16,15 @@ public interface ILeaseClient
     /// <param name="route">Exact <c>lease://realm/area/resource</c> route. Patterns are not accepted.</param>
     /// <param name="ttl">Initial time-to-live. Must be a whole number of seconds.</param>
     /// <param name="wait">
-    /// How long to wait for a contended lease before failing. Zero fails immediately.
+    /// How long to wait in the broker's FIFO queue for a contended lease, in whole seconds up to
+    /// 30. Zero fails immediately. Waiting acquisitions on different routes proceed concurrently.
     /// </param>
-    /// <param name="ct">Cancellation token for the acquisition.</param>
+    /// <param name="ct">
+    /// Cancellation token for the acquisition. Cancelling a queued acquisition abandons it
+    /// locally; if the broker grants it afterwards, the lease is held until its TTL expires.
+    /// </param>
     /// <returns>A handle holding the lease.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="wait"/> exceeds 30 seconds.</exception>
     Task<ILease> AcquireAsync(string route, TimeSpan ttl, TimeSpan wait = default, CancellationToken ct = default);
 
     /// <summary>

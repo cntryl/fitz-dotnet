@@ -1,6 +1,3 @@
-using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
-using System.Threading.Channels;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
@@ -11,42 +8,29 @@ namespace Cntryl.Fitz.Domains.Notice;
 /// The default <see cref="INoticeClient"/>: notice publish and subscribe.
 /// </summary>
 /// <remarks>
-/// Obtained from <see cref="Client"/> rather than constructed directly. The public
+/// Obtained from <see cref="FitzClient"/> rather than constructed directly. The public
 /// constructors exist for testing against a transport delegate.
 /// </remarks>
-sealed class NoticeClient : INoticeClient, IDisposable
+sealed class NoticeClient : INoticeClient, IAsyncDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _request;
     readonly Func<ushort, ReadOnlyMemory<byte>, byte, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _requestWithFlags;
-    readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
-    readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
-    readonly int _subscriptionBufferCapacity;
-    readonly NotificationActivationBuffer _activationBuffer;
-    readonly FitzConnection? _connection;
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
-    readonly SemaphoreSlim _subscriptionGate = new(1, 1);
-    readonly object _gate = new();
-    readonly Dictionary<string, NoticeSubscriptionState> _subscriptionsByPattern = [with(StringComparer.Ordinal)];
-    readonly Dictionary<ulong, string> _patternsBySubscriptionId = [];
-    IDisposable? _notificationRegistration;
-    bool _notificationHandlerInitialized;
     int _disposed;
-    long _nextHandleId;
-    readonly IDisposable? _reconnectRegistration;
+    readonly SubscriptionTable<NoticeMessage> _subscriptions;
+    readonly IDisposable? _connectionBinding;
 
     internal NoticeClient(FitzConnection connection)
         : this(
             connection.SendAsync,
             connection.RequestAsync,
-            connection.RegisterBorrowedNotificationHandler,
+            connection.RegisterNotificationHandler,
             (handler, rejected) => connection.TryDispatchAsyncHandler("notice", handler, rejected),
             connection.SubscriptionBufferCapacity,
-            connection.RequestWithFlagsAsync)
+            connection.RequestWithFlagsAsync,
+            connection.Time)
     {
-        _reconnectRegistration = connection.OnReconnect(HandleReconnect);
-        _connection = connection;
-        connection.NotificationDeliveryFailed += FailNotificationDelivery;
+        _connectionBinding = _subscriptions.AttachTo(connection);
     }
 
     /// <summary>
@@ -72,15 +56,23 @@ sealed class NoticeClient : INoticeClient, IDisposable
         Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null,
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
         int subscriptionBufferCapacity = SubscriptionRegistration<NoticeMessage>.DefaultCapacity,
-        Func<ushort, ReadOnlyMemory<byte>, byte, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? requestWithFlags = null)
+        Func<ushort, ReadOnlyMemory<byte>, byte, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? requestWithFlags = null,
+        TimeProvider? timeProvider = null)
     {
         _send = send;
         _request = request;
         _requestWithFlags = requestWithFlags;
-        _registerNotificationHandler = registerNotificationHandler;
-        _dispatchAsyncHandler = dispatchAsyncHandler;
-        _subscriptionBufferCapacity = subscriptionBufferCapacity;
-        _activationBuffer = new NotificationActivationBuffer(subscriptionBufferCapacity);
+        _subscriptions = new SubscriptionTable<NoticeMessage>(
+            this,
+            "notice",
+            MessageTypes.NoticeNotify,
+            registerNotificationHandler,
+            dispatchAsyncHandler,
+            subscriptionBufferCapacity,
+            SubscribeWireAsync,
+            UnsubscribeWireAsync,
+            DecodeNotification,
+            timeProvider);
     }
 
     /// <inheritdoc />
@@ -89,13 +81,12 @@ sealed class NoticeClient : INoticeClient, IDisposable
         ThrowIfDisposed();
         if (!RouteValidation.IsFixedRoute(route, "notice", 3))
         {
-            throw new NoticeException($"route '{route}' must be notice://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+            throw new ArgumentException($"route '{route}' must be notice://{{realm}}/{{area}}/{{resource}}", nameof(route));
         }
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        writer.WriteU32((uint)body.Length);
-        writer.WriteBytes(body.Span);
+        writer.WriteLengthPrefixed(body.Span);
         await _send(MessageTypes.NoticePublish, writer.WrittenMemory, ct).ConfigureAwait(false);
     }
 
@@ -105,17 +96,16 @@ sealed class NoticeClient : INoticeClient, IDisposable
         ThrowIfDisposed();
         if (!RouteValidation.IsFixedRoute(route, "notice", 3))
         {
-            throw new NoticeException($"route '{route}' must be notice://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+            throw new ArgumentException($"route '{route}' must be notice://{{realm}}/{{area}}/{{resource}}", nameof(route));
         }
         if (_requestWithFlags is null)
         {
-            throw new InvalidOperationException("Request support with Wire-2 flags is required for acknowledged notice publish");
+            throw new InvalidOperationException("Request support with frame flags is required for acknowledged notice publish");
         }
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        writer.WriteU32((uint)body.Length);
-        writer.WriteBytes(body.Span);
+        writer.WriteLengthPrefixed(body.Span);
         var response = await _requestWithFlags(
             MessageTypes.NoticePublish,
             writer.WrittenMemory,
@@ -129,94 +119,27 @@ sealed class NoticeClient : INoticeClient, IDisposable
     }
 
     /// <inheritdoc />
-    public async Task<NoticeSubscription> SubscribeAsync(string pattern, CancellationToken ct = default)
+    public Task<NoticeSubscription> SubscribeAsync(string pattern, CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        var buffer = new AsyncSubscriptionBuffer<NoticeMessage>(pattern, _subscriptionBufferCapacity);
-        var registration = await SubscribeAsync(pattern, (notification, _) =>
-        {
-            buffer.Write(notification);
-            return ValueTask.CompletedTask;
-        }, ct).ConfigureAwait(false);
-        buffer.ObserveCompletion(registration.Completion);
-        return new NoticeSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
-        {
-            await registration.UnsubscribeAsync(token).ConfigureAwait(false);
-            buffer.Complete();
-        }, registration.Completion);
+        EnsurePattern(pattern);
+        return _subscriptions.SubscribeBufferedAsync(
+            pattern,
+            static (pattern, notifications, unsubscribe, completion, time) => new NoticeSubscription(pattern, notifications, unsubscribe, completion, time),
+            preDispatch: null,
+            ct);
     }
 
     internal async Task<NoticeSubscription> SubscribeAsync(string pattern, Func<NoticeMessage, CancellationToken, ValueTask> handler, CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        ArgumentNullException.ThrowIfNull(handler);
-        if (!RouteValidation.IsRegistrationPattern(pattern, "notice"))
-        {
-            throw new NoticeException($"pattern '{pattern}' must use whole-segment * or ** wildcards", "INVALID_ROUTE");
-        }
-
-        EnsureNotificationHandlerInitialized();
-
-        var channel = SubscriptionRegistration<NoticeMessage>.CreateChannel(_subscriptionBufferCapacity);
-        SubscriptionRegistration<NoticeMessage>? registration = null;
-
-        var handleId = Interlocked.Increment(ref _nextHandleId);
-        var gateAcquired = false;
-        try
-        {
-            registration = new SubscriptionRegistration<NoticeMessage>(
-                channel,
-                "notice",
-                pattern,
-                token => UnsubscribeAsync(pattern, handleId, token));
-            await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-            gateAcquired = true;
-            ThrowIfDisposed();
-
-            lock (_gate)
-            {
-                ThrowIfDisposed();
-                if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
-                {
-                    existingSubscription.Writers[handleId] = registration;
-                    var existingHandle = CreateSubscription(pattern, handleId, registration.Completion);
-                    SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
-                    registration = null;
-                    return existingHandle;
-                }
-            }
-
-            using var activation = _activationBuffer.Begin(pattern);
-            var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
-            var subscription = new NoticeSubscriptionState(subscriptionId);
-            subscription.Writers[handleId] = registration;
-            lock (_gate)
-            {
-                ThrowIfDisposed();
-                _subscriptionsByPattern[pattern] = subscription;
-                _patternsBySubscriptionId[subscriptionId] = pattern;
-                if (_activationBuffer.Replay(subscriptionId, HandleNotification) is { } activationError)
-                    _ = registration.FailAsync(activationError);
-            }
-
-            var handle = CreateSubscription(pattern, handleId, registration.Completion);
-            SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
-            registration = null;
-            return handle;
-        }
-        finally
-        {
-            if (gateAcquired)
-            {
-                _subscriptionGate.Release();
-            }
-
-            registration?.Dispose();
-        }
+        EnsurePattern(pattern);
+        var binding = await _subscriptions.SubscribeAsync(pattern, handler, preDispatch: null, ct).ConfigureAwait(false);
+        return new NoticeSubscription(pattern, binding.Unsubscribe, binding.Completion, _subscriptions.Time);
     }
 
     /// <inheritdoc />
-    public async Task UnsubscribeAllAsync(CancellationToken ct = default)
+    public Task UnsubscribeAllAsync(CancellationToken ct = default)
     {
         ThrowIfDisposed();
         if (_request is null)
@@ -224,97 +147,15 @@ sealed class NoticeClient : INoticeClient, IDisposable
             throw new InvalidOperationException("Request support is required for notice unsubscription");
         }
 
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            var response = await _request(MessageTypes.NoticeUnsubscribeAll, ReadOnlyMemory<byte>.Empty, ct).ConfigureAwait(false);
-            var reader = NoticeWireHelpers.ReadSuccess(response, "UNSUBSCRIBE_ALL");
-            if (!reader.IsEof)
-            {
-                throw new NoticeException("UNSUBSCRIBE_ALL response has trailing bytes", "UNSUBSCRIBE_ALL_INVALID_RESPONSE");
-            }
-
-            List<SubscriptionRegistration<NoticeMessage>> registrations;
-            lock (_gate)
-            {
-                registrations = _subscriptionsByPattern.Values
-                    .SelectMany(subscription => subscription.Writers.Values)
-                    .ToList();
-                _subscriptionsByPattern.Clear();
-                _patternsBySubscriptionId.Clear();
-            }
-
-            foreach (var registration in registrations)
-            {
-                registration.Dispose();
-            }
-        }
-        finally
-        {
-            _subscriptionGate.Release();
-        }
+        return _subscriptions.RemoveAllAsync(UnsubscribeAllWireAsync, ct);
     }
 
-    NoticeSubscription CreateSubscription(
-        string pattern,
-        long handleId,
-        Task completion)
+    static void EnsurePattern(string pattern)
     {
-        return new NoticeSubscription(
-            pattern,
-            ct => UnsubscribeAsync(pattern, handleId, ct),
-            completion);
-    }
-
-    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Ownership intentionally remains in the subscription table when the wire unsubscribe fails.")]
-    async ValueTask UnsubscribeAsync(string pattern, long handleId, CancellationToken ct)
-    {
-        SubscriptionRegistration<NoticeMessage>? registration = null;
-
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-        try
+        if (!RouteValidation.IsRegistrationPattern(pattern, "notice"))
         {
-            ulong subscriptionId;
-            var shouldUnsubscribe = false;
-            lock (_gate)
-            {
-                if (!_subscriptionsByPattern.TryGetValue(pattern, out var subscription) ||
-                    !subscription.Writers.TryGetValue(handleId, out registration))
-                {
-                    return;
-                }
-
-                subscriptionId = subscription.SubscriptionId;
-                shouldUnsubscribe = subscription.Writers.Count == 1;
-            }
-
-            if (shouldUnsubscribe)
-            {
-                await UnsubscribeWireAsync(subscriptionId, ct).ConfigureAwait(false);
-            }
-
-            lock (_gate)
-            {
-                if (!_subscriptionsByPattern.TryGetValue(pattern, out var subscription) ||
-                    !subscription.Writers.Remove(handleId, out registration))
-                {
-                    return;
-                }
-
-                if (subscription.Writers.Count == 0)
-                {
-                    _subscriptionsByPattern.Remove(pattern);
-                    _patternsBySubscriptionId.Remove(subscription.SubscriptionId);
-                }
-            }
+            throw new ArgumentException($"pattern '{pattern}' must use whole-segment * or ** wildcards", nameof(pattern));
         }
-        finally
-        {
-            _subscriptionGate.Release();
-        }
-
-        registration?.Dispose();
-
     }
 
     async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken ct)
@@ -344,7 +185,8 @@ sealed class NoticeClient : INoticeClient, IDisposable
         return subscriptionId;
     }
 
-    async Task UnsubscribeWireAsync(ulong subscriptionId, CancellationToken ct)
+    // NOTICE unsubscribes by subscription id; the pattern is not on the wire.
+    async Task UnsubscribeWireAsync(string pattern, ulong subscriptionId, CancellationToken ct)
     {
         if (_request is null)
         {
@@ -362,204 +204,42 @@ sealed class NoticeClient : INoticeClient, IDisposable
         }
     }
 
-    void FailNotificationDelivery(Exception error)
+    async Task UnsubscribeAllWireAsync(CancellationToken ct)
     {
-        lock (_gate)
+        var response = await _request!(MessageTypes.NoticeUnsubscribeAll, ReadOnlyMemory<byte>.Empty, ct).ConfigureAwait(false);
+        var reader = NoticeWireHelpers.ReadSuccess(response, "UNSUBSCRIBE_ALL");
+        if (!reader.IsEof)
         {
-            _activationBuffer.Fail(error);
-            var registrations = _subscriptionsByPattern.Values.SelectMany(subscription => subscription.Writers.Values).ToArray();
-            _subscriptionsByPattern.Clear();
-            _patternsBySubscriptionId.Clear();
-            foreach (var registration in registrations)
-                _ = registration.FailAsync(error);
+            throw new NoticeException("UNSUBSCRIBE_ALL response has trailing bytes", "UNSUBSCRIBE_ALL_INVALID_RESPONSE");
         }
     }
 
-    void EnsureNotificationHandlerInitialized()
+    static DecodedNotification<NoticeMessage>? DecodeNotification(ReadOnlyMemory<byte> payload)
     {
-        lock (_gate)
-        {
-            ThrowIfDisposed();
-            if (_notificationHandlerInitialized)
-            {
-                return;
-            }
-
-            if (_registerNotificationHandler is null)
-            {
-                throw new InvalidOperationException("Notification handlers not configured for subscription support");
-            }
-
-            _notificationRegistration = _registerNotificationHandler(MessageTypes.NoticeNotify, HandleNotification);
-            _notificationHandlerInitialized = true;
-        }
-    }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Malformed broker notifications are dropped without disrupting the receive loop.")]
-    void HandleNotification(ReadOnlyMemory<byte> payload)
-    {
-        try
-        {
-            var reader = new BinaryBufferReader(payload);
-            var subscriptionId = reader.ReadU64();
-            var route = reader.ReadString();
-            var bodyLength = reader.ReadU32();
-            var body = reader.ReadBytes(bodyLength);
-            if (!reader.IsEof)
-            {
-                return;
-            }
-            SubscriptionRegistration<NoticeMessage>[] registrations;
-            lock (_gate)
-            {
-                if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
-                    !_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
-                {
-                    _activationBuffer.Buffer(subscriptionId, route, payload);
-                    return;
-                }
-
-                registrations = [.. subscription.Writers.Values];
-            }
-
-            var message = new NoticeMessage(route, body);
-            foreach (var registration in registrations)
-            {
-                if (!registration.Channel.Writer.TryWrite(message))
-                    _ = registration.FailOverflowAsync();
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    async ValueTask HandleReconnect(CancellationToken ct) => await RestoreSubscriptionsAsync(ct).ConfigureAwait(false);
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
-    async ValueTask RestoreSubscriptionsAsync(CancellationToken ct)
-    {
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            List<(string Pattern, NoticeSubscriptionState Subscription)> snapshot;
-            lock (_gate)
-            {
-                if (_subscriptionsByPattern.Count == 0)
-                {
-                    return;
-                }
-
-                snapshot = [with(_subscriptionsByPattern.Count)];
-                foreach (var entry in _subscriptionsByPattern)
-                {
-                    snapshot.Add((entry.Key, entry.Value.Clone()));
-                }
-            }
-
-            var restoredSubscriptions = new Dictionary<string, NoticeSubscriptionState>(StringComparer.Ordinal);
-            var restoredPatternsById = new Dictionary<ulong, string>();
-
-            try
-            {
-                foreach (var entry in snapshot)
-                {
-                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, ct).ConfigureAwait(false);
-                    restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
-                    restoredPatternsById[subscriptionId] = entry.Pattern;
-                }
-            }
-            catch
-            {
-                foreach (var subscriptionId in restoredPatternsById.Keys)
-                {
-                    try
-                    {
-                        await UnsubscribeWireAsync(subscriptionId, CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        // Best effort; preserve the original restore failure.
-                    }
-                }
-
-                throw;
-            }
-
-            lock (_gate)
-            {
-                _subscriptionsByPattern.Clear();
-                _patternsBySubscriptionId.Clear();
-
-                foreach (var entry in restoredSubscriptions)
-                {
-                    _subscriptionsByPattern[entry.Key] = entry.Value;
-                }
-
-                foreach (var entry in restoredPatternsById)
-                {
-                    _patternsBySubscriptionId[entry.Key] = entry.Value;
-                }
-            }
-        }
-        finally
-        {
-            _subscriptionGate.Release();
-        }
+        var reader = new BinaryBufferReader(payload);
+        var subscriptionId = reader.ReadU64();
+        var route = reader.ReadString();
+        var bodyLength = reader.ReadU32();
+        var body = reader.ReadBytes(bodyLength);
+        return reader.IsEof
+            ? new DecodedNotification<NoticeMessage>(subscriptionId, route, new NoticeMessage(route, body))
+            : null;
     }
 
     /// <summary>Releases local resources and ends any registrations this client owns.</summary>
-    public void Dispose()
+    /// <returns>A task that completes once an in-progress subscription change has finished.</returns>
+    /// <remarks>Queued and later subscription changes fail with <see cref="ObjectDisposedException"/>;
+    /// unsubscribes and reconnect restoration become no-ops.</remarks>
+    public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
 
-        _connection?.NotificationDeliveryFailed -= FailNotificationDelivery;
-        _activationBuffer.Dispose();
-        _notificationRegistration?.Dispose();
-        _reconnectRegistration?.Dispose();
-        lock (_gate)
-        {
-            foreach (var subscription in _subscriptionsByPattern.Values)
-            {
-                foreach (var registration in subscription.Writers.Values)
-                {
-                    registration.Dispose();
-                }
-            }
-
-            _subscriptionsByPattern.Clear();
-            _patternsBySubscriptionId.Clear();
-        }
-
+        _connectionBinding?.Dispose();
+        await _subscriptions.DisposeAsync().ConfigureAwait(false);
     }
 
     void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-
-    sealed class NoticeSubscriptionState
-    {
-        public NoticeSubscriptionState(ulong subscriptionId)
-        {
-            SubscriptionId = subscriptionId;
-        }
-
-        public ulong SubscriptionId { get; init; }
-
-        public Dictionary<long, SubscriptionRegistration<NoticeMessage>> Writers { get; } = [];
-
-        public NoticeSubscriptionState Clone() => Clone(SubscriptionId);
-
-        public NoticeSubscriptionState Clone(ulong subscriptionId)
-        {
-            var clone = new NoticeSubscriptionState(subscriptionId);
-            foreach (var entry in Writers)
-            {
-                clone.Writers.Add(entry.Key, entry.Value);
-            }
-
-            return clone;
-        }
-    }
 }

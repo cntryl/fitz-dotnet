@@ -20,7 +20,7 @@ public sealed class NotificationDeliveryTests
         Action<ReadOnlyMemory<byte>>? notify = null;
         var firstReply = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
         var attempts = 0;
-        using var client = new StreamClient(
+        await using var client = new StreamClient(
             (_, _, _) => ++attempts == 1 ? new ValueTask<ReadOnlyMemory<byte>>(firstReply.Task) : ValueTask.FromResult<ReadOnlyMemory<byte>>(SubscriptionReply()),
             (_, handler) => { notify = handler; return new TestRegistration(); });
         const string route = "stream://prod/app/events";
@@ -55,15 +55,15 @@ public sealed class NotificationDeliveryTests
             release.Wait(TimeSpan.FromSeconds(10));
         });
         var received = new List<byte>();
-        using var registration = mux.RegisterNotificationHandler(MessageTypes.StreamNotify, payload => received.Add(payload[0]));
-        mux.Dispatch(MessageTypes.NoticeNotify, new byte[] { 0 });
+        using var registration = mux.RegisterNotificationHandler(MessageTypes.StreamNotify, payload => received.Add(payload.Span[0]));
+        mux.DispatchNotification(MessageTypes.NoticeNotify, new byte[] { 0 });
         await blocked.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        mux.Dispatch(MessageTypes.StreamNotify, new byte[] { 1 });
+        mux.DispatchNotification(MessageTypes.StreamNotify, new byte[] { 1 });
 
         // Act
         mux.SetDisconnected();
         mux.SetConnected();
-        mux.Dispatch(MessageTypes.StreamNotify, new byte[] { 2 });
+        mux.DispatchNotification(MessageTypes.StreamNotify, new byte[] { 2 });
         release.Set();
         await mux.CompleteNotificationDispatchAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
 
@@ -95,7 +95,7 @@ public sealed class NotificationDeliveryTests
             notify = handler;
             return new TestRegistration();
         }
-        using IDisposable client = domain switch
+        await using IAsyncDisposable client = domain switch
         {
             "stream" => new StreamClient(Request, Register, subscriptionBufferCapacity: 1),
             "queue" => new QueueClient(Request, Register, subscriptionBufferCapacity: 1),
@@ -159,7 +159,7 @@ public sealed class NotificationDeliveryTests
     {
         // Arrange
         Action<ReadOnlyMemory<byte>>? notify = null;
-        using var client = new QueueClient(
+        await using var client = new QueueClient(
             (_, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(SubscriptionReply()),
             (_, handler) => { notify = handler; return new TestRegistration(); });
         var subscription = await client.SubscribeAsync("queue://prod/app/events");
@@ -171,11 +171,9 @@ public sealed class NotificationDeliveryTests
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         await using var reader = subscription.GetAsyncEnumerator(deadline.Token);
         Assert.True(await reader.MoveNextAsync());
-        var payload = new BinaryBufferReader(reader.Current.Payload);
-        Assert.Equal(1UL, payload.ReadU64());
-        Assert.Equal(2UL, payload.ReadU64());
-        Assert.Equal(3UL, payload.ReadU64());
-        Assert.True(payload.IsEof);
+        Assert.Equal(1UL, reader.Current.Ready);
+        Assert.Equal(2UL, reader.Current.Delayed);
+        Assert.Equal(3UL, reader.Current.InFlight);
     }
 
     [Theory]
@@ -191,7 +189,7 @@ public sealed class NotificationDeliveryTests
         await using var transport = new TestQueuedTransport();
         await using var connection = new FitzConnection(new ClientConfig(
             new Uri("ws://queued/ws"), Reconnect: new ReconnectOptions(Enabled: false)), () => transport);
-        using IDisposable client = domain switch
+        await using IAsyncDisposable client = domain switch
         {
             "stream" => new StreamClient(connection),
             "queue" => new QueueClient(connection),

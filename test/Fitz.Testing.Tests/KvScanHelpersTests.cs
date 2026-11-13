@@ -75,22 +75,10 @@ public sealed class KvScanHelpersTests
         Assert.True(transaction.Queries[1].StartExclusive);
     }
 
-    [Fact]
-    public async Task ShouldFailLoudlyGivenImplementationThatDoesNotReportRoute()
-    {
-        // Arrange
-        await using IKvTransaction transaction = new EmptyContinuationTransaction();
-
-        // Act
-        var error = Assert.Throws<NotSupportedException>(() => transaction.Route);
-
-        // Assert
-        Assert.Contains(nameof(EmptyContinuationTransaction), error.Message, StringComparison.Ordinal);
-        Assert.Contains("IKvTransaction.Route", error.Message, StringComparison.Ordinal);
-    }
-
     sealed class EmptyContinuationTransaction : IKvTransaction
     {
+        public string Route => "kv://test/app/resource";
+
         public Task<KvScanResult> ScanAsync(KvScanQuery query, CancellationToken ct = default) =>
             Task.FromResult(new KvScanResult([], HasMore: true));
 
@@ -106,6 +94,7 @@ public sealed class KvScanHelpersTests
 
     sealed class RecordingContinuationTransaction : IKvTransaction
     {
+        public string Route => "kv://test/app/resource";
         public bool SupportsExclusiveScan { get; init; }
         public List<KvScanQuery> Queries { get; } = [];
 

@@ -67,7 +67,7 @@ public sealed class HotPathRegressionTests
         }
 
         // Act
-        mux.Dispatch(MessageTypes.NoticeNotify, new byte[] { 0x1, 0x2 });
+        mux.DispatchNotification(MessageTypes.NoticeNotify, new byte[] { 0x1, 0x2 });
 
         // Assert
         Assert.True(await Task.Run(() => countdown.Wait(TimeSpan.FromSeconds(10))));
@@ -96,7 +96,7 @@ public sealed class HotPathRegressionTests
             _ => afterThrowing.TrySetResult());
 
         // Act
-        mux.Dispatch(MessageTypes.NoticeNotify, new byte[] { 0x7 });
+        mux.DispatchNotification(MessageTypes.NoticeNotify, new byte[] { 0x7 });
 
         // Assert
         await afterThrowing.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -122,7 +122,7 @@ public sealed class HotPathRegressionTests
 
         // Act
         removed.Dispose();
-        mux.Dispatch(MessageTypes.NoticeNotify, new byte[] { 0x3 });
+        mux.DispatchNotification(MessageTypes.NoticeNotify, new byte[] { 0x3 });
 
         // Assert
         await kept.Task.WaitAsync(TimeSpan.FromSeconds(10));
@@ -130,7 +130,7 @@ public sealed class HotPathRegressionTests
     }
 
     [Fact]
-    public async Task ShouldServeSecondRequestGivenSameMessageTypeWhenFirstLaneReleased()
+    public async Task ShouldServeSecondRequestGivenSameMessageTypeWhenFirstCompleted()
     {
         // Arrange
         using var mux = new Multiplexer();
@@ -141,16 +141,18 @@ public sealed class HotPathRegressionTests
             MessageTypes.KvGet,
             [0x1],
             (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(5));
-        mux.Dispatch(MessageTypes.KvGet, new byte[] { 0xA });
+            TimeSpan.FromSeconds(5),
+            correlationId: 1);
+        mux.DispatchCorrelated(1, new byte[] { 0xA });
         var firstResponse = await first.WaitAsync(TimeSpan.FromSeconds(10));
 
         var second = mux.RequestAsync(
             MessageTypes.KvGet,
             [0x2],
             (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(5));
-        mux.Dispatch(MessageTypes.KvGet, new byte[] { 0xB });
+            TimeSpan.FromSeconds(5),
+            correlationId: 1);
+        mux.DispatchCorrelated(1, new byte[] { 0xB });
         var secondResponse = await second.WaitAsync(TimeSpan.FromSeconds(10));
 
         // Assert

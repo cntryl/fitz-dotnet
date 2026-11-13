@@ -5,7 +5,8 @@ public sealed record InMemoryKvClientOptions
 {
     /// <summary>
     /// Gets the maximum number of pairs returned by one scan, even when the query asks for
-    /// more. A value of <see langword="null"/> leaves scans limited only by their query.
+    /// more. A value of <see langword="null"/> applies only the broker's own limits: 1024 pairs
+    /// and 65,529 bytes of encoded pairs per page. A larger value cannot raise those limits.
     /// </summary>
     public int? ScanPageSize { get; init; }
 
@@ -14,6 +15,14 @@ public sealed record InMemoryKvClientOptions
     /// <see langword="null"/> uses an unbounded test channel.
     /// </summary>
     public int? SubscriptionBufferCapacity { get; init; }
+
+    /// <summary>
+    /// Gets the largest encoded request frame, including the 15-byte header, that a transaction
+    /// will send. A larger request fails with <see cref="ProtocolException"/> like the real
+    /// client's. Defaults to <see cref="FitzLimits.MaxFrameSize"/>, the broker default of 1 MiB;
+    /// it must be between <see cref="FitzLimits.MinFrameSize"/> and that maximum.
+    /// </summary>
+    public int MaxFrameSize { get; init; } = FitzLimits.MaxFrameSize;
 }
 
 /// <summary>Identifies an operation recorded or faulted by <see cref="InMemoryKvClient"/>.</summary>
@@ -47,7 +56,7 @@ public enum KvTestOperation
 /// <param name="Route">Exact route or subscription pattern used by the operation.</param>
 /// <param name="Durability">Requested persistence, for a commit operation.</param>
 /// <param name="Mode">Transaction mode, when applicable.</param>
-/// <param name="Key">Cloned primary key, when applicable.</param>
+/// <param name="Key">Cloned primary key (or delete-range start key), when applicable.</param>
 /// <param name="Value">Cloned value, when applicable.</param>
 /// <param name="EndKey">Cloned exclusive end key, for a delete-range operation.</param>
 /// <param name="ScanQuery">Deeply cloned query, for a scan operation.</param>
@@ -57,7 +66,7 @@ public sealed record KvTestOperationRecord(
     string Route,
     KvDurability? Durability = null,
     KvMode? Mode = null,
-    IReadOnlyList<byte>? Key = null,
-    IReadOnlyList<byte>? Value = null,
-    IReadOnlyList<byte>? EndKey = null,
+    ReadOnlyMemory<byte>? Key = null,
+    ReadOnlyMemory<byte>? Value = null,
+    ReadOnlyMemory<byte>? EndKey = null,
     KvScanQuery? ScanQuery = null);

@@ -1,5 +1,6 @@
 namespace Cntryl.Fitz.Core.Tests.Integration;
 
+[Trait("Category", "Integration")]
 public sealed class RpcCancellationChainTests
 {
     [Fact]
@@ -32,7 +33,7 @@ public sealed class RpcCancellationChainTests
         Assert.Equal(1ul, frames[1].Sequence);
     }
 
-    static Client CreateClient(string address)
+    static FitzClient CreateClient(string address)
     {
         var transport = address.StartsWith("tcp://", StringComparison.Ordinal) ? "tcp" : "websocket";
         return Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") is null
@@ -72,7 +73,7 @@ public sealed class RpcCancellationChainTests
 
     sealed class Chain : IAsyncDisposable
     {
-        readonly Client[] _clients;
+        readonly FitzClient[] _clients;
         readonly RpcWorkerRegistration[] _workers;
         readonly CancellationTokenSource _callerCancellation;
         readonly Task[] _cleanup;
@@ -82,7 +83,7 @@ public sealed class RpcCancellationChainTests
         internal Task<Exception?> Caller { get; }
         internal TimeSpan Elapsed => System.Diagnostics.Stopwatch.GetElapsedTime(_startedAt);
 
-        Chain(Client[] clients, RpcWorkerRegistration[] workers, CancellationTokenSource cancellation,
+        Chain(FitzClient[] clients, RpcWorkerRegistration[] workers, CancellationTokenSource cancellation,
             Task[] cleanup, RpcCall call, Task<Exception?> caller, long startedAt)
         {
             _clients = clients;

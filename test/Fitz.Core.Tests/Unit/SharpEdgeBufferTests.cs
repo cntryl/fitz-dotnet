@@ -39,7 +39,7 @@ public sealed class SharpEdgeBufferTests
             await allowRead.Task.WaitAsync(ct);
             observed = payload.ToArray();
         };
-        using var client = new NoticeClient(send);
+        await using var client = new NoticeClient(send);
 
         using var expectedWriter = new BinaryBufferWriter();
         expectedWriter.WriteString("notice://prod/app/events");

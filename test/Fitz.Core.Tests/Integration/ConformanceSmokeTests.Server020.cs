@@ -5,7 +5,7 @@ namespace Cntryl.Fitz.Core.Tests.Integration;
 public sealed partial class ConformanceSmokeTests
 {
     [Fact]
-    public async Task ShouldAdvertiseWire2CapabilitiesGivenBrokerWhenConnected()
+    public async Task ShouldAdvertiseWire3CapabilitiesGivenBrokerWhenConnected()
     {
         // Arrange
         await using var client = IntegrationFixture.CreateClientForMode(
@@ -25,9 +25,6 @@ public sealed partial class ConformanceSmokeTests
         // Assert
         Assert.Equal(3, capabilities.ProtocolVersion);
         Assert.Equal(0u, capabilities.CapabilityBits);
-        Assert.True(capabilities.SupportsCorrelation);
-        Assert.False(Cntryl.Fitz.Protocol.ServerCapabilities.SupportsSessionMetadata);
-        Assert.True(capabilities.SupportsKvScanExclusive);
     }
 
     [Theory]

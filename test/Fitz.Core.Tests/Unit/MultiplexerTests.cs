@@ -1,4 +1,5 @@
 using Cntryl.Fitz.Connection;
+using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
@@ -13,7 +14,6 @@ public sealed class MultiplexerTests
         // Act
         mux.Dispose();
 
-
         // Assert
         Assert.Throws<ObjectDisposedException>(() => mux.RegisterNotificationHandler(90, _ => { }));
     }
@@ -27,15 +27,34 @@ public sealed class MultiplexerTests
         // Act
         mux.Dispose();
 
-
         // Assert
         var error = await Assert.ThrowsAsync<ConnectionException>(() => mux.RequestAsync(
             90,
             [],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(1)));
+            TimeSpan.FromSeconds(1),
+            correlationId: 1));
 
         Assert.Contains("closed", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ShouldRejectZeroCorrelationGivenConnectedMultiplexerWhenRequesting()
+    {
+        // Arrange
+        using var mux = new Multiplexer();
+        mux.SetConnected();
+
+        // Act
+        var act = () => mux.RequestAsync(
+            90,
+            [],
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromSeconds(1),
+            correlationId: 0);
+
+        // Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(act);
     }
 
     [Fact]
@@ -44,13 +63,12 @@ public sealed class MultiplexerTests
         // Arrange
         using var mux = new Multiplexer();
         var received = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var registration = mux.RegisterNotificationHandler(90, payload => received.TrySetResult(payload));
+        using var registration = mux.RegisterNotificationHandler(90, payload => received.TrySetResult(payload.ToArray()));
         mux.BeginNotificationRestore();
         mux.SetConnected();
 
-
         // Act
-        mux.Dispatch(90, [0xAB]);
+        mux.DispatchNotification(90, new byte[] { 0xAB });
 
         // Assert
         Assert.False(received.Task.IsCompleted);
@@ -70,12 +88,12 @@ public sealed class MultiplexerTests
         var task = mux.RequestAsync(
             100,
             [1, 2, 3],
-            static (data, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(1)
-        );
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromSeconds(1),
+            correlationId: 7);
 
         // Act
-        mux.Dispatch(100, [9, 8, 7]);
+        mux.DispatchCorrelated(7, new byte[] { 9, 8, 7 });
 
         // Assert
         var result = await task;
@@ -93,9 +111,9 @@ public sealed class MultiplexerTests
         var act = () => mux.RequestAsync(
             101,
             [0x1],
-            static (data, _) => Task.CompletedTask,
-            TimeSpan.FromMilliseconds(50)
-        );
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromMilliseconds(50),
+            correlationId: 1);
 
         // Assert
         await Assert.ThrowsAsync<RequestTimeoutException>(act);
@@ -116,56 +134,11 @@ public sealed class MultiplexerTests
             [0x1],
             static (_, _) => Task.CompletedTask,
             TimeSpan.FromSeconds(1),
-            ct: cts.Token
-        );
+            correlationId: 1,
+            ct: cts.Token);
 
         // Assert
         await Assert.ThrowsAnyAsync<OperationCanceledException>(act);
-    }
-
-    [Fact]
-    public async Task ShouldSerializeSameMessageTypeGivenTwoRequestsWhenDispatching()
-    {
-        // Arrange
-        using var mux = new Multiplexer();
-        mux.SetConnected();
-
-        var sendOrder = new List<byte>();
-        var firstTask = mux.RequestAsync(
-            120,
-            [0x1],
-            async (_, token) =>
-            {
-                sendOrder.Add(0x1);
-                await Task.Delay(50, token);
-            },
-            TimeSpan.FromSeconds(1)
-        );
-
-        await Task.Delay(10);
-
-        var secondTask = mux.RequestAsync(
-            120,
-            [0x2],
-            (_, _) =>
-            {
-                sendOrder.Add(0x2);
-                return Task.CompletedTask;
-            },
-            TimeSpan.FromSeconds(1)
-        );
-
-        await Task.Delay(60);
-
-        // Act
-        mux.Dispatch(120, [0xA]);
-        await Task.Delay(25);
-        mux.Dispatch(120, [0xB]);
-
-        // Assert
-        Assert.Equal([0x1, 0x2], sendOrder);
-        Assert.Equal([0xA], await firstTask);
-        Assert.Equal([0xB], await secondTask);
     }
 
     [Fact]
@@ -185,7 +158,7 @@ public sealed class MultiplexerTests
         });
 
         // Act
-        mux.Dispatch(130, [0x1]);
+        mux.DispatchNotification(130, new byte[] { 0x1 });
         await dispatched.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         // Assert
@@ -203,8 +176,8 @@ public sealed class MultiplexerTests
             121,
             [0x1],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(10)
-        );
+            TimeSpan.FromSeconds(10),
+            correlationId: 1);
 
         // Act
         mux.SetDisconnected();
@@ -214,186 +187,42 @@ public sealed class MultiplexerTests
     }
 
     [Fact]
-    public async Task ShouldDispatchToNextRequestGivenFirstRequestCanceledWhenSameMessageTypeIsInflight()
+    public async Task ShouldResolveSecondRequestGivenFirstRequestCanceledWhenSameMessageTypeIsInflight()
     {
         // Arrange
         using var mux = new Multiplexer();
         mux.SetConnected();
-        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         using var firstCts = new CancellationTokenSource();
         var first = mux.RequestAsync(
             122,
             [0x1],
-            static async (_, token) =>
-            {
-                await Task.Delay(100, token);
-            },
+            static (_, _) => Task.CompletedTask,
             TimeSpan.FromSeconds(5),
-            ct: firstCts.Token
-        );
+            correlationId: 1,
+            ct: firstCts.Token);
 
         var second = mux.RequestAsync(
             122,
             [0x2],
-            (_, _) =>
-            {
-                secondStarted.TrySetResult();
-                return Task.CompletedTask;
-            },
-            TimeSpan.FromSeconds(5)
-        );
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromSeconds(5),
+            correlationId: 2);
 
         // Act
         await firstCts.CancelAsync();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
-        await secondStarted.Task;
-        mux.Dispatch(122, [0xB]);
+        mux.DispatchCorrelated(1, new byte[] { 0xA });
+        mux.DispatchCorrelated(2, new byte[] { 0xB });
 
         // Assert
         Assert.Equal([0xB], await second);
     }
 
     [Fact]
-    public async Task ShouldNotDeliverMatcherRejectedResponseToUncorrelatedRequestGivenActiveMultiplexerWhenDispatching()
+    public async Task ShouldAcceptReusedCorrelationGivenPriorDisconnectWhenFollowingRequestStarts()
     {
         // Arrange
-        using var mux = new Multiplexer();
-        mux.SetConnected();
-
-        var firstSendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var secondSendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        var firstTask = mux.RequestAsync(
-            130,
-            [0x01],
-            async (_, token) =>
-            {
-                firstSendStarted.TrySetResult();
-                await Task.Delay(10, token);
-            },
-            TimeSpan.FromSeconds(1)
-        );
-
-        await firstSendStarted.Task;
-
-        var secondTask = mux.RequestAsync(
-            130,
-            [0x02],
-            (_, _) =>
-            {
-                secondSendStarted.TrySetResult();
-                return Task.CompletedTask;
-            },
-            TimeSpan.FromSeconds(1),
-            responseMatcher: response => response.Length > 0 && response.Span[0] == 2
-        );
-
-        await secondSendStarted.Task;
-
-        // Act
-        mux.Dispatch(130, [0xA]);
-        await Task.Delay(20);
-
-        // Assert
-        Assert.False(firstTask.IsCompleted);
-
-        mux.Dispatch(130, [2]);
-        Assert.Equal([2], await secondTask);
-
-        mux.Dispatch(130, [0xB]);
-        Assert.Equal([0xB], await firstTask);
-    }
-
-    [Fact]
-    public async Task ShouldMatchResponsesToCorrelatedRequestsGivenSameMessageTypeWhenDispatching()
-    {
-        // Arrange
-        using var mux = new Multiplexer();
-        mux.SetConnected();
-
-        var firstSendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var secondSendStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
-        var firstTask = mux.RequestAsync(
-            131,
-            [0x01],
-            async (_, token) =>
-            {
-                firstSendStarted.TrySetResult();
-                await Task.Delay(10, token);
-            },
-            TimeSpan.FromSeconds(1),
-            responseMatcher: response => response.Length > 0 && response.Span[0] == 1
-        );
-
-        await firstSendStarted.Task;
-
-        var secondTask = mux.RequestAsync(
-            131,
-            [0x02],
-            (_, _) =>
-            {
-                secondSendStarted.TrySetResult();
-                return Task.CompletedTask;
-            },
-            TimeSpan.FromSeconds(1),
-            responseMatcher: response => response.Length > 0 && response.Span[0] == 2
-        );
-
-        await secondSendStarted.Task;
-
-        // Act
-        mux.Dispatch(131, [2]);
-        mux.Dispatch(131, [1]);
-
-        // Assert
-        Assert.Equal([1], await firstTask);
-        Assert.Equal([2], await secondTask);
-    }
-
-    [Fact]
-    public async Task ShouldDeliverUnmatchedResponsesToNotificationHandlersGivenMatchingByCorrelationFailsWhenDispatching()
-    {
-        // Arrange
-        using var mux = new Multiplexer();
-        mux.SetConnected();
-
-        var notifications = new List<byte[]>();
-        using var _ = mux.RegisterNotificationHandler(132, payload =>
-        {
-            notifications.Add(payload.ToArray());
-        });
-
-        var request = mux.RequestAsync(
-            132,
-            [0x01],
-            static (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(1),
-            responseMatcher: payload => payload.Length > 0 && payload.Span[0] == 0x99
-        );
-
-        mux.Dispatch(132, [0x01]);
-
-        await Task.Delay(15);
-        Assert.NotNull(notifications);
-        Assert.Single(notifications);
-        Assert.Equal([0x01], notifications[0]);
-
-        // Act
-        mux.Dispatch(132, [0x99]);
-
-        // Assert
-        Assert.Equal([0x99], await request);
-        Assert.Single(notifications);
-    }
-
-    [Fact]
-    public async Task ShouldIgnoreStaleResponseGivenPriorDisconnectWhenFollowingRequestStarts()
-    {
-        // Arrange
-        // Act
-        // Assert
         using var mux = new Multiplexer();
         mux.SetConnected();
 
@@ -401,30 +230,27 @@ public sealed class MultiplexerTests
             140,
             [0x1],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromMilliseconds(20)
-        );
-
+            TimeSpan.FromMilliseconds(20),
+            correlationId: 1);
         await Assert.ThrowsAsync<RequestTimeoutException>(() => staleRequest);
-
         mux.SetDisconnected();
-        mux.Dispatch(140, [0xAA]);
-
         mux.SetConnected();
+
+        // Act
         var nextRequest = mux.RequestAsync(
             140,
             [0x2],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(1)
-        );
-
-        mux.Dispatch(140, [0xB]);
+            TimeSpan.FromSeconds(1),
+            correlationId: 1);
+        mux.DispatchCorrelated(1, new byte[] { 0xB });
 
         // Assert
         Assert.Equal([0xB], await nextRequest);
     }
 
     [Fact]
-    public async Task ShouldResetConnectionAndFailWaitersGivenUncorrelatedRequestWhenTimeoutExpires()
+    public async Task ShouldKeepOtherRequestsGivenCorrelatedRequestWhenTimeoutExpires()
     {
         // Arrange
         using var mux = new Multiplexer();
@@ -434,21 +260,46 @@ public sealed class MultiplexerTests
             141,
             [0x1],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromMilliseconds(20));
-
-        // Act
+            TimeSpan.FromMilliseconds(20),
+            correlationId: 1);
         var waiter = mux.RequestAsync(
             141,
             [0x2],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(2));
+            TimeSpan.FromSeconds(5),
+            correlationId: 2);
 
+        // Act
+        await Assert.ThrowsAsync<RequestTimeoutException>(() => timedOut);
+        var lateReply = Record.Exception(() => mux.DispatchCorrelated(1, new byte[] { 0xA }));
+        mux.DispatchCorrelated(2, new byte[] { 0xB });
 
         // Assert
-        var timeout = await Assert.ThrowsAsync<RequestTimeoutException>(() => timedOut);
-        var reset = await Assert.ThrowsAsync<ConnectionException>(() => waiter);
+        Assert.Null(lateReply);
+        Assert.Equal([0xB], await waiter);
+    }
 
-        Assert.Contains("lane was reset", timeout.Message, StringComparison.Ordinal);
-        Assert.Contains("reset", reset.Message, StringComparison.Ordinal);
+    [Fact]
+    public async Task ShouldKeepRequestPastTimeoutGivenNonFinalFrameWhenFinalFrameArrivesLater()
+    {
+        // Arrange
+        using var mux = new Multiplexer();
+        mux.SetConnected();
+        var request = mux.RequestAsync(
+            MessageTypes.LeaseAcquire,
+            [0x1],
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromMilliseconds(100),
+            correlationId: 3);
+        mux.DispatchCorrelated(3, new byte[] { 0, 2 }, responseFinal: false);
+
+        // Act
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+        var stillWaiting = !request.IsCompleted;
+        mux.DispatchCorrelated(3, new byte[] { 0, 0, 0, 9 });
+
+        // Assert
+        Assert.True(stillWaiting, "A non-final frame must disarm the response timeout.");
+        Assert.Equal([0, 0, 0, 9], await request.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 }

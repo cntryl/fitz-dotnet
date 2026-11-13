@@ -1,5 +1,5 @@
-using System.Threading;
 using Cntryl.Fitz.Protocol;
+using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Stream;
 
@@ -8,30 +8,28 @@ namespace Cntryl.Fitz.Domains.Stream;
 /// </summary>
 sealed class StreamSession : IStreamSession
 {
+    static readonly TimeSpan CleanupBudget = TimeSpan.FromSeconds(5);
+
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly ulong _sessionId;
-    IDisposable? _disconnectRegistration;
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Disposal may race active operations; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
+    readonly TimeProvider _time;
+    readonly SessionLatch _session;
     readonly SemaphoreSlim _finalizationGate = new(1, 1);
-    int _closed;
+    readonly CancellationTokenSource _closing = new();
+    readonly CancellationToken _closingToken;
     int _disposed;
 
     internal StreamSession(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
         ulong sessionId,
-        Func<Action, IDisposable>? registerOnDisconnect = null)
+        Func<Action, IDisposable>? registerOnDisconnect = null,
+        TimeProvider? timeProvider = null)
     {
         _request = request;
         _sessionId = sessionId;
-        var disconnectRegistration = registerOnDisconnect?.Invoke(MarkClosed);
-        if (disconnectRegistration is not null)
-        {
-            Interlocked.Exchange(ref _disconnectRegistration, disconnectRegistration)?.Dispose();
-            if (Volatile.Read(ref _closed) != 0)
-            {
-                Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
-            }
-        }
+        _time = timeProvider ?? TimeProvider.System;
+        _closingToken = _closing.Token;
+        _session = new SessionLatch(registerOnDisconnect);
     }
 
     /// <inheritdoc />
@@ -42,18 +40,8 @@ sealed class StreamSession : IStreamSession
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(_sessionId);
         writer.WriteU64(expectedOffset);
-        writer.WriteU32((uint)body.Length);
-        writer.WriteBytes(body.Span);
-        if (metadata.HasValue)
-        {
-            writer.WriteU8(1);
-            writer.WriteU32((uint)metadata.Value.Length);
-            writer.WriteBytes(metadata.Value.Span);
-        }
-        else
-        {
-            writer.WriteU8(0);
-        }
+        writer.WriteLengthPrefixed(body.Span);
+        writer.WriteOptionalLengthPrefixed(metadata);
 
         if (!string.IsNullOrEmpty(discriminator))
         {
@@ -92,7 +80,9 @@ sealed class StreamSession : IStreamSession
             _ => throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown stream commit mode."),
         };
 
-        await _finalizationGate.WaitAsync(ct).ConfigureAwait(false);
+        if (!await _finalizationGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
+            throw ClosedException();
+
         try
         {
             ThrowIfClosed();
@@ -110,17 +100,12 @@ sealed class StreamSession : IStreamSession
     /// <inheritdoc />
     public async Task RollbackAsync(CancellationToken ct = default)
     {
-        await _finalizationGate.WaitAsync(ct).ConfigureAwait(false);
+        if (!await _finalizationGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
+            return;
+
         try
         {
-            if (Volatile.Read(ref _closed) != 0)
-            {
-                return;
-            }
-
-            using var writer = new BinaryBufferWriter();
-            writer.WriteU64(_sessionId);
-            await ExpectStatusAsync(MessageTypes.StreamRollback, writer.WrittenMemory, "ROLLBACK", ct).ConfigureAwait(false);
+            await RollbackCoreAsync(ct).ConfigureAwait(false);
         }
         finally
         {
@@ -130,7 +115,10 @@ sealed class StreamSession : IStreamSession
 
     /// <summary>Rolls the session back if it has not been committed.</summary>
     /// <returns>A task that completes once cleanup finishes.</returns>
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Stream-session disposal is bounded best-effort cleanup and must not replace an exception leaving an await-using scope.")]
+    /// <remarks>
+    /// Waits for an in-progress commit or rollback to finish first. A queued commit fails as
+    /// closed; a queued rollback returns, because disposal rolls back.
+    /// </remarks>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -138,25 +126,35 @@ sealed class StreamSession : IStreamSession
             return;
         }
 
+        await _closing.CancelAsync().ConfigureAwait(false);
+        await _finalizationGate.DrainAndDisposeAsync().ConfigureAwait(false);
+        _closing.Dispose();
         try
         {
-            if (Volatile.Read(ref _closed) == 0)
-            {
-                try
-                {
-                    using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    await RollbackAsync(cleanupDeadline.Token).ConfigureAwait(false);
-                }
-                catch
-                {
-                }
-            }
+            using var cleanupDeadline = new CancellationTokenSource(CleanupBudget, _time);
+            await RollbackCoreAsync(cleanupDeadline.Token).ConfigureAwait(false);
+        }
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
+        {
+            // Best-effort cleanup must not replace an exception leaving an await-using scope.
         }
         finally
         {
             MarkClosed();
-            GC.SuppressFinalize(this);
         }
+    }
+
+    // Callers hold the gate, or have drained it during disposal.
+    async Task RollbackCoreAsync(CancellationToken ct)
+    {
+        if (_session.IsClosed)
+        {
+            return;
+        }
+
+        using var writer = new BinaryBufferWriter();
+        writer.WriteU64(_sessionId);
+        await ExpectStatusAsync(MessageTypes.StreamRollback, writer.WrittenMemory, "ROLLBACK", ct).ConfigureAwait(false);
     }
 
     async Task ExpectStatusAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct)
@@ -169,21 +167,11 @@ sealed class StreamSession : IStreamSession
 
     void ThrowIfClosed()
     {
-        if (Volatile.Read(ref _closed) == 0)
-        {
-            return;
-        }
-
-        throw new StreamException("Stream session already closed", "SESSION_CLOSED");
+        if (_session.IsClosed)
+            throw ClosedException();
     }
 
-    void MarkClosed()
-    {
-        if (Interlocked.Exchange(ref _closed, 1) != 0)
-        {
-            return;
-        }
+    static StreamException ClosedException() => new("Stream session already closed", "SESSION_CLOSED");
 
-        Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
-    }
+    void MarkClosed() => _session.TryClose();
 }

@@ -3,12 +3,7 @@
     <ProjectReference Include="..\Fitz.Abstractions\Fitz.Abstractions.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Cntryl.LexKey" Version="0.1.2" />
-  </ItemGroup>
-  <ItemGroup>
-    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
-      <_Parameter1>Cntryl.Fitz.Extensions.Tests</_Parameter1>
-    </AssemblyAttribute>
+    <PackageReference Include="Cntryl.LexKey" />
   </ItemGroup>
   <PropertyGroup>
     <IsAotCompatible>true</IsAotCompatible>

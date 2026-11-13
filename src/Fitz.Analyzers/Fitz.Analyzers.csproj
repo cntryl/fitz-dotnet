@@ -16,6 +16,21 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- Keep shipped analyzers loadable by the .NET 11 SDK (Roslyn 5.9). -->
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
+    <!-- Enforces analyzer correctness and release tracking (AnalyzerReleases.*.md) on this project. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all" />
+  </ItemGroup>
+  <ItemGroup>
+    <AdditionalFiles Include="AnalyzerReleases.Shipped.md" />
+    <AdditionalFiles Include="AnalyzerReleases.Unshipped.md" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The route grammar is shared with Cntryl.Fitz.Core so the two cannot drift. -->
+    <Compile Include="..\Shared\RouteGrammar.cs" Link="Shared\RouteGrammar.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>Cntryl.Fitz.Analyzers.Tests</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 </Project>

@@ -11,7 +11,7 @@ public sealed class LeaseListTests
         // Arrange
         // Act
         // Assert
-        using var lease = new LeaseClient((_, _, _) => Task.FromResult(new byte[] { 0 }));
+        await using var lease = new LeaseClient((_, _, _) => Task.FromResult(new byte[] { 0 }));
 
         var error = await Assert.ThrowsAsync<LeaseException>(() => lease.ListAsync("lease://prod/app/*"));
 
@@ -25,7 +25,7 @@ public sealed class LeaseListTests
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        using var leaseClient = new LeaseClient((messageType, payload, _) =>
+        await using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -58,7 +58,7 @@ public sealed class LeaseListTests
         // Arrange
         byte[]? seenPayload = null;
 
-        using var leaseClient = new LeaseClient((_, payload, _) =>
+        await using var leaseClient = new LeaseClient((_, payload, _) =>
         {
             seenPayload = payload;
             using var writer = new BinaryBufferWriter();
@@ -85,7 +85,7 @@ public sealed class LeaseListTests
     public async Task ShouldDecodeItemsAndNextCursorGivenSuccessResponseWhenListing()
     {
         // Arrange
-        using var leaseClient = new LeaseClient((_, _, _) =>
+        await using var leaseClient = new LeaseClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -119,7 +119,7 @@ public sealed class LeaseListTests
         Assert.Equal("lease://acme/renderers/a", result.Items[0].Route);
         Assert.Equal("worker-1", result.Items[0].OwnerId);
         Assert.Equal((ulong)11, result.Items[0].HolderIncarnation);
-        Assert.Equal("2026-08-29T00:00:00Z", result.Items[0].AcquiredAt);
+        Assert.Equal(new DateTimeOffset(2026, 8, 29, 0, 0, 0, TimeSpan.Zero), result.Items[0].AcquiredAt);
         Assert.Equal(TimeSpan.FromSeconds(30), result.Items[0].ExpiresIn);
         Assert.Equal((uint)2, result.Items[0].Renewals);
 
@@ -135,7 +135,7 @@ public sealed class LeaseListTests
     public async Task ShouldRejectImpossibleItemCountWithoutUnboundedPreallocationGivenLeaseListRequestWhenProcessing()
     {
         // Arrange
-        using var leaseClient = new LeaseClient((_, _, _) =>
+        await using var leaseClient = new LeaseClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -158,7 +158,7 @@ public sealed class LeaseListTests
     public async Task ShouldPreserveDomainCodeGivenTypedListErrorWhenParsingListResponse(uint domainCode)
     {
         // Arrange
-        using var leaseClient = new LeaseClient((_, _, _) =>
+        await using var leaseClient = new LeaseClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
@@ -179,21 +179,48 @@ public sealed class LeaseListTests
     public async Task ShouldRejectMalformedListPatternGivenLeaseListRequestWhenProcessing()
     {
         // Arrange
-        using var leaseClient = new LeaseClient((_, _, _) => throw new InvalidOperationException("should not send request for invalid pattern"));
+        await using var leaseClient = new LeaseClient((_, _, _) => throw new InvalidOperationException("should not send request for invalid pattern"));
 
         // Act
         var act = () => leaseClient.ListAsync("lease://acme/renderers/lock*");
 
         // Assert
+        var error = await Assert.ThrowsAsync<ArgumentException>(act);
+        Assert.Equal("pattern", error.ParamName);
+    }
+
+    [Fact]
+    public async Task ShouldRejectResponseGivenNonTimestampAcquiredAtWhenListing()
+    {
+        // Arrange
+        await using var leaseClient = new LeaseClient((_, _, _) =>
+        {
+            using var writer = new BinaryBufferWriter();
+            writer.WriteU8(0);
+            writer.WriteU32(1);
+            writer.WriteString("lease://acme/renderers/a");
+            writer.WriteString("worker-1");
+            writer.WriteU64(11);
+            writer.WriteString("yesterday");
+            writer.WriteU64(30);
+            writer.WriteU32(0);
+            writer.WriteU8(0);
+            return Task.FromResult(writer.Build());
+        });
+
+        // Act
+        var act = () => leaseClient.ListAsync("lease://acme/renderers/*");
+
+        // Assert
         var error = await Assert.ThrowsAsync<LeaseException>(act);
-        Assert.Equal("INVALID_ROUTE", error.Code);
+        Assert.Equal("LIST_INVALID_RESPONSE", error.Code);
     }
 
     [Fact]
     public async Task ShouldRejectNegativeLimitGivenLeaseListRequestWhenProcessing()
     {
         // Arrange
-        using var leaseClient = new LeaseClient((_, _, _) => throw new InvalidOperationException("should not send request for invalid limit"));
+        await using var leaseClient = new LeaseClient((_, _, _) => throw new InvalidOperationException("should not send request for invalid limit"));
 
         // Act
         var act = () => leaseClient.ListAsync("lease://acme/renderers/*", limit: -1);
@@ -206,7 +233,7 @@ public sealed class LeaseListTests
     public async Task ShouldRejectLimitGivenZeroValueWhenListingLeases()
     {
         // Arrange
-        using var leaseClient = new LeaseClient((_, _, _) =>
+        await using var leaseClient = new LeaseClient((_, _, _) =>
             throw new InvalidOperationException("should not send request for invalid limit"));
 
 

@@ -12,7 +12,7 @@ namespace Cntryl.Fitz.Benchmarks;
 [SimpleJob]
 [MemoryDiagnoser]
 [PlainExporter]
-public class DomainHotPathBenchmarks : IDisposable
+public class DomainHotPathBenchmarks : IAsyncDisposable
 {
     static readonly byte[] Payload = "payload"u8.ToArray();
 
@@ -33,13 +33,16 @@ public class DomainHotPathBenchmarks : IDisposable
     }
 
     [GlobalCleanup]
-    public void Dispose()
+    public Task CleanupAsync() => DisposeAsync().AsTask();
+
+    public async ValueTask DisposeAsync()
     {
-        _kv.Dispose();
-        _queue.Dispose();
-        _lease.Dispose();
-        _notice.Dispose();
-        _schedule.Dispose();
+        await _kv.DisposeAsync().ConfigureAwait(false);
+        await _queue.DisposeAsync().ConfigureAwait(false);
+        await _lease.DisposeAsync().ConfigureAwait(false);
+        await _notice.DisposeAsync().ConfigureAwait(false);
+        await _schedule.DisposeAsync().ConfigureAwait(false);
+        GC.SuppressFinalize(this);
     }
 
     [Benchmark]

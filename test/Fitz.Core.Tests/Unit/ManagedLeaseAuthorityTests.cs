@@ -14,7 +14,7 @@ public sealed class ManagedLeaseAuthorityTests
         LeaseAuthority? observed = null;
 
         // Act
-        using var leaseClient = new LeaseClient((messageType, _, _) =>
+        await using var leaseClient = new LeaseClient((messageType, _, _) =>
         {
             return Task.FromResult(messageType == MessageTypes.LeaseAcquire
                 ? AcquireResponse(responseType, 77)
@@ -40,24 +40,13 @@ public sealed class ManagedLeaseAuthorityTests
     [Fact]
     public async Task ShouldPassFinalAuthorityGivenQueuedAcquireWhenManagedLeaseRuns()
     {
-        // Arrange
-        Action<byte[]>? acquireHandler = null;
-
-        // Act
+        // Arrange: the request completes only when the broker sends the final ACQUIRE frame.
+        var finalFrame = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
         LeaseAuthority? observed = null;
-
-        // Assert
-        using var leaseClient = new LeaseClient(
-            (messageType, _, _) => Task.FromResult(messageType == MessageTypes.LeaseAcquire
-                ? AcquireResponse(2, 13)
-                : SuccessResponse()),
-            (messageType, handler) =>
-            {
-                Assert.Equal(MessageTypes.LeaseAcquire, messageType);
-                acquireHandler = handler;
-                return new TestRegistration();
-            });
-
+        await using var leaseClient = new LeaseClient(
+            (messageType, _, _) => messageType == MessageTypes.LeaseAcquire
+                ? finalFrame.Task
+                : Task.FromResult(SuccessResponse()));
         var pending = leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
             TimeSpan.FromSeconds(30),
@@ -67,12 +56,12 @@ public sealed class ManagedLeaseAuthorityTests
                 return ValueTask.CompletedTask;
             },
             new LeaseExecutionOptions { WaitForAvailability = true, Wait = TimeSpan.FromSeconds(5) });
-        await Task.Yield();
 
-        Assert.NotNull(acquireHandler);
-        acquireHandler(AcquireResponse(0, 91));
-        await pending;
+        // Act
+        finalFrame.SetResult(AcquireResponse(0, 91));
+        await pending.WaitAsync(TimeSpan.FromSeconds(5));
 
+        // Assert
         Assert.Equal((ulong)91, observed?.FencingToken);
     }
 
@@ -86,7 +75,7 @@ public sealed class ManagedLeaseAuthorityTests
         ulong? releaseToken = null;
 
         // Assert
-        using var leaseClient = new LeaseClient((messageType, payload, _) =>
+        await using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             if (messageType == MessageTypes.LeaseAcquire)
             {
@@ -130,7 +119,7 @@ public sealed class ManagedLeaseAuthorityTests
     {
         // Arrange
         var callbackInvoked = false;
-        using var leaseClient = new LeaseClient((_, _, _) =>
+        await using var leaseClient = new LeaseClient((_, _, _) =>
             Task.FromResult(ErrorResponse(5001, "held by another owner")));
 
 
@@ -153,19 +142,13 @@ public sealed class ManagedLeaseAuthorityTests
     [Fact]
     public async Task ShouldNotInvokeAuthorityCallbackGivenQueuedAcquireTimesOutWhenManagedLeaseRuns()
     {
-        // Arrange
-        Action<byte[]>? acquireHandler = null;
+        // Arrange: the broker ends the queued wait with an error on the final ACQUIRE frame.
+        var finalFrame = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
         var callbackInvoked = false;
-        using var leaseClient = new LeaseClient(
-            (messageType, _, _) => Task.FromResult(messageType == MessageTypes.LeaseAcquire
-                ? AcquireResponse(2, 13)
-                : SuccessResponse()),
-            (_, handler) =>
-            {
-                acquireHandler = handler;
-                return new TestRegistration();
-            });
-
+        await using var leaseClient = new LeaseClient(
+            (messageType, _, _) => messageType == MessageTypes.LeaseAcquire
+                ? finalFrame.Task
+                : Task.FromResult(SuccessResponse()));
         var pending = leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
             TimeSpan.FromSeconds(30),
@@ -177,13 +160,9 @@ public sealed class ManagedLeaseAuthorityTests
             new LeaseExecutionOptions { WaitForAvailability = true, Wait = TimeSpan.FromSeconds(1) });
 
         // Act
-        await Task.Yield();
-
+        finalFrame.SetResult(ErrorResponse(5055, "lease wait timed out"));
 
         // Assert
-        Assert.NotNull(acquireHandler);
-        acquireHandler(ErrorResponse(5055, "lease wait timed out"));
-
         var error = await Assert.ThrowsAsync<LeaseException>(() => pending);
         Assert.Equal((uint)5055, error.DomainCode);
         Assert.False(callbackInvoked);
@@ -192,15 +171,16 @@ public sealed class ManagedLeaseAuthorityTests
     [Fact]
     public async Task ShouldNotInvokeAuthorityCallbackGivenQueuedAcquireIsCancelledWhenManagedLeaseRuns()
     {
-        // Arrange
+        // Arrange: no final ACQUIRE frame arrives before the caller cancels.
         var callbackInvoked = false;
         using var cancellation = new CancellationTokenSource();
-        using var leaseClient = new LeaseClient(
-            (messageType, _, _) => Task.FromResult(messageType == MessageTypes.LeaseAcquire
-                ? AcquireResponse(2, 13)
-                : SuccessResponse()),
-            (_, _) => new TestRegistration());
-
+        await using var leaseClient = new LeaseClient(
+            async (messageType, _, ct) =>
+            {
+                if (messageType == MessageTypes.LeaseAcquire)
+                    await Task.Delay(Timeout.Infinite, ct);
+                return SuccessResponse();
+            });
         var pending = leaseClient.WithLeaseAsync(
             "lease://prod/app/lock",
             TimeSpan.FromSeconds(30),
@@ -211,12 +191,9 @@ public sealed class ManagedLeaseAuthorityTests
             },
             new LeaseExecutionOptions { WaitForAvailability = true, Wait = TimeSpan.FromSeconds(5) },
             cancellation.Token);
-        await Task.Yield();
-
 
         // Act
         await cancellation.CancelAsync();
-
 
         // Assert
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
@@ -229,7 +206,7 @@ public sealed class ManagedLeaseAuthorityTests
         // Arrange
         var acquireCount = 0UL;
         var nonGenericInvoked = false;
-        using var leaseClient = new LeaseClient((messageType, _, _) =>
+        await using var leaseClient = new LeaseClient((messageType, _, _) =>
         {
             return Task.FromResult(messageType == MessageTypes.LeaseAcquire
                 ? AcquireResponse(0, ++acquireCount)

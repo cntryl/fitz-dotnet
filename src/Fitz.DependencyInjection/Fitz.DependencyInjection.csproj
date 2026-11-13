@@ -1,4 +1,9 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
+  <!-- No Microsoft.Extensions.* PackageReference is needed: on net11.0,
+       Microsoft.Extensions.DependencyInjection.Abstractions and
+       Microsoft.Extensions.Hosting.Abstractions (IHostedService) ship in the Microsoft.NETCore.App
+       shared framework, so consumers always have them. Verified against the packed nuspec. Add
+       PackageReferences here if this project ever targets an older framework. -->
   <ItemGroup>
     <ProjectReference Include="..\Fitz.Core\Fitz.Core.csproj" />
     <ProjectReference Include="..\Fitz.Abstractions\Fitz.Abstractions.csproj" />

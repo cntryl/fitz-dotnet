@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -169,7 +168,7 @@ static class IntegrationFixture
         return Path.Combine(GetRepositoryRoot(), "artifacts", "conformance-results.json");
     }
 
-    internal static Client CreateAnonymousClient(
+    internal static FitzClient CreateAnonymousClient(
         string url,
         string? transport = null,
         TimeSpan? timeout = null,
@@ -178,7 +177,7 @@ static class IntegrationFixture
         FitzObservabilityOptions? observability = null,
         AsyncHandlerOptions? asyncHandlers = null) => CreateClient(url, transport, timeout, reconnect, tokenProvider: null, maxInFlightRequests, observability, asyncHandlers);
 
-    internal static Client CreateValidJwtClient(
+    internal static FitzClient CreateValidJwtClient(
         string url,
         string? transport = null,
         TimeSpan? timeout = null,
@@ -202,7 +201,7 @@ static class IntegrationFixture
             asyncHandlers);
     }
 
-    internal static Client CreateInvalidJwtClient(
+    internal static FitzClient CreateInvalidJwtClient(
         string url,
         string? transport = null,
         TimeSpan? timeout = null,
@@ -226,7 +225,7 @@ static class IntegrationFixture
             asyncHandlers);
     }
 
-    internal static Client CreateClientForMode(
+    internal static FitzClient CreateClientForMode(
         string transport,
         string authMode,
         TimeSpan? timeout = null,
@@ -275,7 +274,7 @@ static class IntegrationFixture
             : "auth failure surfaced as non-typed exception";
     }
 
-    static Client CreateClient(
+    static FitzClient CreateClient(
         string url,
         string? transport,
         TimeSpan? timeout,
@@ -303,7 +302,7 @@ static class IntegrationFixture
             reconnect = reconnect is null ? new ReconnectOptions(enabled) : reconnect with { Enabled = enabled };
         }
 
-        return new Client(
+        return new FitzClient(
             new ClientConfig(
                 new Uri(normalizedUrl),
                 Transport: transportKind,
@@ -367,8 +366,6 @@ static class IntegrationFixture
             ? "fitz-auth"
             : "fitz-anon";
     }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "The reconnect probe retries every client failure until its bounded deadline.")]
     static async Task WaitForBrokerReadyAsync(string transport, string authMode, TimeSpan timeout, CancellationToken ct)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
@@ -393,7 +390,7 @@ static class IntegrationFixture
                     ct);
                 return;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
             {
                 lastError = ex;
                 await Task.Delay(250, ct);

@@ -42,18 +42,15 @@ public sealed class CorrelationTests
     public void ShouldReadCorrelatedFrameGivenOneTransportFrameWhenParsing()
     {
         // Arrange
-        var parser = new FrameParser();
         var frame = FrameCodec.EncodeCorrelated(42, MessageTypes.KvGet, [0x7]);
 
         // Act
-        parser.Append(frame);
+        var response = FrameCodec.DecodeStrict(frame);
 
         // Assert
-        Assert.True(parser.TryReadFrame(out var response));
         Assert.Equal(42UL, response.CorrelationId);
         Assert.Equal(MessageTypes.KvGet, response.MessageType);
         Assert.Equal([0x7], response.Payload.ToArray());
-        Assert.False(parser.TryReadFrame(out _));
     }
 
     [Fact]
@@ -77,18 +74,15 @@ public sealed class CorrelationTests
         // Arrange
         var payload = new byte[FrameCodec.MaxTransportFrameSize - FrameCodec.MaxHeaderSize];
         var frame = FrameCodec.EncodeCorrelated(42, ushort.MaxValue, payload);
-        var parser = new FrameParser();
 
         // Act
-        parser.Append(frame);
+        var request = FrameCodec.DecodeStrict(frame);
 
         // Assert
         Assert.Equal(FrameCodec.MaxTransportFrameSize, frame.Length);
-        Assert.True(parser.TryReadFrame(out var request));
         Assert.Equal(42UL, request.CorrelationId);
         Assert.Equal(ushort.MaxValue, request.MessageType);
         Assert.Equal(payload.Length, request.Payload.Length);
-        Assert.False(parser.TryReadFrame(out _));
     }
 
     [Fact]
@@ -104,7 +98,7 @@ public sealed class CorrelationTests
     }
 
     [Fact]
-    public void ShouldReportNoCorrelationGivenTruncatedServerHelloWhenAdvertising()
+    public void ShouldRejectHelloGivenTruncatedPayloadWhenParsing()
     {
         // Arrange
         var truncated = new byte[] { 0x00, 0x01 };
@@ -112,9 +106,9 @@ public sealed class CorrelationTests
         // Act
         var parsed = ServerCapabilities.TryParse(truncated, out var capabilities);
 
-        // Assert: an unparseable advertisement is no more disruptive than a missing one.
+        // Assert
         Assert.False(parsed);
-        Assert.False(capabilities.SupportsCorrelation);
+        Assert.Same(ServerCapabilities.None, capabilities);
     }
 
     [Fact]
@@ -138,8 +132,8 @@ public sealed class CorrelationTests
             correlationId: 222);
 
         // Act: answer out of receive order, exactly as a parked RESERVE would.
-        Assert.True(mux.DispatchCorrelated(222, MessageTypes.QueueReserve, new byte[] { 0xB }));
-        Assert.True(mux.DispatchCorrelated(111, MessageTypes.QueueReserve, new byte[] { 0xA }));
+        mux.DispatchCorrelated(222, new byte[] { 0xB });
+        mux.DispatchCorrelated(111, new byte[] { 0xA });
 
         // Assert: each caller got its own response, not the other's.
         Assert.Equal([0xA], await first.WaitAsync(TimeSpan.FromSeconds(10)));
@@ -160,9 +154,9 @@ public sealed class CorrelationTests
             correlationId: 17);
 
         // Act
-        Assert.True(mux.DispatchCorrelated(17, MessageTypes.LeaseAcquire, new byte[] { 0, 2 }, responseFinal: false));
+        mux.DispatchCorrelated(17, new byte[] { 0, 2 }, responseFinal: false);
         Assert.False(request.IsCompleted);
-        Assert.True(mux.DispatchCorrelated(17, MessageTypes.LeaseAcquire, new byte[] { 0, 0, 0, 9 }, responseFinal: true));
+        mux.DispatchCorrelated(17, new byte[] { 0, 0, 0, 9 }, responseFinal: true);
 
         // Assert
         Assert.Equal(new byte[] { 0, 0, 0, 9 }, await request.WaitAsync(TimeSpan.FromSeconds(10)));
@@ -176,7 +170,7 @@ public sealed class CorrelationTests
         mux.SetConnected();
 
         // Act
-        Action act = () => { _ = mux.DispatchCorrelated(99, MessageTypes.LeaseAcquire, new byte[] { 0x1 }); };
+        Action act = () => mux.DispatchCorrelated(99, new byte[] { 0x1 });
 
         // Assert
         Assert.Throws<ProtocolException>(act);
@@ -211,10 +205,8 @@ public sealed class CorrelationTests
         var routed = 0;
         for (var i = 32; i >= 1; i--)
         {
-            if (mux.DispatchCorrelated((ulong)i, MessageTypes.KvGet, new byte[] { (byte)i }))
-            {
-                routed++;
-            }
+            mux.DispatchCorrelated((ulong)i, new byte[] { (byte)i });
+            routed++;
         }
 
         // Assert: all 32 reached the transport before any answer. Uncorrelated, only one would have.
@@ -236,7 +228,7 @@ public sealed class CorrelationTests
         var notified = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var registration = mux.RegisterNotificationHandler(
             MessageTypes.KvNotify,
-            payload => notified.TrySetResult(payload));
+            payload => notified.TrySetResult(payload.ToArray()));
 
         var request = mux.RequestAsync(
             MessageTypes.KvGet,
@@ -246,13 +238,13 @@ public sealed class CorrelationTests
             correlationId: 77);
 
         // Act: an uncorrelated notification, then the correlated response.
-        mux.Dispatch(MessageTypes.KvNotify, new byte[] { 0xFE });
+        mux.DispatchNotification(MessageTypes.KvNotify, new byte[] { 0xFE });
 
         // Assert
         Assert.Equal([0xFE], await notified.Task.WaitAsync(TimeSpan.FromSeconds(10)));
         Assert.False(request.IsCompleted);
 
-        Assert.True(mux.DispatchCorrelated(77, MessageTypes.KvGet, new byte[] { 0xAB }));
+        mux.DispatchCorrelated(77, new byte[] { 0xAB });
         Assert.Equal([0xAB], await request.WaitAsync(TimeSpan.FromSeconds(10)));
     }
 
@@ -268,7 +260,7 @@ public sealed class CorrelationTests
             _ => called = true);
 
         // Act
-        Action act = () => { _ = mux.DispatchCorrelated(9999, MessageTypes.LeaseAcquire, new byte[] { 0x1 }); };
+        Action act = () => mux.DispatchCorrelated(9999, new byte[] { 0x1 });
 
         // Assert
         Assert.Throws<ProtocolException>(act);
@@ -298,7 +290,7 @@ public sealed class CorrelationTests
 
         // Assert
         await Assert.ThrowsAsync<ProtocolException>(act);
-        Assert.True(mux.DispatchCorrelated(5, MessageTypes.KvGet, new byte[] { 0xA }));
+        mux.DispatchCorrelated(5, new byte[] { 0xA });
         Assert.Equal([0xA], await inFlight.WaitAsync(TimeSpan.FromSeconds(10)));
     }
 

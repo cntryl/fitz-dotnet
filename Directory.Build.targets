@@ -1,0 +1,7 @@
+<Project>
+  <!-- Evaluated after the project file, so TargetFramework is final here. The netstandard2.0
+       Roslyn components must not be compiled with the net11.0-only runtime-async feature. -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net11.0'">
+    <Features>$(Features);runtime-async=on</Features>
+  </PropertyGroup>
+</Project>

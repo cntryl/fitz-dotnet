@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>Cntryl.Fitz.Benchmarks.Runner</RootNamespace>
+    <Description>Command-line host that runs the Fitz .NET client benchmarks.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Fitz.Benchmarks\Fitz.Benchmarks.csproj" />
+  </ItemGroup>
+</Project>

@@ -25,7 +25,7 @@ public sealed class StreamClientTests
         // Arrange
         // Act
         // Assert
-        using var stream = new StreamClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+        await using var stream = new StreamClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
 
         var error = await Assert.ThrowsAsync<StreamException>(() =>
             stream.PeekAsync("stream://prod/app/events"));
@@ -46,6 +46,39 @@ public sealed class StreamClientTests
 
         Assert.Equal(0UL, parsed.Offset);
         Assert.Equal(expected, parsed.Status);
+    }
+
+    [Theory]
+    [InlineData("{\"first_resource_offset\":3,\"last_resource_offset\":9}")]
+    [InlineData("{\"last_resource_offset\":9,\"first_resource_offset\":3}")]
+    public void ShouldPreferLastOffsetGivenBothOffsetsInAnyOrderWhenParsingOffset(string json)
+    {
+        // Arrange
+        var payload = System.Text.Encoding.UTF8.GetBytes(json);
+
+        // Act
+        var parsed = StreamWireHelpers.ParseCommitOffset(payload);
+
+        // Assert
+        Assert.Equal(StreamCommitOffsetStatus.Present, parsed.Status);
+        Assert.Equal(9UL, parsed.Offset);
+    }
+
+    [Theory]
+    [InlineData("{\"meta\":{\"last_resource_offset\":9}}", StreamCommitOffsetStatus.Absent)]
+    [InlineData("{\"last_resource_offset\":-1}", StreamCommitOffsetStatus.Malformed)]
+    [InlineData("[{\"last_resource_offset\":9}]", StreamCommitOffsetStatus.Malformed)]
+    public void ShouldIgnoreNestedAndRejectInvalidOffsetsGivenCommitMetadataWhenParsingOffset(string json, StreamCommitOffsetStatus expected)
+    {
+        // Arrange
+        var payload = System.Text.Encoding.UTF8.GetBytes(json);
+
+        // Act
+        var parsed = StreamWireHelpers.ParseCommitOffset(payload);
+
+        // Assert
+        Assert.Equal(expected, parsed.Status);
+        Assert.Equal(0UL, parsed.Offset);
     }
 
     [Fact]
@@ -94,7 +127,7 @@ public sealed class StreamClientTests
         // Act
         // Assert
         var requestedOffsets = new List<ulong>();
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamRead, messageType);
             var request = new BinaryBufferReader(payload);
@@ -144,7 +177,7 @@ public sealed class StreamClientTests
         // Arrange
         // Act
         // Assert
-        using var stream = new StreamClient(
+        await using var stream = new StreamClient(
             (messageType, _, _) =>
             {
                 using var writer = new BinaryBufferWriter();
@@ -173,55 +206,6 @@ public sealed class StreamClientTests
     [Theory]
     [MemberData(nameof(CanonicalStreamSelectors))]
     public void ShouldAcceptSelectorGivenCanonicalStreamFixtureShapeWhenStreamOperationRuns(string selector) => Assert.True(RouteValidation.IsStreamSelector(selector));
-
-    [Fact]
-    public async Task ShouldRollbackAlreadyRestoredPatternsGivenPartialReconnectFailureWhenStreamOperationRuns()
-    {
-        // Arrange
-        var calls = new List<ushort>();
-        var subscribeCalls = 0;
-        using var stream = new StreamClient(
-            (messageType, _, _) =>
-            {
-                calls.Add(messageType);
-                using var writer = new BinaryBufferWriter();
-                if (messageType == MessageTypes.StreamSubscribe)
-                {
-                    subscribeCalls++;
-                    if (subscribeCalls == 4)
-                    {
-                        writer.WriteU8(1);
-                        writer.WriteString("restore rejected");
-                    }
-                    else
-                    {
-                        writer.WriteU8(0);
-                        writer.WriteU8(1);
-                        writer.WriteU64((ulong)subscribeCalls);
-                    }
-                }
-                else
-                {
-                    writer.WriteU8(0);
-                }
-                return Task.FromResult(writer.Build());
-            },
-            (_, _) => new TestRegistration());
-        _ = await stream.SubscribeAsync("stream://prod/app/*", (_, _) => ValueTask.CompletedTask);
-        _ = await stream.SubscribeAsync("stream://prod/other/*", (_, _) => ValueTask.CompletedTask);
-
-        // Act
-        var restore = typeof(StreamClient).GetMethod(
-            "RestoreSubscriptionsAsync",
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-
-
-        // Assert
-        var pending = Assert.IsType<ValueTask>(restore!.Invoke(stream, [CancellationToken.None]));
-        await Assert.ThrowsAsync<StreamException>(pending.AsTask);
-
-        Assert.Equal(MessageTypes.StreamUnsubscribe, calls[^1]);
-    }
 
     [Theory]
     [InlineData("stream://*/area/resource")]
@@ -272,7 +256,7 @@ public sealed class StreamClientTests
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -303,7 +287,7 @@ public sealed class StreamClientTests
     public async Task ShouldAllowOptionalPayloadGivenBeginResponseWhenBeginningStream()
     {
         // Arrange
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamBegin, messageType);
 
@@ -326,7 +310,7 @@ public sealed class StreamClientTests
     {
         // Arrange
         var requestCount = 0;
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             requestCount++;
             Assert.Equal(MessageTypes.StreamRead, messageType);
@@ -360,7 +344,7 @@ public sealed class StreamClientTests
         // Arrange
         // Act
         // Assert
-        using var stream = new StreamClient((_, payload, _) =>
+        await using var stream = new StreamClient((_, payload, _) =>
         {
             var request = new BinaryBufferReader(payload);
             var selector = request.ReadString();
@@ -384,7 +368,7 @@ public sealed class StreamClientTests
     {
         // Arrange
         var requestCount = 0;
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             requestCount++;
             Assert.Equal(MessageTypes.StreamRead, messageType);
@@ -440,7 +424,7 @@ public sealed class StreamClientTests
     public async Task ShouldReturnRecordsGivenWrappedPayloadWhenReadingStream()
     {
         // Arrange
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamRead, messageType);
 
@@ -513,7 +497,7 @@ public sealed class StreamClientTests
     {
         // Arrange
         var requestCount = 0;
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             requestCount++;
             Assert.Equal(MessageTypes.StreamRead, messageType);
@@ -559,7 +543,7 @@ public sealed class StreamClientTests
     public async Task ShouldRejectTrailingBytesGivenCountPrefixedPayloadWhenReadingStream()
     {
         // Arrange
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamRead, messageType);
 
@@ -615,7 +599,7 @@ public sealed class StreamClientTests
         // Arrange
         // Act
         // Assert
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamRead, messageType);
 
@@ -712,7 +696,7 @@ public sealed class StreamClientTests
     public async Task ShouldReturnConcreteRoutesGivenWildcardStreamReadWhenStreamOperationRuns()
     {
         // Arrange
-        using var stream = new StreamClient((messageType, _, _) =>
+        await using var stream = new StreamClient((messageType, _, _) =>
         {
             Assert.Equal(MessageTypes.StreamRead, messageType);
 
@@ -748,7 +732,7 @@ public sealed class StreamClientTests
     public async Task ShouldRejectWildcardRouteGivenStreamReadResponseWhenStreamOperationRuns()
     {
         // Arrange
-        using var stream = new StreamClient((_, _, _) =>
+        await using var stream = new StreamClient((_, _, _) =>
         {
             using var data = new BinaryBufferWriter();
             data.WriteU32(1);
@@ -779,7 +763,7 @@ public sealed class StreamClientTests
     public async Task ShouldReturnMetadataGivenCanonicalPayloadWhenReadingStreamMetadata()
     {
         // Arrange
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamGetMetadata, messageType);
 
@@ -815,7 +799,7 @@ public sealed class StreamClientTests
     public async Task ShouldReturnLastRecordGivenCanonicalPayloadWhenPeekingStream()
     {
         // Arrange
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.StreamLast, messageType);
 
@@ -854,7 +838,7 @@ public sealed class StreamClientTests
         // Arrange
         // Act
         // Assert
-        using var stream = new StreamClient((_, _, _) =>
+        await using var stream = new StreamClient((_, _, _) =>
         {
             using var data = new BinaryBufferWriter();
             data.WriteString("stream://*/app/events");
@@ -881,7 +865,7 @@ public sealed class StreamClientTests
         StreamCommitEvent? received = null;
         CancellationToken seenCancellationToken = default;
         var receivedTcs = new TaskCompletionSource<StreamCommitEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var stream = new StreamClient(
+        await using var stream = new StreamClient(
             (messageType, payload, _) =>
             {
                 var request = new BinaryBufferReader(payload);
@@ -950,7 +934,7 @@ public sealed class StreamClientTests
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
 
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -997,7 +981,7 @@ public sealed class StreamClientTests
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
 
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -1048,7 +1032,7 @@ public sealed class StreamClientTests
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
 
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -1087,7 +1071,7 @@ public sealed class StreamClientTests
     {
         // Arrange
         var calls = new List<ushort>();
-        using var stream = new StreamClient((messageType, _, _) =>
+        await using var stream = new StreamClient((messageType, _, _) =>
         {
             calls.Add(messageType);
 
@@ -1122,7 +1106,7 @@ public sealed class StreamClientTests
         // Arrange
         // Act
         // Assert
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -1151,7 +1135,7 @@ public sealed class StreamClientTests
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
 
-        using var stream = new StreamClient((messageType, payload, _) =>
+        await using var stream = new StreamClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -1205,7 +1189,7 @@ public sealed class StreamClientTests
 
         var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), TransportFactory: _ => transport);
         await using var connection = new FitzConnection(config, () => transport);
-        using var stream = new StreamClient(connection);
+        await using var stream = new StreamClient(connection);
 
         await connection.ConnectAsync();
         var session = await stream.BeginAsync("stream://prod/app/events");
@@ -1268,7 +1252,7 @@ public sealed class StreamClientTests
                 new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        using var stream = new StreamClient(connection);
+        await using var stream = new StreamClient(connection);
 
         await connection.ConnectAsync();
         var session = await stream.BeginAsync("stream://prod/app/events");
@@ -1353,7 +1337,7 @@ public sealed class StreamClientTests
                 new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        using var stream = new StreamClient(connection);
+        await using var stream = new StreamClient(connection);
 
         await connection.ConnectAsync();
         var subscription = await stream.SubscribeAsync("stream://prod/*/*", (evt, _) =>

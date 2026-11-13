@@ -16,12 +16,6 @@
   </PropertyGroup>
   <ItemGroup>
     <!-- Keep shipped code fixes loadable by the .NET 11 SDK (Roslyn 5.9). -->
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.9.0" PrivateAssets="all" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="$(OutputPath)$(AssemblyName).dll"
-          Pack="true"
-          PackagePath="analyzers/dotnet/cs"
-          Visible="false" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" PrivateAssets="all" />
   </ItemGroup>
 </Project>

@@ -15,20 +15,15 @@ public abstract class QueueItem : IQueueReservedItem
     /// <param name="ct">Cancellation token.</param>
     /// <returns>A task completing after the broker acknowledges NACK.</returns>
     public abstract Task NackAsync(TimeSpan visibilityDelay = default, CancellationToken ct = default);
-    /// <summary>Sentinel used when the current wire protocol does not provide an attempt count.</summary>
-    public const uint AttemptUnavailable = 0;
-
     /// <summary>
     /// Initializes the reserved item.
     /// </summary>
     /// <param name="route">Concrete route the message was reserved from.</param>
     /// <param name="body">Opaque message payload.</param>
-    /// <param name="attempt">Delivery attempt count, or <see cref="AttemptUnavailable"/>.</param>
-    protected QueueItem(string route, ReadOnlyMemory<byte> body, uint attempt = AttemptUnavailable)
+    protected QueueItem(string route, ReadOnlyMemory<byte> body)
     {
         Route = route;
         Body = body;
-        Attempt = attempt;
     }
 
     /// <summary>The concrete route this message was reserved from, never the request pattern.</summary>
@@ -36,12 +31,6 @@ public abstract class QueueItem : IQueueReservedItem
 
     /// <summary>The opaque message payload.</summary>
     public ReadOnlyMemory<byte> Body { get; }
-
-    /// <summary>
-    /// Delivery attempt count, or <see cref="AttemptUnavailable"/> when the broker does not
-    /// report one. The current wire protocol never reports it.
-    /// </summary>
-    public uint Attempt { get; }
 
     /// <summary>
     /// Extends this message's visibility timeout.

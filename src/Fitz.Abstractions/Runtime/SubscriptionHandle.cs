@@ -8,13 +8,18 @@ namespace Cntryl.Fitz;
 /// Disposal unsubscribes on a bounded best-effort basis and never replaces an exception
 /// already leaving an <c>await using</c> scope. Unsubscribing twice is safe.
 /// </remarks>
-[System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "The small semaphore remains valid for concurrent callers racing terminal disposal.")]
 public abstract class SubscriptionHandle : IAsyncDisposable
 {
+    static readonly TimeSpan CleanupBudget = TimeSpan.FromSeconds(5);
+
     readonly Func<CancellationToken, ValueTask> _unsubscribe;
     readonly TaskCompletionSource? _ownedCompletion;
     readonly SemaphoreSlim _unsubscribeGate = new(1, 1);
+    readonly CancellationTokenSource _closing = new();
+    readonly CancellationToken _closingToken;
+    readonly TimeProvider _time;
     int _unsubscribed;
+    int _disposed;
 
     /// <summary>
     /// Initializes the handle.
@@ -24,13 +29,17 @@ public abstract class SubscriptionHandle : IAsyncDisposable
     /// <param name="completion">
     /// Externally owned completion signal, or <see langword="null"/> to have the handle own one.
     /// </param>
+    /// <param name="timeProvider">The clock that bounds cleanup on disposal; the system clock by default.</param>
     protected SubscriptionHandle(
         string pattern,
         Func<CancellationToken, ValueTask> unsubscribe,
-        Task? completion = null)
+        Task? completion = null,
+        TimeProvider? timeProvider = null)
     {
         Pattern = pattern;
+        _time = timeProvider ?? TimeProvider.System;
         _unsubscribe = unsubscribe;
+        _closingToken = _closing.Token;
         if (completion is null)
         {
             _ownedCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -56,51 +65,65 @@ public abstract class SubscriptionHandle : IAsyncDisposable
     /// </summary>
     /// <param name="ct">Cancellation token bounding the unsubscribe request.</param>
     /// <returns>A task that completes once the broker accepts the unsubscribe.</returns>
-    /// <remarks>An unsubscribe the broker rejects remains retryable.</remarks>
-    public ValueTask UnsubscribeAsync(CancellationToken ct = default) => UnsubscribeCoreAsync(ct);
-
-    /// <summary>
-    /// Unsubscribes on a best-effort basis, bounded to five seconds, and swallows failures.
-    /// </summary>
-    /// <returns>A task that completes once cleanup finishes.</returns>
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Subscription disposal is bounded best-effort cleanup and must not replace an exception leaving an await-using scope.")]
-    public async ValueTask DisposeAsync()
-    {
-        GC.SuppressFinalize(this);
-        try
-        {
-            using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await UnsubscribeCoreAsync(cleanupDeadline.Token).ConfigureAwait(false);
-        }
-        catch
-        {
-            // Best-effort cleanup must not replace an exception leaving an await-using scope.
-        }
-    }
-
-    async ValueTask UnsubscribeCoreAsync(CancellationToken ct)
+    /// <remarks>
+    /// An unsubscribe the broker rejects remains retryable. Once the handle is disposed this
+    /// returns without contacting the broker, because disposal already unsubscribed.
+    /// </remarks>
+    public async ValueTask UnsubscribeAsync(CancellationToken ct = default)
     {
         if (Volatile.Read(ref _unsubscribed) != 0)
-        {
             return;
-        }
 
-        await _unsubscribeGate.WaitAsync(ct).ConfigureAwait(false);
+        if (!await _unsubscribeGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
+            return;
+
         try
         {
-            if (Volatile.Read(ref _unsubscribed) != 0)
-            {
-                return;
-            }
-
-            await _unsubscribe(ct).ConfigureAwait(false);
-            Volatile.Write(ref _unsubscribed, 1);
-            _ownedCompletion?.TrySetResult();
+            await UnsubscribeOnceAsync(ct).ConfigureAwait(false);
         }
         finally
         {
             _unsubscribeGate.Release();
         }
+    }
+
+    /// <summary>
+    /// Unsubscribes on a best-effort basis, bounded to five seconds, and swallows failures.
+    /// </summary>
+    /// <returns>A task that completes once cleanup finishes.</returns>
+    /// <remarks>
+    /// Waits for an in-progress <see cref="UnsubscribeAsync"/> to finish first. Calls that are
+    /// still queued, or that start afterwards, return without contacting the broker.
+    /// </remarks>
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
+        GC.SuppressFinalize(this);
+        await _closing.CancelAsync().ConfigureAwait(false);
+        await _unsubscribeGate.DrainAndDisposeAsync().ConfigureAwait(false);
+        _closing.Dispose();
+        try
+        {
+            using var cleanupDeadline = new CancellationTokenSource(CleanupBudget, _time);
+            await UnsubscribeOnceAsync(cleanupDeadline.Token).ConfigureAwait(false);
+        }
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
+        {
+            // Best-effort cleanup must not replace an exception leaving an await-using scope.
+        }
+    }
+
+    // Callers hold the gate, or have drained it during disposal.
+    async ValueTask UnsubscribeOnceAsync(CancellationToken ct)
+    {
+        if (Volatile.Read(ref _unsubscribed) != 0)
+            return;
+
+        await _unsubscribe(ct).ConfigureAwait(false);
+        Volatile.Write(ref _unsubscribed, 1);
+        _ownedCompletion?.TrySetResult();
     }
 }
 
@@ -127,12 +150,14 @@ public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerab
     /// <param name="completion">
     /// Externally owned completion signal, or <see langword="null"/> to have the handle own one.
     /// </param>
+    /// <param name="timeProvider">The clock that bounds cleanup on disposal; the system clock by default.</param>
     protected SubscriptionHandle(
         string pattern,
         IAsyncEnumerable<T> notifications,
         Func<CancellationToken, ValueTask> unsubscribe,
-        Task? completion = null)
-        : base(pattern, unsubscribe, completion)
+        Task? completion = null,
+        TimeProvider? timeProvider = null)
+        : base(pattern, unsubscribe, completion, timeProvider)
     {
         _notifications = notifications;
     }
@@ -140,10 +165,10 @@ public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerab
     /// <summary>
     /// Begins enumerating notifications.
     /// </summary>
-    /// <param name="ct">Cancellation token that stops enumeration.</param>
+    /// <param name="cancellationToken">Cancellation token that stops enumeration.</param>
     /// <returns>An enumerator over this subscription's notifications.</returns>
     /// <exception cref="InvalidOperationException">The handle is already being enumerated.</exception>
-    public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken ct = default)
+    public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default)
     {
         if (Interlocked.CompareExchange(ref _enumerating, 1, 0) != 0)
         {
@@ -153,7 +178,7 @@ public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerab
         var transferred = false;
         try
         {
-            var enumerator = new SubscriptionEnumerator(this, _notifications.GetAsyncEnumerator(ct));
+            var enumerator = new SubscriptionEnumerator(this, _notifications.GetAsyncEnumerator(cancellationToken));
             transferred = true;
             return enumerator;
         }
@@ -230,7 +255,7 @@ public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerab
 /// Raise <c>AsyncHandlerOptions.SubscriptionBufferCapacity</c> or consume faster. The
 /// default capacity is 256 notifications.
 /// </remarks>
-public sealed class SubscriptionBackpressureException : Exception
+public sealed class SubscriptionBackpressureException : FitzException
 {
     /// <summary>Initializes the exception with a default message.</summary>
     public SubscriptionBackpressureException()
@@ -262,7 +287,7 @@ public sealed class SubscriptionBackpressureException : Exception
 /// This one indicates the client-wide callback queue, sized by
 /// <c>AsyncHandlerOptions.QueueCapacity</c>, could not absorb delivery.
 /// </remarks>
-public sealed class AsyncHandlerOverflowException : Exception
+public sealed class AsyncHandlerOverflowException : FitzException
 {
     /// <summary>Stable error code identifying async-handler overflow.</summary>
     public const string ErrorCode = "ASYNC_HANDLER_OVERFLOW";

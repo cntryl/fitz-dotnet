@@ -14,6 +14,7 @@ namespace Cntryl.Fitz.Benchmarks;
 public class MultiplexerHotPathBenchmarks : IDisposable
 {
     Multiplexer _mux = null!;
+    ulong _nextCorrelationId;
 
     [GlobalSetup]
     public void Setup()
@@ -23,7 +24,21 @@ public class MultiplexerHotPathBenchmarks : IDisposable
     }
 
     [GlobalCleanup]
-    public void Dispose() => _mux.Dispose();
+    public void Cleanup() => Dispose();
+
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _mux.Dispose();
+        }
+    }
 
     [Benchmark]
     public async Task<byte[]> RequestDispatchRoundTrip()
@@ -32,39 +47,36 @@ public class MultiplexerHotPathBenchmarks : IDisposable
             450,
             [0x1, 0x2],
             static (_, _) => Task.CompletedTask,
-            TimeSpan.FromSeconds(5)
+            TimeSpan.FromSeconds(5),
+            ++_nextCorrelationId
         );
 
-        _mux.Dispatch(450, [0x9, 0x8, 0x7]);
+        _mux.DispatchCorrelated(_nextCorrelationId, new byte[] { 0x9, 0x8, 0x7 });
         return await task.ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Cancels one in-flight request (leaving a correlation tombstone) and completes the next.
+    /// </summary>
     [Benchmark]
     public async Task CancellationThenNextDispatch()
     {
         using var cts = new CancellationTokenSource();
-        var secondStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-
         var first = _mux.RequestAsync(
             451,
             [0x1],
-            static async (_, token) =>
-            {
-                await Task.Delay(10, token).ConfigureAwait(false);
-            },
+            static (_, _) => Task.CompletedTask,
             TimeSpan.FromSeconds(5),
-            ct: cts.Token
+            ++_nextCorrelationId,
+            cts.Token
         );
 
         var second = _mux.RequestAsync(
             451,
             [0x2],
-            (_, _) =>
-            {
-                secondStarted.TrySetResult();
-                return Task.CompletedTask;
-            },
-            TimeSpan.FromSeconds(5)
+            static (_, _) => Task.CompletedTask,
+            TimeSpan.FromSeconds(5),
+            ++_nextCorrelationId
         );
 
         await cts.CancelAsync().ConfigureAwait(false);
@@ -76,8 +88,7 @@ public class MultiplexerHotPathBenchmarks : IDisposable
         {
         }
 
-        await secondStarted.Task.ConfigureAwait(false);
-        _mux.Dispatch(451, [0xA]);
+        _mux.DispatchCorrelated(_nextCorrelationId, new byte[] { 0xA });
         _ = await second.ConfigureAwait(false);
     }
 }
