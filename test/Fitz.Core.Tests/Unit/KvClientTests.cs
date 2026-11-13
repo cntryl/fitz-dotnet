@@ -395,8 +395,8 @@ public sealed class KvClientTests
         var result = await tx.GetAsync(new ReadOnlyMemory<byte>("user:1"u8.ToArray()));
 
         // Assert
-        Assert.True(result.Found);
-        Assert.Equal("alice", System.Text.Encoding.UTF8.GetString(result.Value!.Value.Span));
+        var found = Assert.IsType<KvFound>(result.Value);
+        Assert.Equal("alice", System.Text.Encoding.UTF8.GetString(found.Value.Span));
     }
 
     [Fact]
@@ -427,8 +427,7 @@ public sealed class KvClientTests
         var result = await tx.GetAsync("missing"u8.ToArray());
 
         // Assert
-        Assert.False(result.Found);
-        Assert.Null(result.Value);
+        Assert.Same(KvNotFound.Instance, result.Value);
     }
 
     [Fact]

@@ -21,6 +21,8 @@ surface more idiomatic. The package stays on 4.x.
 - `LeaseListItem.AcquiredAt` is a `DateTimeOffset` parsed from the broker's RFC 3339 timestamp. An
   unparseable value fails the page with `LIST_INVALID_RESPONSE`.
 - `IKvTransaction.Route` is a required member instead of a default that throws.
+- `KvGetResult` is a C# 15 union of `KvFound(Value)` and `KvNotFound`, replacing the record with a `Found` flag
+  and a nullable `Value`. Read it with `result is KvFound { Value: var bytes }` or a `switch` over both cases.
 - Invalid client-side routes and patterns throw `ArgumentException` (with `ParamName`) instead of a domain
   exception carrying `INVALID_ROUTE`. Broker-reported route errors are unchanged.
 - A closed `FitzClient` throws `ObjectDisposedException` instead of a retryable `ConnectionException`.

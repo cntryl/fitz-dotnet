@@ -69,7 +69,7 @@ sealed class KvTransaction : IKvTransaction
 
         if (reader.IsEof)
         {
-            return new KvGetResult(false, null);
+            return KvNotFound.Instance;
         }
 
         var found = reader.ReadU8();
@@ -82,7 +82,7 @@ sealed class KvTransaction : IKvTransaction
         {
             if (reader.IsEof)
             {
-                return new KvGetResult(false, null);
+                return KvNotFound.Instance;
             }
 
             if (reader.RemainingBytes != 4 || reader.ReadU32() != 0 || !reader.IsEof)
@@ -90,7 +90,7 @@ sealed class KvTransaction : IKvTransaction
                 throw new KvException("GET not-found response has invalid value length", "GET_INVALID_RESPONSE");
             }
 
-            return new KvGetResult(false, null);
+            return KvNotFound.Instance;
         }
 
         if (reader.RemainingBytes < 4)
@@ -110,7 +110,7 @@ sealed class KvTransaction : IKvTransaction
             throw new KvException("GET response has trailing bytes", "GET_INVALID_RESPONSE");
         }
 
-        return new KvGetResult(true, value);
+        return new KvFound(value);
     }
 
     /// <inheritdoc />

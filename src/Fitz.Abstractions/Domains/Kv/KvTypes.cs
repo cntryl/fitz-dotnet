@@ -33,11 +33,69 @@ public enum KvDurability
 }
 
 /// <summary>
-/// Result returned by KV get operations.
+/// Result of a KV get: the value that was found (<see cref="KvFound"/>), or
+/// <see cref="KvNotFound"/> when the key holds no value.
 /// </summary>
-/// <param name="Found">Whether the key was found.</param>
-/// <param name="Value">Value bytes when found, otherwise <see langword="null"/>.</param>
-public sealed record KvGetResult(bool Found, ReadOnlyMemory<byte>? Value = null);
+/// <remarks>
+/// <para>
+/// Match on the case to read the result. A <c>switch</c> over both cases is checked for
+/// completeness by the compiler:
+/// </para>
+/// <code>
+/// if (await transaction.GetAsync(key) is KvFound { Value: var bytes })
+/// {
+///     Use(bytes);
+/// }
+///
+/// var text = await transaction.GetAsync(key) switch
+/// {
+///     KvFound found => Decode(found.Value),
+///     KvNotFound => "(none)",
+/// };
+/// </code>
+/// <para>
+/// Prefer those forms to <c>result is KvFound found</c>: code analysis rule CA1508 does not
+/// understand union patterns yet and reports that form as always true.
+/// </para>
+/// </remarks>
+public union KvGetResult(KvFound, KvNotFound) : IEquatable<KvGetResult>
+{
+    /// <summary>Whether two results hold equal cases.</summary>
+    /// <param name="other">The result to compare with.</param>
+    /// <returns><see langword="true"/> when both hold the same case with equal contents.</returns>
+    public bool Equals(KvGetResult other) => Equals(Value, other.Value);
+
+    /// <inheritdoc />
+    public override bool Equals(object? obj) => obj is KvGetResult other && Equals(other);
+
+    /// <inheritdoc />
+    public override int GetHashCode() => Value?.GetHashCode() ?? 0;
+
+    /// <summary>Whether two results hold equal cases.</summary>
+    public static bool operator ==(KvGetResult left, KvGetResult right) => left.Equals(right);
+
+    /// <summary>Whether two results hold different cases or contents.</summary>
+    public static bool operator !=(KvGetResult left, KvGetResult right) => !left.Equals(right);
+}
+
+/// <summary>
+/// The value a KV get found at its key.
+/// </summary>
+/// <param name="Value">Value bytes. Empty when the key holds an empty value.</param>
+public sealed record KvFound(ReadOnlyMemory<byte> Value);
+
+/// <summary>
+/// The outcome of a KV get for a key that holds no value.
+/// </summary>
+public sealed record KvNotFound
+{
+    KvNotFound()
+    {
+    }
+
+    /// <summary>The shared instance; every "not found" result is this object.</summary>
+    public static KvNotFound Instance { get; } = new();
+}
 
 /// <summary>
 /// Key/value pair returned by KV scan operations.

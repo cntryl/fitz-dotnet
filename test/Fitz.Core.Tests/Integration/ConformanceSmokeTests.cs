@@ -168,12 +168,12 @@ public sealed partial class ConformanceSmokeTests
 
             var readTx = await client.Kv.BeginAsync(route, KvMode.ReadOnly);
             var result = await readTx.GetAsync("user:1"u8.ToArray());
-            if (!result.Found)
+            if (result is not KvFound { Value: var bytes })
             {
                 return Result("CS-003", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "expected found=true");
             }
 
-            var value = result.Value.HasValue ? Encoding.UTF8.GetString(result.Value.Value.Span) : string.Empty;
+            var value = Encoding.UTF8.GetString(bytes.Span);
             evidence.Add($"read-after-commit returned \"{value}\"");
             return Result("CS-003", transport, authMode, string.Equals(value, "Alice", StringComparison.Ordinal) ? "pass" : "fail", sw.ElapsedMilliseconds, evidence, value);
         }
@@ -867,7 +867,7 @@ public sealed partial class ConformanceSmokeTests
 
                 var readTx = await client.Kv.BeginAsync(route, KvMode.ReadOnly);
                 var result = await readTx.GetAsync(Encoding.UTF8.GetBytes($"key-{index}"));
-                return result.Value.HasValue ? Encoding.UTF8.GetString(result.Value.Value.Span) : string.Empty;
+                return result is KvFound { Value: var bytes } ? Encoding.UTF8.GetString(bytes.Span) : string.Empty;
             })).ToArray();
 
             var values = await Task.WhenAll(tasks);

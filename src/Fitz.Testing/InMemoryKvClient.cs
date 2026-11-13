@@ -210,8 +210,8 @@ public sealed class InMemoryKvClient : IKvClient
         {
             return _routes.TryGetValue(route, out var state) &&
                 state.Values.TryGetValue(key.ToArray(), out var value)
-                ? new KvGetResult(true, value.ToArray())
-                : new KvGetResult(false);
+                ? new KvFound(value.ToArray())
+                : KvNotFound.Instance;
         }
     }
 
@@ -933,9 +933,9 @@ public sealed class InMemoryKvClient : IKvClient
                 EnsureOpen();
                 _owner.ValidateFrame(_requestPrefixBytes + sizeof(int) + key.Length);
                 _owner.Dispatch(this, KvTestOperation.Get, isWrite: false, key);
-                return Task.FromResult(_values.TryGetValue(key.ToArray(), out var value)
-                    ? new KvGetResult(true, value.ToArray())
-                    : new KvGetResult(false));
+                return Task.FromResult<KvGetResult>(_values.TryGetValue(key.ToArray(), out var value)
+                    ? new KvFound(value.ToArray())
+                    : KvNotFound.Instance);
             }
         }
 
