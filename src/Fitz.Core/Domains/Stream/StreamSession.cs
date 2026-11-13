@@ -17,7 +17,7 @@ sealed class StreamSession : IStreamSession
     readonly SemaphoreSlim _finalizationGate = new(1, 1);
     readonly CancellationTokenSource _closing = new();
     readonly CancellationToken _closingToken;
-    int _disposed;
+    bool _disposed;
 
     internal StreamSession(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
@@ -121,7 +121,7 @@ sealed class StreamSession : IStreamSession
     /// </remarks>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }

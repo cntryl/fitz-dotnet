@@ -9,7 +9,7 @@ sealed class QueueReservedItem : QueueItem
     readonly ulong _token;
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _requestFn;
     readonly SessionLatch _session;
-    int _completing;
+    bool _completing;
     readonly Func<uint, bool>? _supportsNack;
 
     internal QueueReservedItem(
@@ -76,7 +76,7 @@ sealed class QueueReservedItem : QueueItem
         }
         finally
         {
-            Volatile.Write(ref _completing, 0);
+            Volatile.Write(ref _completing, false);
         }
     }
 
@@ -109,13 +109,13 @@ sealed class QueueReservedItem : QueueItem
         }
         finally
         {
-            Volatile.Write(ref _completing, 0);
+            Volatile.Write(ref _completing, false);
         }
     }
 
     void ThrowIfClosed()
     {
-        if (!_session.IsClosed && Volatile.Read(ref _completing) == 0)
+        if (!_session.IsClosed && !Volatile.Read(ref _completing))
         {
             return;
         }
@@ -127,7 +127,7 @@ sealed class QueueReservedItem : QueueItem
 
     void BeginCompletion()
     {
-        if (!_session.IsClosed && Interlocked.CompareExchange(ref _completing, 1, 0) == 0)
+        if (!_session.IsClosed && !Interlocked.CompareExchange(ref _completing, true, false))
         {
             return;
         }

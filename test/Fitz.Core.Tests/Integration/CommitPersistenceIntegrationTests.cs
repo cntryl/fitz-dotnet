@@ -27,7 +27,7 @@ public sealed class CommitPersistenceIntegrationTests
         // Assert
         await using var read = await client.Kv.BeginAsync(route, KvMode.ReadOnly);
         var result = await read.GetAsync("key"u8.ToArray());
-        Assert.True(result.Found);
-        Assert.Equal("value"u8.ToArray(), result.Value!.Value.ToArray());
+        var found = Assert.IsType<KvFound>(result.Value);
+        Assert.Equal("value"u8.ToArray(), found.Value.ToArray());
     }
 }

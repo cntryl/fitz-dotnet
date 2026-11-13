@@ -16,7 +16,7 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _request;
     readonly Func<ushort, ReadOnlyMemory<byte>, byte, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _requestWithFlags;
-    int _disposed;
+    bool _disposed;
     readonly SubscriptionTable<NoticeMessage> _subscriptions;
     readonly IDisposable? _connectionBinding;
 
@@ -232,7 +232,7 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
     /// unsubscribes and reconnect restoration become no-ops.</remarks>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }
@@ -241,5 +241,5 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
         await _subscriptions.DisposeAsync().ConfigureAwait(false);
     }
 
-    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
 }

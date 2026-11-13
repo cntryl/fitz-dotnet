@@ -14,7 +14,7 @@ sealed class RpcResponseWriter : IRpcResponseWriter, IAsyncDisposable
     readonly CancellationToken _closingToken;
     ulong _sequence;
     bool _ended;
-    int _disposed;
+    bool _disposed;
 
     internal bool IsEnded => _ended;
 
@@ -58,7 +58,7 @@ sealed class RpcResponseWriter : IRpcResponseWriter, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
             return;
 
         await _closing.CancelAsync().ConfigureAwait(false);

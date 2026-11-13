@@ -77,7 +77,7 @@ public sealed class InMemoryKvClient : IKvClient
     const uint KeyExistsCode = 1055;
     const uint InvalidRequestCode = 1002;
 
-    readonly object _gate = new();
+    readonly Lock _gate = new();
     readonly Dictionary<string, RouteState> _routes = [with(StringComparer.Ordinal)];
     readonly Dictionary<string, InMemoryKvTransaction> _writers = [with(StringComparer.Ordinal)];
     readonly HashSet<InMemoryKvTransaction> _openTransactions = [with(ReferenceEqualityComparer.Instance)];
@@ -210,8 +210,8 @@ public sealed class InMemoryKvClient : IKvClient
         {
             return _routes.TryGetValue(route, out var state) &&
                 state.Values.TryGetValue(key.ToArray(), out var value)
-                ? new KvGetResult(true, value.ToArray())
-                : new KvGetResult(false);
+                ? new KvFound(value.ToArray())
+                : KvNotFound.Instance;
         }
     }
 
@@ -879,7 +879,7 @@ public sealed class InMemoryKvClient : IKvClient
     {
         readonly InMemoryKvClient _owner;
         readonly int? _scanPageSize;
-        readonly object _gate = new();
+        readonly Lock _gate = new();
         readonly SortedDictionary<byte[], byte[]> _values;
         readonly long _requestPrefixBytes;
         ulong _mutationCount;
@@ -933,9 +933,9 @@ public sealed class InMemoryKvClient : IKvClient
                 EnsureOpen();
                 _owner.ValidateFrame(_requestPrefixBytes + sizeof(int) + key.Length);
                 _owner.Dispatch(this, KvTestOperation.Get, isWrite: false, key);
-                return Task.FromResult(_values.TryGetValue(key.ToArray(), out var value)
-                    ? new KvGetResult(true, value.ToArray())
-                    : new KvGetResult(false));
+                return Task.FromResult<KvGetResult>(_values.TryGetValue(key.ToArray(), out var value)
+                    ? new KvFound(value.ToArray())
+                    : KvNotFound.Instance);
             }
         }
 

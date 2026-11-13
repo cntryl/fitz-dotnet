@@ -42,8 +42,7 @@ public sealed class DomainWorkflowIntegrationTests
 
 
         // Assert
-        Assert.False(result.Found);
-        Assert.Null(result.Value);
+        Assert.Same(KvNotFound.Instance, result.Value);
     }
 
     [Fact]
@@ -628,8 +627,8 @@ public sealed class DomainWorkflowIntegrationTests
 
 
         // Assert
-        Assert.True(result.Found);
-        Assert.Equal("v", Encoding.UTF8.GetString(result.Value!.Value.Span));
+        var found = Assert.IsType<KvFound>(result.Value);
+        Assert.Equal("v", Encoding.UTF8.GetString(found.Value.Span));
     }
 
     static async Task<Cntryl.Fitz.LeaseInfo> WaitForLeaseReleaseAsync(

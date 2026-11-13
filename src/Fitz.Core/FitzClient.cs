@@ -31,7 +31,7 @@ public sealed class FitzClient : IFitzClient, IDisposable
     readonly Lazy<RpcClient> _rpcClient;
     readonly Lazy<ScheduleClient> _scheduleClient;
     readonly Lazy<StreamClient> _streamClient;
-    int _disposed;
+    bool _disposed;
 
     /// <summary>
     /// Creates a client. No connection is opened until you call a connect method.
@@ -39,10 +39,18 @@ public sealed class FitzClient : IFitzClient, IDisposable
     /// <param name="config">Configuration for the connection. Validated immediately.</param>
     /// <exception cref="ArgumentNullException"><paramref name="config"/> is <see langword="null"/>.</exception>
     public FitzClient(ClientConfig config)
+        : this(config, TimeProvider.System)
+    {
+    }
+
+    /// <summary>Creates a client that keeps time with <paramref name="time"/>.</summary>
+    /// <param name="config">Configuration for the connection. Validated immediately.</param>
+    /// <param name="time">The clock for every timeout, backoff, and deadline of this client.</param>
+    internal FitzClient(ClientConfig config, TimeProvider time)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         var transportFactory = _config.TransportFactory ?? TransportResolver.Resolve;
-        _connection = new FitzConnection(_config, () => transportFactory(_config));
+        _connection = new FitzConnection(_config, () => transportFactory(_config), time);
         _kvClient = new Lazy<KvClient>(() => new KvClient(_connection), LazyThreadSafetyMode.ExecutionAndPublication);
         _leaseClient = new Lazy<LeaseClient>(() => new LeaseClient(_connection), LazyThreadSafetyMode.ExecutionAndPublication);
         _noticeClient = new Lazy<NoticeClient>(() => new NoticeClient(_connection), LazyThreadSafetyMode.ExecutionAndPublication);
@@ -65,80 +73,80 @@ public sealed class FitzClient : IFitzClient, IDisposable
     /// <inheritdoc />
     public async Task ConnectWhenReadyAsync(ConnectWhenReadyOptions? options = null, CancellationToken ct = default)
     {
+        const string TimedOut = "Timed out waiting for Fitz to become ready.";
         ThrowIfDisposed();
 
         options ??= new ConnectWhenReadyOptions();
         var timeout = ResolveDelay(options.Timeout, _config.Timeout ?? TimeSpan.FromSeconds(30), allowZero: true);
         var backoff = ResolveDelay(options.Backoff, TimeSpan.FromMilliseconds(250));
         var maxBackoff = ResolveDelay(options.MaxBackoff, TimeSpan.FromSeconds(2));
-        var deadline = DateTimeOffset.UtcNow + timeout;
+        var time = _connection.Time;
+
+        // A zero timeout means one attempt and no retries. Otherwise one deadline covers the whole
+        // call, and "did it time out?" is read from that deadline's own cancellation. Comparing a
+        // clock reading with the deadline instead can disagree with the timer by a fraction of a
+        // millisecond and report a timeout as a plain cancellation.
+        var singleAttempt = timeout == TimeSpan.Zero;
+        using var deadline = singleAttempt || timeout == System.Threading.Timeout.InfiniteTimeSpan
+            ? null
+            : new CancellationTokenSource(timeout, time);
+        using var bounded = deadline is null ? null : CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
+        var attemptToken = bounded?.Token ?? ct;
         var attempts = 0;
 
         while (true)
         {
             ThrowIfDisposed();
             ct.ThrowIfCancellationRequested();
-            attempts++;
-
-            var remaining = deadline - DateTimeOffset.UtcNow;
-            if (timeout == TimeSpan.Zero && attempts > 1)
+            if (++attempts > 1 && Expired())
             {
-                throw new TimeoutException("Timed out waiting for Fitz to become ready.");
+                throw new TimeoutException(TimedOut);
             }
-
-            using var attemptCts = timeout == System.Threading.Timeout.InfiniteTimeSpan
-                ? CancellationTokenSource.CreateLinkedTokenSource(ct)
-                : CreateAttemptCancellationSource(remaining, ct);
 
             try
             {
-                await ConnectAsync(attemptCts.Token).ConfigureAwait(false);
+                await ConnectAsync(attemptToken).ConfigureAwait(false);
                 return;
             }
-            catch (OperationCanceledException cancellation) when (!ct.IsCancellationRequested && timeout != System.Threading.Timeout.InfiniteTimeSpan && DateTimeOffset.UtcNow >= deadline)
+            catch (OperationCanceledException cancellation) when (!ct.IsCancellationRequested && Expired())
             {
-                throw new TimeoutException("Timed out waiting for Fitz to become ready.", cancellation);
+                throw new TimeoutException(TimedOut, cancellation);
             }
             catch (AuthenticationException)
             {
                 throw;
             }
-            catch (ConnectionException) when (Volatile.Read(ref _disposed) != 0 || State == ConnectionState.Closed)
+            catch (ConnectionException) when (Volatile.Read(ref _disposed) || State == ConnectionState.Closed)
             {
                 throw;
             }
-            catch (Exception attemptFailure) when (timeout != System.Threading.Timeout.InfiniteTimeSpan && DateTimeOffset.UtcNow >= deadline)
+            catch (Exception attemptFailure) when (Expired())
             {
-                throw new TimeoutException("Timed out waiting for Fitz to become ready.", attemptFailure);
+                throw new TimeoutException(TimedOut, attemptFailure);
             }
             catch (Exception exception) when (IsStartupReadinessFailure(State) && IsTransientStartupFailure(exception))
             {
-                var remainingDelay = timeout == System.Threading.Timeout.InfiniteTimeSpan
-                    ? maxBackoff
-                    : deadline - DateTimeOffset.UtcNow;
-                if (timeout != System.Threading.Timeout.InfiniteTimeSpan && remainingDelay <= TimeSpan.Zero)
+                try
                 {
-                    throw new TimeoutException("Timed out waiting for Fitz to become ready.");
+                    await Task.Delay(backoff, time, attemptToken).ConfigureAwait(false);
                 }
-
-                var actualDelay = timeout == System.Threading.Timeout.InfiniteTimeSpan
-                    ? backoff
-                    : Min(backoff, remainingDelay);
-                if (actualDelay > TimeSpan.Zero)
+                catch (OperationCanceledException cancellation) when (!ct.IsCancellationRequested && Expired())
                 {
-                    await Task.Delay(actualDelay, ct).ConfigureAwait(false);
+                    throw new TimeoutException(TimedOut, cancellation);
                 }
 
                 backoff = Min(TimeSpan.FromMilliseconds(backoff.TotalMilliseconds * 2), maxBackoff);
             }
         }
+
+        bool Expired() => singleAttempt || deadline is { IsCancellationRequested: true };
     }
 
     /// <inheritdoc />
     public async Task CloseAsync(CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }
@@ -263,15 +271,7 @@ public sealed class FitzClient : IFitzClient, IDisposable
         : Array.Empty<uint>();
 
     /// <inheritdoc />
-    public ConnectionState State => Volatile.Read(ref _disposed) != 0 ? ConnectionState.Closed : _connection.State;
-
-    static CancellationTokenSource CreateAttemptCancellationSource(TimeSpan remaining, CancellationToken ct)
-    {
-        var timeout = remaining <= TimeSpan.Zero ? TimeSpan.Zero : remaining;
-        var source = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        source.CancelAfter(timeout);
-        return source;
-    }
+    public ConnectionState State => Volatile.Read(ref _disposed) ? ConnectionState.Closed : _connection.State;
 
     static bool IsStartupReadinessFailure(ConnectionState state) => state is not ConnectionState.Closed;
 
@@ -310,7 +310,7 @@ public sealed class FitzClient : IFitzClient, IDisposable
 
     void ThrowIfDisposed()
     {
-        if (Volatile.Read(ref _disposed) != 0)
+        if (Volatile.Read(ref _disposed))
         {
             throw new ObjectDisposedException(nameof(FitzClient), "The client is closed.");
         }

@@ -218,11 +218,15 @@ await using var tx = await client.Kv.BeginAsync(
     "kv://prod/billing/invoices", KvMode.ReadWrite, ct);
 
 await tx.PutAsync(key, value, ct);
-var result = await tx.GetAsync(key, ct);
-if (result.Found) { Use(result.Value); }
+if (await tx.GetAsync(key, ct) is KvFound { Value: var stored }) { Use(stored); }
 
 await tx.CommitAsync(KvDurability.Sync, ct);
 ```
+
+`GetAsync` returns a `KvGetResult`, which is either a `KvFound` carrying the value or `KvNotFound`.
+Read it with a pattern, as above, or with a `switch` over both cases, which the compiler checks
+for completeness. Avoid the bare form `result is KvFound found`: code analysis rule CA1508 does
+not understand union patterns yet and reports it as always true.
 
 Commit persistence is explicit and has no default: `Sync` waits for durability, `Buffered`
 does not. Without a `CommitAsync` the transaction rolls back on disposal. `ScanAsync` returns

@@ -28,11 +28,11 @@ sealed class RpcClient : IRpcClient, IDisposable
 
     readonly TimeSpan _responseTimeout;
     readonly TimeProvider _time;
-    readonly object _responseSync = new();
+    readonly Lock _responseSync = new();
     readonly Dictionary<Guid, RpcCallState> _calls = [];
     readonly Dictionary<Guid, PendingCancellation> _pendingCancellations = [];
 
-    int _disposed;
+    bool _disposed;
     IDisposable? _rpcResponseRegistration;
     IDisposable? _rpcLifecycleRegistration;
 
@@ -501,7 +501,7 @@ sealed class RpcClient : IRpcClient, IDisposable
     /// <summary>Releases local resources and ends any registrations this client owns.</summary>
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }
@@ -532,13 +532,13 @@ sealed class RpcClient : IRpcClient, IDisposable
         _workers?.Dispose();
     }
 
-    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
 
     sealed class RpcCallState(
         SubscriptionChannel<RpcResponseFrame> channel,
         TaskCompletionSource<RpcCancellationOutcome> cancellation)
     {
-        readonly object _gate = new();
+        readonly Lock _gate = new();
         ulong _nextSequence;
         bool _terminal;
 

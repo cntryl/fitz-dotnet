@@ -69,12 +69,12 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     readonly SemaphoreSlim _changeGate = new(1, 1);
     readonly CancellationTokenSource _closing = new();
     readonly CancellationToken _closingToken;
-    readonly object _gate = new();
+    readonly Lock _gate = new();
     readonly Dictionary<string, PatternSubscription> _byPattern = [with(StringComparer.Ordinal)];
     readonly Dictionary<ulong, string> _patternById = [];
     IDisposable? _notificationRegistration;
     long _nextHandleId;
-    int _disposed;
+    bool _disposed;
 
     /// <summary>Creates the table.</summary>
     /// <param name="owner">The domain client, named in <see cref="ObjectDisposedException"/>.</param>
@@ -338,7 +338,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     /// <returns>A task that completes once shutdown finishes.</returns>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
             return;
 
         await _closing.CancelAsync().ConfigureAwait(false);
@@ -478,14 +478,14 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         return registrations;
     }
 
-    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, _owner);
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), _owner);
 
     sealed class ConnectionBinding : IDisposable
     {
         readonly FitzConnection _connection;
         readonly Action<Exception> _onDeliveryFailed;
         readonly IDisposable _reconnect;
-        int _disposed;
+        bool _disposed;
 
         internal ConnectionBinding(FitzConnection connection, Func<CancellationToken, ValueTask> onReconnect, Action<Exception> onDeliveryFailed)
         {
@@ -497,7 +497,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            if (Interlocked.Exchange(ref _disposed, true))
                 return;
             _connection.NotificationDeliveryFailed -= _onDeliveryFailed;
             _reconnect.Dispose();

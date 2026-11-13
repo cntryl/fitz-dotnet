@@ -207,8 +207,8 @@ public sealed class KvDirectory<T, TKey>
         ArgumentNullException.ThrowIfNull(value);
         var key = PrimaryKey(_identity(value));
         var existing = await transaction.GetAsync(key, ct).ConfigureAwait(false);
-        if (existing.Found)
-            await ReplaceAsync(transaction, ReadStored(existing.Value!.Value, readStored), value, ct).ConfigureAwait(false);
+        if (existing is KvFound { Value: var stored })
+            await ReplaceAsync(transaction, ReadStored(stored, readStored), value, ct).ConfigureAwait(false);
         else
             await InsertAsync(transaction, value, ct).ConfigureAwait(false);
     }
@@ -270,8 +270,8 @@ public sealed class KvDirectory<T, TKey>
     {
         ArgumentNullException.ThrowIfNull(transaction);
         var existing = await transaction.GetAsync(PrimaryKey(identity), ct).ConfigureAwait(false);
-        if (existing.Found)
-            await DeleteAsync(transaction, ReadStored(existing.Value!.Value, readStored), ct).ConfigureAwait(false);
+        if (existing is KvFound { Value: var stored })
+            await DeleteAsync(transaction, ReadStored(stored, readStored), ct).ConfigureAwait(false);
     }
 
     /// <summary>Reads one primary record through a caller-owned transaction.</summary>
@@ -279,7 +279,7 @@ public sealed class KvDirectory<T, TKey>
     {
         ArgumentNullException.ThrowIfNull(transaction);
         var result = await transaction.GetAsync(PrimaryKey(identity), ct).ConfigureAwait(false);
-        return result.Found ? Deserialize(result.Value!.Value) : default;
+        return result is KvFound { Value: var stored } ? Deserialize(stored) : default;
     }
 
     /// <summary>Reads one primary record in a short read-only transaction.</summary>

@@ -11,7 +11,7 @@ namespace Cntryl.Fitz.Runtime;
 sealed class ListenerRegistry<TListener>
     where TListener : Delegate
 {
-    readonly object _gate = new();
+    readonly Lock _gate = new();
     readonly Dictionary<long, TListener> _listeners = [];
     long _nextId;
 
@@ -51,11 +51,11 @@ sealed class ListenerRegistry<TListener>
 
     sealed class Registration(ListenerRegistry<TListener> owner, long id) : IDisposable
     {
-        int _disposed;
+        bool _disposed;
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            if (!Interlocked.Exchange(ref _disposed, true))
                 owner.Remove(id);
         }
     }

@@ -23,7 +23,7 @@ sealed class QueueClient : IQueueClient, IAsyncDisposable
     readonly IDisposable? _connectionBinding;
     readonly Func<ushort, ReadOnlyMemory<byte>, byte, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _requestWithFlags;
     readonly Func<uint, bool>? _supportsCapability;
-    int _disposed;
+    bool _disposed;
 
     internal QueueClient(FitzConnection connection)
         : this(
@@ -276,7 +276,7 @@ sealed class QueueClient : IQueueClient, IAsyncDisposable
     /// unsubscribes and reconnect restoration become no-ops.</remarks>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }
@@ -343,5 +343,5 @@ sealed class QueueClient : IQueueClient, IAsyncDisposable
             : null;
     }
 
-    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
 }

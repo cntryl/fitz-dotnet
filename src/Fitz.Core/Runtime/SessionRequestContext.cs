@@ -7,7 +7,7 @@ namespace Cntryl.Fitz.Runtime;
 // transport-session token and bind later handle operations to that session.
 sealed class SessionRequestContext : IDisposable
 {
-    readonly object _gate = new();
+    readonly Lock _gate = new();
     readonly FitzConnection? _connection;
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<Action, IDisposable>? _registerOnDisconnect;
@@ -121,10 +121,10 @@ sealed class SessionRequestContext : IDisposable
 
     sealed class PendingRegistration(SessionRequestContext owner, long id, IDisposable? registration) : IDisposable
     {
-        int _disposed;
+        bool _disposed;
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            if (Interlocked.Exchange(ref _disposed, true))
                 return;
             registration?.Dispose();
             lock (owner._gate)

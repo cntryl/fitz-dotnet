@@ -409,7 +409,7 @@ public sealed class InMemoryKvBrokerFidelityTests
         await transaction.CommitAsync(KvDurability.Sync);
 
         // Assert
-        Assert.True(client.Read(Route, ReadOnlyMemory<byte>.Empty).Found);
+        Assert.IsType<KvFound>(client.Read(Route, ReadOnlyMemory<byte>.Empty).Value);
     }
 
     // src/Fitz.Core/Connection/FitzConnection.cs EncodeFrame: frame (15-byte header + payload) vs limit.

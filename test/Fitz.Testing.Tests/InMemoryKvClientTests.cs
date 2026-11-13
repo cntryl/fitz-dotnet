@@ -33,7 +33,7 @@ public sealed class InMemoryKvClientTests
         await using (var rolledBack = await client.BeginAsync(Route))
         {
             await rolledBack.PutAsync("a"u8.ToArray(), "temporary"u8.ToArray());
-            Assert.Equal("temporary"u8.ToArray(), (await rolledBack.GetAsync("a"u8.ToArray())).Value!.Value.ToArray());
+            Assert.Equal("temporary"u8.ToArray(), Bytes(await rolledBack.GetAsync("a"u8.ToArray())));
         }
         await using (var committed = await client.BeginAsync(Route))
         {
@@ -269,8 +269,7 @@ public sealed class InMemoryKvClientTests
         client.Reset();
 
         // Assert
-        Assert.True(found.Found);
-        Assert.Equal("two"u8.ToArray(), found.Value!.Value.ToArray());
+        Assert.Equal("two"u8.ToArray(), Bytes(found));
         Assert.Empty(client.Snapshot(Route));
         Assert.Empty(client.Operations);
     }
@@ -396,8 +395,8 @@ public sealed class InMemoryKvClientTests
         var read = await reader.GetAsync("key"u8.ToArray());
 
         // Assert
-        Assert.Equal("old"u8.ToArray(), read.Value!.Value.ToArray());
-        Assert.Equal("new"u8.ToArray(), client.Read(Route, "key"u8.ToArray()).Value!.Value.ToArray());
+        Assert.Equal("old"u8.ToArray(), Bytes(read));
+        Assert.Equal("new"u8.ToArray(), Bytes(client.Read(Route, "key"u8.ToArray())));
     }
 
     [Fact]
@@ -414,7 +413,7 @@ public sealed class InMemoryKvClientTests
 
         // Assert
         Assert.Equal("TX_CLOSED", (await Assert.ThrowsAsync<KvException>(read)).Code);
-        Assert.False(client.Read(Route, "key"u8.ToArray()).Found);
+        Assert.Same(KvNotFound.Instance, client.Read(Route, "key"u8.ToArray()).Value);
         Assert.Equal(KvTestOperation.Rollback, client.Operations[^1].Operation);
     }
 
@@ -505,4 +504,7 @@ public sealed class InMemoryKvClientTests
 
     static string[] TextKeys(KvScanResult result) =>
         result.Pairs.Select(static pair => System.Text.Encoding.UTF8.GetString(pair.Key.Span)).ToArray();
+
+    // The bytes of a get that must have found its key.
+    static byte[] Bytes(KvGetResult result) => Assert.IsType<KvFound>(result.Value).Value.ToArray();
 }

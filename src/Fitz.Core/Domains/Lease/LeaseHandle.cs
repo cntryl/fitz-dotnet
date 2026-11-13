@@ -17,7 +17,7 @@ sealed class LeaseHandle : ILease
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly SessionLatch _session;
     readonly TimeProvider _time;
-    int _disposed;
+    bool _disposed;
     readonly SemaphoreSlim _operationGate = new(1, 1);
     readonly CancellationTokenSource _closing = new();
     readonly CancellationToken _closingToken;
@@ -97,7 +97,7 @@ sealed class LeaseHandle : ILease
     /// </remarks>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }
