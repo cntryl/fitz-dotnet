@@ -3,9 +3,10 @@
 #
 # compose.yml disables container healthchecks, and `docker compose up -d` returns as soon
 # as the containers exist, not when the brokers listen. A published port also accepts
-# connections (through the Docker proxy) before the broker inside is ready, so a bare TCP
-# connect proves nothing. Instead, each broker's HTTP port must return an HTTP response, then
-# its TCP port must accept a connection.
+# connections (through the Docker proxy) before the broker inside is ready, and the broker
+# answers plain HTTP requests while its data plane is still starting: it rejects client
+# connections with 503 until then. So each broker's `/readyz` must return success, which it
+# does only once the data plane accepts clients, then its TCP port must accept a connection.
 #
 # Usage: wait-for-broker.sh [timeout-seconds]   (default 90)
 # Ports follow compose.yml and honour the same FITZ_*_HOST_*_PORT overrides.
@@ -37,7 +38,7 @@ tcp_open() {
 }
 
 for port in "${http_ports[@]}"; do
-  wait_until "HTTP 127.0.0.1:${port}" curl --silent --output /dev/null --max-time 2 "http://127.0.0.1:${port}/"
+  wait_until "broker ready on 127.0.0.1:${port}" curl --silent --fail --output /dev/null --max-time 2 "http://127.0.0.1:${port}/readyz"
 done
 for port in "${tcp_ports[@]}"; do
   wait_until "TCP 127.0.0.1:${port}" tcp_open "${port}"

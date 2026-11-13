@@ -23,7 +23,10 @@
 # `latest` index as of 2026-11-13 (amd64 + arm64, built 2026-11-11).
 x-broker-common: &broker-common
   restart: unless-stopped
-  stop_grace_period: 15s
+  # The broker drains for up to 25 seconds on SIGTERM. A shorter grace period makes Docker kill
+  # it mid-drain, which leaves its storage writer lease behind: the next start then waits about
+  # 35 seconds for that lease to expire, longer than the restart scenario allows a client to reconnect.
+  stop_grace_period: 45s
   # Healthchecks stay disabled (the image has no probe tool). `docker compose up -d` therefore
   # returns before the brokers listen; run .github/scripts/wait-for-broker.sh before testing.
   healthcheck:
