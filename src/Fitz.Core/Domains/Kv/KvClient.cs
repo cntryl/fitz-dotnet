@@ -21,6 +21,8 @@ sealed class KvClient : IKvClient, IDisposable
     readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly int _subscriptionBufferCapacity;
+    readonly NotificationActivationBuffer _activationBuffer;
+    readonly FitzConnection? _connection;
     readonly Func<bool> _supportsExclusiveScan;
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
@@ -48,6 +50,8 @@ sealed class KvClient : IKvClient, IDisposable
             () => true)
     {
         _reconnectRegistration = connection.OnReconnect(RestoreSubscriptionsAsync);
+        _connection = connection;
+        connection.NotificationDeliveryFailed += FailNotificationDelivery;
     }
 
     /// <summary>
@@ -74,6 +78,7 @@ sealed class KvClient : IKvClient, IDisposable
         _registerNotificationHandler = registerNotificationHandler;
         _dispatchAsyncHandler = dispatchAsyncHandler;
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
+        _activationBuffer = new NotificationActivationBuffer(subscriptionBufferCapacity);
         _supportsExclusiveScan = supportsExclusiveScan ?? (() => true);
     }
 
@@ -97,7 +102,8 @@ sealed class KvClient : IKvClient, IDisposable
         writer.WriteString(route);
         writer.WriteU8((byte)mode);
 
-        var response = await _request(MessageTypes.KvBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
+        using var session = new SessionRequestContext(_connection, _request, _registerOnDisconnect);
+        var response = await session.RequestAsync(MessageTypes.KvBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = KvWireHelpers.ReadSuccess(response, "BEGIN");
 
         if (reader.IsEof || reader.RemainingBytes < 8)
@@ -111,12 +117,13 @@ sealed class KvClient : IKvClient, IDisposable
             throw new KvException("BEGIN response has trailing bytes", "BEGIN_INVALID_RESPONSE");
         }
 
+        session.EnsureValid();
         return new KvTransaction(
-            _request,
+            session.BoundRequest,
             route,
             txId,
-            _registerOnDisconnect,
-            _retryRequest,
+            session.RegisterOnDisconnect,
+            session.BindRetry(_retryRequest),
             _supportsExclusiveScan);
     }
 
@@ -163,24 +170,27 @@ sealed class KvClient : IKvClient, IDisposable
         await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            ThrowIfDisposed();
+            using var activation = _activationBuffer.Begin(pattern);
             KvSubscriptionState? state;
             lock (_gate)
             {
+                ThrowIfDisposed();
                 _subscriptionsByPattern.TryGetValue(pattern, out state);
             }
             if (state is null)
             {
                 var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
                 state = new KvSubscriptionState(subscriptionId);
-                lock (_gate)
-                {
-                    _subscriptionsByPattern[pattern] = state;
-                    _patternsBySubscriptionId[subscriptionId] = pattern;
-                }
             }
             lock (_gate)
             {
+                ThrowIfDisposed();
                 state.Writers[handleId] = registration;
+                _subscriptionsByPattern[pattern] = state;
+                _patternsBySubscriptionId[state.SubscriptionId] = pattern;
+                if (_activationBuffer.Replay(state.SubscriptionId, HandleNotification) is { } activationError)
+                    _ = registration.FailAsync(activationError);
             }
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
             var completion = registration.Completion;
@@ -279,6 +289,19 @@ sealed class KvClient : IKvClient, IDisposable
         return expectSubscriptionId ? reader.ReadU64() : null;
     }
 
+    void FailNotificationDelivery(Exception error)
+    {
+        lock (_gate)
+        {
+            _activationBuffer.Fail(error);
+            var registrations = _subscriptionsByPattern.Values.SelectMany(subscription => subscription.Writers.Values).ToArray();
+            _subscriptionsByPattern.Clear();
+            _patternsBySubscriptionId.Clear();
+            foreach (var registration in registrations)
+                _ = registration.FailAsync(error);
+        }
+    }
+
     void EnsureNotificationHandlerInitialized()
     {
         lock (_gate)
@@ -311,7 +334,10 @@ sealed class KvClient : IKvClient, IDisposable
             {
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
                     !_subscriptionsByPattern.TryGetValue(pattern, out var state))
+                {
+                    _activationBuffer.Buffer(subscriptionId, route, payload);
                     return;
+                }
                 registrations = [.. state.Writers.Values];
             }
 
@@ -390,6 +416,8 @@ sealed class KvClient : IKvClient, IDisposable
             return;
         }
 
+        _connection?.NotificationDeliveryFailed -= FailNotificationDelivery;
+        _activationBuffer.Dispose();
         _notificationRegistration?.Dispose();
         _reconnectRegistration?.Dispose();
         lock (_gate)

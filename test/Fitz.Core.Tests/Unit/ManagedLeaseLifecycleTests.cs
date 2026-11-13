@@ -218,8 +218,8 @@ public sealed class ManagedLeaseLifecycleTests
 
 
         // Act
-        await using var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
-
+        await Assert.ThrowsAsync<ConnectionException>(() =>
+            leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30)));
 
         // Assert
         Assert.Equal(1, Volatile.Read(ref registrationDisposals));

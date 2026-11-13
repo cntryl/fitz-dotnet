@@ -589,8 +589,9 @@ public sealed class QueueClientTests
         using var notification = new BinaryBufferWriter();
         notification.WriteU64(subscriptionId);
         notification.WriteString("queue://prod/app/tasks");
-        notification.WriteU32(3);
-        notification.WriteBytes("new"u8);
+        notification.WriteU64(1);
+        notification.WriteU64(2);
+        notification.WriteU64(3);
         notifyHandler!(notification.Build());
 
         var evt = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
@@ -600,7 +601,11 @@ public sealed class QueueClientTests
         Assert.Equal(MessageTypes.QueueSubscribe, seenMessageType);
         Assert.NotNull(seenPayload);
         Assert.Equal("queue://prod/app/tasks", evt!.Route);
-        Assert.Equal("new", System.Text.Encoding.UTF8.GetString(evt.Payload.Span));
+        var counters = new BinaryBufferReader(evt.Payload);
+        Assert.Equal(1UL, counters.ReadU64());
+        Assert.Equal(2UL, counters.ReadU64());
+        Assert.Equal(3UL, counters.ReadU64());
+        Assert.True(counters.IsEof);
         Assert.Same(received, evt);
         Assert.NotEqual(default, seenCancellationToken);
         Assert.False(seenCancellationToken.IsCancellationRequested);
@@ -673,8 +678,7 @@ public sealed class QueueClientTests
     public async Task ShouldMarkReservedItemAsClosedAfterDisconnectGivenQueueClientWhenOperationRuns()
     {
         // Arrange
-        Action? onDisconnect = null;
-        var unsubscribeCount = 0;
+        var disconnects = new List<Action>();
 
         using var queue = new QueueClient(
             (messageType, payload, _) =>
@@ -691,22 +695,24 @@ public sealed class QueueClientTests
             registerNotificationHandler: null,
             registerOnDisconnect: disconnect =>
             {
-                onDisconnect = disconnect;
-                return new TestRegistration(() => unsubscribeCount++);
+                disconnects.Add(disconnect);
+                return new TestRegistration(() => disconnects.Remove(disconnect));
             });
 
         var items = await queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30));
         var item = Assert.Single(items);
 
         // Act
-        onDisconnect?.Invoke();
+        Assert.Single(disconnects);
+        foreach (var disconnect in disconnects.ToArray())
+            disconnect();
 
         var ex = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(TimeSpan.FromSeconds(10)));
 
         // Assert
         Assert.Equal("ITEM_CLOSED", ex.Code);
         Assert.Equal("Queue item is no longer valid after disconnect", ex.Message);
-        Assert.Equal(1, unsubscribeCount);
+        Assert.Empty(disconnects);
     }
 
     [Fact]
@@ -829,8 +835,9 @@ public sealed class QueueClientTests
                     using var notification = new BinaryBufferWriter();
                     notification.WriteU64(777);
                     notification.WriteString("queue://prod/app/tasks");
-                    notification.WriteU32(8);
-                    notification.WriteBytes("restored"u8);
+                    notification.WriteU64(2);
+                    notification.WriteU64(0);
+                    notification.WriteU64(0);
                     secondTransport.QueueResponse(MessageTypes.QueueNotify, notification.WrittenSpan);
                 });
             }
@@ -865,8 +872,9 @@ public sealed class QueueClientTests
         {
             notification.WriteU64(555);
             notification.WriteString("queue://prod/app/tasks");
-            notification.WriteU32(7);
-            notification.WriteBytes("initial"u8);
+            notification.WriteU64(1);
+            notification.WriteU64(0);
+            notification.WriteU64(0);
             firstTransport.QueueResponse(MessageTypes.QueueNotify, notification.WrittenSpan);
         }
 
@@ -874,13 +882,13 @@ public sealed class QueueClientTests
         var initialEvent = await firstNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         // Assert
-        Assert.Equal("initial", System.Text.Encoding.UTF8.GetString(initialEvent.Payload.Span));
+        Assert.Equal(1UL, new BinaryBufferReader(initialEvent.Payload).ReadU64());
 
         firstTransport.QueueClosed();
 
         var restoredEvent = await secondNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
         Assert.Equal("queue://prod/app/tasks", restoredEvent.Route);
-        Assert.Equal("restored", System.Text.Encoding.UTF8.GetString(restoredEvent.Payload.Span));
+        Assert.Equal(2UL, new BinaryBufferReader(restoredEvent.Payload).ReadU64());
 
         await connection.CloseAsync();
     }

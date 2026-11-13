@@ -48,6 +48,7 @@ sealed partial class RpcClient : IRpcClient, IDisposable
 
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
+    readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<CancellationToken>> _sendInSession;
     readonly Func<ushort, Action<byte[]>, IDisposable>? _registerNotificationHandler;
     readonly Func<Func<CancellationToken, ValueTask>, IDisposable>? _onReconnect;
     readonly Func<CancellationToken>? _getConnectionClosedToken;
@@ -58,6 +59,8 @@ sealed partial class RpcClient : IRpcClient, IDisposable
     readonly Dictionary<string, uint> _workerConcurrency = [with(StringComparer.Ordinal)];
     readonly Dictionary<string, SemaphoreSlim> _workerGates = [with(StringComparer.Ordinal)];
     readonly object _workerSync = new();
+    TaskCompletionSource _workerAvailability = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    int _waitingWorkerCount;
     readonly Dictionary<Guid, ActiveRpcInvocation> _activeWorkerCalls = [];
     readonly HashSet<Guid> _cancelledWorkerCalls = [];
     readonly Dictionary<Guid, QueuedRpcInvocation> _queuedWorkerCalls = [];
@@ -82,7 +85,8 @@ sealed partial class RpcClient : IRpcClient, IDisposable
             () => connection.ConnectionClosedToken,
             (handler, rejected) => connection.TryDispatchAsyncHandler("rpc", handler, rejected),
             connectionTimeout: connection.Timeout,
-            onWorkerError: connection.ReportAsyncHandlerError)
+            onWorkerError: connection.ReportAsyncHandlerError,
+            sendInSession: connection.SendInSessionAsync)
     {
     }
 
@@ -125,16 +129,30 @@ sealed partial class RpcClient : IRpcClient, IDisposable
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
         TimeSpan? connectionTimeout = null,
         Action<Exception>? onWorkerError = null,
-        Func<uint>? getCapabilityBits = null)
+        Func<uint>? getCapabilityBits = null,
+        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<CancellationToken>>? sendInSession = null)
     {
         _request = request;
         _send = send;
+        _sendInSession = sendInSession ?? SendWithCapturedSessionAsync;
         _registerNotificationHandler = registerNotificationHandler;
         _onReconnect = onReconnect;
         _getConnectionClosedToken = getConnectionClosedToken;
         _dispatchAsyncHandler = dispatchAsyncHandler;
         _onWorkerError = onWorkerError;
         _responseTimeout = connectionTimeout ?? TimeSpan.FromSeconds(30);
+    }
+
+    async ValueTask<CancellationToken> SendWithCapturedSessionAsync(
+        ushort messageType,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken ct)
+    {
+        // Delegate-backed test clients have no transport-generation API. Capture their
+        // supplied lifetime before sending; real connections return the actual lifetime.
+        var session = _getConnectionClosedToken?.Invoke() ?? CancellationToken.None;
+        await _send(messageType, payload, ct).ConfigureAwait(false);
+        return session;
     }
 
     /// <inheritdoc />
@@ -215,14 +233,14 @@ sealed partial class RpcClient : IRpcClient, IDisposable
         }
 
         var requestSent = false;
+        var connectionClosedToken = CancellationToken.None;
         byte cancellationReason = 1;
         try
         {
             callToken.ThrowIfCancellationRequested();
-            await _send(MessageTypes.RpcRequest, writer.WrittenMemory, callToken).ConfigureAwait(false);
+            connectionClosedToken = await _sendInSession(MessageTypes.RpcRequest, writer.WrittenMemory, callToken).ConfigureAwait(false);
             requestSent = true;
 
-            var connectionClosedToken = _getConnectionClosedToken?.Invoke() ?? CancellationToken.None;
             using var connectionClosedRegistration = connectionClosedToken.CanBeCanceled
                 ? connectionClosedToken.Register(static state => ((SubscriptionChannel<RpcResponseFrame>)state!).Dispose(), channel)
                 : default;
@@ -272,6 +290,10 @@ sealed partial class RpcClient : IRpcClient, IDisposable
             else if (!requestSent)
             {
                 cancellation.TrySetResult(RpcCancellationOutcome.RequestNotSent);
+            }
+            else if (connectionClosedToken.IsCancellationRequested)
+            {
+                cancellation.TrySetResult(RpcCancellationOutcome.ConnectionClosed);
             }
             else
             {

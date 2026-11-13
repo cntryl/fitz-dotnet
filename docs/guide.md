@@ -168,6 +168,13 @@ which surfaces as `SubscriptionBackpressureException` or `AsyncHandlerOverflowEx
 terminates that subscription rather than silently dropping records. Size the buffer and
 concurrency with `AsyncHandlerOptions`.
 
+Notifications received while a subscription is being activated are buffered up to
+`SubscriptionBufferCapacity`; overflow faults that handle with
+`SubscriptionBackpressureException`. If the shared transport notification queue fills,
+all active subscription handles fault with `SubscriptionBackpressureException` and the
+connection is reset. Create new subscriptions after this terminal delivery failure;
+reconnection cannot recover notifications that were lost.
+
 `subscription.Completion` completes when the subscription ends, and faults with the reason if
 it ended abnormally. Await it if you need to observe that.
 
@@ -188,6 +195,16 @@ client.IsConnected  // true only in Authenticated
 
 Fitz has no application-level heartbeat frame. Silent transport loss is detected by TCP
 keepalive and WebSocket PING/PONG, configured through `HeartbeatOptions`.
+
+Canceling an attempted TCP frame write closes that transport: a partial frame cannot be
+followed safely by another frame. Cancellation while waiting to send does not close it.
+Canceled and timed-out correlated requests retain only bounded late-response identifiers.
+If 1,024 unanswered cancellations accumulate, the connection resets rather than forgetting
+identifiers that a late broker response may still use.
+
+Overlapping RPC worker patterns use available matching handler capacity. When broker and
+local capacity become available in different orders, admitted calls wait locally within a
+bounded queue; their cancellation and remaining budget still apply during that wait.
 
 ## The seven domains
 

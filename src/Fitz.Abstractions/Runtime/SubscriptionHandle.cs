@@ -1,5 +1,3 @@
-using System.Runtime.CompilerServices;
-
 namespace Cntryl.Fitz;
 
 /// <summary>
@@ -152,21 +150,64 @@ public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerab
             throw new InvalidOperationException("Concurrent enumeration of a subscription is not supported.");
         }
 
-        return Enumerate(ct).GetAsyncEnumerator(ct);
-    }
-
-    async IAsyncEnumerable<T> Enumerate([EnumeratorCancellation] CancellationToken ct)
-    {
+        var transferred = false;
         try
         {
-            await foreach (var notification in _notifications.WithCancellation(ct).ConfigureAwait(false))
-            {
-                yield return notification;
-            }
+            var enumerator = new SubscriptionEnumerator(this, _notifications.GetAsyncEnumerator(ct));
+            transferred = true;
+            return enumerator;
         }
         finally
         {
-            Volatile.Write(ref _enumerating, 0);
+            if (!transferred)
+                Volatile.Write(ref _enumerating, 0);
+        }
+    }
+
+    sealed class SubscriptionEnumerator(SubscriptionHandle<T> owner, IAsyncEnumerator<T> inner) : IAsyncEnumerator<T>
+    {
+        int _disposed;
+        int _released;
+
+        public T Current => inner.Current;
+
+        public async ValueTask<bool> MoveNextAsync()
+        {
+            if (Volatile.Read(ref _disposed) != 0)
+                return false;
+
+            var hasNext = false;
+            try
+            {
+                hasNext = await inner.MoveNextAsync().ConfigureAwait(false);
+                return hasNext;
+            }
+            finally
+            {
+                if (!hasNext)
+                    ReleaseGuard();
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            try
+            {
+                await inner.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                ReleaseGuard();
+            }
+        }
+
+        void ReleaseGuard()
+        {
+            if (Interlocked.Exchange(ref _released, 1) == 0)
+                Volatile.Write(ref owner._enumerating, 0);
         }
     }
 

@@ -126,12 +126,14 @@ public sealed class TcpTransport : ITransport
             {
                 await stream.WriteAsync(frame.AsMemory(0, frameLength + 4), timeoutCts.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            catch (OperationCanceledException exception) when (ct.IsCancellationRequested)
             {
-                throw;
+                AbortFrameWrite();
+                throw new TransportSendCanceledException(exception, ct);
             }
             catch (OperationCanceledException exception)
             {
+                AbortFrameWrite();
                 throw new TimeoutException($"TCP send exceeded {_timeout}.", exception);
             }
         }
@@ -142,6 +144,22 @@ public sealed class TcpTransport : ITransport
                 ReturnCleared(frame, frameLength + 4);
             }
             _sendLock.Release();
+        }
+    }
+
+    void AbortFrameWrite()
+    {
+        // A canceled write may already have sent a prefix and part of its frame.
+        // Reusing that byte stream would append the next frame to the partial body.
+        var stream = Interlocked.Exchange(ref _stream, null);
+        var client = Interlocked.Exchange(ref _client, null);
+        try
+        {
+            stream?.Dispose();
+        }
+        finally
+        {
+            client?.Dispose();
         }
     }
 
@@ -264,7 +282,7 @@ public sealed class TcpTransport : ITransport
         var client = Volatile.Read(ref _client);
         if (stream is null || client is null || !client.Connected)
         {
-            throw new InvalidOperationException("Transport is not connected.");
+            throw new ConnectionException("Transport is not connected.");
         }
 
         return stream;
@@ -299,3 +317,7 @@ public sealed class TcpTransport : ITransport
         }
     }
 }
+
+[SuppressMessage("Design", "CA1032:Implement standard exception constructors", Justification = "This internal transport signal must carry the original cancellation and its caller token.")]
+sealed class TransportSendCanceledException(OperationCanceledException innerException, CancellationToken cancellationToken)
+    : OperationCanceledException("TCP frame write was canceled; the transport is no longer usable.", innerException, cancellationToken);
