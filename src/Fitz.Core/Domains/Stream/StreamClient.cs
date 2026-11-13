@@ -21,7 +21,7 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
     readonly TimeProvider _time;
     readonly SubscriptionTable<StreamCommitEvent> _subscriptions;
     readonly IDisposable? _connectionBinding;
-    int _disposed;
+    bool _disposed;
 
     internal StreamClient(FitzConnection connection)
         : this(
@@ -414,7 +414,7 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
     /// unsubscribes and reconnect restoration become no-ops.</remarks>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }
@@ -423,5 +423,5 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
         await _subscriptions.DisposeAsync().ConfigureAwait(false);
     }
 
-    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
 }

@@ -27,7 +27,7 @@ sealed class RpcWorkerHost : IDisposable
     readonly Action<Exception>? _onWorkerError;
     readonly TimeProvider _time;
 
-    readonly object _sync = new();
+    readonly Lock _sync = new();
     readonly Dictionary<string, LocalWorker> _workers = [with(StringComparer.Ordinal)];
     readonly Dictionary<Guid, QueuedInvocation> _queued = [];
     readonly HashSet<Guid> _claimed = [];

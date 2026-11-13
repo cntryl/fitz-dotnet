@@ -18,8 +18,8 @@ public abstract class SubscriptionHandle : IAsyncDisposable
     readonly CancellationTokenSource _closing = new();
     readonly CancellationToken _closingToken;
     readonly TimeProvider _time;
-    int _unsubscribed;
-    int _disposed;
+    bool _unsubscribed;
+    bool _disposed;
 
     /// <summary>
     /// Initializes the handle.
@@ -71,7 +71,7 @@ public abstract class SubscriptionHandle : IAsyncDisposable
     /// </remarks>
     public async ValueTask UnsubscribeAsync(CancellationToken ct = default)
     {
-        if (Volatile.Read(ref _unsubscribed) != 0)
+        if (Volatile.Read(ref _unsubscribed))
             return;
 
         if (!await _unsubscribeGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
@@ -97,7 +97,7 @@ public abstract class SubscriptionHandle : IAsyncDisposable
     /// </remarks>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
             return;
 
         GC.SuppressFinalize(this);
@@ -118,11 +118,11 @@ public abstract class SubscriptionHandle : IAsyncDisposable
     // Callers hold the gate, or have drained it during disposal.
     async ValueTask UnsubscribeOnceAsync(CancellationToken ct)
     {
-        if (Volatile.Read(ref _unsubscribed) != 0)
+        if (Volatile.Read(ref _unsubscribed))
             return;
 
         await _unsubscribe(ct).ConfigureAwait(false);
-        Volatile.Write(ref _unsubscribed, 1);
+        Volatile.Write(ref _unsubscribed, true);
         _ownedCompletion?.TrySetResult();
     }
 }
@@ -139,7 +139,7 @@ public abstract class SubscriptionHandle : IAsyncDisposable
 public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerable<T>
 {
     readonly IAsyncEnumerable<T> _notifications;
-    int _enumerating;
+    bool _enumerating;
 
     /// <summary>
     /// Initializes the handle.
@@ -170,7 +170,7 @@ public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerab
     /// <exception cref="InvalidOperationException">The handle is already being enumerated.</exception>
     public IAsyncEnumerator<T> GetAsyncEnumerator(CancellationToken cancellationToken = default)
     {
-        if (Interlocked.CompareExchange(ref _enumerating, 1, 0) != 0)
+        if (Interlocked.CompareExchange(ref _enumerating, true, false))
         {
             throw new InvalidOperationException("Concurrent enumeration of a subscription is not supported.");
         }
@@ -185,20 +185,20 @@ public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerab
         finally
         {
             if (!transferred)
-                Volatile.Write(ref _enumerating, 0);
+                Volatile.Write(ref _enumerating, false);
         }
     }
 
     sealed class SubscriptionEnumerator(SubscriptionHandle<T> owner, IAsyncEnumerator<T> inner) : IAsyncEnumerator<T>
     {
-        int _disposed;
-        int _released;
+        bool _disposed;
+        bool _released;
 
         public T Current => inner.Current;
 
         public async ValueTask<bool> MoveNextAsync()
         {
-            if (Volatile.Read(ref _disposed) != 0)
+            if (Volatile.Read(ref _disposed))
                 return false;
 
             var hasNext = false;
@@ -216,7 +216,7 @@ public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerab
 
         public async ValueTask DisposeAsync()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            if (Interlocked.Exchange(ref _disposed, true))
                 return;
 
             try
@@ -231,8 +231,8 @@ public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerab
 
         void ReleaseGuard()
         {
-            if (Interlocked.Exchange(ref _released, 1) == 0)
-                Volatile.Write(ref owner._enumerating, 0);
+            if (!Interlocked.Exchange(ref _released, true))
+                Volatile.Write(ref owner._enumerating, false);
         }
     }
 

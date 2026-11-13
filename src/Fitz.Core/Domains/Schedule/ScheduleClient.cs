@@ -14,7 +14,7 @@ namespace Cntryl.Fitz.Domains.Schedule;
 sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
-    int _disposed;
+    bool _disposed;
     readonly SubscriptionTable<ScheduleNotification> _subscriptions;
     readonly IDisposable? _connectionBinding;
 
@@ -339,7 +339,7 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
     /// unsubscribes and reconnect restoration become no-ops.</remarks>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }
@@ -348,7 +348,7 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
         await _subscriptions.DisposeAsync().ConfigureAwait(false);
     }
 
-    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
 
     // Returns the success payload after the status byte.
     async ValueTask<ReadOnlyMemory<byte>> RequestSuccessAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct)

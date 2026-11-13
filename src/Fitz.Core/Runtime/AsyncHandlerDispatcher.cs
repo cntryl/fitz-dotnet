@@ -4,7 +4,7 @@ namespace Cntryl.Fitz.Runtime;
 
 sealed class AsyncHandlerDispatcher
 {
-    readonly object _gate = new();
+    readonly Lock _gate = new();
     readonly Queue<DispatchWorkItem> _queue = new();
     readonly HashSet<Task> _activeTasks = [];
     readonly Action<Exception> _onError;

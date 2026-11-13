@@ -26,7 +26,7 @@ sealed class KvTransaction : IKvTransaction
     readonly SemaphoreSlim _operationGate = new(1, 1);
     readonly CancellationTokenSource _closing = new();
     readonly CancellationToken _closingToken;
-    int _disposed;
+    bool _disposed;
 
     internal KvTransaction(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
@@ -230,7 +230,7 @@ sealed class KvTransaction : IKvTransaction
     /// </remarks>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }

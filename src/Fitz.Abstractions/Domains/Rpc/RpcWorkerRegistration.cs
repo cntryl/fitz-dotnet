@@ -16,8 +16,8 @@ public sealed class RpcWorkerRegistration : IAsyncDisposable
     readonly SemaphoreSlim _unregisterGate = new(1, 1);
     readonly CancellationTokenSource _closing = new();
     readonly CancellationToken _closingToken;
-    int _unregistered;
-    int _disposed;
+    bool _unregistered;
+    bool _disposed;
 
     /// <summary>
     /// Initializes the registration.
@@ -47,7 +47,7 @@ public sealed class RpcWorkerRegistration : IAsyncDisposable
     /// </remarks>
     public async ValueTask UnregisterAsync(CancellationToken ct = default)
     {
-        if (Volatile.Read(ref _unregistered) != 0)
+        if (Volatile.Read(ref _unregistered))
             return;
 
         if (!await _unregisterGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
@@ -73,7 +73,7 @@ public sealed class RpcWorkerRegistration : IAsyncDisposable
     /// </remarks>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
             return;
 
         await _closing.CancelAsync().ConfigureAwait(false);
@@ -93,10 +93,10 @@ public sealed class RpcWorkerRegistration : IAsyncDisposable
     // Callers hold the gate, or have drained it during disposal.
     async ValueTask UnregisterOnceAsync(CancellationToken ct)
     {
-        if (Volatile.Read(ref _unregistered) != 0)
+        if (Volatile.Read(ref _unregistered))
             return;
 
         await _unregister(ct).ConfigureAwait(false);
-        Volatile.Write(ref _unregistered, 1);
+        Volatile.Write(ref _unregistered, true);
     }
 }

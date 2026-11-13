@@ -21,7 +21,7 @@ sealed class FitzConnection : IAsyncDisposable
     static readonly TaskCompletionSource<bool> CompletedStateSignal = CreateCompletedStateSignal();
     static readonly CancellationToken ClosedConnectionToken = new(canceled: true);
 
-    readonly object _gate = new();
+    readonly Lock _gate = new();
     readonly ClientConfig _config;
     readonly Func<ITransport> _transportFactory;
     readonly Multiplexer _multiplexer;
@@ -53,7 +53,7 @@ sealed class FitzConnection : IAsyncDisposable
     volatile bool _reconnectExhausted;
     long _readyWaiterCount;
     volatile ConnectionState _state = ConnectionState.Disconnected;
-    int _disposed;
+    bool _disposed;
     // Negotiated limits and session identifiers are per-session and published as one immutable object.
     ServerCapabilities? _capabilities;
     long _nextCorrelationId;
@@ -194,7 +194,7 @@ sealed class FitzConnection : IAsyncDisposable
     internal int SubscriptionBufferCapacity => _config.ResolvedAsyncHandlers.SubscriptionBufferCapacity;
     // Read from a field rather than through the source: a retired source is disposed once
     // cancelled, and CancellationTokenSource.Token throws after disposal.
-    internal CancellationToken ConnectionClosedToken => Volatile.Read(ref _disposed) == 0
+    internal CancellationToken ConnectionClosedToken => !Volatile.Read(ref _disposed)
         ? _connectionClosedToken
         : ClosedConnectionToken;
 
@@ -206,7 +206,7 @@ sealed class FitzConnection : IAsyncDisposable
         AsyncHandlerDispatcher dispatcher;
         lock (_gate)
         {
-            if (_closeRequested || Volatile.Read(ref _disposed) != 0)
+            if (_closeRequested || Volatile.Read(ref _disposed))
             {
                 return false;
             }
@@ -684,7 +684,7 @@ sealed class FitzConnection : IAsyncDisposable
     /// <returns>A task that completes once cleanup finishes.</returns>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }
@@ -1623,7 +1623,7 @@ sealed class FitzConnection : IAsyncDisposable
     sealed class ReadyWaitRegistration : IDisposable
     {
         readonly FitzConnection _owner;
-        int _disposed;
+        bool _disposed;
 
         internal ReadyWaitRegistration(FitzConnection owner)
         {
@@ -1632,7 +1632,7 @@ sealed class FitzConnection : IAsyncDisposable
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            if (Interlocked.Exchange(ref _disposed, true))
             {
                 return;
             }

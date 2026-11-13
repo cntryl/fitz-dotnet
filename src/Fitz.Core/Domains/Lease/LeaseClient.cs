@@ -30,7 +30,7 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
     readonly Func<Action, IDisposable>? _registerOnDisconnect;
     readonly FitzConnection? _connection;
     readonly TimeProvider _time;
-    int _disposed;
+    bool _disposed;
     readonly SubscriptionTable<LeaseChangeEvent> _subscriptions;
     readonly IDisposable? _connectionBinding;
     readonly ListenerRegistry<Func<CancellationToken, ValueTask>> _reconnectListeners = new();
@@ -560,7 +560,7 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
     /// unsubscribes and reconnect restoration become no-ops.</remarks>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }
@@ -569,5 +569,5 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
         await _subscriptions.DisposeAsync().ConfigureAwait(false);
     }
 
-    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
 }

@@ -7,7 +7,7 @@ sealed class NotificationActivationBuffer(int capacity) : IDisposable
     // Retired IDs can continue arriving from the bounded multiplexer queue. Track which
     // IDs actually lost frames without retaining an unbounded history of retired IDs.
     const int MaxTrackedOverflowIds = 1024;
-    readonly object _gate = new();
+    readonly Lock _gate = new();
     readonly Queue<(ulong SubscriptionId, byte[] Payload)> _notifications = new();
     readonly HashSet<ulong> _overflowedSubscriptionIds = [];
     bool _active;

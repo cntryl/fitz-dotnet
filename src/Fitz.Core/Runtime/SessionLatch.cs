@@ -12,7 +12,7 @@ namespace Cntryl.Fitz.Runtime;
 sealed class SessionLatch
 {
     IDisposable? _disconnectRegistration;
-    int _closed;
+    bool _closed;
 
     /// <summary>Creates an open latch.</summary>
     /// <param name="registerOnDisconnect">Connection hook for disconnects, or <see langword="null"/> for an unbound handle.</param>
@@ -33,13 +33,13 @@ sealed class SessionLatch
     }
 
     /// <summary>Whether the handle has been closed.</summary>
-    internal bool IsClosed => Volatile.Read(ref _closed) != 0;
+    internal bool IsClosed => Volatile.Read(ref _closed);
 
     /// <summary>Closes the latch.</summary>
     /// <returns><see langword="true"/> for the call that closed it; <see langword="false"/> if it was already closed.</returns>
     internal bool TryClose()
     {
-        if (Interlocked.Exchange(ref _closed, 1) != 0)
+        if (Interlocked.Exchange(ref _closed, true))
             return false;
 
         Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();

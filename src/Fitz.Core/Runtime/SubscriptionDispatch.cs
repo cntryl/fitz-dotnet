@@ -13,7 +13,7 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
     // How long the broker-side unsubscribe after an overflow may take before it is abandoned.
     static readonly TimeSpan OverflowCleanupBudget = TimeSpan.FromSeconds(5);
 
-    int _disposed;
+    bool _disposed;
     CancellationTokenSource? _cancellationSource;
     readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly string _domain;
@@ -46,7 +46,7 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
 
     internal Action<TNotification>? PreDispatch { get; }
 
-    internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+    internal bool IsDisposed => Volatile.Read(ref _disposed);
 
     internal Task Completion => _completion.Task;
 
@@ -62,7 +62,7 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }
@@ -77,7 +77,7 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
 
     internal async Task FailAsync(Exception error)
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }

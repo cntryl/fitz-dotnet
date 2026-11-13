@@ -14,7 +14,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
     readonly string _pattern;
     readonly LeaseObserveOptions _options;
     readonly TimeProvider _time;
-    readonly object _gate = new();
+    readonly Lock _gate = new();
     readonly SemaphoreSlim _refreshGate = new(1, 1);
     readonly Channel<LeaseInventoryUpdate> _updates;
     readonly CancellationTokenSource _lifetimeCts = new();
@@ -36,7 +36,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
     volatile bool _isReady;
     bool _bootstrapDirty;
     readonly HashSet<string> _pendingRoutes = [with(StringComparer.Ordinal)];
-    int _disposed;
+    bool _disposed;
 
     internal LeaseInventoryObserver(LeaseClient client, string pattern, LeaseObserveOptions options, TimeProvider time)
     {
@@ -77,7 +77,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
 
     async ValueTask HandleReconnectAsync(CancellationToken ct)
     {
-        if (Volatile.Read(ref _disposed) != 0 || _lifetime.IsCancellationRequested)
+        if (Volatile.Read(ref _disposed) || _lifetime.IsCancellationRequested)
         {
             return;
         }
@@ -96,7 +96,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
             // stops an in-flight reconnect bootstrap rather than racing it unsynchronized.
             await BootstrapAsync(linked.Token, isReconnect: true).ConfigureAwait(false);
         }
-        catch (OperationCanceledException) when (Volatile.Read(ref _disposed) != 0)
+        catch (OperationCanceledException) when (Volatile.Read(ref _disposed))
         {
             // Disposed concurrently with a reconnect-triggered bootstrap; DisposeAsync
             // already tears down the subscription and background consumer loop itself.
@@ -123,7 +123,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         {
             // A disposed observer's bootstrap must abort cleanly instead of proceeding to
             // mutate state that DisposeAsync is about to (or already did) tear down.
-            if (Volatile.Read(ref _disposed) != 0)
+            if (Volatile.Read(ref _disposed))
             {
                 return;
             }
@@ -187,7 +187,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
                     // DisposeAsync can run concurrently while this LIST pass is in flight (it
                     // blocks on _refreshGate until this method returns); never install a view
                     // or mark ready once disposal has begun.
-                    if (Volatile.Read(ref _disposed) != 0)
+                    if (Volatile.Read(ref _disposed))
                     {
                         return;
                     }
@@ -316,7 +316,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
     {
         lock (_gate)
         {
-            if (Volatile.Read(ref _disposed) != 0 || _lifetime.IsCancellationRequested)
+            if (Volatile.Read(ref _disposed) || _lifetime.IsCancellationRequested)
             {
                 return;
             }
@@ -335,7 +335,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
     async Task RecoverSubscriptionLoopAsync()
     {
         var attempt = 0;
-        while (Volatile.Read(ref _disposed) == 0)
+        while (!Volatile.Read(ref _disposed))
         {
             lock (_gate)
             {
@@ -568,7 +568,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
 
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }

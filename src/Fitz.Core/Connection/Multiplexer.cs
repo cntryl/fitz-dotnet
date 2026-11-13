@@ -590,11 +590,11 @@ sealed class Multiplexer : IDisposable
 
     sealed class NotificationRegistration(Multiplexer owner, ushort messageType, long handlerId) : IDisposable
     {
-        int _disposed;
+        bool _disposed;
 
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            if (!Interlocked.Exchange(ref _disposed, true))
             {
                 owner.RemoveNotificationHandler(messageType, handlerId);
             }

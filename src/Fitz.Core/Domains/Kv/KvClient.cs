@@ -21,7 +21,7 @@ sealed class KvClient : IKvClient, IAsyncDisposable
     readonly TimeProvider _time;
     readonly SubscriptionTable<KvNotification> _subscriptions;
     readonly IDisposable? _connectionBinding;
-    int _disposed;
+    bool _disposed;
 
     internal KvClient(FitzConnection connection)
         : this(
@@ -151,7 +151,7 @@ sealed class KvClient : IKvClient, IAsyncDisposable
     /// unsubscribes and reconnect restoration become no-ops.</remarks>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, true))
         {
             return;
         }
@@ -207,5 +207,5 @@ sealed class KvClient : IKvClient, IAsyncDisposable
             : null;
     }
 
-    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+    void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
 }

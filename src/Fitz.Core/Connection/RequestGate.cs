@@ -4,7 +4,7 @@ namespace Cntryl.Fitz.Connection;
 
 sealed class RequestGate
 {
-    readonly object _gate = new();
+    readonly Lock _gate = new();
     readonly Queue<RequestWaiter> _waiters = new();
     int _maxConcurrency;
     readonly int _maxQueueSize;
@@ -143,7 +143,7 @@ sealed class RequestGate
 
     sealed class RequestWaiter
     {
-        readonly object _gate = new();
+        readonly Lock _gate = new();
         readonly CancellationTokenRegistration _registration;
         readonly TaskCompletionSource<Releaser> _tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
         bool _completed;

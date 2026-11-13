@@ -77,7 +77,7 @@ public sealed class InMemoryKvClient : IKvClient
     const uint KeyExistsCode = 1055;
     const uint InvalidRequestCode = 1002;
 
-    readonly object _gate = new();
+    readonly Lock _gate = new();
     readonly Dictionary<string, RouteState> _routes = [with(StringComparer.Ordinal)];
     readonly Dictionary<string, InMemoryKvTransaction> _writers = [with(StringComparer.Ordinal)];
     readonly HashSet<InMemoryKvTransaction> _openTransactions = [with(ReferenceEqualityComparer.Instance)];
@@ -879,7 +879,7 @@ public sealed class InMemoryKvClient : IKvClient
     {
         readonly InMemoryKvClient _owner;
         readonly int? _scanPageSize;
-        readonly object _gate = new();
+        readonly Lock _gate = new();
         readonly SortedDictionary<byte[], byte[]> _values;
         readonly long _requestPrefixBytes;
         ulong _mutationCount;
