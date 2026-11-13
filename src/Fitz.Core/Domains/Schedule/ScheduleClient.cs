@@ -296,9 +296,11 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
                 token => UnsubscribeAsync(pattern, handleId, token));
             await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
+            ThrowIfDisposed();
 
             lock (_gate)
             {
+                ThrowIfDisposed();
                 if (_subscriptionsByRoute.TryGetValue(pattern, out var existingSubscription))
                 {
                     existingSubscription.Writers[handleId] = registration;
@@ -309,15 +311,16 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
                 }
             }
 
-            using var activation = _activationBuffer.Begin();
+            using var activation = _activationBuffer.Begin(pattern);
             var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
             var subscription = new ScheduleSubscriptionState(subscriptionId);
             subscription.Writers[handleId] = registration;
             lock (_gate)
             {
+                ThrowIfDisposed();
                 _subscriptionsByRoute[pattern] = subscription;
                 _routesBySubscriptionId[subscriptionId] = pattern;
-                if (_activationBuffer.Replay(HandleNotification) is { } activationError)
+                if (_activationBuffer.Replay(subscriptionId, HandleNotification) is { } activationError)
                     _ = registration.FailAsync(activationError);
             }
 
@@ -495,7 +498,7 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
                 if (!_routesBySubscriptionId.TryGetValue(subscriptionId, out var route) ||
                     !_subscriptionsByRoute.TryGetValue(route, out var subscription))
                 {
-                    _activationBuffer.Buffer(payload);
+                    _activationBuffer.Buffer(subscriptionId, exactRoute, payload);
                     return;
                 }
 

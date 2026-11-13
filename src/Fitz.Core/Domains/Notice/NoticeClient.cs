@@ -171,9 +171,11 @@ sealed class NoticeClient : INoticeClient, IDisposable
                 token => UnsubscribeAsync(pattern, handleId, token));
             await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
+            ThrowIfDisposed();
 
             lock (_gate)
             {
+                ThrowIfDisposed();
                 if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
                 {
                     existingSubscription.Writers[handleId] = registration;
@@ -184,15 +186,16 @@ sealed class NoticeClient : INoticeClient, IDisposable
                 }
             }
 
-            using var activation = _activationBuffer.Begin();
+            using var activation = _activationBuffer.Begin(pattern);
             var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
             var subscription = new NoticeSubscriptionState(subscriptionId);
             subscription.Writers[handleId] = registration;
             lock (_gate)
             {
+                ThrowIfDisposed();
                 _subscriptionsByPattern[pattern] = subscription;
                 _patternsBySubscriptionId[subscriptionId] = pattern;
-                if (_activationBuffer.Replay(HandleNotification) is { } activationError)
+                if (_activationBuffer.Replay(subscriptionId, HandleNotification) is { } activationError)
                     _ = registration.FailAsync(activationError);
             }
 
@@ -412,7 +415,7 @@ sealed class NoticeClient : INoticeClient, IDisposable
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
                     !_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
                 {
-                    _activationBuffer.Buffer(payload);
+                    _activationBuffer.Buffer(subscriptionId, route, payload);
                     return;
                 }
 

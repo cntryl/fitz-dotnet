@@ -155,9 +155,10 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         writer.WriteU64(ttlSecs);
         writer.WriteU32(waitSeconds);
         ReadOnlyMemory<byte> response;
+        using var session = new SessionRequestContext(_connection, _request, _registerOnDisconnect);
         try
         {
-            response = await _request(MessageTypes.LeaseAcquire, writer.WrittenMemory, ct).ConfigureAwait(false);
+            response = await session.RequestAsync(MessageTypes.LeaseAcquire, writer.WrittenMemory, ct).ConfigureAwait(false);
         }
         catch
         {
@@ -244,7 +245,8 @@ sealed class LeaseClient : ILeaseClient, IDisposable
             RemoveQueuedAcquisition(deferred);
         }
 
-        return new LeaseHandle(_request, route, fencedToken, _registerOnDisconnect);
+        session.EnsureValid();
+        return new LeaseHandle(session.BoundRequest, route, fencedToken, session.RegisterOnDisconnect);
     }
 
     void RemoveQueuedAcquisition(TaskCompletionSource<ReadOnlyMemory<byte>>? target)
@@ -739,9 +741,11 @@ sealed class LeaseClient : ILeaseClient, IDisposable
                 preDispatch);
             await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
+            ThrowIfDisposed();
 
             lock (_gate)
             {
+                ThrowIfDisposed();
                 if (_subscriptionsByRoute.TryGetValue(route, out var existingSubscription))
                 {
                     existingSubscription.Registrations[handleId] = registration;
@@ -752,15 +756,16 @@ sealed class LeaseClient : ILeaseClient, IDisposable
                 }
             }
 
-            using var activation = _activationBuffer.Begin();
+            using var activation = _activationBuffer.Begin(route);
             var subscriptionId = await SubscribeWireAsync(route, ct).ConfigureAwait(false);
             var subscription = new LeaseSubscriptionState(subscriptionId);
             subscription.Registrations[handleId] = registration;
             lock (_gate)
             {
+                ThrowIfDisposed();
                 _subscriptionsByRoute[route] = subscription;
                 _routesBySubscriptionId[subscriptionId] = route;
-                if (_activationBuffer.Replay(HandleNotification) is { } activationError)
+                if (_activationBuffer.Replay(subscriptionId, HandleNotification) is { } activationError)
                     _ = registration.FailAsync(activationError);
             }
 
@@ -930,7 +935,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
                 if (!_routesBySubscriptionId.TryGetValue(subscriptionId, out var registeredRoute) ||
                     !_subscriptionsByRoute.TryGetValue(registeredRoute, out var subscription))
                 {
-                    _activationBuffer.Buffer(payload);
+                    _activationBuffer.Buffer(subscriptionId, route, payload);
                     return;
                 }
 

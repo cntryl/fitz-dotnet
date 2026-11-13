@@ -194,7 +194,8 @@ sealed class QueueClient : IQueueClient, IDisposable
             writer.WriteU8(0);
         }
 
-        var response = await _request(MessageTypes.QueueReserve, writer.WrittenMemory, ct).ConfigureAwait(false);
+        using var session = new SessionRequestContext(_connection, _request, _registerOnDisconnect);
+        var response = await session.RequestAsync(MessageTypes.QueueReserve, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = QueueWireHelpers.ReadResponse(response, "RESERVE");
         var status = reader.ReadU8();
         if (status != 0)
@@ -228,8 +229,8 @@ sealed class QueueClient : IQueueClient, IDisposable
                 QueueItem.AttemptUnavailable,
                 itemId,
                 itemToken,
-                _request,
-                _registerOnDisconnect,
+                session.BoundRequest,
+                session.RegisterOnDisconnect,
                 _supportsCapability);
         }
 
@@ -238,6 +239,7 @@ sealed class QueueClient : IQueueClient, IDisposable
             throw new QueueException("RESERVE response has trailing bytes", "RESERVE_INVALID_RESPONSE");
         }
 
+        session.EnsureValid();
         return items;
     }
 
@@ -293,9 +295,11 @@ sealed class QueueClient : IQueueClient, IDisposable
                 token => UnsubscribeAsync(pattern, handleId, token));
             await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
+            ThrowIfDisposed();
 
             lock (_gate)
             {
+                ThrowIfDisposed();
                 if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
                 {
                     existingSubscription.Registrations[handleId] = registration;
@@ -306,15 +310,16 @@ sealed class QueueClient : IQueueClient, IDisposable
                 }
             }
 
-            using var activation = _activationBuffer.Begin();
+            using var activation = _activationBuffer.Begin(pattern);
             var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
             var subscription = new QueueSubscriptionState(subscriptionId);
             subscription.Registrations[handleId] = registration;
             lock (_gate)
             {
+                ThrowIfDisposed();
                 _subscriptionsByPattern[pattern] = subscription;
                 _patternsBySubscriptionId[subscriptionId] = pattern;
-                if (_activationBuffer.Replay(HandleNotification) is { } activationError)
+                if (_activationBuffer.Replay(subscriptionId, HandleNotification) is { } activationError)
                     _ = registration.FailAsync(activationError);
             }
 
@@ -490,7 +495,7 @@ sealed class QueueClient : IQueueClient, IDisposable
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
                     !_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
                 {
-                    _activationBuffer.Buffer(payload);
+                    _activationBuffer.Buffer(subscriptionId, eventRoute, payload);
                     return;
                 }
 

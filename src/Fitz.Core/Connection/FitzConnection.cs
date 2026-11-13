@@ -378,30 +378,48 @@ sealed class FitzConnection : IAsyncDisposable
         ushort messageType,
         ReadOnlyMemory<byte> payload,
         byte flags,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        (await RequestInSessionCoreAsync(messageType, payload, flags, expectedSession: null, ct).ConfigureAwait(false)).Payload;
+
+    internal ValueTask<SessionResponse> RequestInSessionAsync(
+        ushort messageType, ReadOnlyMemory<byte> payload, CancellationToken ct = default) =>
+        RequestInSessionCoreAsync(messageType, payload, 0, expectedSession: null, ct);
+
+    internal async ValueTask<ReadOnlyMemory<byte>> RequestOnSessionAsync(
+        ushort messageType, ReadOnlyMemory<byte> payload, CancellationToken session, CancellationToken ct) =>
+        (await RequestInSessionCoreAsync(messageType, payload, 0, session, ct).ConfigureAwait(false)).Payload;
+
+    async ValueTask<SessionResponse> RequestInSessionCoreAsync(
+        ushort messageType, ReadOnlyMemory<byte> payload, byte flags,
+        CancellationToken? expectedSession, CancellationToken ct)
     {
+        if (expectedSession?.IsCancellationRequested == true)
+            throw new ConnectionException("The owning connection session has ended.");
         await WaitForRequestReadyAsync(ct).ConfigureAwait(false);
 
+        using var slot = await AcquireRequestSlotAsync(ct).ConfigureAwait(false);
+        var (requestTransport, session) = CaptureTransportSession(expectedSession);
         var correlationId = NextCorrelationId();
         var frame = EncodeFrame(messageType, payload.Span, flags, correlationId);
-        ITransport? requestTransport = null;
 
         try
         {
-            using var slot = await AcquireRequestSlotAsync(ct).ConfigureAwait(false);
-            var transport = requestTransport = EnsureTransport();
-
             // Method group, not a lambda: the signatures match exactly, so this avoids a closure
             // and an extra async state machine on every request.
             var response = await _multiplexer.RequestAsync(
                 messageType,
                 frame,
-                transport.SendAsync,
+                requestTransport.SendAsync,
                 Timeout,
                 correlationId: correlationId,
                 ct: ct).ConfigureAwait(false);
 
-            return response;
+            return new SessionResponse(response, session);
+        }
+        catch (TransportSendCanceledException exception)
+        {
+            ScheduleConnectionLoss(exception, requestTransport);
+            throw;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -432,22 +450,30 @@ sealed class FitzConnection : IAsyncDisposable
     public async ValueTask SendAsync(
         ushort messageType,
         ReadOnlyMemory<byte> payload,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        _ = await SendInSessionAsync(messageType, payload, ct).ConfigureAwait(false);
+
+    internal async ValueTask<CancellationToken> SendInSessionAsync(
+        ushort messageType, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
         await WaitForRequestReadyAsync(ct).ConfigureAwait(false);
+        using var slot = await AcquireRequestSlotAsync(ct).ConfigureAwait(false);
+        var (sendTransport, session) = CaptureTransportSession(expectedSession: null);
         var rpcResponseWithoutRequestCorrelation = messageType is 303 or 305 ||
             (messageType == 304 && (payload.IsEmpty || payload.Span[0] != 1));
         var correlationId = IsRpcMessage(messageType) && !rpcResponseWithoutRequestCorrelation
             ? NextCorrelationId()
             : 0UL;
         var frame = EncodeFrame(messageType, payload.Span, 0, correlationId);
-        ITransport? sendTransport = null;
-
         try
         {
-            using var slot = await AcquireRequestSlotAsync(ct).ConfigureAwait(false);
-            sendTransport = EnsureTransport();
             await sendTransport.SendAsync(frame, ct).ConfigureAwait(false);
+            return session;
+        }
+        catch (TransportSendCanceledException exception)
+        {
+            ScheduleConnectionLoss(exception, sendTransport);
+            throw;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -1300,7 +1326,7 @@ sealed class FitzConnection : IAsyncDisposable
             _retiredConnectionClosedTokens.Add(previous);
         }
 
-        previous.Cancel();
+        CancelConnectionToken(previous);
     }
 
     void SignalConnectionClosed()
@@ -1311,15 +1337,22 @@ sealed class FitzConnection : IAsyncDisposable
             current = _connectionClosedCts;
         }
 
-        if (!current.IsCancellationRequested)
+        CancelConnectionToken(current);
+    }
+
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Application cancellation callbacks must not abort connection teardown or reconnection.")]
+    void CancelConnectionToken(CancellationTokenSource source)
+    {
+        try
         {
-            try
-            {
-                current.Cancel();
-            }
-            catch (ObjectDisposedException)
-            {
-            }
+            source.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+        catch (Exception error)
+        {
+            OnAsyncHandlerError(error);
         }
     }
 
@@ -1363,6 +1396,26 @@ sealed class FitzConnection : IAsyncDisposable
     ITransport? DetachTransport() => Interlocked.Exchange(ref _transport, null);
 
     ITransport EnsureTransport() => Volatile.Read(ref _transport) ?? throw new ConnectionException("No active transport");
+
+    (ITransport Transport, CancellationToken Session) CaptureTransportSession(CancellationToken? expectedSession)
+    {
+        lock (_gate)
+        {
+            EnsureSessionReady();
+            var transport = EnsureTransport();
+            var session = _connectionClosedCts.Token;
+            if (expectedSession is { } expected && (expected != session || expected.IsCancellationRequested))
+                throw new ConnectionException("The owning connection session has ended.");
+            return (transport, session);
+        }
+    }
+
+    void EnsureSessionReady()
+    {
+        if (_closeRequested || (State != ConnectionState.Authenticated &&
+            !(_restoreRequestDepth.Value > 0 && State == ConnectionState.Reconnecting)))
+            throw new ConnectionException("The connection session changed while waiting to send.");
+    }
 
     void EnsureAuthenticated()
     {

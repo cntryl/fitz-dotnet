@@ -37,7 +37,17 @@ sealed class RequestGate
 
             if (_waiters.Count >= _maxQueueSize)
             {
-                throw new RequestQueueFullException();
+                // Canceled waiters cannot consume admission capacity while active work
+                // keeps the queue from draining. Preserve FIFO among live waiters.
+                for (var remaining = _waiters.Count; remaining > 0; remaining--)
+                {
+                    var candidate = _waiters.Dequeue();
+                    if (!candidate.IsCanceled)
+                        _waiters.Enqueue(candidate);
+                }
+
+                if (_waiters.Count >= _maxQueueSize)
+                    throw new RequestQueueFullException();
             }
 
             var waiter = new RequestWaiter(this, ct);

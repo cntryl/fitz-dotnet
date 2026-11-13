@@ -10,11 +10,14 @@ namespace Cntryl.Fitz.Connection;
 /// </summary>
 sealed class Multiplexer : IDisposable
 {
+    internal const int DefaultMaxCorrelationTombstones = 1024;
     readonly object _gate = new();
     readonly Dictionary<ushort, LinkedList<PendingRequest>> _pending = [];
     // Correlated requests are keyed by their identifier, so dispatch is O(1) and independent of how
     // many requests of the same message type are in flight.
     readonly Dictionary<ulong, PendingRequest> _correlated = [];
+    readonly HashSet<ulong> _correlationTombstones = [];
+    readonly int _maxCorrelationTombstones;
     readonly Dictionary<ushort, SemaphoreSlim> _requestLanes = [];
     readonly Dictionary<ushort, Dictionary<long, NotificationHandler>> _notificationHandlers = [];
     // Handler registration is rare and dispatch is per-frame, so the fan-out array is built once
@@ -38,10 +41,14 @@ sealed class Multiplexer : IDisposable
     /// <param name="onSessionDesynchronized">
     /// Invoked when a response cannot be correlated, indicating the session lost sync.
     /// </param>
+    /// <param name="maxCorrelationTombstones">Maximum canceled request identifiers retained before resetting the session.</param>
     public Multiplexer(
         Action<Exception>? onDispatchError = null,
-        Action<Exception>? onSessionDesynchronized = null)
+        Action<Exception>? onSessionDesynchronized = null,
+        int maxCorrelationTombstones = DefaultMaxCorrelationTombstones)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(maxCorrelationTombstones);
+        _maxCorrelationTombstones = maxCorrelationTombstones;
         _onDispatchError = onDispatchError;
         _onSessionDesynchronized = onSessionDesynchronized;
         _notificationQueue = Channel.CreateBounded<NotificationDispatch>(new BoundedChannelOptions(1024)
@@ -230,9 +237,19 @@ sealed class Multiplexer : IDisposable
         PendingRequest? pending;
         lock (_gate)
         {
-            if (_state != ConnectionState.Authenticated || !_correlated.TryGetValue(correlationId, out pending))
+            if (_state != ConnectionState.Authenticated)
             {
                 throw new ProtocolException($"Unexpected response correlation {correlationId}.");
+            }
+
+            if (!_correlated.TryGetValue(correlationId, out pending))
+            {
+                if (!_correlationTombstones.Contains(correlationId))
+                    throw new ProtocolException($"Unexpected response correlation {correlationId}.");
+
+                if (responseFinal)
+                    _correlationTombstones.Remove(correlationId);
+                return true;
             }
 
             if (!responseFinal)
@@ -390,14 +407,14 @@ sealed class Multiplexer : IDisposable
         {
             lock (_gate)
             {
-                if (_disposed || _laneStateCts.IsCancellationRequested)
+                if (_disposed || _state != ConnectionState.Authenticated || _laneStateCts.IsCancellationRequested)
                 {
                     throw new ConnectionException("Connection closed or reset");
                 }
 
                 if (correlationId != 0)
                 {
-                    if (!_correlated.TryAdd(correlationId, request))
+                    if (_correlationTombstones.Contains(correlationId) || !_correlated.TryAdd(correlationId, request))
                     {
                         throw new ProtocolException(
                             $"Correlation identifier {correlationId} is already in flight on this connection.");
@@ -464,6 +481,7 @@ sealed class Multiplexer : IDisposable
             pending.AddRange(_correlated.Values);
             _pending.Clear();
             _correlated.Clear();
+            _correlationTombstones.Clear();
         }
 
         foreach (var request in pending)
@@ -486,6 +504,7 @@ sealed class Multiplexer : IDisposable
             _notificationHandlers.Clear();
             _notificationHandlerSnapshots.Clear();
             _correlated.Clear();
+            _correlationTombstones.Clear();
         }
     }
 
@@ -534,9 +553,12 @@ sealed class Multiplexer : IDisposable
 
     void RemoveRequest(PendingRequest request)
     {
+        List<PendingRequest>? resetRequests = null;
+        CancellationTokenSource? resetLanes = null;
+        ConnectionException? resetFailure = null;
         lock (_gate)
         {
-            if (request.CorrelationId != 0 && !request.RetainCorrelationTombstone)
+            if (request.CorrelationId != 0)
             {
                 // Only drop the entry if it is still this request's: a late duplicate response must
                 // not evict a newer request that reused the identifier.
@@ -544,6 +566,33 @@ sealed class Multiplexer : IDisposable
                     && ReferenceEquals(registered, request))
                 {
                     _correlated.Remove(request.CorrelationId);
+                    if (request.RetainCorrelationTombstone)
+                    {
+                        if (_correlationTombstones.Count < _maxCorrelationTombstones)
+                        {
+                            _correlationTombstones.Add(request.CorrelationId);
+                        }
+                        else
+                        {
+                            // An arbitrary eviction could turn a valid late reply into an
+                            // unknown response. Reset atomically instead of retaining full
+                            // request objects or unbounded cancellation history.
+                            _state = ConnectionState.Disconnected;
+                            resetFailure = new ConnectionException("The canceled-request correlation history is full; the connection was reset.");
+                            if (!_laneStateCts.IsCancellationRequested)
+                                resetLanes = _laneStateCts;
+                            resetRequests = [];
+                            foreach (var affectedQueue in _pending.Values)
+                                resetRequests.AddRange(affectedQueue);
+                            resetRequests.AddRange(_correlated.Values);
+                            _pending.Clear();
+                            _correlated.Clear();
+                            _correlationTombstones.Clear();
+                            _restoringNotifications.Clear();
+                            _notificationRestoreFailure = null;
+                            _notificationRestoreActive = false;
+                        }
+                    }
                 }
             }
 
@@ -566,6 +615,14 @@ sealed class Multiplexer : IDisposable
             }
 
             request.QueueNode = null;
+        }
+
+        if (resetFailure is not null)
+        {
+            resetLanes?.Cancel();
+            foreach (var affected in resetRequests!)
+                affected.FailConnection(resetFailure);
+            ReportSessionDesynchronized(resetFailure);
         }
     }
 
@@ -634,6 +691,7 @@ sealed class Multiplexer : IDisposable
             affected.AddRange(_correlated.Values);
             _pending.Clear();
             _correlated.Clear();
+            _correlationTombstones.Clear();
         }
 
         laneStateCts?.Cancel();

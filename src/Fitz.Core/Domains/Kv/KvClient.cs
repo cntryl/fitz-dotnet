@@ -102,7 +102,8 @@ sealed class KvClient : IKvClient, IDisposable
         writer.WriteString(route);
         writer.WriteU8((byte)mode);
 
-        var response = await _request(MessageTypes.KvBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
+        using var session = new SessionRequestContext(_connection, _request, _registerOnDisconnect);
+        var response = await session.RequestAsync(MessageTypes.KvBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = KvWireHelpers.ReadSuccess(response, "BEGIN");
 
         if (reader.IsEof || reader.RemainingBytes < 8)
@@ -116,12 +117,13 @@ sealed class KvClient : IKvClient, IDisposable
             throw new KvException("BEGIN response has trailing bytes", "BEGIN_INVALID_RESPONSE");
         }
 
+        session.EnsureValid();
         return new KvTransaction(
-            _request,
+            session.BoundRequest,
             route,
             txId,
-            _registerOnDisconnect,
-            _retryRequest,
+            session.RegisterOnDisconnect,
+            session.BindRetry(_retryRequest),
             _supportsExclusiveScan);
     }
 
@@ -168,10 +170,12 @@ sealed class KvClient : IKvClient, IDisposable
         await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            using var activation = _activationBuffer.Begin();
+            ThrowIfDisposed();
+            using var activation = _activationBuffer.Begin(pattern);
             KvSubscriptionState? state;
             lock (_gate)
             {
+                ThrowIfDisposed();
                 _subscriptionsByPattern.TryGetValue(pattern, out state);
             }
             if (state is null)
@@ -181,10 +185,11 @@ sealed class KvClient : IKvClient, IDisposable
             }
             lock (_gate)
             {
+                ThrowIfDisposed();
                 state.Writers[handleId] = registration;
                 _subscriptionsByPattern[pattern] = state;
                 _patternsBySubscriptionId[state.SubscriptionId] = pattern;
-                if (_activationBuffer.Replay(HandleNotification) is { } activationError)
+                if (_activationBuffer.Replay(state.SubscriptionId, HandleNotification) is { } activationError)
                     _ = registration.FailAsync(activationError);
             }
             SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
@@ -330,7 +335,7 @@ sealed class KvClient : IKvClient, IDisposable
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
                     !_subscriptionsByPattern.TryGetValue(pattern, out var state))
                 {
-                    _activationBuffer.Buffer(payload);
+                    _activationBuffer.Buffer(subscriptionId, route, payload);
                     return;
                 }
                 registrations = [.. state.Writers.Values];

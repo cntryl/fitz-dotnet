@@ -41,6 +41,7 @@ sealed partial class RpcClient
             _workerConcurrency[pattern] = maxConcurrency;
             EnsureRpcRequestHandlerInitializedLocked();
             _workerGates[pattern] = new SemaphoreSlim(checked((int)maxConcurrency), checked((int)maxConcurrency));
+            NotifyWorkerAvailabilityUnsafe();
         }
 
         try
@@ -153,6 +154,7 @@ sealed partial class RpcClient
 
             var body = reader.ReadBytes(bodyLength);
             TimeSpan? remainingTime = null;
+            TimeSpan? originalBudget = null;
             if (reader.RemainingBytes < 1)
             {
                 return;
@@ -165,7 +167,8 @@ sealed partial class RpcClient
                 var remainingBudgetMs = reader.ReadU32();
                 if (remainingBudgetMs > 86_400_000)
                     return;
-                var budget = TimeSpan.FromMilliseconds(remainingBudgetMs) - System.Diagnostics.Stopwatch.GetElapsedTime(receivedAt);
+                originalBudget = TimeSpan.FromMilliseconds(remainingBudgetMs);
+                var budget = originalBudget.Value - System.Diagnostics.Stopwatch.GetElapsedTime(receivedAt);
                 remainingTime = budget > TimeSpan.Zero ? budget : TimeSpan.Zero;
             }
             else if (hasBudget != 0 || !reader.IsEof)
@@ -173,36 +176,26 @@ sealed partial class RpcClient
                 return;
             }
 
-            if (!TryGetWorker(route, out var handler, out var concurrencyGate))
-            {
-                return;
-            }
-
             var writer = new RpcResponseWriter(_send, correlationId, connectionClosed);
-            if (!await concurrencyGate.WaitAsync(0, ct).ConfigureAwait(false))
+            using var invocationCts = CancellationTokenSource.CreateLinkedTokenSource(
+                ct,
+                connectionClosed);
+            if (remainingTime is { } initialBudget)
             {
-                await TrySendBackpressureResponseAsync(payload, connectionClosed).ConfigureAwait(false);
-                return;
+                invocationCts.CancelAfter(initialBudget);
             }
-
+            var invocation = new ActiveRpcInvocation(invocationCts);
+            var cancelImmediately = false;
+            lock (_workerSync)
+            {
+                var invocationId = GuidFromNetworkBytes(correlationId);
+                _claimedWorkerCalls.Remove(invocationId);
+                cancelImmediately = _cancelledWorkerCalls.Remove(invocationId);
+                _activeWorkerCalls[invocationId] = invocation;
+            }
+            ReservedRpcWorker? reserved = null;
             try
             {
-                using var invocationCts = CancellationTokenSource.CreateLinkedTokenSource(
-                    ct,
-                    connectionClosed);
-                if (remainingTime is { } budget)
-                {
-                    invocationCts.CancelAfter(budget);
-                }
-                var invocation = new ActiveRpcInvocation(invocationCts);
-                var cancelImmediately = false;
-                lock (_workerSync)
-                {
-                    var invocationId = GuidFromNetworkBytes(correlationId);
-                    _claimedWorkerCalls.Remove(invocationId);
-                    cancelImmediately = _cancelledWorkerCalls.Remove(invocationId);
-                    _activeWorkerCalls[invocationId] = invocation;
-                }
                 if (cancelImmediately || remainingTime == TimeSpan.Zero)
                 {
                     await invocationCts.CancelAsync().ConfigureAwait(false);
@@ -210,17 +203,21 @@ sealed partial class RpcClient
 
                 try
                 {
-                    await handler(new RpcRequest(route, body, remainingTime), writer, invocationCts.Token).ConfigureAwait(false);
+                    reserved = await ReserveWorkerAsync(route, invocationCts.Token).ConfigureAwait(false);
+                    if (reserved is not { } worker)
+                    {
+                        await TrySendBackpressureResponseAsync(payload, connectionClosed).ConfigureAwait(false);
+                        return;
+                    }
+                    if (originalBudget is { } admittedBudget)
+                    {
+                        var remaining = admittedBudget - System.Diagnostics.Stopwatch.GetElapsedTime(receivedAt);
+                        remainingTime = remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
+                    }
+                    await worker.Handler(new RpcRequest(route, body, remainingTime), writer, invocationCts.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (invocationCts.IsCancellationRequested)
                 {
-                }
-                finally
-                {
-                    lock (_workerSync)
-                    {
-                        _activeWorkerCalls.Remove(GuidFromNetworkBytes(correlationId));
-                    }
                 }
             }
             catch (Exception)
@@ -236,7 +233,17 @@ sealed partial class RpcClient
             }
             finally
             {
-                concurrencyGate.Release();
+                lock (_workerSync)
+                {
+                    // Waiting invocations are active cancellation targets too; always remove
+                    // them, including failures before a worker gate could be reserved.
+                    _activeWorkerCalls.Remove(GuidFromNetworkBytes(correlationId));
+                    if (reserved is { } worker)
+                    {
+                        worker.Gate.Release();
+                        NotifyWorkerAvailabilityUnsafe();
+                    }
+                }
             }
         }
         catch (Exception exception)
@@ -255,6 +262,89 @@ sealed partial class RpcClient
             RemoveQueuedInvocation(payload);
         }
     }
+
+    async ValueTask<ReservedRpcWorker?> ReserveWorkerAsync(string route, CancellationToken ct)
+    {
+        var waiting = false;
+        try
+        {
+            while (true)
+            {
+                Task available;
+                lock (_workerSync)
+                {
+                    if (TryReserveWorkerUnsafe(route, out var worker))
+                        return worker;
+                    if (!TryGetWorker(route, out _, out _))
+                        return null;
+                    if (!waiting)
+                    {
+                        // The broker limits admission independently for each overlapping
+                        // registration. Local credit can therefore be released in a different
+                        // order; retain a bounded wait rather than spuriously reject that work.
+                        var capacity = _workerConcurrency.Values.Sum(static count => checked((int)count));
+                        if (_waitingWorkerCount >= capacity)
+                            return null;
+                        _waitingWorkerCount++;
+                        waiting = true;
+                    }
+                    available = _workerAvailability.Task;
+                }
+                await available.WaitAsync(ct).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
+            }
+        }
+        finally
+        {
+            if (waiting)
+            {
+                lock (_workerSync)
+                    _waitingWorkerCount--;
+            }
+        }
+    }
+
+    bool TryReserveWorkerUnsafe(string route, out ReservedRpcWorker worker)
+    {
+        if (_workers.TryGetValue(route, out var exactHandler) && _workerGates[route].Wait(0))
+        {
+            worker = new ReservedRpcWorker(exactHandler, _workerGates[route]);
+            return true;
+        }
+
+        string? bestPattern = null;
+        (int LiteralSegments, int SingleWildcards, int SegmentCount) bestSpecificity = default;
+        foreach (var pattern in _workers.Keys)
+        {
+            if (_workerGates[pattern].CurrentCount == 0 || !RouteValidation.MatchesPattern(route, pattern))
+                continue;
+            var specificity = GetPatternSpecificity(pattern);
+            if (bestPattern is null || specificity.CompareTo(bestSpecificity) > 0 ||
+                (specificity == bestSpecificity && string.CompareOrdinal(pattern, bestPattern) < 0))
+            {
+                bestPattern = pattern;
+                bestSpecificity = specificity;
+            }
+        }
+        if (bestPattern is not null && _workerGates[bestPattern].Wait(0))
+        {
+            worker = new ReservedRpcWorker(_workers[bestPattern], _workerGates[bestPattern]);
+            return true;
+        }
+        worker = default;
+        return false;
+    }
+
+    void NotifyWorkerAvailabilityUnsafe()
+    {
+        var previous = _workerAvailability;
+        _workerAvailability = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        previous.TrySetResult();
+    }
+
+    readonly record struct ReservedRpcWorker(
+        Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask> Handler,
+        SemaphoreSlim Gate);
 
     void RemoveQueuedInvocation(byte[] payload)
     {
@@ -373,6 +463,7 @@ sealed partial class RpcClient
         _workers.Remove(pattern);
         _workerConcurrency.Remove(pattern);
         _workerGates.Remove(pattern);
+        NotifyWorkerAvailabilityUnsafe();
     }
 
     [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored worker before preserving the original failure.")]

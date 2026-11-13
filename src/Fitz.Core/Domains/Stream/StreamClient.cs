@@ -102,8 +102,11 @@ sealed class StreamClient : IStreamClient, IDisposable
             writer.WriteU8(0);
         }
 
-        var response = await _request(MessageTypes.StreamBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
-        return new StreamSession(_request, StreamWireHelpers.ReadBeginSessionId(response), _registerOnDisconnect);
+        using var session = new SessionRequestContext(_connection, _request, _registerOnDisconnect);
+        var response = await session.RequestAsync(MessageTypes.StreamBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var sessionId = StreamWireHelpers.ReadBeginSessionId(response);
+        session.EnsureValid();
+        return new StreamSession(session.BoundRequest, sessionId, session.RegisterOnDisconnect);
     }
 
     /// <inheritdoc />
@@ -336,10 +339,12 @@ sealed class StreamClient : IStreamClient, IDisposable
                 token => UnsubscribeAsync(pattern, handleId, token));
             await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
+            ThrowIfDisposed();
 
             var existing = false;
             lock (_gate)
             {
+                ThrowIfDisposed();
                 if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
                 {
                     existingSubscription.Registrations[handleId] = registration;
@@ -355,15 +360,16 @@ sealed class StreamClient : IStreamClient, IDisposable
                 return CreateSubscription(pattern, handleId, completion);
             }
 
-            using var activation = _activationBuffer.Begin();
+            using var activation = _activationBuffer.Begin(pattern);
             var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
             var subscription = new StreamSubscriptionState(subscriptionId);
             lock (_gate)
             {
+                ThrowIfDisposed();
                 subscription.Registrations[handleId] = registration;
                 _subscriptionsByPattern[pattern] = subscription;
                 _patternsBySubscriptionId[subscriptionId] = pattern;
-                if (_activationBuffer.Replay(HandleNotification) is { } activationError)
+                if (_activationBuffer.Replay(subscriptionId, HandleNotification) is { } activationError)
                     _ = registration.FailAsync(activationError);
             }
 
@@ -517,7 +523,7 @@ sealed class StreamClient : IStreamClient, IDisposable
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
                     !_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
                 {
-                    _activationBuffer.Buffer(payload);
+                    _activationBuffer.Buffer(subscriptionId, route, payload);
                     return;
                 }
 

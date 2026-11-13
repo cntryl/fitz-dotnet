@@ -678,8 +678,7 @@ public sealed class QueueClientTests
     public async Task ShouldMarkReservedItemAsClosedAfterDisconnectGivenQueueClientWhenOperationRuns()
     {
         // Arrange
-        Action? onDisconnect = null;
-        var unsubscribeCount = 0;
+        var disconnects = new List<Action>();
 
         using var queue = new QueueClient(
             (messageType, payload, _) =>
@@ -696,22 +695,24 @@ public sealed class QueueClientTests
             registerNotificationHandler: null,
             registerOnDisconnect: disconnect =>
             {
-                onDisconnect = disconnect;
-                return new TestRegistration(() => unsubscribeCount++);
+                disconnects.Add(disconnect);
+                return new TestRegistration(() => disconnects.Remove(disconnect));
             });
 
         var items = await queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30));
         var item = Assert.Single(items);
 
         // Act
-        onDisconnect?.Invoke();
+        Assert.Single(disconnects);
+        foreach (var disconnect in disconnects.ToArray())
+            disconnect();
 
         var ex = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(TimeSpan.FromSeconds(10)));
 
         // Assert
         Assert.Equal("ITEM_CLOSED", ex.Code);
         Assert.Equal("Queue item is no longer valid after disconnect", ex.Message);
-        Assert.Equal(1, unsubscribeCount);
+        Assert.Empty(disconnects);
     }
 
     [Fact]
