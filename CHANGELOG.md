@@ -52,6 +52,9 @@ surface more idiomatic. The package stays on 4.x.
 - Reads stream commit offsets from top-level response properties only.
 - Releases the socket when a TCP connect fails partway.
 - Request retry and reconnect share one jittered exponential backoff.
+- Disconnect listeners and session-token cancellation callbacks no longer run while the connection lock is
+  held, so a callback can call back into the client. A reconnect attempt waits for the lost session's teardown
+  to finish, and a session is reported authenticated only while its transport is still the current one.
 - Removes all analyzer suppressions from shipped code.
 - Stream, Schedule, Lease, and Notice now count malformed NOTIFY frames on `fitz.notification.dropped`
   instead of dropping them silently.

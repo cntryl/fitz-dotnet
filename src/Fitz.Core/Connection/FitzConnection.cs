@@ -173,6 +173,8 @@ sealed class FitzConnection : IAsyncDisposable
     static readonly TimeSpan DefaultReconnectMaxBackoff = TimeSpan.FromSeconds(5);
     static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(30);
 
+    const string SessionLostWhileEstablishing = "Connection closed while establishing the session.";
+
     internal TimeSpan Timeout => _config.Timeout ?? DefaultTimeout;
 
     /// <summary>The clock for timeouts, backoff, and the timers of domain clients built on this connection.</summary>
@@ -746,6 +748,11 @@ sealed class FitzConnection : IAsyncDisposable
     {
         ct.ThrowIfCancellationRequested();
 
+        // A lost session is torn down outside the connection lock, because teardown runs caller
+        // callbacks. Nothing else orders that teardown before the next session, so wait for it
+        // here; otherwise its remaining steps would land on the session this attempt establishes.
+        await PendingConnectionLoss().WaitAsync(ct).ConfigureAwait(false);
+
         ResetSessionState(isReconnect);
         Interlocked.Exchange(ref _requestGate, CreateRequestGate()).Close();
         SetState(isReconnect ? ConnectionState.Reconnecting : ConnectionState.Connecting);
@@ -835,8 +842,7 @@ sealed class FitzConnection : IAsyncDisposable
 
             await ThrowIfAttemptFailedAsync(transport).ConfigureAwait(false);
 
-            _hasEstablishedSession = true;
-            SetState(ConnectionState.Authenticated);
+            CommitSession(transport);
             _telemetry.LifecycleEvent(isReconnect ? "reconnect_succeeded" : "connect_succeeded");
         }
         catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
@@ -922,9 +928,30 @@ sealed class FitzConnection : IAsyncDisposable
 
         if (!ReferenceEquals(Volatile.Read(ref _transport), transport))
         {
-            throw new ConnectionException("Connection closed while establishing the session.");
+            throw new ConnectionException(SessionLostWhileEstablishing);
         }
     }
+
+    // Publishes the session only while its transport is still the current one. The check and the
+    // state change share one lock section, and a loss handler publishes its own state through the
+    // same lock after detaching the transport. So a loss either makes this throw, or is handled
+    // after the session became visible. The connection is never authenticated without a transport.
+    void CommitSession(ITransport transport)
+    {
+        lock (_gate)
+        {
+            if (!ReferenceEquals(Volatile.Read(ref _transport), transport))
+            {
+                throw new ConnectionException(SessionLostWhileEstablishing);
+            }
+
+            _hasEstablishedSession = true;
+            SetState(ConnectionState.Authenticated);
+        }
+    }
+
+    // Loss handling never waits on a session attempt, so an attempt may wait on loss handling.
+    Task PendingConnectionLoss() => Volatile.Read(ref _connectionLossTask) ?? Task.CompletedTask;
 
     void StartReceiveLoop()
     {
@@ -1098,7 +1125,9 @@ sealed class FitzConnection : IAsyncDisposable
         }
 
         // Teardown cancels session tokens and notifies disconnect listeners synchronously.
-        // Those are caller callbacks, so they must not run while _gate is held.
+        // Those are caller callbacks, so they must not run while _gate is held. The lock therefore
+        // no longer keeps teardown ahead of the next session; OpenAndAuthenticateAsync does, by
+        // waiting on _connectionLossTask before it starts.
         _ = HandleConnectionLossSafelyAsync(exception, failedTransport, lossCompletion);
     }
 
@@ -1106,7 +1135,7 @@ sealed class FitzConnection : IAsyncDisposable
     {
         try
         {
-            await HandleConnectionLossAsync(exception, failedTransport).ConfigureAwait(false);
+            await HandleConnectionLossAsync(exception, failedTransport, completion).ConfigureAwait(false);
         }
         catch (Exception cleanupError) when (ExceptionPolicy.IsRecoverable(cleanupError))
         {
@@ -1122,7 +1151,7 @@ sealed class FitzConnection : IAsyncDisposable
         }
     }
 
-    async Task HandleConnectionLossAsync(Exception exception, ITransport? failedTransport)
+    async Task HandleConnectionLossAsync(Exception exception, ITransport? failedTransport, TaskCompletionSource handled)
     {
         var transport = failedTransport is null
             ? DetachTransport()
@@ -1192,7 +1221,7 @@ sealed class FitzConnection : IAsyncDisposable
             return;
         }
 
-        EnsureReconnectLoop();
+        EnsureReconnectLoop(handled);
     }
 
     async Task ReconnectLoopAsync(CancellationToken ct)
@@ -1253,10 +1282,14 @@ sealed class FitzConnection : IAsyncDisposable
         }
     }
 
-    void EnsureReconnectLoop()
+    // `handledLoss` is the loss whose handling ends by starting this loop. It is marked complete
+    // under the lock that starts the loop: the loop's first attempt does not wait on the handler
+    // that started it, and no other attempt can begin between the two steps.
+    void EnsureReconnectLoop(TaskCompletionSource? handledLoss = null)
     {
         lock (_gate)
         {
+            handledLoss?.TrySetResult();
             if (_reconnectTask is not null || !CanWaitForReconnectUnsafe())
             {
                 return;

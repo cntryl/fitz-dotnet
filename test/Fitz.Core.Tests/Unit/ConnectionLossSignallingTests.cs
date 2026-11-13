@@ -73,6 +73,76 @@ public sealed class ConnectionLossSignallingTests
         Assert.False(connection.ConnectionClosedToken.IsCancellationRequested);
     }
 
+    [Fact]
+    public async Task ShouldKeepRestoredSessionGivenSlowDisconnectListenerWhenTransportClosesDuringReconnect()
+    {
+        // Arrange
+        await using var first = new TestQueuedTransport();
+        await using var interrupted = new TestQueuedTransport();
+        interrupted.AfterSend = sentFrameCount =>
+        {
+            // The broker accepts the session (HELLO is queued first) and then drops the connection.
+            if (sentFrameCount == 1)
+                interrupted.QueueClosed();
+        };
+        await using var restored = new TestQueuedTransport();
+        var factoryCalls = 0;
+        var connectionLosses = 0;
+        var disconnects = 0;
+        var restoredSession = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var interruptedLossReported = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lossHandlerParked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseLossHandler = new ManualResetEventSlim();
+        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"),
+            Reconnect: new ReconnectOptions(true, MaxAttempts: 3, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
+            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>
+            {
+                if (evt.Event == "reconnect_succeeded" && Volatile.Read(ref factoryCalls) >= 3)
+                    restoredSession.TrySetResult();
+                if (evt.Event == "connection_lost" && Interlocked.Increment(ref connectionLosses) == 2)
+                    interruptedLossReported.TrySetResult();
+            })), () => Interlocked.Increment(ref factoryCalls) switch
+            {
+                1 => first,
+                2 => interrupted,
+                _ => restored,
+            });
+        await connection.ConnectAsync();
+        using var registration = connection.OnDisconnect(() =>
+        {
+            // The second disconnect belongs to the interrupted session. Hold its loss handler
+            // here, partway through tearing that session down.
+            if (Interlocked.Increment(ref disconnects) == 2)
+            {
+                lossHandlerParked.TrySetResult();
+                releaseLossHandler.Wait(TimeSpan.FromSeconds(30));
+            }
+        });
+
+        // Act
+        try
+        {
+            first.QueueClosed();
+            await lossHandlerParked.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            // A connection that does not wait for the parked handler restores a session within
+            // this window; the handler's remaining steps then land on that newer session. The
+            // window only makes the fault visible. It cannot fail a correct connection.
+            await Task.Delay(TimeSpan.FromMilliseconds(250));
+        }
+        finally
+        {
+            releaseLossHandler.Set();
+        }
+
+        await restoredSession.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        await interruptedLossReported.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Assert
+        Assert.Equal(ConnectionState.Authenticated, connection.State);
+        Assert.Equal(3, Volatile.Read(ref factoryCalls));
+    }
+
     [Theory]
     [InlineData((ushort)8)]
     [InlineData((ushort)51)]
