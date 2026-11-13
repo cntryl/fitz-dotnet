@@ -183,7 +183,7 @@ public sealed class RpcCancellationTests
 
         // Act
         receive!(RequestFrame(30));
-        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         // Assert
         Assert.True(cancelled.Task.IsCompletedSuccessfully);

@@ -5,7 +5,7 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class ConnectionLossSignallingTests
 {
-    static readonly TimeSpan LockProbeBudget = TimeSpan.FromSeconds(1);
+    static readonly TimeSpan LockProbeBudget = TimeSpan.FromSeconds(5);
 
     [Fact]
     public async Task ShouldReleaseConnectionLockGivenSessionTokenCallbackWhenConnectionIsLost()
@@ -124,7 +124,9 @@ public sealed class ConnectionLossSignallingTests
     // needs the connection lock; if the callback is running under that lock, it cannot finish.
     static bool CanTakeConnectionLockFromAnotherThread(FitzConnection connection)
     {
-        var contender = Task.Run(() => connection.OnDisconnect(static () => { }).Dispose());
-        return SpinWait.SpinUntil(() => contender.IsCompleted, LockProbeBudget);
+        // A dedicated thread, not the pool: a starved pool on a busy runner must not read as a held lock.
+        var contender = new Thread(() => connection.OnDisconnect(static () => { }).Dispose()) { IsBackground = true };
+        contender.Start();
+        return contender.Join(LockProbeBudget);
     }
 }

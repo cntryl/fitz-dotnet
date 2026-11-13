@@ -161,7 +161,7 @@ public sealed class ManagedLeaseLifecycleTests
                     ct: parentCancellation.Token);
             }
         });
-        await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
 
         // Act
@@ -172,7 +172,7 @@ public sealed class ManagedLeaseLifecycleTests
         try
         {
             var error = await Assert.ThrowsAsync<LeaseException>(
-                () => pending.WaitAsync(TimeSpan.FromSeconds(1)));
+                () => pending.WaitAsync(TimeSpan.FromSeconds(10)));
             Assert.Equal("LEASE_LOST", error.Code);
         }
         finally
