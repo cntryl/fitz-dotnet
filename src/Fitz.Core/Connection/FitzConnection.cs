@@ -32,6 +32,7 @@ sealed class FitzConnection : IAsyncDisposable
     readonly List<CancellationTokenSource> _retiredConnectionClosedTokens = [];
     readonly Dictionary<string, AsyncHandlerDispatcher> _asyncHandlerDispatchers = [with(StringComparer.Ordinal)];
     readonly AsyncLocal<int> _restoreRequestDepth = new();
+    internal event Action<Exception>? NotificationDeliveryFailed;
     CancellationTokenSource _connectionClosedCts = new();
     RequestGate _requestGate;
     TaskCompletionSource<bool> _stateChanged = CompletedStateSignal;
@@ -1493,12 +1494,30 @@ sealed class FitzConnection : IAsyncDisposable
         });
     }
 
+    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "A terminal delivery listener must not prevent sibling subscriptions from observing notification loss.")]
     void OnMultiplexerError(Exception exception)
     {
         Log(FitzLogLevel.Warn, "fitz.connection.notification_dispatch_failed", new Dictionary<string, object?>
         {
             ["error"] = exception.Message,
         });
+        if (exception is SubscriptionBackpressureException)
+        {
+            if (NotificationDeliveryFailed is { } listeners)
+            {
+                foreach (Action<Exception> listener in listeners.GetInvocationList())
+                {
+                    try
+                    {
+                        listener(exception);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            ScheduleConnectionLoss(exception);
+        }
     }
 
     void OnAsyncHandlerMetricsChanged(int activeCount, int queuedCount)

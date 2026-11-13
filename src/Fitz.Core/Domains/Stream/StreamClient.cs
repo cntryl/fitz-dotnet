@@ -22,6 +22,8 @@ sealed class StreamClient : IStreamClient, IDisposable
     readonly Func<Action, IDisposable>? _registerOnDisconnect;
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly int _subscriptionBufferCapacity;
+    readonly NotificationActivationBuffer _activationBuffer;
+    readonly FitzConnection? _connection;
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     readonly object _gate = new();
@@ -47,6 +49,8 @@ sealed class StreamClient : IStreamClient, IDisposable
             connection.SubscriptionBufferCapacity)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
+        _connection = connection;
+        connection.NotificationDeliveryFailed += FailNotificationDelivery;
     }
 
     /// <summary>
@@ -76,6 +80,7 @@ sealed class StreamClient : IStreamClient, IDisposable
         _dispatchAsyncHandler = dispatchAsyncHandler;
         _retryRequest = retryRequest;
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
+        _activationBuffer = new NotificationActivationBuffer(subscriptionBufferCapacity);
     }
 
     /// <inheritdoc />
@@ -350,6 +355,7 @@ sealed class StreamClient : IStreamClient, IDisposable
                 return CreateSubscription(pattern, handleId, completion);
             }
 
+            using var activation = _activationBuffer.Begin();
             var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
             var subscription = new StreamSubscriptionState(subscriptionId);
             lock (_gate)
@@ -357,6 +363,8 @@ sealed class StreamClient : IStreamClient, IDisposable
                 subscription.Registrations[handleId] = registration;
                 _subscriptionsByPattern[pattern] = subscription;
                 _patternsBySubscriptionId[subscriptionId] = pattern;
+                if (_activationBuffer.Replay(HandleNotification) is { } activationError)
+                    _ = registration.FailAsync(activationError);
             }
 
             var handle = CreateSubscription(pattern, handleId, registration.Completion);
@@ -450,6 +458,19 @@ sealed class StreamClient : IStreamClient, IDisposable
 
     }
 
+    void FailNotificationDelivery(Exception error)
+    {
+        lock (_gate)
+        {
+            _activationBuffer.Fail(error);
+            var registrations = _subscriptionsByPattern.Values.SelectMany(subscription => subscription.Registrations.Values).ToArray();
+            _subscriptionsByPattern.Clear();
+            _patternsBySubscriptionId.Clear();
+            foreach (var registration in registrations)
+                _ = registration.FailAsync(error);
+        }
+    }
+
     void EnsureNotificationHandlerInitialized()
     {
         lock (_gate)
@@ -496,6 +517,7 @@ sealed class StreamClient : IStreamClient, IDisposable
                 if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
                     !_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
                 {
+                    _activationBuffer.Buffer(payload);
                     return;
                 }
 
@@ -641,6 +663,8 @@ sealed class StreamClient : IStreamClient, IDisposable
             return;
         }
 
+        _connection?.NotificationDeliveryFailed -= FailNotificationDelivery;
+        _activationBuffer.Dispose();
         _notificationRegistration?.Dispose();
         _reconnectRegistration?.Dispose();
         lock (_gate)

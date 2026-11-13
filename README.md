@@ -239,6 +239,9 @@ Callbacks have no default deadline; configure `AsyncHandlerOptions.Timeout`
 explicitly when the application wants slow callbacks to be cancelled.
 An unsubscribe rejected by the broker remains retryable.
 RPC worker saturation continues to use broker-visible protocol backpressure.
+If the shared transport notification queue overflows, all subscription handles fault
+with `SubscriptionBackpressureException` and the connection is reset. Create new
+subscriptions after that terminal failure; reconnect cannot replay lost notifications.
 For an A→B→C call, pass the handler's `RpcRequest.RemainingTime` and
 `CancellationToken` to the downstream `CallAsync` so its budget and cancellation
 are linked explicitly to the parent request.

@@ -168,6 +168,13 @@ which surfaces as `SubscriptionBackpressureException` or `AsyncHandlerOverflowEx
 terminates that subscription rather than silently dropping records. Size the buffer and
 concurrency with `AsyncHandlerOptions`.
 
+Notifications received while a subscription is being activated are buffered up to
+`SubscriptionBufferCapacity`; overflow faults that handle with
+`SubscriptionBackpressureException`. If the shared transport notification queue fills,
+all active subscription handles fault with `SubscriptionBackpressureException` and the
+connection is reset. Create new subscriptions after this terminal delivery failure;
+reconnection cannot recover notifications that were lost.
+
 `subscription.Completion` completes when the subscription ends, and faults with the reason if
 it ended abnormally. Await it if you need to observe that.
 

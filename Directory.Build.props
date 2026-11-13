@@ -12,7 +12,7 @@
 
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
     <!-- Assembly identity stays fixed permanently; release only by advancing PackageVersion. -->
-    <PackageVersion>4.1.1</PackageVersion>
+    <PackageVersion>4.1.2</PackageVersion>
     <Version>$(PackageVersion)</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <InformationalVersion>$(PackageVersion)</InformationalVersion>
@@ -27,7 +27,7 @@
     <DebugType>portable</DebugType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>fitz distributed-systems kv queue rpc lease notice stream schedule</PackageTags>
-    <PackageReleaseNotes>Enables .NET 11 runtime-async compilation. Requires Fitz 0.4.0 / Wire 3. See CHANGELOG.md and docs/wire3-migration.md.</PackageReleaseNotes>
+    <PackageReleaseNotes>Fixes Queue notification decoding, subscription activation races, and silent notification overflow. Requires Fitz 0.4.0 / Wire 3. See CHANGELOG.md and docs/wire3-migration.md.</PackageReleaseNotes>
     <PackageOutputPath>$(MSBuildThisFileDirectory)artifacts\packages</PackageOutputPath>
   </PropertyGroup>
 

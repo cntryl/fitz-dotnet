@@ -589,8 +589,9 @@ public sealed class QueueClientTests
         using var notification = new BinaryBufferWriter();
         notification.WriteU64(subscriptionId);
         notification.WriteString("queue://prod/app/tasks");
-        notification.WriteU32(3);
-        notification.WriteBytes("new"u8);
+        notification.WriteU64(1);
+        notification.WriteU64(2);
+        notification.WriteU64(3);
         notifyHandler!(notification.Build());
 
         var evt = await receivedTcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
@@ -600,7 +601,11 @@ public sealed class QueueClientTests
         Assert.Equal(MessageTypes.QueueSubscribe, seenMessageType);
         Assert.NotNull(seenPayload);
         Assert.Equal("queue://prod/app/tasks", evt!.Route);
-        Assert.Equal("new", System.Text.Encoding.UTF8.GetString(evt.Payload.Span));
+        var counters = new BinaryBufferReader(evt.Payload);
+        Assert.Equal(1UL, counters.ReadU64());
+        Assert.Equal(2UL, counters.ReadU64());
+        Assert.Equal(3UL, counters.ReadU64());
+        Assert.True(counters.IsEof);
         Assert.Same(received, evt);
         Assert.NotEqual(default, seenCancellationToken);
         Assert.False(seenCancellationToken.IsCancellationRequested);
@@ -829,8 +834,9 @@ public sealed class QueueClientTests
                     using var notification = new BinaryBufferWriter();
                     notification.WriteU64(777);
                     notification.WriteString("queue://prod/app/tasks");
-                    notification.WriteU32(8);
-                    notification.WriteBytes("restored"u8);
+                    notification.WriteU64(2);
+                    notification.WriteU64(0);
+                    notification.WriteU64(0);
                     secondTransport.QueueResponse(MessageTypes.QueueNotify, notification.WrittenSpan);
                 });
             }
@@ -865,8 +871,9 @@ public sealed class QueueClientTests
         {
             notification.WriteU64(555);
             notification.WriteString("queue://prod/app/tasks");
-            notification.WriteU32(7);
-            notification.WriteBytes("initial"u8);
+            notification.WriteU64(1);
+            notification.WriteU64(0);
+            notification.WriteU64(0);
             firstTransport.QueueResponse(MessageTypes.QueueNotify, notification.WrittenSpan);
         }
 
@@ -874,13 +881,13 @@ public sealed class QueueClientTests
         var initialEvent = await firstNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
         // Assert
-        Assert.Equal("initial", System.Text.Encoding.UTF8.GetString(initialEvent.Payload.Span));
+        Assert.Equal(1UL, new BinaryBufferReader(initialEvent.Payload).ReadU64());
 
         firstTransport.QueueClosed();
 
         var restoredEvent = await secondNotification.Task.WaitAsync(TimeSpan.FromSeconds(1));
         Assert.Equal("queue://prod/app/tasks", restoredEvent.Route);
-        Assert.Equal("restored", System.Text.Encoding.UTF8.GetString(restoredEvent.Payload.Span));
+        Assert.Equal(2UL, new BinaryBufferReader(restoredEvent.Payload).ReadU64());
 
         await connection.CloseAsync();
     }

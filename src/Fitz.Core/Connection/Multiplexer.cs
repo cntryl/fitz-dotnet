@@ -255,6 +255,7 @@ sealed class Multiplexer : IDisposable
     {
         PendingRequest? pending = null;
         NotificationHandler[]? handlers = null;
+        long sessionEpoch;
 
         lock (_gate)
         {
@@ -262,6 +263,7 @@ sealed class Multiplexer : IDisposable
             {
                 return;
             }
+            sessionEpoch = _sessionEpoch;
 
             if (_pending.TryGetValue(messageType, out var pendingQueue) && pendingQueue.Count > 0)
             {
@@ -300,7 +302,7 @@ sealed class Multiplexer : IDisposable
                 }
 
                 var restoringPayload = payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray();
-                _restoringNotifications.Enqueue(new NotificationDispatch(handlers, restoringPayload));
+                _restoringNotifications.Enqueue(new NotificationDispatch(handlers, restoringPayload, sessionEpoch));
                 return;
             }
         }
@@ -317,7 +319,7 @@ sealed class Multiplexer : IDisposable
         }
 
         var ownedPayload = payload.IsEmpty ? Array.Empty<byte>() : payload.ToArray();
-        if (!_notificationQueue.Writer.TryWrite(new NotificationDispatch(handlers, ownedPayload)))
+        if (!_notificationQueue.Writer.TryWrite(new NotificationDispatch(handlers, ownedPayload, sessionEpoch)))
         {
             ReportDispatchError(new SubscriptionBackpressureException(
                 "The multiplexer notification dispatch queue is full."));
@@ -500,6 +502,11 @@ sealed class Multiplexer : IDisposable
         {
             foreach (var handler in notification.Handlers)
             {
+                lock (_gate)
+                {
+                    if (_state != ConnectionState.Authenticated || notification.SessionEpoch != _sessionEpoch)
+                        break;
+                }
                 try
                 {
                     handler.Invoke(notification.Payload);
@@ -970,7 +977,7 @@ sealed class Multiplexer : IDisposable
     /// than per handler keeps the pump queue's capacity a count of frames, so a burst to many
     /// subscribers no longer consumes capacity proportional to the subscriber count.
     /// </summary>
-    readonly record struct NotificationDispatch(NotificationHandler[] Handlers, byte[] Payload);
+    readonly record struct NotificationDispatch(NotificationHandler[] Handlers, byte[] Payload, long SessionEpoch);
 
     sealed class NotificationRegistration : IDisposable
     {

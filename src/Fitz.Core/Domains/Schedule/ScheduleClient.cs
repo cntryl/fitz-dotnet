@@ -20,6 +20,8 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
     readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly int _subscriptionBufferCapacity;
+    readonly NotificationActivationBuffer _activationBuffer;
+    readonly FitzConnection? _connection;
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     readonly object _gate = new();
@@ -39,6 +41,8 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
             connection.SubscriptionBufferCapacity)
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
+        _connection = connection;
+        connection.NotificationDeliveryFailed += FailNotificationDelivery;
     }
 
     /// <summary>
@@ -64,6 +68,7 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
         _registerNotificationHandler = registerNotificationHandler;
         _dispatchAsyncHandler = dispatchAsyncHandler;
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
+        _activationBuffer = new NotificationActivationBuffer(subscriptionBufferCapacity);
     }
 
     /// <inheritdoc />
@@ -304,6 +309,7 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
                 }
             }
 
+            using var activation = _activationBuffer.Begin();
             var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
             var subscription = new ScheduleSubscriptionState(subscriptionId);
             subscription.Writers[handleId] = registration;
@@ -311,6 +317,8 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
             {
                 _subscriptionsByRoute[pattern] = subscription;
                 _routesBySubscriptionId[subscriptionId] = pattern;
+                if (_activationBuffer.Replay(HandleNotification) is { } activationError)
+                    _ = registration.FailAsync(activationError);
             }
 
             var handle = CreateSubscription(pattern, handleId, registration.Completion);
@@ -433,6 +441,19 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
         }
     }
 
+    void FailNotificationDelivery(Exception error)
+    {
+        lock (_gate)
+        {
+            _activationBuffer.Fail(error);
+            var registrations = _subscriptionsByRoute.Values.SelectMany(subscription => subscription.Writers.Values).ToArray();
+            _subscriptionsByRoute.Clear();
+            _routesBySubscriptionId.Clear();
+            foreach (var registration in registrations)
+                _ = registration.FailAsync(error);
+        }
+    }
+
     void EnsureNotificationHandlerInitialized()
     {
         lock (_gate)
@@ -474,6 +495,7 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
                 if (!_routesBySubscriptionId.TryGetValue(subscriptionId, out var route) ||
                     !_subscriptionsByRoute.TryGetValue(route, out var subscription))
                 {
+                    _activationBuffer.Buffer(payload);
                     return;
                 }
 
@@ -597,6 +619,8 @@ sealed class ScheduleClient : IScheduleClient, IDisposable
             return;
         }
 
+        _connection?.NotificationDeliveryFailed -= FailNotificationDelivery;
+        _activationBuffer.Dispose();
         _notificationRegistration?.Dispose();
         _reconnectRegistration?.Dispose();
         lock (_gate)

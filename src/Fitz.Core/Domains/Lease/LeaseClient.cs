@@ -26,6 +26,8 @@ sealed class LeaseClient : ILeaseClient, IDisposable
     readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
     readonly Action<Exception>? _invalidateSession;
     readonly int _subscriptionBufferCapacity;
+    readonly NotificationActivationBuffer _activationBuffer;
+    readonly FitzConnection? _connection;
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _subscriptionGate = new(1, 1);
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race an active acquisition; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
@@ -62,6 +64,8 @@ sealed class LeaseClient : ILeaseClient, IDisposable
     {
         _reconnectRegistration = connection.OnReconnect(HandleReconnect);
         _acquisitionDisconnectRegistration = connection.OnDisconnect(HandleAcquisitionDisconnect);
+        _connection = connection;
+        connection.NotificationDeliveryFailed += FailNotificationDelivery;
     }
 
     /// <summary>
@@ -92,6 +96,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         _dispatchAsyncHandler = dispatchAsyncHandler;
         _retryRequest = retryRequest;
         _subscriptionBufferCapacity = subscriptionBufferCapacity;
+        _activationBuffer = new NotificationActivationBuffer(subscriptionBufferCapacity);
         _invalidateSession = invalidateSession;
     }
 
@@ -747,6 +752,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
                 }
             }
 
+            using var activation = _activationBuffer.Begin();
             var subscriptionId = await SubscribeWireAsync(route, ct).ConfigureAwait(false);
             var subscription = new LeaseSubscriptionState(subscriptionId);
             subscription.Registrations[handleId] = registration;
@@ -754,6 +760,8 @@ sealed class LeaseClient : ILeaseClient, IDisposable
             {
                 _subscriptionsByRoute[route] = subscription;
                 _routesBySubscriptionId[subscriptionId] = route;
+                if (_activationBuffer.Replay(HandleNotification) is { } activationError)
+                    _ = registration.FailAsync(activationError);
             }
 
             var handle = CreateSubscription(route, handleId, registration.Completion);
@@ -871,6 +879,19 @@ sealed class LeaseClient : ILeaseClient, IDisposable
 
     }
 
+    void FailNotificationDelivery(Exception error)
+    {
+        lock (_gate)
+        {
+            _activationBuffer.Fail(error);
+            var registrations = _subscriptionsByRoute.Values.SelectMany(subscription => subscription.Registrations.Values).ToArray();
+            _subscriptionsByRoute.Clear();
+            _routesBySubscriptionId.Clear();
+            foreach (var registration in registrations)
+                _ = registration.FailAsync(error);
+        }
+    }
+
     void EnsureNotificationHandlerInitialized()
     {
         lock (_gate)
@@ -909,6 +930,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
                 if (!_routesBySubscriptionId.TryGetValue(subscriptionId, out var registeredRoute) ||
                     !_subscriptionsByRoute.TryGetValue(registeredRoute, out var subscription))
                 {
+                    _activationBuffer.Buffer(payload);
                     return;
                 }
 
@@ -1123,6 +1145,8 @@ sealed class LeaseClient : ILeaseClient, IDisposable
             return;
         }
 
+        _connection?.NotificationDeliveryFailed -= FailNotificationDelivery;
+        _activationBuffer.Dispose();
         _notificationRegistration?.Dispose();
         _acquireNotificationRegistration?.Dispose();
         _acquisitionDisconnectRegistration?.Dispose();
