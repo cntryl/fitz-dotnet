@@ -52,6 +52,9 @@ surface more idiomatic. The package stays on 4.x.
 - Reads stream commit offsets from top-level response properties only.
 - Releases the socket when a TCP connect fails partway.
 - Request retry and reconnect share one jittered exponential backoff.
+- `ConnectWhenReadyAsync` always reports an elapsed deadline as `TimeoutException`. It could surface as
+  `OperationCanceledException` when the deadline's timer fired a moment before the clock reached it. A zero
+  timeout makes exactly one attempt.
 - Disconnect listeners and session-token cancellation callbacks no longer run while the connection lock is
   held, so a callback can call back into the client. A reconnect attempt waits for the lost session's teardown
   to finish, and a session is reported authenticated only while its transport is still the current one.
@@ -63,6 +66,8 @@ surface more idiomatic. The package stays on 4.x.
   listener registries move out of `FitzConnection`. RPC splits into a caller, a worker host, and a wire
   codec; managed lease execution moves into its own scope type.
 - A duplicate inbound RPC correlation id is ignored instead of throwing inside notification dispatch.
+- Internal: locks are `System.Threading.Lock` and one-shot state such as "disposed" is a `bool` updated
+  with `Interlocked`, instead of `object` monitors and `int` flags.
 - `RpcRequest` takes an optional `TimeProvider` that counts down `RemainingTime`, and every subscription
   handle (`SubscriptionHandle`, and the KV, Queue, Stream, Schedule, Lease, and Notice subscriptions) takes one
   that bounds its five-second unsubscribe on disposal. The system clock remains the default.

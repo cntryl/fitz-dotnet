@@ -495,6 +495,31 @@ public sealed class ClientTests
     }
 
     [Fact]
+    public async Task ShouldReportTimeoutExactlyAtDeadlineGivenManualClockWhenConnectWhenReadyAttemptIsStillRunning()
+    {
+        // Arrange
+        var time = new ManualTimeProvider();
+        var neverConnects = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var transport = new BlockingConnectTransport(neverConnects.Task);
+        await using var client = new FitzClient(
+            new ClientConfig(new Uri("ws://localhost:4190/ws"), TransportFactory: _ => transport),
+            time);
+        var timeout = TimeSpan.FromSeconds(5);
+        var connecting = client.ConnectWhenReadyAsync(new ConnectWhenReadyOptions(Timeout: timeout));
+
+        // Act
+        await time.WaitForTimerAsync(timeout);
+        time.Advance(timeout - TimeSpan.FromTicks(1));
+        var endedEarly = connecting.IsCompleted;
+        time.Advance(TimeSpan.FromTicks(1));
+        var error = await Record.ExceptionAsync(() => connecting.WaitAsync(TimeSpan.FromSeconds(10)));
+
+        // Assert
+        Assert.False(endedEarly);
+        Assert.IsType<TimeoutException>(error);
+    }
+
+    [Fact]
     public async Task ShouldCoalesceConcurrentConnectCallsOntoOneInflightAttemptGivenConfiguredClientWhenOperationRuns()
     {
         // Arrange
