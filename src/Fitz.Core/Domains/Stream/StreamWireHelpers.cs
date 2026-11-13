@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Text;
 using System.Text.Json;
@@ -52,8 +51,7 @@ static class StreamWireHelpers
 
     internal static void EnsureSuccessStatusOnly(ReadOnlyMemory<byte> response, string operation)
     {
-        var reader = new BinaryBufferReader(response);
-        ReadSuccessStatus(reader, operation);
+        var reader = ReadSuccess(response, operation);
         if (operation == "COMMIT")
             _ = ReadLengthPrefixedData(reader, operation);
         if (!reader.IsEof)
@@ -62,8 +60,7 @@ static class StreamWireHelpers
 
     internal static ulong ReadBeginSessionId(ReadOnlyMemory<byte> response)
     {
-        var reader = new BinaryBufferReader(response);
-        ReadSuccessStatus(reader, "BEGIN");
+        var reader = ReadSuccess(response, "BEGIN");
         if (reader.RemainingBytes < 12)
         {
             throw new StreamException("BEGIN response missing session id or payload length", "MISSING_SESSION_ID");
@@ -75,8 +72,7 @@ static class StreamWireHelpers
 
     internal static ulong ReadSubscriptionId(ReadOnlyMemory<byte> response)
     {
-        var reader = new BinaryBufferReader(response);
-        ReadSuccessStatus(reader, "SUBSCRIBE");
+        var reader = ReadSuccess(response, "SUBSCRIBE");
         if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
             throw new StreamException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
         var subscriptionId = reader.ReadU64();
@@ -89,8 +85,7 @@ static class StreamWireHelpers
 
     internal static ReadOnlyMemory<byte> ReadOptionalPayload(ReadOnlyMemory<byte> response, string operation)
     {
-        var reader = new BinaryBufferReader(response);
-        ReadSuccessStatus(reader, operation);
+        var reader = ReadSuccess(response, operation);
         if (operation == "READ")
         {
             if (reader.IsEof || reader.ReadU8() != 0)
@@ -354,78 +349,70 @@ static class StreamWireHelpers
         return reader.ReadMemory(payloadLengthInt);
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Best-effort metadata parsing reports malformed broker payloads without failing notification delivery.")]
+    // Reads the top-level commit offset. last_resource_offset wins over first_resource_offset
+    // wherever each appears in the object; nested objects are ignored.
     internal static (ulong Offset, StreamCommitOffsetStatus Status) ParseCommitOffset(ReadOnlySpan<byte> payload)
     {
+        OffsetField last = default;
+        OffsetField first = default;
         try
         {
             var reader = new Utf8JsonReader(payload, isFinalBlock: true, state: default);
-            while (reader.Read())
+            if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+                return (0, StreamCommitOffsetStatus.Malformed);
+
+            while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
             {
-                if (reader.TokenType != JsonTokenType.PropertyName)
-                {
-                    continue;
-                }
+                var isLast = reader.ValueTextEquals("last_resource_offset"u8);
+                var isFirst = !isLast && reader.ValueTextEquals("first_resource_offset"u8);
+                if (!reader.Read())
+                    return (0, StreamCommitOffsetStatus.Malformed);
 
-                if (reader.ValueTextEquals("last_resource_offset"u8))
-                {
-                    return reader.Read() && reader.TokenType == JsonTokenType.Number
-                        ? (reader.GetUInt64(), StreamCommitOffsetStatus.Present)
-                        : (0, StreamCommitOffsetStatus.Malformed);
-                }
-
-                if (reader.ValueTextEquals("first_resource_offset"u8))
-                {
-                    return reader.Read() && reader.TokenType == JsonTokenType.Number
-                        ? (reader.GetUInt64(), StreamCommitOffsetStatus.Present)
-                        : (0, StreamCommitOffsetStatus.Malformed);
-                }
+                if (isLast)
+                    last = OffsetField.Read(ref reader);
+                else if (isFirst)
+                    first = OffsetField.Read(ref reader);
+                else
+                    reader.Skip();
             }
         }
-        catch
+        catch (JsonException)
         {
             return (0, StreamCommitOffsetStatus.Malformed);
         }
 
-        return (0, StreamCommitOffsetStatus.Absent);
+        var chosen = last.Seen ? last : first;
+        if (!chosen.Seen)
+            return (0, StreamCommitOffsetStatus.Absent);
+
+        return chosen.Valid ? (chosen.Value, StreamCommitOffsetStatus.Present) : (0, StreamCommitOffsetStatus.Malformed);
+    }
+
+    readonly record struct OffsetField(bool Seen, bool Valid, ulong Value)
+    {
+        internal static OffsetField Read(ref Utf8JsonReader reader)
+        {
+            if (reader.TokenType == JsonTokenType.Number && reader.TryGetUInt64(out var value))
+                return new(Seen: true, Valid: true, value);
+
+            reader.Skip();
+            return new(Seen: true, Valid: false, 0);
+        }
     }
 
     static void WriteBincodeString(BinaryBufferWriter writer, string value)
     {
         var bytes = Encoding.UTF8.GetBytes(value);
-        writer.WriteU32((uint)bytes.Length);
-        writer.WriteBytes(bytes);
+        writer.WriteLengthPrefixed(bytes);
     }
 
-    static void ReadSuccessStatus(BinaryBufferReader reader, string operation)
-    {
-        if (reader.IsEof)
+    static readonly WireFailureFactory<StreamException> Failure = static failure =>
+        new StreamException(failure.Message, failure.Code, failure.Status, failure.DomainCode)
         {
-            throw new StreamException($"{operation} response is empty", $"{operation}_INVALID_RESPONSE");
-        }
+            ErrorClass = failure.ErrorClass,
+            ErrorEffect = failure.ErrorEffect,
+        };
 
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            if (status == 1)
-            {
-                var domainCode = reader.ReadU16();
-                var errorClass = reader.ReadU8();
-                var effect = reader.ReadU8();
-                if (effect > 2)
-                {
-                    throw new StreamException($"{operation} error response has an invalid effect", $"{operation}_INVALID_RESPONSE");
-                }
-                var message = reader.ReadString();
-                if (!reader.IsEof)
-                {
-                    throw new StreamException($"{operation} error response has trailing bytes", $"{operation}_INVALID_RESPONSE", status, domainCode);
-                }
-                var domainError = new StreamException($"{operation} failed: {message}", $"{operation}_FAILED", status, domainCode);
-                domainError.SetWireError(errorClass > 10 ? (byte)6 : errorClass, effect);
-                throw domainError;
-            }
-            throw new StreamException($"{operation} failed with status {status}", $"{operation}_FAILED", status);
-        }
-    }
+    static BinaryBufferReader ReadSuccess(ReadOnlyMemory<byte> response, string operation) =>
+        ResponseEnvelope.ReadSuccess(response, operation, Failure);
 }

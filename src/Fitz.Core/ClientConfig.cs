@@ -4,7 +4,7 @@ using Cntryl.Fitz.Protocol;
 namespace Cntryl.Fitz;
 
 /// <summary>
-/// The complete configuration for a <see cref="Client"/>.
+/// The complete configuration for a <see cref="FitzClient"/>.
 /// </summary>
 /// <param name="Url">
 /// Broker endpoint. The scheme selects the transport when <paramref name="Transport"/> is
@@ -12,10 +12,6 @@ namespace Cntryl.Fitz;
 /// </param>
 /// <param name="Transport">Transport override. Defaults to selecting from the URL scheme.</param>
 /// <param name="Timeout">Per-request deadline. Defaults to 30 seconds.</param>
-/// <param name="AuthSettleDelay">
-/// Legacy setting retained for source compatibility. Wire 2 waits for HELLO or
-/// CONNECT_REJECTED within the configured operation timeout.
-/// </param>
 /// <param name="TokenProvider">
 /// Supplies a bearer token per connection attempt. Invoked again on every reconnect, so it
 /// can return a freshly minted token.
@@ -27,7 +23,7 @@ namespace Cntryl.Fitz;
 /// <param name="Observability">Logging, tracing, metrics, and lifecycle hooks.</param>
 /// <param name="AsyncHandlers">Bounds on callback dispatch and subscription buffering.</param>
 /// <param name="MaxFrameSize">
-/// Largest transport frame accepted or produced, including the fixed Wire-2 header. This is
+/// Largest transport frame accepted or produced, including the fixed Wire 3 header. This is
 /// bounded by the protocol: see
 /// <see cref="FitzLimits.MinFrameSize"/> and <see cref="FitzLimits.MaxFrameSize"/>.
 /// </param>
@@ -39,7 +35,7 @@ namespace Cntryl.Fitz;
 /// Supplies a custom <see cref="ITransport"/> instead of the built-in ones. Override
 /// <see cref="ITransport.TransportName"/> to label it in telemetry.
 /// </param>
-/// <param name="ServiceName">Optional friendly service name included in the Wire-2 CONNECT payload.</param>
+/// <param name="ServiceName">Optional friendly service name included in the CONNECT payload.</param>
 /// <remarks>
 /// This record is validated centrally before any connection work starts, so invalid
 /// configuration fails fast rather than at first use.
@@ -48,7 +44,6 @@ public sealed record ClientConfig(
     Uri Url,
     ClientTransport Transport = ClientTransport.Auto,
     TimeSpan? Timeout = null,
-    TimeSpan? AuthSettleDelay = null,
     Func<CancellationToken, ValueTask<string>>? TokenProvider = null,
     ReconnectOptions? Reconnect = null,
     RetryOptions? Retry = null,
@@ -116,15 +111,10 @@ public sealed record ClientConfig(
         }
 
         ValidatePositiveTimeout(Timeout, nameof(Timeout));
-        if (AuthSettleDelay is { } authSettleDelay && authSettleDelay < TimeSpan.Zero)
-        {
-            throw new ArgumentOutOfRangeException(nameof(AuthSettleDelay), "Authentication settlement delay cannot be negative.");
-        }
-
         if (MaxFrameSize is < FitzLimits.MinFrameSize or > FitzLimits.MaxFrameSize)
         {
             throw new ArgumentOutOfRangeException(nameof(MaxFrameSize),
-                $"MaxFrameSize must be between {FitzLimits.MinFrameSize} and {FitzLimits.MaxFrameSize} bytes, including the Wire-2 header.");
+                $"MaxFrameSize must be between {FitzLimits.MinFrameSize} and {FitzLimits.MaxFrameSize} bytes, including the Wire 3 header.");
         }
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxInFlightRequests);

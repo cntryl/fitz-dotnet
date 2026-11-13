@@ -1,10 +1,10 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using Cntryl.Fitz.Observability;
 
 namespace Cntryl.Fitz.Core.Tests.Integration;
 
-[SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Conformance scenarios intentionally capture arbitrary client failures as structured result evidence.")]
+[Trait("Category", "Integration")]
+[Trait("Category", "Conformance")]
 [Collection("Broker restart")]
 public sealed partial class ConformanceSmokeTests
 {
@@ -120,7 +120,7 @@ public sealed partial class ConformanceSmokeTests
 
             return Result("CS-001", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"connect failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-001", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -142,7 +142,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("connect unexpectedly succeeded");
             return Result("CS-002", transport, "invalid_jwt", "fail", sw.ElapsedMilliseconds, evidence, "invalid JWT should fail connect");
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"connect raised {ex.GetType().Name}: {ex.Message}");
             evidence.Add(IntegrationFixture.DescribeAuthFailure(ex));
@@ -177,7 +177,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add($"read-after-commit returned \"{value}\"");
             return Result("CS-003", transport, authMode, string.Equals(value, "Alice", StringComparison.Ordinal) ? "pass" : "fail", sw.ElapsedMilliseconds, evidence, value);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"request success failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-003", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -202,7 +202,7 @@ public sealed partial class ConformanceSmokeTests
                 {
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
             {
                 caught = ex;
             }
@@ -221,7 +221,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("client remains usable after unknown-route error");
             return Result("CS-004", transport, authMode, caught is RpcException { DomainCode: FitzErrorCodes.RpcRouteNotRegistered } ? "pass" : "partial", sw.ElapsedMilliseconds, evidence, caught.Message);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"unknown-route scenario failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-004", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -243,7 +243,7 @@ public sealed partial class ConformanceSmokeTests
             {
                 await client.Schedule.CreateAsync(IntegrationFixture.CreateUniqueRoute("schedule"), "not a cron", ScheduleDeliveryMode.Broadcast, ReadOnlyMemory<byte>.Empty);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
             {
                 caught = ex;
             }
@@ -259,7 +259,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("client remains usable after the rejected operation");
             return Result("CS-005", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"invalid payload scenario failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-005", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -283,7 +283,7 @@ public sealed partial class ConformanceSmokeTests
                 {
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
             {
                 rpcError = ex;
             }
@@ -308,7 +308,7 @@ public sealed partial class ConformanceSmokeTests
             {
                 await tx2.InsertAsync("x"u8.ToArray(), "2"u8.ToArray());
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
             {
                 kvError = ex;
             }
@@ -328,7 +328,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("required mapping includes retryable unregistered RPC and terminal KV errors");
             return Result("CS-006", transport, authMode, verdict, sw.ElapsedMilliseconds, evidence);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"server error mapping failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-006", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -365,7 +365,7 @@ public sealed partial class ConformanceSmokeTests
                 {
                 }
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
             {
                 caught = ex;
             }
@@ -388,7 +388,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("connection healthy after timeout");
             return Result("CS-007", transport, authMode, verdict, sw.ElapsedMilliseconds, evidence, caught.Message);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"timeout scenario failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-007", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -433,7 +433,7 @@ public sealed partial class ConformanceSmokeTests
             {
                 await callTask;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
             {
                 caught = ex;
             }
@@ -454,7 +454,7 @@ public sealed partial class ConformanceSmokeTests
             var verdict = caught is OperationCanceledException ? "pass" : "partial";
             return Result("CS-008", transport, authMode, verdict, sw.ElapsedMilliseconds, evidence, caught.Message);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"caller cancellation failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-008", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -496,7 +496,7 @@ public sealed partial class ConformanceSmokeTests
             {
                 await callTask;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
             {
                 caught = ex;
             }
@@ -511,7 +511,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("explicit client disposal does not exercise unexpected transport loss or reconnect");
             return Result("CS-009", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, caught.Message);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"disconnect scenario failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-009", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -522,8 +522,6 @@ public sealed partial class ConformanceSmokeTests
             await callerClient.DisposeAsync();
         }
     }
-
-    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The verifier client is conditionally created and disposed in the method's finally block.")]
     static async Task<ScenarioResult> RunCs010ReconnectAndRetryBehavior(string transport, string authMode)
     {
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -565,7 +563,6 @@ public sealed partial class ConformanceSmokeTests
         var releasePendingCall = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         RpcWorkerRegistration? restoredWorker = null;
         RpcWorkerRegistration? responderWorker = null;
-        Client? verifierClient = null;
 
         try
         {
@@ -668,7 +665,7 @@ public sealed partial class ConformanceSmokeTests
             await postReconnectTx.CommitAsync(KvDurability.Sync);
             evidence.Add("same client completed a new kv transaction after reconnect");
 
-            verifierClient = IntegrationFixture.CreateClientForMode(
+            await using var verifierClient = IntegrationFixture.CreateClientForMode(
                 transport,
                 authMode,
                 timeout: TimeSpan.FromSeconds(5),
@@ -697,7 +694,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("subscription restoration was not checked");
             return Result("CS-010", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             lock (lifecycleGate)
             {
@@ -709,7 +706,6 @@ public sealed partial class ConformanceSmokeTests
         finally
         {
             releasePendingCall.TrySetResult(true);
-            await DisposeQuietlyAsync(verifierClient);
             await DisposeQuietlyAsync(responderWorker);
             await DisposeQuietlyAsync(restoredWorker);
         }
@@ -757,7 +753,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add($"read {records.Count} records in offset order");
             return Result("CS-011", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"stream sequence failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-011", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -796,7 +792,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add($"stream read completed cleanly with {count} records");
             return Result("CS-012", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"stream completion failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-012", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -825,7 +821,7 @@ public sealed partial class ConformanceSmokeTests
                 var wrongSession = await client.Stream.BeginAsync(route);
                 await wrongSession.AppendAsync(0, "record-2"u8.ToArray());
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
             {
                 caught = ex;
             }
@@ -839,7 +835,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("an error during an active streaming read was not exercised");
             return Result("CS-013", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, caught.Message);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"stream error scenario failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-013", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -887,7 +883,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("cross-domain concurrency and within-domain ordering were not exercised");
             return Result("CS-014", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"concurrent request scenario failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-014", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -915,7 +911,7 @@ public sealed partial class ConformanceSmokeTests
                 _ = await beginTask;
                 evidence.Add("begin completed before close");
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
             {
                 evidence.Add($"in-flight begin raised {ex.GetType().Name}");
             }
@@ -925,7 +921,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("the KV request may have completed before close; active-work interruption was not established");
             return Result("CS-015", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"shutdown scenario failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-015", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -1045,7 +1041,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("filtered replay returned the matching record plus synthetic filtered metadata in order");
             return Result("CS-016", transport, authMode, "pass", sw.ElapsedMilliseconds, evidence);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             evidence.Add($"filtered stream replay failed: {ex.GetType().Name}: {ex.Message}");
             return Result("CS-016", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, ex.Message);
@@ -1095,13 +1091,13 @@ public sealed partial class ConformanceSmokeTests
             await operation();
             return null;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             return ex;
         }
     }
 
-    static async Task DisposeQuietlyAsync(IAsyncDisposable? resource)
+    static async Task DisposeQuietlyAsync(RpcWorkerRegistration? resource)
     {
         if (resource is null)
         {
@@ -1112,8 +1108,9 @@ public sealed partial class ConformanceSmokeTests
         {
             await resource.DisposeAsync();
         }
-        catch
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
         {
+            // Teardown failures must not mask the scenario's recorded outcome.
         }
     }
 }

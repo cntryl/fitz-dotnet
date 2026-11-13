@@ -19,11 +19,11 @@ public interface IScheduleClient
     /// </returns>
     Task<string?> CreateAsync(string route, string cron, ScheduleDeliveryMode deliveryMode, ReadOnlyMemory<byte> payload, CancellationToken ct = default);
 
-    /// <summary>Creates several schedules in one broker request (extension 706).</summary>
+    /// <summary>Creates several schedules in one broker request.</summary>
+    /// <param name="entries">The schedules to create.</param>
+    /// <param name="ct">Cancellation token for the create request.</param>
+    /// <returns>A task that completes once the broker accepts every schedule.</returns>
     Task CreateBatchAsync(IReadOnlyList<ScheduleEntry> entries, CancellationToken ct = default);
-
-    /// <summary>Reads a cursor page using broker Schedule LIST (702).</summary>
-    Task<ScheduleCursorPage> ListV2Async(string? continuation = null, ulong? limit = null, CancellationToken ct = default);
 
     /// <summary>
     /// Removes a registered schedule.
@@ -36,11 +36,13 @@ public interface IScheduleClient
     /// <summary>
     /// Reads one page of registered schedules.
     /// </summary>
-    /// <param name="offset">Only null or zero is supported by the cursor-based wire format.</param>
+    /// <param name="continuation">
+    /// <see cref="ScheduleListPage.Continuation"/> from the previous page, or <see langword="null"/> to start.
+    /// </param>
     /// <param name="limit">Maximum entries to return. Defaults to the broker's page size.</param>
     /// <param name="ct">Cancellation token for the list request.</param>
-    /// <returns>The page of entries and cursor state. Wire 2 does not include a total count.</returns>
-    Task<ScheduleListPage> ListAsync(ulong? offset = null, ulong? limit = null, CancellationToken ct = default);
+    /// <returns>The page of entries and the cursor for the next page, if any.</returns>
+    Task<ScheduleListPage> ListAsync(string? continuation = null, ulong? limit = null, CancellationToken ct = default);
 
     /// <summary>
     /// Reads every registered schedule whose route matches a selector.

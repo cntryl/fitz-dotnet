@@ -129,6 +129,10 @@ sealed class BinaryBufferReader
     /// <returns>A span over the underlying buffer.</returns>
     public ReadOnlySpan<byte> ReadSpan(uint length) => ReadSpan(ReadLength(length));
 
+    /// <summary>Reads bytes preceded by their u32 length.</summary>
+    /// <returns>A copy of the bytes.</returns>
+    public byte[] ReadLengthPrefixed() => ReadBytes(ReadU32());
+
     /// <summary>Reads a length-prefixed UTF-8 string.</summary>
     /// <returns>The decoded string.</returns>
     public string ReadString()

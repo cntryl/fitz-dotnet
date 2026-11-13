@@ -1,10 +1,11 @@
 ; Unshipped analyzer release
+; https://github.com/dotnet/roslyn-analyzers/blob/main/src/Microsoft.CodeAnalysis.Analyzers/ReleaseTrackingAnalyzers.Help.md
 
-### New Rules
+### Changed Rules
 
-Rule ID | Category | Severity | Notes
---------|----------|----------|------
-FITZ001 | Usage | Warning | Reports invalid constant Fitz routes.
-FITZ002 | Usage | Warning | Reports invalid constant Fitz patterns and selectors.
-FITZ003 | Reliability | Warning | Reports discarded Fitz lifecycle handles.
-FITZ004 | Usage | Warning | Reports invalid constant operation arguments.
+Rule ID | New Category | New Severity | Old Category | Old Severity | Notes
+--------|--------------|--------------|--------------|--------------|------
+FITZ001 | Usage | Error | Usage | Warning | An invalid route literal is rejected by the client at runtime, so it now fails the build.
+FITZ002 | Usage | Error | Usage | Warning | An invalid pattern literal is rejected by the client at runtime, so it now fails the build.
+FITZ003 | Reliability | Error | Reliability | Warning | A discarded lease, transaction, or subscription handle leaks the resource it owns, so it now fails the build.
+FITZ004 | Usage | Error | Usage | Warning | An invalid argument or duration literal is rejected by the client at runtime, so it now fails the build.

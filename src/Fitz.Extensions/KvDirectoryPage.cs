@@ -7,4 +7,4 @@ namespace Cntryl.Fitz.Extensions;
 /// <typeparam name="T">The item type.</typeparam>
 /// <param name="Items">The items in this page, in the query's effective order.</param>
 /// <param name="NextCursor">An opaque cursor resuming after this page, or <see langword="null"/> when this is the last page.</param>
-public sealed record Page<T>(IReadOnlyList<T> Items, string? NextCursor);
+public sealed record KvDirectoryPage<T>(IReadOnlyList<T> Items, string? NextCursor);

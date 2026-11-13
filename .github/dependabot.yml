@@ -1,15 +1,38 @@
 version: 2
 
+# Cntryl.LexKey and Cntryl.Conventions.* come from the private cntryl GitHub Packages feed,
+# which Dependabot cannot read without credentials. The repository owner must create the
+# Dependabot secret DEPENDABOT_PACKAGES_TOKEN (Settings > Secrets and variables > Dependabot)
+# holding a personal access token with read:packages. Actions secrets are not visible to
+# Dependabot, so it has to be created in the Dependabot section.
+registries:
+  nuget-org:
+    type: nuget-feed
+    url: https://api.nuget.org/v3/index.json
+  cntryl-github-packages:
+    type: nuget-feed
+    url: https://nuget.pkg.github.com/cntryl/index.json
+    token: ${{secrets.DEPENDABOT_PACKAGES_TOKEN}}
+
 updates:
   - package-ecosystem: nuget
     directory: /
+    registries:
+      - nuget-org
+      - cntryl-github-packages
     schedule:
       interval: weekly
     ignore:
       # This repo's own packages; their version tracks PackageVersion, not the feed.
-      - dependency-name: Cntryl.*
+      - dependency-name: Cntryl.Fitz.*
 
   - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  # Proposes new digests for the pinned broker image in compose.yml.
+  - package-ecosystem: docker-compose
     directory: /
     schedule:
       interval: weekly

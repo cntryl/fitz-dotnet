@@ -12,15 +12,7 @@ sealed record ServerCapabilities(
 {
     internal uint CapabilityMask { get; init; }
     internal bool SupportsCapability(uint id) => id is 1 or 2 && (CapabilityMask & (1u << (int)id)) != 0;
-    public const uint CorrelationBit = 0;
-    public const uint SessionMetadataBit = 0;
-    public const uint KvScanExclusiveBit = 0;
-    public const uint RpcCancellationBit = 0;
     public static ServerCapabilities None { get; } = new(0, 0, 1024 * 1024, 256, 0);
-    public bool SupportsCorrelation => ProtocolVersion >= 2;
-    public static bool SupportsSessionMetadata => false;
-    public bool SupportsKvScanExclusive => ProtocolVersion >= 2;
-    public bool SupportsRpcCancellation => ProtocolVersion >= 2;
 
     /// <summary>Parses the frozen HELLO core; optional values belong in registered extensions.</summary>
     public static bool TryParse(ReadOnlySpan<byte> payload, out ServerCapabilities capabilities)

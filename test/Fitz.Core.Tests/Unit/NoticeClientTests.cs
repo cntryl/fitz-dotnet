@@ -12,7 +12,7 @@ public sealed class NoticeClientTests
         // Arrange
         var subscriptionId = 40UL;
         var sent = new List<ushort>();
-        using var notice = new NoticeClient(
+        await using var notice = new NoticeClient(
             (_, _, _) => Task.CompletedTask,
             (messageType, payload, _) =>
             {
@@ -57,7 +57,7 @@ public sealed class NoticeClientTests
             });
 
         // Act
-        notice.Dispose();
+        await notice.DisposeAsync();
 
 
         // Assert
@@ -73,7 +73,7 @@ public sealed class NoticeClientTests
         // Arrange
         // Act
         // Assert
-        using var notice = new NoticeClient(
+        await using var notice = new NoticeClient(
             (_, _, _) => Task.CompletedTask,
             (_, _, _) => Task.FromResult(Array.Empty<byte>()),
             (_, _) => new TestRegistration());
@@ -89,7 +89,7 @@ public sealed class NoticeClientTests
     {
         // Arrange
         Action<ReadOnlyMemory<byte>>? notifyHandler = null;
-        using var notice = new NoticeClient(
+        await using var notice = new NoticeClient(
             (_, _, _) => ValueTask.CompletedTask,
             (messageType, _, _) =>
             {
@@ -132,7 +132,7 @@ public sealed class NoticeClientTests
         // Arrange
         Action<ReadOnlyMemory<byte>>? notifyHandler = null;
         var unsubscribeAttempts = 0;
-        using var notice = new NoticeClient(
+        await using var notice = new NoticeClient(
             (_, _, _) => ValueTask.CompletedTask,
             (messageType, _, _) =>
             {
@@ -176,7 +176,7 @@ public sealed class NoticeClientTests
     public async Task ShouldPreserveDomainErrorGivenInvalidPatternWhenSubscribing()
     {
         // Arrange
-        using var notice = new NoticeClient(
+        await using var notice = new NoticeClient(
             (_, _, _) => Task.CompletedTask,
             (_, _, _) =>
             {
@@ -212,7 +212,7 @@ public sealed class NoticeClientTests
     {
         // Arrange
         Action<byte[]>? notifyHandler = null;
-        using var notice = new NoticeClient(
+        await using var notice = new NoticeClient(
             (_, _, _) => Task.CompletedTask,
             (messageType, _, _) =>
             {
@@ -253,7 +253,7 @@ public sealed class NoticeClientTests
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        using var notice = new NoticeClient((messageType, payload, _) =>
+        await using var notice = new NoticeClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -284,7 +284,7 @@ public sealed class NoticeClientTests
         CancellationToken seenCancellationToken = default;
         var receivedTcs = new TaskCompletionSource<NoticeMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        using var notice = new NoticeClient(
+        await using var notice = new NoticeClient(
             (_, _, _) => Task.CompletedTask,
             (messageType, payload, _) =>
             {
@@ -353,7 +353,7 @@ public sealed class NoticeClientTests
         // Assert
         Action<byte[]>? notifyHandler = null;
 
-        using var notice = new NoticeClient(
+        await using var notice = new NoticeClient(
             (_, _, _) => Task.CompletedTask,
             (messageType, _, _) =>
             {
@@ -416,7 +416,7 @@ public sealed class NoticeClientTests
         // Assert
         Action<byte[]>? notifyHandler = null;
 
-        using var notice = new NoticeClient(
+        await using var notice = new NoticeClient(
             (_, _, _) => Task.CompletedTask,
             (messageType, _, _) =>
             {

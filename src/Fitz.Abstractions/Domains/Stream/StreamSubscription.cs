@@ -17,8 +17,9 @@ public sealed class StreamSubscription : SubscriptionHandle<StreamCommitEvent>
     /// <param name="pattern">Route or pattern this subscription was registered with.</param>
     /// <param name="unsubscribe">Callback that withdraws the registration from the broker.</param>
     /// <param name="completion">Externally owned completion signal, or <see langword="null"/>.</param>
-    public StreamSubscription(string pattern, Func<CancellationToken, ValueTask> unsubscribe, Task? completion = null)
-        : this(pattern, EmptyNotifications(), unsubscribe, completion)
+    /// <param name="timeProvider">The clock that bounds cleanup on disposal; the system clock by default.</param>
+    public StreamSubscription(string pattern, Func<CancellationToken, ValueTask> unsubscribe, Task? completion = null, TimeProvider? timeProvider = null)
+        : this(pattern, EmptyNotifications(), unsubscribe, completion, timeProvider)
     {
     }
 
@@ -29,11 +30,12 @@ public sealed class StreamSubscription : SubscriptionHandle<StreamCommitEvent>
     /// <param name="notifications">Bounded source of notifications for this subscription.</param>
     /// <param name="unsubscribe">Callback that withdraws the registration from the broker.</param>
     /// <param name="completion">Externally owned completion signal, or <see langword="null"/>.</param>
+    /// <param name="timeProvider">The clock that bounds cleanup on disposal; the system clock by default.</param>
     public StreamSubscription(
         string pattern, IAsyncEnumerable<StreamCommitEvent> notifications,
         Func<CancellationToken, ValueTask> unsubscribe,
-        Task? completion = null)
-        : base(pattern, notifications, unsubscribe, completion)
+        Task? completion = null, TimeProvider? timeProvider = null)
+        : base(pattern, notifications, unsubscribe, completion, timeProvider)
     {
     }
 }

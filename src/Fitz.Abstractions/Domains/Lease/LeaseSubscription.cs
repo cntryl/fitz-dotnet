@@ -17,8 +17,9 @@ public sealed class LeaseSubscription : SubscriptionHandle<LeaseChangeEvent>
     /// <param name="route">Route or pattern this subscription was registered with.</param>
     /// <param name="unsubscribe">Callback that withdraws the registration from the broker.</param>
     /// <param name="completion">Externally owned completion signal, or <see langword="null"/>.</param>
-    public LeaseSubscription(string route, Func<CancellationToken, ValueTask> unsubscribe, Task? completion = null)
-        : this(route, EmptyNotifications(), unsubscribe, completion)
+    /// <param name="timeProvider">The clock that bounds cleanup on disposal; the system clock by default.</param>
+    public LeaseSubscription(string route, Func<CancellationToken, ValueTask> unsubscribe, Task? completion = null, TimeProvider? timeProvider = null)
+        : this(route, EmptyNotifications(), unsubscribe, completion, timeProvider)
     {
     }
 
@@ -29,11 +30,12 @@ public sealed class LeaseSubscription : SubscriptionHandle<LeaseChangeEvent>
     /// <param name="notifications">Bounded source of notifications for this subscription.</param>
     /// <param name="unsubscribe">Callback that withdraws the registration from the broker.</param>
     /// <param name="completion">Externally owned completion signal, or <see langword="null"/>.</param>
+    /// <param name="timeProvider">The clock that bounds cleanup on disposal; the system clock by default.</param>
     public LeaseSubscription(
         string route, IAsyncEnumerable<LeaseChangeEvent> notifications,
         Func<CancellationToken, ValueTask> unsubscribe,
-        Task? completion = null)
-        : base(route, notifications, unsubscribe, completion)
+        Task? completion = null, TimeProvider? timeProvider = null)
+        : base(route, notifications, unsubscribe, completion, timeProvider)
     {
         Route = route;
     }

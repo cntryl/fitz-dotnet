@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Threading.Channels;
 
 namespace Cntryl.Fitz.Runtime;
@@ -10,21 +9,28 @@ delegate bool AsyncHandlerDispatch(
 sealed class SubscriptionRegistration<TNotification> : IDisposable
 {
     internal const int DefaultCapacity = 256;
+
+    // How long the broker-side unsubscribe after an overflow may take before it is abandoned.
+    static readonly TimeSpan OverflowCleanupBudget = TimeSpan.FromSeconds(5);
+
     int _disposed;
     CancellationTokenSource? _cancellationSource;
     readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly string _domain;
     readonly string _pattern;
     readonly Func<CancellationToken, ValueTask>? _overflowCleanup;
+    readonly TimeProvider _time;
 
     internal SubscriptionRegistration(
         Channel<TNotification> channel,
         string domain = "subscription",
         string pattern = "unknown",
         Func<CancellationToken, ValueTask>? overflowCleanup = null,
-        Action<TNotification>? preDispatch = null)
+        Action<TNotification>? preDispatch = null,
+        TimeProvider? timeProvider = null)
     {
         Channel = channel;
+        _time = timeProvider ?? TimeProvider.System;
         _domain = domain;
         _pattern = pattern;
         _overflowCleanup = overflowCleanup;
@@ -67,10 +73,8 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
         _completion.TrySetResult();
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Terminal subscription cleanup is best effort and its overflow signal must remain authoritative.")]
     internal Task FailOverflowAsync() => FailAsync(new AsyncHandlerOverflowException(_domain, _pattern));
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Terminal subscription cleanup is best effort and the original failure must remain authoritative.")]
     internal async Task FailAsync(Exception error)
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -90,10 +94,10 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
         {
             try
             {
-                using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                using var cleanupDeadline = new CancellationTokenSource(OverflowCleanupBudget, _time);
                 await _overflowCleanup(cleanupDeadline.Token).ConfigureAwait(false);
             }
-            catch
+            catch (Exception cleanupError) when (ExceptionPolicy.IsRecoverable(cleanupError))
             {
             }
         }
@@ -140,7 +144,6 @@ static class SubscriptionPump
             preferLocal: false);
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Subscription pumps isolate arbitrary user callbacks by faulting only their registration.")]
     static async Task RunAsync<TNotification>(
         SubscriptionRegistration<TNotification> registration,
         Func<TNotification, CancellationToken, ValueTask> handler,
@@ -176,7 +179,7 @@ static class SubscriptionPump
                                     await handler(message, linkedCts.Token).ConfigureAwait(false);
                                     callbackCompletion.TrySetResult();
                                 }
-                                catch (Exception exception)
+                                catch (Exception exception) when (ExceptionPolicy.IsRecoverable(exception))
                                 {
                                     callbackCompletion.TrySetException(exception);
                                     throw;
@@ -194,7 +197,7 @@ static class SubscriptionPump
                     {
                         return;
                     }
-                    catch (Exception exception)
+                    catch (Exception exception) when (ExceptionPolicy.IsRecoverable(exception))
                     {
                         await registration.FailAsync(exception).ConfigureAwait(false);
                         return;
@@ -207,7 +210,7 @@ static class SubscriptionPump
                 }
             }
         }
-        catch
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
         {
         }
         finally

@@ -11,7 +11,7 @@ public sealed class RpcSessionAndSchedulingTests
         // Arrange
         using var previous = new CancellationTokenSource();
         using var sendingSession = new CancellationTokenSource();
-        Action<byte[]>? response = null;
+        Action<ReadOnlyMemory<byte>>? response = null;
         using var rpc = new RpcClient(
             (_, _, _) => ValueTask.FromResult(ReadOnlyMemory<byte>.Empty),
             (_, _, _) => ValueTask.CompletedTask,

@@ -73,7 +73,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("filtered-only pages advanced the global cursor through the captured tail");
             return Result("CS-017", transport, authMode, "pass", stopwatch.ElapsedMilliseconds, evidence);
         }
-        catch (Exception error)
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
         {
             evidence.Add($"global filtered replay failed: {error.GetType().Name}: {error.Message}");
             return Result("CS-017", transport, authMode, "fail", stopwatch.ElapsedMilliseconds, evidence, error.Message);

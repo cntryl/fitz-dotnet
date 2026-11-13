@@ -15,7 +15,7 @@ public sealed class QueueBackpressureTests
         TestErrorEnvelope.Write(writer, 4005);
         writer.WriteString("not accepted");
         await using var item = new QueueReservedItem("queue://prod/app/tasks", ReadOnlyMemory<byte>.Empty,
-            QueueItem.AttemptUnavailable, 7, 11, (_, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build()));
+            7, 11, (_, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build()));
         // Act
         var error = await Assert.ThrowsAsync<QueueException>(() => item.CompleteAsync());
         // Assert
@@ -31,7 +31,7 @@ public sealed class QueueBackpressureTests
         writer.WriteU8(1);
         TestErrorEnvelope.Write(writer, 7005);
         writer.WriteString("not accepted");
-        using var schedule = new ScheduleClient((_, _, _) => Task.FromResult(writer.Build()));
+        await using var schedule = new ScheduleClient((_, _, _) => Task.FromResult(writer.Build()));
         // Act
         var error = await Assert.ThrowsAsync<ScheduleException>(() => schedule.CancelAsync("schedule://prod/app/jobs/run"));
         // Assert
@@ -51,7 +51,7 @@ public sealed class QueueBackpressureTests
         writer.WriteString("broker rejection");
         var calls = 0;
         await using var item = new QueueReservedItem("queue://prod/app/tasks", ReadOnlyMemory<byte>.Empty,
-            QueueItem.AttemptUnavailable, 7, 11, (_, _, _) =>
+            7, 11, (_, _, _) =>
             {
                 calls++;
                 return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
@@ -73,7 +73,7 @@ public sealed class QueueBackpressureTests
         writer.WriteU8(1);
         writer.WriteString(message);
         // Act
-        var error = QueueWireHelpers.ReadError(writer.Build(), "COMPLETE", 1);
+        var error = Assert.Throws<QueueException>(() => QueueWireHelpers.ReadSuccess(writer.Build(), "COMPLETE"));
         // Assert
         Assert.Null(error.DomainCode);
         Assert.EndsWith("INVALID_RESPONSE", error.Code, StringComparison.Ordinal);
@@ -86,7 +86,7 @@ public sealed class QueueBackpressureTests
         // Arrange
         byte[] payload = [1, 0, 0, 15, 165, 0, 0, 0, 2, 120];
         // Act
-        var error = QueueWireHelpers.ReadError(payload, "COMPLETE", 1);
+        var error = Assert.Throws<QueueException>(() => QueueWireHelpers.ReadSuccess(payload, "COMPLETE"));
         // Assert
         Assert.Null(error.DomainCode);
         Assert.False(Retryability.IsRetryable(error));
@@ -98,7 +98,7 @@ public sealed class QueueBackpressureTests
     public async Task ShouldRejectInvalidCapacityEnvelopeGivenQueueWhenReserving(byte[] response)
     {
         // Arrange
-        using var queue = new QueueClient((_, _, _) => Task.FromResult(response));
+        await using var queue = new QueueClient((_, _, _) => Task.FromResult(response));
         // Act
         var error = await Assert.ThrowsAsync<QueueException>(() => queue.ReserveAsync("queue://prod/app/jobs", TimeSpan.FromSeconds(30)));
         // Assert

@@ -70,6 +70,23 @@ sealed class BinaryBufferWriter : IDisposable
         _position += bytes.Length;
     }
 
+    /// <summary>Writes bytes preceded by their u32 length.</summary>
+    /// <param name="bytes">Bytes to write.</param>
+    public void WriteLengthPrefixed(ReadOnlySpan<byte> bytes)
+    {
+        WriteU32((uint)bytes.Length);
+        WriteBytes(bytes);
+    }
+
+    /// <summary>Writes a presence flag, then the bytes length-prefixed when present.</summary>
+    /// <param name="bytes">Bytes to write, or <see langword="null"/> for absent.</param>
+    public void WriteOptionalLengthPrefixed(ReadOnlyMemory<byte>? bytes)
+    {
+        WriteU8(bytes.HasValue ? (byte)1 : (byte)0);
+        if (bytes is { } present)
+            WriteLengthPrefixed(present.Span);
+    }
+
     /// <summary>Writes a length-prefixed UTF-8 string.</summary>
     /// <param name="value">String to write.</param>
     public void WriteString(string value)

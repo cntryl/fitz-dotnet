@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Cntryl.Fitz.Testing;
 
 namespace Cntryl.Fitz.Testing.Tests;
@@ -80,8 +81,8 @@ public sealed class InMemoryKvClientTests
         var delete = () => transaction.DeleteAsync("a"u8.ToArray());
 
         // Assert
-        Assert.Equal("READ_ONLY", (await Assert.ThrowsAsync<KvException>(put)).Code);
-        Assert.Equal("READ_ONLY", (await Assert.ThrowsAsync<KvException>(delete)).Code);
+        Assert.Equal("PUT_FAILED", (await Assert.ThrowsAsync<KvException>(put)).Code);
+        Assert.Equal("DELETE_FAILED", (await Assert.ThrowsAsync<KvException>(delete)).Code);
     }
 
     [Fact]
@@ -102,7 +103,7 @@ public sealed class InMemoryKvClientTests
         await transaction.CommitAsync(KvDurability.Sync);
 
         // Assert
-        Assert.Equal("KEY_EXISTS", Assert.IsType<KvException>(duplicate).Code);
+        Assert.Equal("INSERT_FAILED", Assert.IsType<KvException>(duplicate).Code);
         Assert.Equal(["a", "d"], client.Snapshot(Route).Select(static pair => System.Text.Encoding.UTF8.GetString(pair.Key.Span)));
     }
 
@@ -119,7 +120,7 @@ public sealed class InMemoryKvClientTests
 
         // Act
         var forward = await transaction.ScanAsync(new KvScanQuery("b"u8.ToArray(), "e"u8.ToArray(), Limit: 10));
-        var reverse = await transaction.ScanAsync(new KvScanQuery("b"u8.ToArray(), "e"u8.ToArray(), Limit: 10, Reverse: true));
+        var reverse = await transaction.ScanAsync(new KvScanQuery("d"u8.ToArray(), "a"u8.ToArray(), Limit: 10, Reverse: true));
 
         // Assert
         Assert.Equal(["b", "c"], TextKeys(forward));
@@ -148,51 +149,6 @@ public sealed class InMemoryKvClientTests
 
         // Assert
         Assert.Equal(["a", "b", "c", "d", "e"], keys);
-    }
-
-    [Fact]
-    public async Task ShouldRejectReversePageResumptionGivenMissingExclusiveCapability()
-    {
-        // Arrange
-        var client = new InMemoryKvClient(new InMemoryKvClientOptions { ScanPageSize = 2 });
-        foreach (var key in new[] { "a", "b", "c", "d", "e" })
-        {
-            client.Seed(Route, System.Text.Encoding.UTF8.GetBytes(key), Array.Empty<byte>());
-        }
-        await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
-        var keys = new List<string>();
-
-        // Act
-        var exception = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
-        {
-            await foreach (var pair in transaction.ScanAllAsync(new KvScanQuery(Reverse: true)))
-            {
-                keys.Add(System.Text.Encoding.UTF8.GetString(pair.Key.Span));
-            }
-        });
-
-        // Assert
-        Assert.Equal("This client cannot safely continue a reverse KV SCAN across pages.", exception.Message);
-        Assert.Equal(["e", "d"], keys);
-    }
-
-    [Fact]
-    public async Task ShouldRejectSecondWriterGivenConcurrentRouteMutation()
-    {
-        // Arrange
-        var client = new InMemoryKvClient();
-        await using var winner = await client.BeginAsync(Route);
-        await using var loser = await client.BeginAsync(Route);
-        await winner.PutAsync("a"u8.ToArray(), Array.Empty<byte>());
-        await loser.PutAsync("b"u8.ToArray(), Array.Empty<byte>());
-
-        // Act
-        await winner.CommitAsync(KvDurability.Sync);
-        var commit = () => loser.CommitAsync(KvDurability.Sync);
-
-        // Assert
-        var error = await Assert.ThrowsAsync<KvException>(commit);
-        Assert.Equal(FitzErrorCodes.KvIsolationConflict, error.DomainCode);
     }
 
     [Fact]
@@ -233,7 +189,7 @@ public sealed class InMemoryKvClientTests
         Assert.Equal(
             [KvTestOperation.Begin, KvTestOperation.Put, KvTestOperation.Put],
             client.Operations.Select(static operation => operation.Operation));
-        Assert.Equal("a"u8.ToArray(), client.Operations[^1].Key);
+        Assert.Equal("a"u8.ToArray(), client.Operations[^1].Key!.Value.ToArray());
     }
 
     [Fact]
@@ -261,12 +217,12 @@ public sealed class InMemoryKvClientTests
 
         // Act
         var operation = client.Operations[^1];
-        Assert.IsType<byte[]>(operation.Key)[0] = 0;
-        Assert.IsType<byte[]>(operation.Value)[0] = 0;
+        MemoryMarshal.AsMemory(operation.Key!.Value).Span[0] = 0;
+        MemoryMarshal.AsMemory(operation.Value!.Value).Span[0] = 0;
 
         // Assert
-        Assert.Equal("key"u8.ToArray(), client.Operations[^1].Key);
-        Assert.Equal("value"u8.ToArray(), client.Operations[^1].Value);
+        Assert.Equal("key"u8.ToArray(), client.Operations[^1].Key!.Value.ToArray());
+        Assert.Equal("value"u8.ToArray(), client.Operations[^1].Value!.Value.ToArray());
     }
 
     [Fact]
@@ -401,8 +357,8 @@ public sealed class InMemoryKvClientTests
         var operation = client.Operations[^1];
 
         // Assert
-        Assert.Equal("a"u8.ToArray(), operation.Key);
-        Assert.Equal("z"u8.ToArray(), operation.EndKey);
+        Assert.Equal("a"u8.ToArray(), operation.Key!.Value.ToArray());
+        Assert.Equal("z"u8.ToArray(), operation.EndKey!.Value.ToArray());
         Assert.Null(operation.Value);
     }
 
@@ -544,7 +500,7 @@ public sealed class InMemoryKvClientTests
         var begin = () => client.BeginAsync(route);
 
         // Assert
-        Assert.Equal("INVALID_ROUTE", (await Assert.ThrowsAsync<KvException>(begin)).Code);
+        Assert.Equal("route", (await Assert.ThrowsAsync<ArgumentException>(begin)).ParamName);
     }
 
     static string[] TextKeys(KvScanResult result) =>

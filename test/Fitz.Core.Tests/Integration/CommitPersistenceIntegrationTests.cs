@@ -1,5 +1,6 @@
 namespace Cntryl.Fitz.Core.Tests.Integration;
 
+[Trait("Category", "Integration")]
 public sealed class CommitPersistenceIntegrationTests
 {
     [Theory]

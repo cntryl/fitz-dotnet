@@ -35,7 +35,7 @@ the DI helpers:
 ```csharp
 using Cntryl.Fitz;
 
-await using var client = new Client(
+await using var client = new FitzClient(
     new ClientConfig(
         new Uri("ws://127.0.0.1:4190/ws"),
         TokenProvider: _ => ValueTask.FromResult("your-jwt-token")));
@@ -75,8 +75,9 @@ kv://prod/billing/*
 stream://**
 ```
 
-Routes are validated client-side before anything reaches the broker. The shipped Roslyn
-analyzer (`Cntryl.Fitz.Analyzers`, referenced automatically by the `Cntryl.Fitz` package)
+Routes are validated client-side before anything reaches the broker; an invalid one throws
+`ArgumentException`. The shipped Roslyn
+analyzer (`Cntryl.Fitz.Analyzers`, shipped inside the `Cntryl.Fitz.Core` package)
 checks literal routes at compile time, so a malformed route or a pattern passed where a
 concrete route is required is a build error rather than a runtime one. It is build-time only
 and never ships into your application.
@@ -93,7 +94,7 @@ Handles are `IAsyncDisposable` and must be awaited with `await using`, not `usin
 await using var tx = await client.Kv.BeginAsync(route, ct: ct);
 ```
 
-`Client.CloseAsync` is the explicit, idempotent shutdown. `DisposeAsync` delegates to it, so
+`FitzClient.CloseAsync` is the explicit, idempotent shutdown. `DisposeAsync` delegates to it, so
 `await using var client = ...` is sufficient.
 
 ## Durations
@@ -130,11 +131,13 @@ structured domain codes remain available on an exception's `DomainCode`; never m
 Transport and lifecycle problems surface as `ConnectionException`, `AuthenticationException`,
 `RequestTimeoutException`, `RequestQueueFullException`, or `ProtocolException`.
 
-Two exceptions sit outside that hierarchy and derive from `Exception` directly:
-`SubscriptionBackpressureException` and `AsyncHandlerOverflowException`. They are declared in
-`Cntryl.Fitz.Abstractions`, which does not reference the assembly `FitzException` lives in. A
-`catch (FitzException)` will not catch either, so catch them explicitly where you consume a
-subscription.
+Subscription delivery failures, `SubscriptionBackpressureException` and
+`AsyncHandlerOverflowException`, are `FitzException`s too.
+
+Invalid arguments are not broker errors: a malformed route or pattern throws
+`ArgumentException` with `ParamName` set, and a duration the wire cannot carry throws
+`ArgumentOutOfRangeException`. Using a closed `FitzClient` throws `ObjectDisposedException`.
+None of these are retryable.
 
 The client retries internally, and only where retrying is safe: replayable reads are retried
 with jittered exponential backoff under a single deadline shared by all attempts, while
@@ -243,9 +246,8 @@ foreach (var item in items)
 A reserved item not completed within its lease returns to the queue. Call `ExtendAsync` if
 processing legitimately runs long.
 
-`item.Attempt` exists but is not usable today: the current queue wire carries no attempt
-count, so it is always `QueueItem.AttemptUnavailable` (`0`). Do not build redelivery logic on
-it.
+The queue wire carries no delivery-attempt count, so the client does not expose one. Do not
+build redelivery logic that depends on counting attempts.
 
 ### Notice — fire-and-forget pub/sub
 
@@ -406,8 +408,8 @@ var id = await client.Schedule.CreateAsync(
 ```
 
 `Broadcast` delivers each firing to every current subscriber; `Once` delivers it to exactly
-one. `ListAsync(offset, limit)` pages through schedules and returns `TotalCount` alongside the
-page.
+one. `ListAsync(continuation, limit)` pages through schedules: pass each page's
+`Continuation` to the next call until `HasMore` is false.
 
 ## Dependency injection and hosting
 
@@ -415,10 +417,12 @@ page.
 services.AddFitzClient(new ClientConfig(new Uri("ws://127.0.0.1:4190/ws")));
 ```
 
-This registers `ClientConfig`, `Client`, and an `IHostedService` that connects on start and
-closes on stop, all through explicit factories rather than container type activation, so
-nothing reflects over your types at startup. Inject `Client` (or `IClient`) wherever you need
-it; it is a singleton and safe to use concurrently.
+This registers `ClientConfig`, `FitzClient`, and an `IHostedService` that connects on start
+with `ConnectWhenReadyAsync` (set `FitzClientHostingOptions.Startup` to change that) and closes
+on stop, all through explicit factories rather than container type activation, so nothing
+reflects over your types at startup. Inject `FitzClient` (or `IFitzClient`) wherever you need
+it; it is a singleton and safe to use concurrently. Registering a second unkeyed client throws;
+use `AddKeyedFitzClient` for more than one.
 
 ## Observability
 

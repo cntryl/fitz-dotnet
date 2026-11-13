@@ -11,7 +11,18 @@ sealed record RetryOperation(
     string Domain,
     string Operation,
     RetryClass RetryClass
-);
+)
+{
+    /// <summary>Whether a failure of this operation may be retried automatically.</summary>
+    /// <param name="exception">The failure.</param>
+    /// <returns><see langword="true"/> when the operation is safe to repeat after this failure.</returns>
+    internal bool ShouldRetry(Exception exception) => RetryClass switch
+    {
+        RetryClass.ReplayableRead => Retryability.IsRetryable(exception),
+        RetryClass.ConfirmedNegativeRetry => exception is QueueException && Retryability.IsRetryable(exception),
+        _ => false,
+    };
+}
 
 /// <summary>
 /// The fixed set of retryable operations. These are immutable and used on every request, so they

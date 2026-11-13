@@ -2,6 +2,7 @@ using System.Text;
 
 namespace Cntryl.Fitz.Core.Tests.Integration;
 
+[Trait("Category", "Integration")]
 public sealed class DomainWorkflowIntegrationTests
 {
     [Fact]
@@ -579,11 +580,11 @@ public sealed class DomainWorkflowIntegrationTests
 
         // Act
         await client.Schedule.CreateBatchAsync([new ScheduleEntry(null, route, "*/5 * * * *", ScheduleDeliveryMode.Once, "batch"u8.ToArray())]);
-        var page = await client.Schedule.ListV2Async(limit: 100);
+        var page = await client.Schedule.ListAsync(limit: 100);
         var found = page.Entries.Any(entry => entry.Route == route);
         while (!found && page.HasMore && page.Continuation is not null)
         {
-            page = await client.Schedule.ListV2Async(page.Continuation, 100);
+            page = await client.Schedule.ListAsync(page.Continuation, 100);
             found = page.Entries.Any(entry => entry.Route == route);
         }
 
@@ -632,7 +633,7 @@ public sealed class DomainWorkflowIntegrationTests
     }
 
     static async Task<Cntryl.Fitz.LeaseInfo> WaitForLeaseReleaseAsync(
-        Client client,
+        FitzClient client,
         string route,
         TimeSpan timeout)
     {

@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.Operations;
 
 namespace Cntryl.Fitz.Analyzers;
 
@@ -7,47 +8,55 @@ static class FitzRouteRules
 {
     internal sealed class ApiSymbols
     {
-        readonly ImmutableArray<ClientSymbol> _clients;
-        readonly ImmutableArray<INamedTypeSymbol> _lifecycleHandles;
+        readonly ImmutableArray<INamedTypeSymbol> _clients;
+        readonly ImmutableArray<HandleSymbol> _lifecycleHandles;
         readonly INamedTypeSymbol? _subscriptionHandle;
+        readonly INamedTypeSymbol? _task;
+        readonly INamedTypeSymbol? _valueTask;
 
         internal ApiSymbols(Compilation compilation)
         {
-            var clients = ImmutableArray.CreateBuilder<ClientSymbol>();
-            AddClient(clients, compilation, "Cntryl.Fitz.IKvClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.IQueueClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.ILeaseClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.INoticeClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.IRpcClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.IScheduleClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.IStreamClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Kv.KvClient", "IKvClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Queue.QueueClient", "IQueueClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Lease.LeaseClient", "ILeaseClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Notice.NoticeClient", "INoticeClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Rpc.RpcClient", "IRpcClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Schedule.ScheduleClient", "IScheduleClient");
-            AddClient(clients, compilation, "Cntryl.Fitz.Domains.Stream.StreamClient", "IStreamClient");
+            var clients = ImmutableArray.CreateBuilder<INamedTypeSymbol>();
+            AddType(clients, compilation, "Cntryl.Fitz.IKvClient");
+            AddType(clients, compilation, "Cntryl.Fitz.IQueueClient");
+            AddType(clients, compilation, "Cntryl.Fitz.ILeaseClient");
+            AddType(clients, compilation, "Cntryl.Fitz.INoticeClient");
+            AddType(clients, compilation, "Cntryl.Fitz.IRpcClient");
+            AddType(clients, compilation, "Cntryl.Fitz.IScheduleClient");
+            AddType(clients, compilation, "Cntryl.Fitz.IStreamClient");
             _clients = clients.ToImmutable();
 
-            var lifecycleHandles = ImmutableArray.CreateBuilder<INamedTypeSymbol>();
-            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.IKvTransaction");
-            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.ILease");
-            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.ILeaseInventoryObserver");
-            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.RpcWorkerRegistration");
-            AddType(lifecycleHandles, compilation, "Cntryl.Fitz.IStreamSession");
+            var lifecycleHandles = ImmutableArray.CreateBuilder<HandleSymbol>();
+            AddHandle(lifecycleHandles, compilation, "Cntryl.Fitz.IKvTransaction", "transaction");
+            AddHandle(lifecycleHandles, compilation, "Cntryl.Fitz.ILease", "lease");
+            AddHandle(lifecycleHandles, compilation, "Cntryl.Fitz.ILeaseInventoryObserver", "observer");
+            AddHandle(lifecycleHandles, compilation, "Cntryl.Fitz.RpcWorkerRegistration", "registration");
+            AddHandle(lifecycleHandles, compilation, "Cntryl.Fitz.IStreamSession", "session");
             _lifecycleHandles = lifecycleHandles.ToImmutable();
             _subscriptionHandle = compilation.GetTypeByMetadataName("Cntryl.Fitz.Runtime.SubscriptionHandle");
+            _task = compilation.GetTypeByMetadataName("System.Threading.Tasks.Task`1");
+            _valueTask = compilation.GetTypeByMetadataName("System.Threading.Tasks.ValueTask`1");
         }
 
-        internal bool TryGetClientName(IMethodSymbol method, out string clientName)
+        /// <summary>
+        /// Resolves the Fitz client interface that <paramref name="method"/> belongs to, whether it
+        /// is declared on the interface itself or on a class (shipped or user-written) that
+        /// implements the interface member, directly or through an override chain.
+        /// </summary>
+        internal bool TryGetClientName(IInvocationOperation invocation, out string clientName)
         {
-            var containingType = method.ContainingType.OriginalDefinition;
+            var method = invocation.TargetMethod;
+            var containingType = method.ContainingType;
+            var receiverType = invocation.Instance?.Type as INamedTypeSymbol;
             foreach (var client in _clients)
             {
-                if (SymbolEqualityComparer.Default.Equals(containingType, client.Symbol))
+                // The receiver matters when a base class declares the method and only the derived
+                // class lists the Fitz interface.
+                if (SymbolEqualityComparer.Default.Equals(containingType.OriginalDefinition, client) ||
+                    ImplementsClientMember(containingType, client, method) ||
+                    (receiverType is not null && ImplementsClientMember(receiverType, client, method)))
                 {
-                    clientName = client.ClientName;
+                    clientName = client.Name;
                     return true;
                 }
             }
@@ -56,22 +65,46 @@ static class FitzRouteRules
             return false;
         }
 
-        internal bool IsLifecycleHandle(ITypeSymbol type)
+        /// <summary>
+        /// Whether the awaited <paramref name="type"/> is a <c>Task&lt;T&gt;</c> or
+        /// <c>ValueTask&lt;T&gt;</c>, returning the <c>T</c>.
+        /// </summary>
+        internal bool TryGetAwaitedResultType(ITypeSymbol? type, out ITypeSymbol result)
+        {
+            if (type is INamedTypeSymbol { TypeArguments.Length: 1 } named &&
+                (SymbolEqualityComparer.Default.Equals(named.OriginalDefinition, _task) ||
+                 SymbolEqualityComparer.Default.Equals(named.OriginalDefinition, _valueTask)))
+            {
+                result = named.TypeArguments[0];
+                return true;
+            }
+
+            result = null!;
+            return false;
+        }
+
+        /// <summary>
+        /// Whether <paramref name="type"/> is a Fitz handle that must be retained and disposed,
+        /// returning the noun used to describe it.
+        /// </summary>
+        internal bool TryGetLifecycleHandleName(ITypeSymbol type, out string handleName)
         {
             foreach (var lifecycleHandle in _lifecycleHandles)
             {
-                if (SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, lifecycleHandle))
+                if (SymbolEqualityComparer.Default.Equals(type.OriginalDefinition, lifecycleHandle.Symbol))
                 {
+                    handleName = lifecycleHandle.Name;
                     return true;
                 }
             }
 
+            handleName = "subscription";
             if (_subscriptionHandle is null)
             {
                 return false;
             }
 
-            for (var current = type.BaseType; current is not null; current = current.BaseType)
+            for (var current = type; current is not null; current = current.BaseType)
             {
                 if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, _subscriptionHandle))
                 {
@@ -82,16 +115,53 @@ static class FitzRouteRules
             return false;
         }
 
-        static void AddClient(
-            ImmutableArray<ClientSymbol>.Builder clients,
-            Compilation compilation,
-            string metadataName,
-            string? clientName = null)
+        static bool ImplementsClientMember(INamedTypeSymbol containingType, INamedTypeSymbol client, IMethodSymbol method)
         {
-            if (compilation.GetTypeByMetadataName(metadataName) is { } symbol)
+            if (containingType.TypeKind == TypeKind.Interface || method.IsStatic)
             {
-                clients.Add(new ClientSymbol(symbol, clientName ?? symbol.Name));
+                return false;
             }
+
+            foreach (var candidate in containingType.AllInterfaces)
+            {
+                if (!SymbolEqualityComparer.Default.Equals(candidate.OriginalDefinition, client))
+                {
+                    continue;
+                }
+
+                foreach (var member in candidate.GetMembers(method.Name))
+                {
+                    if (member is IMethodSymbol interfaceMethod &&
+                        containingType.FindImplementationForInterfaceMember(interfaceMethod) is IMethodSymbol implementation &&
+                        SharesOverrideChain(implementation, method))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        static bool SharesOverrideChain(IMethodSymbol implementation, IMethodSymbol method)
+        {
+            for (var current = implementation; current is not null; current = current.OverriddenMethod)
+            {
+                if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, method.OriginalDefinition))
+                {
+                    return true;
+                }
+            }
+
+            for (var current = method; current is not null; current = current.OverriddenMethod)
+            {
+                if (SymbolEqualityComparer.Default.Equals(current.OriginalDefinition, implementation.OriginalDefinition))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         static void AddType(
@@ -105,17 +175,29 @@ static class FitzRouteRules
             }
         }
 
-        readonly struct ClientSymbol
+        static void AddHandle(
+            ImmutableArray<HandleSymbol>.Builder handles,
+            Compilation compilation,
+            string metadataName,
+            string name)
         {
-            internal ClientSymbol(INamedTypeSymbol symbol, string clientName)
+            if (compilation.GetTypeByMetadataName(metadataName) is { } symbol)
+            {
+                handles.Add(new HandleSymbol(symbol, name));
+            }
+        }
+
+        readonly struct HandleSymbol
+        {
+            internal HandleSymbol(INamedTypeSymbol symbol, string name)
             {
                 Symbol = symbol;
-                ClientName = clientName;
+                Name = name;
             }
 
             internal INamedTypeSymbol Symbol { get; }
 
-            internal string ClientName { get; }
+            internal string Name { get; }
         }
     }
 
@@ -139,18 +221,18 @@ static class FitzRouteRules
 
     internal static ApiSymbols ResolveApiSymbols(Compilation compilation) => new(compilation);
 
-    internal static bool IsFitzMethod(IMethodSymbol method, ApiSymbols apiSymbols) =>
-        apiSymbols.TryGetClientName(method, out _);
+    internal static bool IsFitzMethod(IInvocationOperation invocation, ApiSymbols apiSymbols) =>
+        apiSymbols.TryGetClientName(invocation, out _);
 
-    internal static bool TryGetRule(IMethodSymbol method, ApiSymbols apiSymbols, out Rule rule)
+    internal static bool TryGetRule(IInvocationOperation invocation, ApiSymbols apiSymbols, out Rule rule)
     {
         rule = default;
-        if (!apiSymbols.TryGetClientName(method, out var type))
+        if (!apiSymbols.TryGetClientName(invocation, out var type))
         {
             return false;
         }
 
-        var name = method.Name;
+        var name = invocation.TargetMethod.Name;
         rule = (type, name) switch
         {
             ("IKvClient", "BeginAsync") => new("route", "kv", 3, false),
@@ -175,68 +257,11 @@ static class FitzRouteRules
         return rule.Scheme is not null;
     }
 
-    internal static bool IsValidConcrete(string value, string scheme, int requiredSegments)
-    {
-        if (!TrySegments(value, scheme, out var segments) || segments.Any(segment => segment.Contains('*')))
-        {
-            return false;
-        }
+    internal static bool IsValidConcrete(string value, string scheme, int requiredSegments) =>
+        RouteGrammar.TryValidateFixedRoute(value, scheme, requiredSegments, out _);
 
-        return requiredSegments == 0 || segments.Length == requiredSegments;
-    }
-
-    internal static bool IsValidPattern(string value, string scheme, int requiredSegments, bool streamSelector)
-    {
-        if (!TrySegments(value, scheme, out var segments))
-        {
-            return false;
-        }
-
-        if (segments.Any(segment => segment.Contains('*') && segment is not "*" and not "**"))
-        {
-            return false;
-        }
-
-        if (streamSelector)
-        {
-            if (segments.Length == 1 && segments[0] == "**")
-            {
-                return true;
-            }
-
-            if (segments.Length == 2 && segments[1] == "**")
-            {
-                return segments[0] is not "*" and not "**";
-            }
-
-            if (segments.Length != 3 || segments.Any(segment => segment == "**"))
-            {
-                return false;
-            }
-
-            return true;
-        }
-
-        var doubleWildcards = segments.Count(segment => segment == "**");
-        if (segments.Zip(segments.Skip(1), (left, right) => left == "**" && right == "**").Any(consecutive => consecutive))
-        {
-            return false;
-        }
-        return requiredSegments == 0 || (doubleWildcards == 0
-            ? segments.Length == requiredSegments
-            : segments.Length - doubleWildcards <= requiredSegments);
-    }
-
-    static bool TrySegments(string value, string scheme, out string[] segments)
-    {
-        var prefix = scheme + "://";
-        if (!value.StartsWith(prefix, StringComparison.Ordinal) || value.Length == prefix.Length)
-        {
-            segments = [];
-            return false;
-        }
-
-        segments = value.Substring(prefix.Length).Split('/');
-        return segments.All(segment => segment.Length > 0);
-    }
+    internal static bool IsValidPattern(string value, string scheme, int requiredSegments, bool streamSelector) =>
+        streamSelector
+            ? RouteGrammar.TryGetStreamSelectorScope(value, out _)
+            : RouteGrammar.TryValidateRegistrationPattern(value, scheme, requiredSegments, out _);
 }

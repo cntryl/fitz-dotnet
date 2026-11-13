@@ -1,6 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
-using System.Threading.Channels;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
@@ -11,44 +8,36 @@ namespace Cntryl.Fitz.Domains.Queue;
 /// The default <see cref="IQueueClient"/>: queue enqueue, reserve, and availability subscriptions.
 /// </summary>
 /// <remarks>
-/// Obtained from <see cref="Client"/> rather than constructed directly. The public
+/// Obtained from <see cref="FitzClient"/> rather than constructed directly. The public
 /// constructors exist for testing against a transport delegate.
 /// </remarks>
-sealed class QueueClient : IQueueClient, IDisposable
+sealed class QueueClient : IQueueClient, IAsyncDisposable
 {
+    // The broker returns at most this many items per RESERVE (queue spec, "RESERVE Long Polling").
+    const int MaxReserveBatch = 1024;
+
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
-    readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
-    readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
-    readonly int _subscriptionBufferCapacity;
-    readonly NotificationActivationBuffer _activationBuffer;
     readonly FitzConnection? _connection;
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
-    readonly SemaphoreSlim _subscriptionGate = new(1, 1);
-    readonly object _gate = new();
-    readonly Dictionary<string, QueueSubscriptionState> _subscriptionsByPattern = [with(StringComparer.Ordinal)];
-    readonly Dictionary<ulong, string> _patternsBySubscriptionId = [];
-    IDisposable? _notificationRegistration;
-    int _disposed;
     readonly Func<Action, IDisposable>? _registerOnDisconnect;
-    bool _notificationHandlerInitialized;
-    long _nextHandleId;
-    readonly IDisposable? _reconnectRegistration;
+    readonly SubscriptionTable<QueueAvailabilityEvent> _subscriptions;
+    readonly IDisposable? _connectionBinding;
     readonly Func<ushort, ReadOnlyMemory<byte>, byte, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _requestWithFlags;
     readonly Func<uint, bool>? _supportsCapability;
+    int _disposed;
 
     internal QueueClient(FitzConnection connection)
         : this(
             connection.RequestAsync,
-            connection.RegisterBorrowedNotificationHandler,
+            connection.RegisterNotificationHandler,
             connection.OnDisconnect,
             (handler, rejected) => connection.TryDispatchAsyncHandler("queue", handler, rejected),
-            connection.SubscriptionBufferCapacity)
+            connection.SubscriptionBufferCapacity,
+            connection.Time)
     {
-        _reconnectRegistration = connection.OnReconnect(HandleReconnect);
         _requestWithFlags = connection.RequestWithFlagsAsync;
         _supportsCapability = id => connection.Capabilities.SupportsCapability(id);
         _connection = connection;
-        connection.NotificationDeliveryFailed += FailNotificationDelivery;
+        _connectionBinding = _subscriptions.AttachTo(connection);
     }
 
     /// <summary>
@@ -69,14 +58,22 @@ sealed class QueueClient : IQueueClient, IDisposable
         Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null,
         Func<Action, IDisposable>? registerOnDisconnect = null,
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
-        int subscriptionBufferCapacity = SubscriptionRegistration<QueueAvailabilityEvent>.DefaultCapacity)
+        int subscriptionBufferCapacity = SubscriptionRegistration<QueueAvailabilityEvent>.DefaultCapacity,
+        TimeProvider? timeProvider = null)
     {
         _request = request;
-        _registerNotificationHandler = registerNotificationHandler;
         _registerOnDisconnect = registerOnDisconnect;
-        _dispatchAsyncHandler = dispatchAsyncHandler;
-        _subscriptionBufferCapacity = subscriptionBufferCapacity;
-        _activationBuffer = new NotificationActivationBuffer(subscriptionBufferCapacity);
+        _subscriptions = new SubscriptionTable<QueueAvailabilityEvent>(
+            this,
+            "queue",
+            MessageTypes.QueueNotify,
+            registerNotificationHandler,
+            dispatchAsyncHandler,
+            subscriptionBufferCapacity,
+            SubscribeWireAsync,
+            UnsubscribeWireAsync,
+            DecodeNotification,
+            timeProvider);
     }
 
     /// <inheritdoc />
@@ -88,10 +85,26 @@ sealed class QueueClient : IQueueClient, IDisposable
         => EnqueueCoreAsync(route, body, delay, null, ct);
 
     /// <inheritdoc />
-    public Task<ulong> EnqueueWithOptionsAsync(string route, ReadOnlyMemory<byte> body, QueueEnqueueOptions options, CancellationToken ct = default)
+    public Task<ulong> EnqueueAsync(string route, ReadOnlyMemory<byte> body, QueueEnqueueOptions options, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(options);
-        return EnqueueCoreAsync(route, body, options.Delay, options.TtlHours, ct);
+        uint? ttlHours = options.TimeToLive is { } timeToLive ? ToWholeHours(timeToLive, nameof(options)) : null;
+        return EnqueueCoreAsync(route, body, options.Delay, ttlHours, ct);
+    }
+
+    static uint ToWholeHours(TimeSpan timeToLive, string paramName)
+    {
+        if (timeToLive <= TimeSpan.Zero ||
+            timeToLive.Ticks % TimeSpan.TicksPerHour != 0 ||
+            timeToLive.Ticks / TimeSpan.TicksPerHour > uint.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(
+                paramName,
+                timeToLive,
+                $"{nameof(QueueEnqueueOptions.TimeToLive)} must be a positive whole number of hours.");
+        }
+
+        return (uint)(timeToLive.Ticks / TimeSpan.TicksPerHour);
     }
 
     async Task<ulong> EnqueueCoreAsync(string route, ReadOnlyMemory<byte> body, TimeSpan? delay, uint? configuredTtlHours, CancellationToken ct)
@@ -99,13 +112,12 @@ sealed class QueueClient : IQueueClient, IDisposable
         ThrowIfDisposed();
         if (!RouteValidation.IsFixedRoute(route, "queue", 3))
         {
-            throw new QueueException($"route '{route}' must be queue://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+            throw new ArgumentException($"route '{route}' must be queue://{{realm}}/{{area}}/{{resource}}", nameof(route));
         }
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
-        writer.WriteU32((uint)body.Length);
-        writer.WriteBytes(body.Span);
+        writer.WriteLengthPrefixed(body.Span);
 
         var delaySeconds = delay is { } configuredDelay ? WireDuration.ToSeconds(configuredDelay, nameof(delay)) : 0;
         writer.WriteU8((byte)(delaySeconds > 0 ? 1 : 0));
@@ -117,7 +129,6 @@ sealed class QueueClient : IQueueClient, IDisposable
         ReadOnlyMemory<byte> response;
         if (configuredTtlHours is { } ttlHours)
         {
-            ArgumentOutOfRangeException.ThrowIfZero(ttlHours, nameof(configuredTtlHours));
             if (_supportsCapability?.Invoke(1) != true || _requestWithFlags is null)
                 throw new NotSupportedException("Queue TTL capability was not negotiated.");
             var ttl = new byte[4];
@@ -129,12 +140,7 @@ sealed class QueueClient : IQueueClient, IDisposable
         {
             response = await _request(MessageTypes.QueueEnqueue, writer.WrittenMemory, ct).ConfigureAwait(false);
         }
-        var reader = QueueWireHelpers.ReadResponse(response, "ENQUEUE");
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw QueueWireHelpers.ReadError(response, "ENQUEUE", status);
-        }
+        var reader = QueueWireHelpers.ReadSuccess(response, "ENQUEUE");
 
         var result = reader.IsEof ? 0UL : reader.ReadU64();
         if (!reader.IsEof)
@@ -159,10 +165,11 @@ sealed class QueueClient : IQueueClient, IDisposable
         var waitSeconds = wait is { } configuredWait ? (ulong?)WireDuration.ToSeconds(configuredWait, nameof(wait)) : null;
         if (!RouteValidation.IsRegistrationPattern(route, "queue", 3))
         {
-            throw new QueueException($"route '{route}' must be a concrete queue route or a whole-segment wildcard pattern", "INVALID_ROUTE");
+            throw new ArgumentException($"route '{route}' must be a concrete queue route or a whole-segment wildcard pattern", nameof(route));
         }
 
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1, nameof(batchSize));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(batchSize, MaxReserveBatch, nameof(batchSize));
         ArgumentOutOfRangeException.ThrowIfZero(leaseSeconds, nameof(lease));
 
         return await ReserveOnceAsync(route, leaseSeconds, batchSize, waitSeconds, ct).ConfigureAwait(false);
@@ -195,13 +202,10 @@ sealed class QueueClient : IQueueClient, IDisposable
         }
 
         using var session = new SessionRequestContext(_connection, _request, _registerOnDisconnect);
-        var response = await session.RequestAsync(MessageTypes.QueueReserve, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = QueueWireHelpers.ReadResponse(response, "RESERVE");
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw QueueWireHelpers.ReadError(response, "RESERVE", status);
-        }
+        // The broker parks a waiting RESERVE for up to wait_seconds before answering.
+        var parkedFor = TimeSpan.FromSeconds(waitSeconds ?? 0UL);
+        var response = await session.RequestAsync(MessageTypes.QueueReserve, writer.WrittenMemory, ct, parkedFor).ConfigureAwait(false);
+        var reader = QueueWireHelpers.ReadSuccess(response, "RESERVE");
 
         var wildcard = route.Split('/').Any(static segment => segment.Contains('*', StringComparison.Ordinal));
         var count = reader.IsEof ? 0U : reader.ReadU32();
@@ -226,7 +230,6 @@ sealed class QueueClient : IQueueClient, IDisposable
             items[i] = new QueueReservedItem(
                 itemRoute,
                 body,
-                QueueItem.AttemptUnavailable,
                 itemId,
                 itemToken,
                 session.BoundRequest,
@@ -244,23 +247,17 @@ sealed class QueueClient : IQueueClient, IDisposable
     }
 
     /// <inheritdoc />
-    public async Task<QueueSubscription> SubscribeAsync(
+    public Task<QueueSubscription> SubscribeAsync(
         string pattern,
         CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        var buffer = new AsyncSubscriptionBuffer<QueueAvailabilityEvent>(pattern, _subscriptionBufferCapacity);
-        var registration = await SubscribeAsync(pattern, (notification, _) =>
-        {
-            buffer.Write(notification);
-            return ValueTask.CompletedTask;
-        }, ct).ConfigureAwait(false);
-        buffer.ObserveCompletion(registration.Completion);
-        return new QueueSubscription(pattern, buffer.ReadAllAsync(CancellationToken.None), async token =>
-        {
-            await registration.UnsubscribeAsync(token).ConfigureAwait(false);
-            buffer.Complete();
-        }, registration.Completion);
+        EnsurePattern(pattern);
+        return _subscriptions.SubscribeBufferedAsync(
+            pattern,
+            static (pattern, notifications, unsubscribe, completion, time) => new QueueSubscription(pattern, notifications, unsubscribe, completion, time),
+            preDispatch: null,
+            ct);
     }
 
     internal async Task<QueueSubscription> SubscribeAsync(
@@ -268,83 +265,32 @@ sealed class QueueClient : IQueueClient, IDisposable
         Func<QueueAvailabilityEvent, CancellationToken, ValueTask> handler,
         CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(handler);
-        if (!RouteValidation.IsRegistrationPattern(pattern, "queue", 3))
-        {
-            throw new QueueException($"pattern '{pattern}' must use whole-segment wildcards and match a three-segment queue route", "INVALID_ROUTE");
-        }
-
-        if (_registerNotificationHandler == null)
-        {
-            throw new InvalidOperationException("Notification handlers not configured for subscription support");
-        }
-
-        EnsureNotificationHandlerInitialized();
-
-        var channel = SubscriptionRegistration<QueueAvailabilityEvent>.CreateChannel(_subscriptionBufferCapacity);
-        SubscriptionRegistration<QueueAvailabilityEvent>? registration = null;
-        var handleId = Interlocked.Increment(ref _nextHandleId);
-        var gateAcquired = false;
-
-        try
-        {
-            registration = new SubscriptionRegistration<QueueAvailabilityEvent>(
-                channel,
-                "queue",
-                pattern,
-                token => UnsubscribeAsync(pattern, handleId, token));
-            await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-            gateAcquired = true;
-            ThrowIfDisposed();
-
-            lock (_gate)
-            {
-                ThrowIfDisposed();
-                if (_subscriptionsByPattern.TryGetValue(pattern, out var existingSubscription))
-                {
-                    existingSubscription.Registrations[handleId] = registration;
-                    var existingHandle = CreateSubscription(pattern, handleId, registration.Completion);
-                    SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
-                    registration = null;
-                    return existingHandle;
-                }
-            }
-
-            using var activation = _activationBuffer.Begin(pattern);
-            var subscriptionId = await SubscribeWireAsync(pattern, ct).ConfigureAwait(false);
-            var subscription = new QueueSubscriptionState(subscriptionId);
-            subscription.Registrations[handleId] = registration;
-            lock (_gate)
-            {
-                ThrowIfDisposed();
-                _subscriptionsByPattern[pattern] = subscription;
-                _patternsBySubscriptionId[subscriptionId] = pattern;
-                if (_activationBuffer.Replay(subscriptionId, HandleNotification) is { } activationError)
-                    _ = registration.FailAsync(activationError);
-            }
-
-            var handle = CreateSubscription(pattern, handleId, registration.Completion);
-            SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
-            registration = null;
-            return handle;
-        }
-        finally
-        {
-            if (gateAcquired)
-            {
-                _subscriptionGate.Release();
-            }
-
-            registration?.Dispose();
-        }
+        EnsurePattern(pattern);
+        var binding = await _subscriptions.SubscribeAsync(pattern, handler, preDispatch: null, ct).ConfigureAwait(false);
+        return new QueueSubscription(pattern, binding.Unsubscribe, binding.Completion, _subscriptions.Time);
     }
 
-    QueueSubscription CreateSubscription(string pattern, long handleId, Task completion)
+    /// <summary>Releases local resources and ends any registrations this client owns.</summary>
+    /// <returns>A task that completes once an in-progress subscription change has finished.</returns>
+    /// <remarks>Queued and later subscription changes fail with <see cref="ObjectDisposedException"/>;
+    /// unsubscribes and reconnect restoration become no-ops.</remarks>
+    public async ValueTask DisposeAsync()
     {
-        return new QueueSubscription(
-            pattern,
-            ct => UnsubscribeAsync(pattern, handleId, ct),
-            completion);
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        _connectionBinding?.Dispose();
+        await _subscriptions.DisposeAsync().ConfigureAwait(false);
+    }
+
+    static void EnsurePattern(string pattern)
+    {
+        if (!RouteValidation.IsRegistrationPattern(pattern, "queue", 3))
+        {
+            throw new ArgumentException($"pattern '{pattern}' must use whole-segment wildcards and match a three-segment queue route", nameof(pattern));
+        }
     }
 
     async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken ct)
@@ -353,12 +299,7 @@ sealed class QueueClient : IQueueClient, IDisposable
         writer.WriteString(pattern);
 
         var response = await _request(MessageTypes.QueueSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = QueueWireHelpers.ReadResponse(response, "SUBSCRIBE");
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw QueueWireHelpers.ReadError(response, "SUBSCRIBE", status);
-        }
+        var reader = QueueWireHelpers.ReadSuccess(response, "SUBSCRIBE");
 
         if (reader.RemainingBytes != 9 || reader.ReadU8() != 1)
         {
@@ -374,18 +315,13 @@ sealed class QueueClient : IQueueClient, IDisposable
         return subscriptionId;
     }
 
-    async Task UnsubscribeWireAsync(string pattern, CancellationToken ct)
+    async Task UnsubscribeWireAsync(string pattern, ulong subscriptionId, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
         var response = await _request(MessageTypes.QueueUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
-        var reader = QueueWireHelpers.ReadResponse(response, "UNSUBSCRIBE");
-        var status = reader.ReadU8();
-        if (status != 0)
-        {
-            throw QueueWireHelpers.ReadError(response, "UNSUBSCRIBE", status);
-        }
+        var reader = QueueWireHelpers.ReadSuccess(response, "UNSUBSCRIBE");
 
         if (!reader.IsEof)
         {
@@ -393,255 +329,19 @@ sealed class QueueClient : IQueueClient, IDisposable
         }
     }
 
-    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Ownership intentionally remains in the subscription table when the wire unsubscribe fails.")]
-    async ValueTask UnsubscribeAsync(string pattern, long handleId, CancellationToken ct)
+    static DecodedNotification<QueueAvailabilityEvent>? DecodeNotification(ReadOnlyMemory<byte> payload)
     {
-        SubscriptionRegistration<QueueAvailabilityEvent>? registration = null;
-
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            var shouldUnsubscribe = false;
-            lock (_gate)
-            {
-                if (!_subscriptionsByPattern.TryGetValue(pattern, out var subscription) ||
-                    !subscription.Registrations.TryGetValue(handleId, out registration))
-                {
-                    return;
-                }
-
-                shouldUnsubscribe = subscription.Registrations.Count == 1;
-            }
-
-            if (shouldUnsubscribe)
-            {
-                await UnsubscribeWireAsync(pattern, ct).ConfigureAwait(false);
-            }
-
-            lock (_gate)
-            {
-                if (!_subscriptionsByPattern.TryGetValue(pattern, out var subscription) ||
-                    !subscription.Registrations.Remove(handleId, out registration))
-                {
-                    return;
-                }
-
-                if (subscription.Registrations.Count == 0)
-                {
-                    _subscriptionsByPattern.Remove(pattern);
-                    _patternsBySubscriptionId.Remove(subscription.SubscriptionId);
-                }
-            }
-        }
-        finally
-        {
-            _subscriptionGate.Release();
-        }
-
-        registration?.Dispose();
-
-    }
-
-    void FailNotificationDelivery(Exception error)
-    {
-        lock (_gate)
-        {
-            _activationBuffer.Fail(error);
-            var registrations = _subscriptionsByPattern.Values.SelectMany(subscription => subscription.Registrations.Values).ToArray();
-            _subscriptionsByPattern.Clear();
-            _patternsBySubscriptionId.Clear();
-            foreach (var registration in registrations)
-                _ = registration.FailAsync(error);
-        }
-    }
-
-    void EnsureNotificationHandlerInitialized()
-    {
-        lock (_gate)
-        {
-            ThrowIfDisposed();
-            if (_notificationHandlerInitialized)
-            {
-                return;
-            }
-
-            if (_registerNotificationHandler is null)
-            {
-                throw new InvalidOperationException("Notification handlers not configured for subscription support");
-            }
-
-            _notificationRegistration = _registerNotificationHandler(MessageTypes.QueueNotify, HandleNotification);
-            _notificationHandlerInitialized = true;
-        }
-    }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Malformed broker notifications are dropped without disrupting the receive loop.")]
-    void HandleNotification(ReadOnlyMemory<byte> payload)
-    {
-        try
-        {
-            var reader = new BinaryBufferReader(payload);
-            var subscriptionId = reader.ReadU64();
-            var eventRoute = reader.ReadString();
-            // Queue NOTIFY carries three fixed-width u64 counters, without a byte-length prefix.
-            var notificationPayload = reader.ReadBytes(24);
-            if (!reader.IsEof)
-            {
-                return;
-            }
-            SubscriptionRegistration<QueueAvailabilityEvent>[] registrations;
-            lock (_gate)
-            {
-                if (!_patternsBySubscriptionId.TryGetValue(subscriptionId, out var pattern) ||
-                    !_subscriptionsByPattern.TryGetValue(pattern, out var subscription))
-                {
-                    _activationBuffer.Buffer(subscriptionId, eventRoute, payload);
-                    return;
-                }
-
-                registrations = [.. subscription.Registrations.Values];
-            }
-
-            var notification = new QueueAvailabilityEvent(
-                eventRoute,
-                notificationPayload);
-            foreach (var registration in registrations)
-            {
-                if (!registration.Channel.Writer.TryWrite(notification))
-                    _ = registration.FailOverflowAsync();
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    async ValueTask HandleReconnect(CancellationToken ct) => await RestoreSubscriptionsAsync(ct).ConfigureAwait(false);
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
-    async ValueTask RestoreSubscriptionsAsync(CancellationToken ct)
-    {
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            List<(string Pattern, QueueSubscriptionState Subscription)> snapshot;
-            lock (_gate)
-            {
-                if (_subscriptionsByPattern.Count == 0)
-                {
-                    return;
-                }
-
-                snapshot = [with(_subscriptionsByPattern.Count)];
-                foreach (var entry in _subscriptionsByPattern)
-                {
-                    snapshot.Add((entry.Key, entry.Value.Clone()));
-                }
-            }
-
-            var restoredSubscriptions = new Dictionary<string, QueueSubscriptionState>(StringComparer.Ordinal);
-            var restoredPatternsById = new Dictionary<ulong, string>();
-
-            try
-            {
-                foreach (var entry in snapshot)
-                {
-                    var subscriptionId = await SubscribeWireAsync(entry.Pattern, ct).ConfigureAwait(false);
-                    restoredSubscriptions[entry.Pattern] = entry.Subscription.Clone(subscriptionId);
-                    restoredPatternsById[subscriptionId] = entry.Pattern;
-                }
-            }
-            catch
-            {
-                foreach (var pattern in restoredSubscriptions.Keys)
-                {
-                    try
-                    {
-                        await UnsubscribeWireAsync(pattern, CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        // Best effort; preserve the original restore failure.
-                    }
-                }
-
-                throw;
-            }
-
-            lock (_gate)
-            {
-                _subscriptionsByPattern.Clear();
-                _patternsBySubscriptionId.Clear();
-
-                foreach (var entry in restoredSubscriptions)
-                {
-                    _subscriptionsByPattern[entry.Key] = entry.Value;
-                }
-
-                foreach (var entry in restoredPatternsById)
-                {
-                    _patternsBySubscriptionId[entry.Key] = entry.Value;
-                }
-            }
-        }
-        finally
-        {
-            _subscriptionGate.Release();
-        }
-    }
-
-    /// <summary>Releases local resources and ends any registrations this client owns.</summary>
-    public void Dispose()
-    {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-        {
-            return;
-        }
-
-        _connection?.NotificationDeliveryFailed -= FailNotificationDelivery;
-        _activationBuffer.Dispose();
-        _notificationRegistration?.Dispose();
-        _reconnectRegistration?.Dispose();
-        lock (_gate)
-        {
-            foreach (var subscription in _subscriptionsByPattern.Values)
-            {
-                foreach (var registration in subscription.Registrations.Values)
-                {
-                    registration.Dispose();
-                }
-            }
-
-            _subscriptionsByPattern.Clear();
-            _patternsBySubscriptionId.Clear();
-        }
-
+        var reader = new BinaryBufferReader(payload);
+        var subscriptionId = reader.ReadU64();
+        var route = reader.ReadString();
+        // Queue NOTIFY carries three fixed-width u64 counters, without a byte-length prefix.
+        var ready = reader.ReadU64();
+        var delayed = reader.ReadU64();
+        var inFlight = reader.ReadU64();
+        return reader.IsEof
+            ? new DecodedNotification<QueueAvailabilityEvent>(subscriptionId, route, new QueueAvailabilityEvent(route, ready, delayed, inFlight))
+            : null;
     }
 
     void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-
-    sealed class QueueSubscriptionState
-    {
-        public QueueSubscriptionState(ulong subscriptionId)
-        {
-            SubscriptionId = subscriptionId;
-        }
-
-        public ulong SubscriptionId { get; init; }
-
-        public Dictionary<long, SubscriptionRegistration<QueueAvailabilityEvent>> Registrations { get; } = [];
-
-        public QueueSubscriptionState Clone() => Clone(SubscriptionId);
-
-        public QueueSubscriptionState Clone(ulong subscriptionId)
-        {
-            var clone = new QueueSubscriptionState(subscriptionId);
-            foreach (var entry in Registrations)
-            {
-                clone.Registrations.Add(entry.Key, entry.Value);
-            }
-
-            return clone;
-        }
-    }
 }

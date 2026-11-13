@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using Cntryl.Fitz.Connection;
 
 namespace Cntryl.Fitz.Runtime;
@@ -29,12 +28,15 @@ sealed class SessionRequestContext : IDisposable
             _earlyRegistration = registerOnDisconnect?.Invoke(OnDisconnected);
     }
 
-    internal async ValueTask<ReadOnlyMemory<byte>> RequestAsync(ushort type, ReadOnlyMemory<byte> payload, CancellationToken ct)
+    // extraResponseTime lengthens the connection's response timeout for requests the broker
+    // deliberately holds open, such as a Queue RESERVE long poll.
+    internal async ValueTask<ReadOnlyMemory<byte>> RequestAsync(
+        ushort type, ReadOnlyMemory<byte> payload, CancellationToken ct, TimeSpan extraResponseTime = default)
     {
         ReadOnlyMemory<byte> response;
         if (_connection is not null)
         {
-            var result = await _connection.RequestInSessionAsync(type, payload, ct).ConfigureAwait(false);
+            var result = await _connection.RequestInSessionAsync(type, payload, extraResponseTime, ct).ConfigureAwait(false);
             _session = result.Closed;
             response = result.Payload;
         }
@@ -95,7 +97,6 @@ sealed class SessionRequestContext : IDisposable
         return new PendingRegistration(this, id, registration);
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "One handle lifetime callback must not prevent sibling handles from being invalidated.")]
     void OnDisconnected()
     {
         Action[] listeners;
@@ -110,7 +111,7 @@ sealed class SessionRequestContext : IDisposable
             {
                 listener();
             }
-            catch
+            catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
             {
             }
         }

@@ -7,12 +7,20 @@
     <AnalysisMode>All</AnalysisMode>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <Features>$(Features);runtime-async=on</Features>
+    <!-- runtime-async is enabled for net11.0 projects only; see Directory.Build.targets. -->
+  </PropertyGroup>
+
+  <!-- Reproducible, SourceLink-resolvable binaries. ContinuousIntegrationBuild rewrites
+       source paths to deterministic ones, so it is only set on GitHub Actions: locally it
+       would break debugging against the working tree. -->
+  <PropertyGroup>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
     <!-- Assembly identity stays fixed permanently; release only by advancing PackageVersion. -->
-    <PackageVersion>4.1.2</PackageVersion>
+    <PackageVersion>4.2.0</PackageVersion>
     <Version>$(PackageVersion)</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <InformationalVersion>$(PackageVersion)</InformationalVersion>
@@ -22,21 +30,22 @@
     <RepositoryUrl>https://github.com/cntryl/fitz-dotnet</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
     <DebugType>portable</DebugType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>fitz distributed-systems kv queue rpc lease notice stream schedule</PackageTags>
-    <PackageReleaseNotes>Fixes Queue notification decoding, subscription activation races, and silent notification overflow. Requires Fitz 0.4.0 / Wire 3. See CHANGELOG.md and docs/wire3-migration.md.</PackageReleaseNotes>
+    <!-- Points at the changelog as tagged for this exact version, so it never goes stale. -->
+    <PackageReleaseNotes>See https://github.com/cntryl/fitz-dotnet/blob/v$(PackageVersion)/CHANGELOG.md</PackageReleaseNotes>
     <PackageOutputPath>$(MSBuildThisFileDirectory)artifacts\packages</PackageOutputPath>
+    <!-- Compatibility checks on every pack. PackageValidationBaselineVersion is deliberately
+         unset until 4.2.0 ships (a deliberate breaking release); see CONTRIBUTING.md. -->
+    <EnablePackageValidation>true</EnablePackageValidation>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(IsPackable)' != 'false'">
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
-    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="11.0.100" PrivateAssets="All" />
-  </ItemGroup>
-  <ItemGroup>
-    <PackageReference Include="Cntryl.Conventions.Testing.Analyzers" Version="1.0.1" PrivateAssets="all" />
-    <PackageReference Include="Cntryl.Conventions.Testing.CodeFixes" Version="1.0.1" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
   </ItemGroup>
 </Project>

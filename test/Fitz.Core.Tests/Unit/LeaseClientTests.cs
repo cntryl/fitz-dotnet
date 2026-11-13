@@ -12,7 +12,7 @@ public sealed class LeaseClientTests
         // Arrange
         // Act
         // Assert
-        using var leaseClient = new LeaseClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
+        await using var leaseClient = new LeaseClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
 
         var error = await Assert.ThrowsAsync<LeaseException>(() =>
             leaseClient.QueryAsync("lease://prod/app/lock"));
@@ -49,7 +49,7 @@ public sealed class LeaseClientTests
         // Arrange
         // Act
         // Assert
-        using var leaseClient = new LeaseClient((_, _, _) =>
+        await using var leaseClient = new LeaseClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -73,7 +73,7 @@ public sealed class LeaseClientTests
         var requestCalled = false;
 
         // Act
-        using var leaseClient = new LeaseClient((_, _, _) =>
+        await using var leaseClient = new LeaseClient((_, _, _) =>
         {
             requestCalled = true;
             return Task.FromResult(Array.Empty<byte>());
@@ -144,7 +144,7 @@ public sealed class LeaseClientTests
     {
         // Arrange
         var releaseCalls = 0;
-        using var leaseClient = new LeaseClient((messageType, _, _) =>
+        await using var leaseClient = new LeaseClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             if (messageType == MessageTypes.LeaseAcquire)
@@ -184,7 +184,7 @@ public sealed class LeaseClientTests
     public async Task ShouldPreserveDomainCodeGivenTypedErrorWhenAcquiringLease()
     {
         // Arrange
-        using var leaseClient = new LeaseClient((_, _, _) =>
+        await using var leaseClient = new LeaseClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
@@ -206,7 +206,7 @@ public sealed class LeaseClientTests
     {
         // Arrange
         var releaseCalls = 0;
-        using var leaseClient = new LeaseClient((messageType, _, ct) =>
+        await using var leaseClient = new LeaseClient((messageType, _, ct) =>
         {
             if (messageType == MessageTypes.LeaseAcquire)
             {
@@ -240,45 +240,84 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task ShouldAwaitDeferredAcquiredFrameGivenQueuedResponseWhenLeaseOperationRuns()
+    public async Task ShouldRejectQueuedOutcomeGivenFinalFrameWhenAcquiringLease()
     {
         // Arrange
+        await using var leaseClient = new LeaseClient((_, _, _) =>
+        {
+            using var queued = new BinaryBufferWriter();
+            queued.WriteU8(0);
+            queued.WriteU8(2);
+            queued.WriteU64(0);
+            return Task.FromResult(queued.Build());
+        });
+
         // Act
+        var error = await Assert.ThrowsAsync<LeaseException>(() =>
+            leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(5)));
+
         // Assert
-        Action<byte[]>? acquireHandler = null;
-        using var leaseClient = new LeaseClient(
-            (_, _, _) =>
-            {
-                using var queued = new BinaryBufferWriter();
-                queued.WriteU8(0);
-                queued.WriteU8(2);
-                queued.WriteU64(0);
-                return Task.FromResult(queued.Build());
-            },
-            (messageType, handler) =>
-            {
-                Assert.Equal(MessageTypes.LeaseAcquire, messageType);
-                acquireHandler = handler;
-                return new TestRegistration();
-            });
+        Assert.Equal("ACQUIRE_INVALID_RESPONSE", error.Code);
+    }
 
-        var pending = leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(5));
-        await Task.Yield();
-        using var acquired = new BinaryBufferWriter();
-        acquired.WriteU8(0);
-        acquired.WriteU8(0);
-        acquired.WriteU64(91);
-        acquireHandler!(acquired.Build());
+    [Fact]
+    public async Task ShouldReturnFinalFrameTokenGivenQueuedThenAcquiredFramesWhenAcquiringOverConnection()
+    {
+        // Arrange
+        await using var transport = new TestQueuedTransport();
+        transport.AfterSend = _ =>
+        {
+            if (FrameCodec.DecodeStrict(transport.SentFrames[^1]).MessageType != MessageTypes.LeaseAcquire)
+                return;
+            using var queued = new BinaryBufferWriter();
+            queued.WriteU8(0);
+            queued.WriteU8(2);
+            queued.WriteU64(0);
+            transport.QueueResponse(MessageTypes.LeaseAcquire, queued.WrittenSpan);
+            using var acquired = new BinaryBufferWriter();
+            acquired.WriteU8(0);
+            acquired.WriteU8(0);
+            acquired.WriteU64(91);
+            transport.QueueResponse(MessageTypes.LeaseAcquire, acquired.WrittenSpan);
+        };
+        var config = new ClientConfig(new Uri("ws://queued/ws"), Reconnect: new ReconnectOptions(Enabled: false));
+        await using var connection = new FitzConnection(config, () => transport);
+        await using var leaseClient = new LeaseClient(connection);
+        await connection.ConnectAsync();
 
-        var lease = await pending;
+        // Act
+        await using var lease = await leaseClient.AcquireAsync(
+            "lease://prod/app/lock", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(5));
+
+        // Assert
+        Assert.Equal(91UL, lease.FencingToken);
         Assert.Equal("lease://prod/app/lock", lease.Route);
+    }
+
+    [Fact]
+    public async Task ShouldRejectWaitGivenMoreThanThirtySecondsWhenAcquiringLease()
+    {
+        // Arrange
+        var requests = 0;
+        await using var leaseClient = new LeaseClient((_, _, _) =>
+        {
+            Interlocked.Increment(ref requests);
+            return Task.FromResult(new byte[] { 0 });
+        });
+
+        // Act
+        var act = () => leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(31));
+
+        // Assert
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(act);
+        Assert.Equal(0, requests);
     }
 
     [Fact]
     public async Task ShouldReturnAlreadyQueuedGivenDuplicateQueuedAcquireOutcome()
     {
         // Arrange
-        using var leaseClient = new LeaseClient((_, _, _) =>
+        await using var leaseClient = new LeaseClient((_, _, _) =>
         {
             using var response = new BinaryBufferWriter();
             response.WriteU8(0);
@@ -296,133 +335,13 @@ public sealed class LeaseClientTests
     }
 
     [Fact]
-    public async Task ShouldCopyPayloadGivenDeferredGrantWhenBorrowedNotificationReturns()
-    {
-        // Arrange
-        Action<ReadOnlyMemory<byte>>? acquireHandler = null;
-        using var leaseClient = new LeaseClient(
-            (_, _, _) =>
-            {
-                using var queued = new BinaryBufferWriter();
-                queued.WriteU8(0);
-                queued.WriteU8(2);
-                queued.WriteU64(0);
-                return ValueTask.FromResult<ReadOnlyMemory<byte>>(queued.Build());
-            },
-            registerNotificationHandler: (_, handler) =>
-            {
-                acquireHandler = handler;
-                return new TestRegistration();
-            });
-
-        var pending = leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(5));
-        await Task.Yield();
-        using var acquired = new BinaryBufferWriter();
-        acquired.WriteU8(0);
-        acquired.WriteU8(0);
-        acquired.WriteU64(91);
-        var borrowed = acquired.Build();
-        acquireHandler!(borrowed);
-        borrowed.AsSpan().Fill(byte.MaxValue);
-
-
-        // Act
-        await using var lease = await pending;
-
-        // Assert
-        Assert.Equal(91UL, lease.FencingToken);
-    }
-
-    [Fact]
-    public async Task ShouldSerializeAcquisitionLifecycleUntilDeferredFrameArrivesGivenLeaseClientWhenOperationRuns()
-    {
-        // Arrange
-        Action<byte[]>? acquireHandler = null;
-
-        // Act
-        var acquireCalls = 0;
-
-        // Assert
-        using var leaseClient = new LeaseClient(
-            (messageType, _, _) =>
-            {
-                Assert.Equal(MessageTypes.LeaseAcquire, messageType);
-                using var response = new BinaryBufferWriter();
-                response.WriteU8(0);
-                response.WriteU8(Interlocked.Increment(ref acquireCalls) == 1 ? (byte)2 : (byte)0);
-                response.WriteU64(0);
-                return Task.FromResult(response.Build());
-            },
-            (_, handler) =>
-            {
-                acquireHandler = handler;
-                return new TestRegistration();
-            });
-
-        var first = leaseClient.AcquireAsync("lease://prod/app/first", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(5));
-        var second = leaseClient.AcquireAsync("lease://prod/app/second", TimeSpan.FromSeconds(30));
-        await Task.Yield();
-        Assert.Equal(1, Volatile.Read(ref acquireCalls));
-
-        using var acquired = new BinaryBufferWriter();
-        acquired.WriteU8(0);
-        acquired.WriteU8(0);
-        acquired.WriteU64(91);
-        acquireHandler!(acquired.Build());
-
-        await first;
-        await second;
-        Assert.Equal(2, Volatile.Read(ref acquireCalls));
-    }
-
-    [Fact]
-    public async Task ShouldDiscardDeferredGrantGivenTimedOutAcquireWhenNextCallerWaits()
-    {
-        // Arrange
-        Action<byte[]>? acquireHandler = null;
-        var acquireCalls = 0;
-
-        // Act
-        using var leaseClient = new LeaseClient(
-            (_, _, _) =>
-            {
-                Interlocked.Increment(ref acquireCalls);
-                using var queued = new BinaryBufferWriter();
-                queued.WriteU8(0);
-                queued.WriteU8(2);
-                queued.WriteU64(0);
-                return Task.FromResult(queued.Build());
-            },
-            (_, handler) =>
-            {
-                acquireHandler = handler;
-                return new TestRegistration();
-            });
-
-
-        // Assert
-        await Assert.ThrowsAsync<RequestTimeoutException>(() =>
-            leaseClient.AcquireAsync("lease://prod/app/first", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(1)));
-
-        var second = leaseClient.AcquireAsync("lease://prod/app/second", TimeSpan.FromSeconds(30), wait: TimeSpan.FromSeconds(5));
-        using var lateGrant = new BinaryBufferWriter();
-        lateGrant.WriteU8(0);
-        lateGrant.WriteU8(0);
-        lateGrant.WriteU64(91);
-        acquireHandler!(lateGrant.Build());
-
-        await Assert.ThrowsAsync<ConnectionException>(() => second);
-        Assert.Equal(1, Volatile.Read(ref acquireCalls));
-    }
-
-    [Fact]
     public async Task ShouldReturnLeaseHandleGivenSuccessResponseWhenAcquiringLease()
     {
         // Arrange
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        using var leaseClient = new LeaseClient((messageType, payload, _) =>
+        await using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -454,7 +373,7 @@ public sealed class LeaseClientTests
     public async Task ShouldReturnHeldLeaseInfoGivenHolderPresentWhenQueryingLease()
     {
         // Arrange
-        using var leaseClient = new LeaseClient((messageType, payload, _) =>
+        await using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.LeaseQuery, messageType);
 
@@ -483,7 +402,7 @@ public sealed class LeaseClientTests
     public async Task ShouldExposePendingWaitersGivenSuccessResponseWhenQueryingLease()
     {
         // Arrange
-        using var leaseClient = new LeaseClient((messageType, payload, _) =>
+        await using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             Assert.Equal(MessageTypes.LeaseQuery, messageType);
 
@@ -512,7 +431,7 @@ public sealed class LeaseClientTests
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
 
-        using var leaseClient = new LeaseClient((messageType, payload, _) =>
+        await using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -554,7 +473,7 @@ public sealed class LeaseClientTests
         // Arrange
         var calls = new List<(ushort MessageType, byte[] Payload)>();
 
-        using var leaseClient = new LeaseClient((messageType, payload, _) =>
+        await using var leaseClient = new LeaseClient((messageType, payload, _) =>
         {
             calls.Add((messageType, payload));
 
@@ -590,7 +509,7 @@ public sealed class LeaseClientTests
     {
         // Arrange
         var releaseCalls = 0;
-        using var leaseClient = new LeaseClient((messageType, _, _) =>
+        await using var leaseClient = new LeaseClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -622,7 +541,7 @@ public sealed class LeaseClientTests
         // Arrange
         // Act
         // Assert
-        using var leaseClient = new LeaseClient((messageType, _, _) =>
+        await using var leaseClient = new LeaseClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(messageType == MessageTypes.LeaseRelease ? (byte)1 : (byte)0);
@@ -656,7 +575,7 @@ public sealed class LeaseClientTests
         CancellationToken seenCancellationToken = default;
         var receivedTcs = new TaskCompletionSource<LeaseChangeEvent>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        using var leaseClient = new LeaseClient(
+        await using var leaseClient = new LeaseClient(
             (messageType, payload, _) =>
             {
                 seenMessageType = messageType;
@@ -739,7 +658,7 @@ public sealed class LeaseClientTests
 
         var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), TransportFactory: _ => transport);
         await using var connection = new FitzConnection(config, () => transport);
-        using var leaseClient = new LeaseClient(connection);
+        await using var leaseClient = new LeaseClient(connection);
 
         await connection.ConnectAsync();
         var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
@@ -799,7 +718,7 @@ public sealed class LeaseClientTests
                 new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        using var leaseClient = new LeaseClient(connection);
+        await using var leaseClient = new LeaseClient(connection);
 
         await connection.ConnectAsync();
         var lease = await leaseClient.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
@@ -826,7 +745,7 @@ public sealed class LeaseClientTests
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        using var leaseClient = new LeaseClient(
+        await using var leaseClient = new LeaseClient(
             (messageType, payload, _) =>
             {
                 using var writer = new BinaryBufferWriter();
@@ -862,7 +781,7 @@ public sealed class LeaseClientTests
     public async Task ShouldAcceptFullWildcardMatrixGivenValidPatternsWhenSubscribing(string pattern)
     {
         // Arrange
-        using var leaseClient = new LeaseClient(
+        await using var leaseClient = new LeaseClient(
             (messageType, _, _) =>
             {
                 using var writer = new BinaryBufferWriter();
@@ -891,7 +810,7 @@ public sealed class LeaseClientTests
     public async Task ShouldRejectMalformedWildcardRouteGivenInvalidPatternWhenSubscribing(string route)
     {
         // Arrange
-        using var leaseClient = new LeaseClient(
+        await using var leaseClient = new LeaseClient(
             (messageType, _, _) =>
             {
                 using var writer = new BinaryBufferWriter();
@@ -908,8 +827,8 @@ public sealed class LeaseClientTests
         var act = () => leaseClient.SubscribeAsync(route, (_, _) => ValueTask.CompletedTask);
 
         // Assert
-        var error = await Assert.ThrowsAsync<LeaseException>(act);
-        Assert.Equal("INVALID_ROUTE", error.Code);
+        var error = await Assert.ThrowsAsync<ArgumentException>(act);
+        Assert.Equal("route", error.ParamName);
     }
 
     [Fact]
@@ -973,7 +892,7 @@ public sealed class LeaseClientTests
                 new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        using var leaseClient = new LeaseClient(connection);
+        await using var leaseClient = new LeaseClient(connection);
 
         await connection.ConnectAsync();
         var subscription = await leaseClient.SubscribeAsync("lease://prod/app/lock", (evt, _) =>

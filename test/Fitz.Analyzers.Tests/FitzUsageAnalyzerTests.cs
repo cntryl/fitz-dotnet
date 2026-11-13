@@ -1,4 +1,5 @@
 using System.Collections.Immutable;
+using System.Globalization;
 using Cntryl.Fitz.Analyzers;
 using Cntryl.Fitz.CodeFixes;
 using Cntryl.Fitz.Domains.Lease;
@@ -194,7 +195,7 @@ public sealed class FitzUsageAnalyzerTests
     }
 
     [Fact]
-    public async Task ShouldReportWarningGivenInvalidRouteWhenAnalyzing()
+    public async Task ShouldReportErrorGivenInvalidRouteWhenAnalyzing()
     {
         // Arrange
         // Act
@@ -203,7 +204,7 @@ public sealed class FitzUsageAnalyzerTests
             "await using var lease = await client.AcquireAsync(\"lease://realm/bad*value/name\", TimeSpan.FromSeconds(30));"));
 
         var diagnostic = Assert.Single(diagnostics.Where(item => item.Id == FitzDiagnostics.InvalidRouteId));
-        Assert.Equal(DiagnosticSeverity.Warning, diagnostic.Severity);
+        Assert.Equal(DiagnosticSeverity.Error, diagnostic.Severity);
     }
 
     [Fact]
@@ -244,6 +245,333 @@ public sealed class FitzUsageAnalyzerTests
             FitzDiagnostics.DiscardedHandleId);
 
         Assert.Contains("await using var lease = await client.AcquireAsync", fixedSource, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(FitzDiagnostics.InvalidRouteId, "fitz001")]
+    [InlineData(FitzDiagnostics.InvalidPatternId, "fitz002")]
+    [InlineData(FitzDiagnostics.DiscardedHandleId, "fitz003")]
+    [InlineData(FitzDiagnostics.InvalidArgumentId, "fitz004")]
+    public void ShouldBeErrorAndLinkToDocsGivenEveryDescriptorWhenInspectingMetadata(string id, string anchor)
+    {
+        // Arrange
+        var descriptor = new FitzUsageAnalyzer().SupportedDiagnostics.Single(item => item.Id == id);
+
+        // Act
+        var link = descriptor.HelpLinkUri;
+
+        // Assert
+        Assert.Equal(DiagnosticSeverity.Error, descriptor.DefaultSeverity);
+        Assert.Equal("https://github.com/cntryl/fitz-dotnet/blob/main/docs/analyzers.md#" + anchor, link);
+        Assert.False(string.IsNullOrWhiteSpace(descriptor.Description.ToString(CultureInfo.InvariantCulture)));
+    }
+
+    [Fact]
+    public async Task ShouldReportInvalidRouteGivenInMemoryClientInvocationWhenAnalyzing()
+    {
+        // Arrange
+        // Act
+        var diagnostics = await GetDiagnosticsAsync("""
+            using Cntryl.Fitz;
+            using Cntryl.Fitz.Testing;
+            class Consumer
+            {
+                static async Task Run(InMemoryKvClient client)
+                {
+                    await using var transaction = await client.BeginAsync("queue://realm/area/name");
+                }
+            }
+            """);
+
+        // Assert
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.InvalidRouteId);
+    }
+
+    [Fact]
+    public async Task ShouldReportInvalidRouteGivenUserImplementationInvocationWhenAnalyzing()
+    {
+        // Arrange
+        // Act
+        var diagnostics = await GetDiagnosticsAsync("""
+            using Cntryl.Fitz;
+            class MyKv : IKvClient
+            {
+                public Task<IKvTransaction> BeginAsync(string route, KvMode mode = KvMode.ReadWrite, CancellationToken ct = default) =>
+                    throw new NotSupportedException();
+
+                public Task<KvSubscription> SubscribeAsync(string pattern, CancellationToken ct = default) =>
+                    throw new NotSupportedException();
+            }
+            class Consumer
+            {
+                static async Task Run(MyKv client)
+                {
+                    await using var transaction = await client.BeginAsync("queue://realm/area/name");
+                    await using var subscription = await client.SubscribeAsync("kv://realm/bad*/name");
+                }
+            }
+            """);
+
+        // Assert
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.InvalidRouteId);
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.InvalidPatternId);
+    }
+
+    [Fact]
+    public async Task ShouldReportInvalidRouteGivenOverrideOfInterfaceImplementationWhenAnalyzing()
+    {
+        // Arrange
+        // Act
+        var diagnostics = await GetDiagnosticsAsync("""
+            using Cntryl.Fitz;
+            class BaseKv
+            {
+                public virtual Task<IKvTransaction> BeginAsync(string route, KvMode mode = KvMode.ReadWrite, CancellationToken ct = default) =>
+                    throw new NotSupportedException();
+
+                public Task<KvSubscription> SubscribeAsync(string pattern, CancellationToken ct = default) =>
+                    throw new NotSupportedException();
+            }
+            class DerivedKv : BaseKv, IKvClient
+            {
+                public override Task<IKvTransaction> BeginAsync(string route, KvMode mode = KvMode.ReadWrite, CancellationToken ct = default) =>
+                    throw new NotSupportedException();
+            }
+            class Consumer
+            {
+                static async Task Run(DerivedKv derived)
+                {
+                    await using var one = await derived.BeginAsync("queue://realm/area/name");
+                    await using var two = await derived.SubscribeAsync("queue://realm/area/name");
+                }
+            }
+            """);
+
+        // Assert
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.InvalidRouteId);
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.InvalidPatternId);
+    }
+
+    [Fact]
+    public async Task ShouldReportInvalidRouteGivenClientServiceAccessorInvocationWhenAnalyzing()
+    {
+        // Arrange
+        // Act
+        var diagnostics = await GetDiagnosticsAsync("""
+            using Cntryl.Fitz;
+            class Consumer
+            {
+                static async Task Run(FitzClient client)
+                {
+                    await using var lease = await client.Lease.AcquireAsync("queue://realm/area/name", TimeSpan.FromSeconds(30));
+                }
+            }
+            """);
+
+        // Assert
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.InvalidRouteId);
+    }
+
+    [Fact]
+    public async Task ShouldIgnoreUnrelatedClassGivenSameMethodNamesWhenAnalyzing()
+    {
+        // Arrange
+        // Act
+        var diagnostics = await GetDiagnosticsAsync("""
+            using Cntryl.Fitz;
+            class NotKv
+            {
+                public Task<IKvTransaction> BeginAsync(string route) => throw new NotSupportedException();
+            }
+            class Consumer
+            {
+                static async Task Run(NotKv client)
+                {
+                    await using var transaction = await client.BeginAsync("queue://realm/area/name");
+                }
+            }
+            """);
+
+        // Assert
+        Assert.Empty(diagnostics);
+    }
+
+    [Fact]
+    public async Task ShouldReportDiscardedHandleGivenDiscardAssignmentWhenAnalyzing()
+    {
+        // Arrange
+        // Act
+        var diagnostics = await GetDiagnosticsAsync(LeaseSource(
+            "_ = await client.AcquireAsync(\"lease://realm/area/name\", TimeSpan.FromSeconds(30));"));
+
+        // Assert
+        var diagnostic = Assert.Single(diagnostics, item => item.Id == FitzDiagnostics.DiscardedHandleId);
+        Assert.Equal("lease", diagnostic.Properties["HandleName"]);
+    }
+
+    [Fact]
+    public async Task ShouldReportDiscardedHandleGivenValueTaskResultWhenAnalyzing()
+    {
+        // Arrange
+        // Act
+        var diagnostics = await GetDiagnosticsAsync("""
+            using Cntryl.Fitz;
+            class Consumer
+            {
+                static ValueTask<ILease> Acquire() => throw new NotSupportedException();
+
+                static async Task Run()
+                {
+                    await Acquire();
+                    _ = await Acquire();
+                }
+            }
+            """);
+
+        // Assert
+        Assert.Equal(2, diagnostics.Count(item => item.Id == FitzDiagnostics.DiscardedHandleId));
+    }
+
+    [Fact]
+    public async Task ShouldNotReportDiscardedHandleGivenLookalikeTaskTypeWhenAnalyzing()
+    {
+        // Arrange
+        // Act
+        var diagnostics = await GetDiagnosticsAsync("""
+            using Cntryl.Fitz;
+            namespace Lookalike
+            {
+                class Task<T>
+                {
+                    public System.Runtime.CompilerServices.TaskAwaiter<T> GetAwaiter() =>
+                        System.Threading.Tasks.Task.FromResult(default(T)!).GetAwaiter();
+                }
+            }
+            class Consumer
+            {
+                static Lookalike.Task<ILease> Acquire() => throw new NotSupportedException();
+
+                static async System.Threading.Tasks.Task Run()
+                {
+                    await Acquire();
+                }
+            }
+            """);
+
+        // Assert
+        Assert.Empty(diagnostics);
+    }
+
+    [Fact]
+    public async Task ShouldNotReportDiscardedHandleGivenDiscardedNonHandleResultWhenAnalyzing()
+    {
+        // Arrange
+        // Act
+        var diagnostics = await GetDiagnosticsAsync("""
+            using Cntryl.Fitz;
+            class Consumer
+            {
+                static async Task Run(ILeaseClient client)
+                {
+                    _ = await client.ListAsync("lease://realm/area/*");
+                }
+            }
+            """);
+
+        // Assert
+        Assert.DoesNotContain(diagnostics, diagnostic => diagnostic.Id == FitzDiagnostics.DiscardedHandleId);
+    }
+
+    [Fact]
+    public async Task ShouldGiveEachHandleAUniqueNameGivenThreeDiscardedHandlesWhenApplyingFixAll()
+    {
+        // Arrange
+        // Act
+        var fixedSource = await ApplyFixAllAsync(
+            LeaseSource("""
+                await client.AcquireAsync("lease://realm/area/one", TimeSpan.FromSeconds(30));
+                await client.AcquireAsync("lease://realm/area/two", TimeSpan.FromSeconds(30));
+                await client.AcquireAsync("lease://realm/area/three", TimeSpan.FromSeconds(30));
+                """),
+            FitzDiagnostics.DiscardedHandleId);
+
+        // Assert
+        Assert.Contains("await using var lease = await client.AcquireAsync(\"lease://realm/area/one\"", fixedSource, StringComparison.Ordinal);
+        Assert.Contains("await using var lease2 = await client.AcquireAsync(\"lease://realm/area/two\"", fixedSource, StringComparison.Ordinal);
+        Assert.Contains("await using var lease3 = await client.AcquireAsync(\"lease://realm/area/three\"", fixedSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ShouldRepairRouteAndHandleTogetherGivenOneStatementWhenApplyingFixAll()
+    {
+        // Arrange
+        // Act
+        var fixedSource = await ApplyFixAllAsync(
+            LeaseSource("await client.AcquireAsync(\"queue://realm/area/one\", TimeSpan.FromSeconds(30));"),
+            FitzDiagnostics.DiscardedHandleId);
+
+        // Assert
+        Assert.Contains("await using var lease = await client.AcquireAsync(\"queue://realm/area/one\"", fixedSource, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ShouldWrapEmbeddedStatementInBlockGivenIfWithoutBracesWhenApplyingFix()
+    {
+        // Arrange
+        // Act
+        var fixedSource = await ApplyFirstFixAsync(
+            """
+            using Cntryl.Fitz;
+            class Consumer
+            {
+                static async Task Run(ILeaseClient client, bool enabled)
+                {
+                    if (enabled)
+                        await client.AcquireAsync("lease://realm/area/name", TimeSpan.FromSeconds(30));
+                }
+            }
+            """,
+            FitzDiagnostics.DiscardedHandleId);
+
+        // Assert
+        Assert.Contains("{", fixedSource, StringComparison.Ordinal);
+        Assert.Contains("await using var lease = await client.AcquireAsync", fixedSource, StringComparison.Ordinal);
+        await AssertCompilesAsync(fixedSource);
+    }
+
+    [Fact]
+    public async Task ShouldKeepCommentsGivenTriviaAroundDiscardedHandleWhenApplyingFix()
+    {
+        // Arrange
+        // Act
+        var fixedSource = await ApplyFirstFixAsync(
+            LeaseSource("""
+                // keep the lease for the whole operation
+                await client.AcquireAsync("lease://realm/area/name", TimeSpan.FromSeconds(30)); // trailing note
+                """),
+            FitzDiagnostics.DiscardedHandleId);
+
+        // Assert
+        Assert.Contains("// keep the lease for the whole operation", fixedSource, StringComparison.Ordinal);
+        Assert.Contains("// trailing note", fixedSource, StringComparison.Ordinal);
+        await AssertCompilesAsync(fixedSource);
+    }
+
+    [Fact]
+    public async Task ShouldAvoidLocalNameInScopeGivenExistingLeaseVariableWhenApplyingFix()
+    {
+        // Arrange
+        // Act
+        var fixedSource = await ApplyFirstFixAsync(
+            LeaseSource("""
+                var lease = 1;
+                await client.AcquireAsync("lease://realm/area/name", TimeSpan.FromSeconds(30));
+                """),
+            FitzDiagnostics.DiscardedHandleId);
+
+        // Assert
+        Assert.Contains("await using var lease2 = await client.AcquireAsync", fixedSource, StringComparison.Ordinal);
+        await AssertCompilesAsync(fixedSource);
     }
 
     static string LeaseSource(string operation) => $$"""
@@ -289,6 +617,60 @@ public sealed class FitzUsageAnalyzerTests
         return (await changed.GetTextAsync()).ToString();
     }
 
+    static async Task AssertCompilesAsync(string source)
+    {
+        using var workspace = CreateWorkspace(source, out var document);
+        var compilation = await document.Project.GetCompilationAsync();
+        Assert.NotNull(compilation);
+        Assert.DoesNotContain(compilation.GetDiagnostics(), diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+    }
+
+    static async Task<string> ApplyFixAllAsync(string source, string diagnosticId)
+    {
+        using var workspace = CreateWorkspace(source, out var document);
+        var provider = new FitzCodeFixProvider();
+        var context = new FixAllContext(
+            document,
+            provider,
+            FixAllScope.Document,
+            "FitzRetainHandle",
+            [diagnosticId],
+            new AnalyzerDiagnosticProvider(),
+            CancellationToken.None);
+        var action = await provider.GetFixAllProvider().GetFixAsync(context);
+        Assert.NotNull(action);
+        foreach (var operation in await action.GetOperationsAsync(CancellationToken.None))
+        {
+            operation.Apply(workspace, CancellationToken.None);
+        }
+
+        var changed = workspace.CurrentSolution.GetDocument(document.Id);
+        Assert.NotNull(changed);
+        var text = (await changed.GetTextAsync()).ToString();
+        await AssertCompilesAsync(text);
+        return text;
+    }
+
+    sealed class AnalyzerDiagnosticProvider : FixAllContext.DiagnosticProvider
+    {
+        public override Task<IEnumerable<Diagnostic>> GetAllDiagnosticsAsync(Project project, CancellationToken ct) =>
+            GetProjectDiagnosticsAsync(project, ct);
+
+        public override async Task<IEnumerable<Diagnostic>> GetProjectDiagnosticsAsync(Project project, CancellationToken ct)
+        {
+            var compilation = await project.GetCompilationAsync(ct);
+            Assert.NotNull(compilation);
+            return await compilation.WithAnalyzers([new FitzUsageAnalyzer()]).GetAnalyzerDiagnosticsAsync(ct);
+        }
+
+        public override async Task<IEnumerable<Diagnostic>> GetDocumentDiagnosticsAsync(Document document, CancellationToken ct)
+        {
+            var tree = await document.GetSyntaxTreeAsync(ct);
+            var all = await GetProjectDiagnosticsAsync(document.Project, ct);
+            return all.Where(diagnostic => diagnostic.Location.SourceTree == tree);
+        }
+    }
+
     // Most tests compile as an ordinary consumer that sees only the public surface. The
     // concrete-client test compiles under the InternalsVisibleTo name instead, because the
     // concrete domain clients are internal and only first-party code can invoke them.
@@ -319,6 +701,6 @@ public sealed class FitzUsageAnalyzerTests
         }
 
         yield return MetadataReference.CreateFromFile(typeof(ILeaseClient).Assembly.Location);
-        yield return MetadataReference.CreateFromFile(typeof(Client).Assembly.Location);
+        yield return MetadataReference.CreateFromFile(typeof(FitzClient).Assembly.Location);
     }
 }

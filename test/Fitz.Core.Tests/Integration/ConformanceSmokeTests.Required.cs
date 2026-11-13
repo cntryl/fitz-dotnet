@@ -42,7 +42,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("parked first reserve resolved with its own payload");
             return Result("CS-019", transport, authMode, "pass", stopwatch.ElapsedMilliseconds, evidence);
         }
-        catch (Exception error)
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
         {
             evidence.Add($"same-type requests failed: {error.GetType().Name}: {error.Message}");
             return Result("CS-019", transport, authMode, "fail", stopwatch.ElapsedMilliseconds, evidence, error.Message);
@@ -60,7 +60,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("three complete events replayed on a 4096-byte route across multiple pages");
             return Result("CS-024", transport, authMode, "pass", stopwatch.ElapsedMilliseconds, evidence);
         }
-        catch (Exception error)
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
         {
             evidence.Add($"Stream boundary failed: {error.GetType().Name}: {error.Message}");
             return Result("CS-024", transport, authMode, "fail", stopwatch.ElapsedMilliseconds, evidence, error.Message);
@@ -88,7 +88,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add($"max_in_flight={capabilities.MaxInFlightRequests}");
             return Result("CS-020", transport, authMode, "pass", stopwatch.ElapsedMilliseconds, evidence);
         }
-        catch (Exception error)
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
         {
             evidence.Add($"handshake negotiation failed: {error.GetType().Name}: {error.Message}");
             return Result("CS-020", transport, authMode, "fail", stopwatch.ElapsedMilliseconds, evidence, error.Message);

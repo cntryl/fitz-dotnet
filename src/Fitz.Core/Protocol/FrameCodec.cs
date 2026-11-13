@@ -7,8 +7,6 @@ static class FrameCodec
 {
     public const int MaxHeaderSize = 15;
     internal const int MaxTransportFrameSize = 1024 * 1024;
-    // Kept as an internal source-compatibility name; correlation now occupies the frame header.
-    public const int CorrelationRecordSize = MaxHeaderSize;
     public const byte AckRequestedFlag = 1;
     public const byte ResponseFinalFlag = 2;
     const byte KnownFlags = AckRequestedFlag | ResponseFinalFlag | ExtensionCodec.PresentFlag;
@@ -63,15 +61,6 @@ static class FrameCodec
             throw new ProtocolException("Correlation identifier zero is reserved for notifications.");
         }
         return Encode(messageType, payload, correlationId: correlationId);
-    }
-
-    internal static ulong ReadCorrelationId(ReadOnlySpan<byte> payload)
-    {
-        if (payload.Length != sizeof(ulong))
-        {
-            throw new ProtocolException($"Correlation value carries {payload.Length} bytes; expected 8.");
-        }
-        return BinaryPrimitives.ReadUInt64BigEndian(payload);
     }
 
     /// <summary>Decodes one complete frame, rejecting truncation and trailing bytes.</summary>

@@ -18,15 +18,16 @@ public sealed class SubscriptionLifecycleRegressionTests
         // Arrange
         var firstReply = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
         var wireRequests = 0;
-        using var fixture = new DomainFixture("stream", (_, _, _) =>
+        await using var fixture = new DomainFixture("stream", (_, _, _) =>
             ++wireRequests == 1 ? new ValueTask<ReadOnlyMemory<byte>>(firstReply.Task)
                 : ValueTask.FromResult<ReadOnlyMemory<byte>>(Reply("stream", 56)));
         var first = fixture.SubscribeAsync(Route("stream", "first"));
         var queued = fixture.SubscribeAsync(Route("stream", "queued"));
 
-        // Act
-        fixture.Dispose();
+        // Act: disposal waits for the in-flight subscribe, so release it after disposal starts.
+        var disposing = fixture.DisposeAsync().AsTask();
         firstReply.SetResult(Reply("stream", 55));
+        await disposing.WaitAsync(TimeSpan.FromSeconds(5));
 
         // Assert
         await Assert.ThrowsAsync<ObjectDisposedException>(() => first.WaitAsync(TimeSpan.FromSeconds(5)));
@@ -52,7 +53,7 @@ public sealed class SubscriptionLifecycleRegressionTests
         // Arrange
         var secondReply = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
         var subscribes = 0;
-        using var fixture = new DomainFixture(domain, (type, _, _) =>
+        await using var fixture = new DomainFixture(domain, (type, _, _) =>
             type != subscribeType ? ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 })
                 : ++subscribes == 1 ? ValueTask.FromResult<ReadOnlyMemory<byte>>(Reply(domain, 55))
                 : new ValueTask<ReadOnlyMemory<byte>>(secondReply.Task));
@@ -86,20 +87,15 @@ public sealed class SubscriptionLifecycleRegressionTests
     {
         // Arrange
         using var response = new PausedResponse();
-        using var fixture = new DomainFixture(domain, (_, _, _) => response.Task);
+        await using var fixture = new DomainFixture(domain, (_, _, _) => response.Task);
         var subscribing = fixture.SubscribeAsync(Route(domain, "events"));
         response.Complete(Reply(domain, 55));
         await response.Resuming.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        // Act
-        try
-        {
-            fixture.Dispose();
-        }
-        finally
-        {
-            response.AllowResume.Set();
-        }
+        // Act: disposal waits for the in-flight subscribe, so release it after disposal starts.
+        var disposing = fixture.DisposeAsync().AsTask();
+        response.AllowResume.Set();
+        await disposing.WaitAsync(TimeSpan.FromSeconds(5));
 
         // Assert
         await Assert.ThrowsAsync<ObjectDisposedException>(() => subscribing.WaitAsync(TimeSpan.FromSeconds(5)));
@@ -204,9 +200,9 @@ public sealed class SubscriptionLifecycleRegressionTests
         return writer.Build();
     }
 
-    sealed class DomainFixture : IDisposable
+    sealed class DomainFixture : IAsyncDisposable
     {
-        readonly IDisposable _client;
+        readonly IAsyncDisposable _client;
         Action<ReadOnlyMemory<byte>>? _notify;
 
         internal DomainFixture(string domain, Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request)
@@ -240,7 +236,7 @@ public sealed class SubscriptionLifecycleRegressionTests
         };
 
         internal void Notify(byte[] payload) => _notify!(payload);
-        public void Dispose() => _client.Dispose();
+        public ValueTask DisposeAsync() => _client.DisposeAsync();
     }
 
     sealed class PausedResponse : IValueTaskSource<ReadOnlyMemory<byte>>, IDisposable

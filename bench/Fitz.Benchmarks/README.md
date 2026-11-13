@@ -12,13 +12,13 @@ and those numbers were being read as multiplexer results.
 Release mode is mandatory:
 
 ```bash
-dotnet run --project bench/Fitz.Benchmarks/Fitz.Benchmarks.csproj -c Release -- --filter '*'
+dotnet run --project bench/Fitz.Benchmarks.Runner/Fitz.Benchmarks.Runner.csproj -c Release -- --filter '*'
 ```
 
 Run one class:
 
 ```bash
-dotnet run --project bench/Fitz.Benchmarks/Fitz.Benchmarks.csproj -c Release -- \
+dotnet run --project bench/Fitz.Benchmarks.Runner/Fitz.Benchmarks.Runner.csproj -c Release -- \
   --filter '*EndToEndRequestBenchmarks*'
 ```
 
@@ -31,21 +31,17 @@ anything reported outside a local investigation.
 ### EndToEndRequestBenchmarks
 
 The real `FitzConnection` request path over an in-memory transport: encode, request gate,
-multiplexer lane, send, receive loop, frame parse, dispatch, completion.
+multiplexer, send, receive loop, frame decode, correlated dispatch, completion.
 
 `RoundTripMs` adds simulated network latency; at `0` every nanosecond is client-side work.
-`Correlated` controls whether the loopback broker advertises `CAP_CORRELATION`.
 
-The interesting comparison is `ConcurrentSameMessageType` across the `Correlated` axis. Uncorrelated,
-it matches `SequentialRequests` exactly, because the client holds one in-flight request per message
-type — a correctness requirement, since the broker does not answer same-type requests in receive
-order. Correlated, the lane disappears and the same work completes in about one round trip.
+Compare `ConcurrentRequests` with `SequentialRequests`: every Wire 3 request carries its own
+correlation identifier, so N concurrent requests complete in about one round trip rather than N.
 
 ### HotPathComponentBenchmarks
 
-Per-component costs used to attribute the end-to-end totals: request encode, the borrowed
-receive-loop parse against the owned-payload public API, pooled frame lifetime, and the per-send
-cancellation plumbing.
+Per-component costs used to attribute the end-to-end totals: request encode, single-frame
+decode, pooled frame lifetime, and the per-send cancellation plumbing.
 
 ### MultiplexerHotPathBenchmarks
 
@@ -54,9 +50,8 @@ cancellation-then-next-dispatch path.
 
 ### DispatchScanBenchmarks
 
-How one dispatch scales with pending-request depth for a message type. Only correlated requests
-can queue deeper than one, and no production call site supplies a response matcher today, so this
-measures headroom for a future correlated design rather than a cost paid now.
+How one correlated dispatch scales with the number of requests in flight. Lookup is by
+correlation identifier, so the cost should stay flat as depth grows.
 
 ### NotificationFanoutBenchmarks
 

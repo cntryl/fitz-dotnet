@@ -14,8 +14,7 @@ namespace Cntryl.Fitz.Benchmarks;
 public class HotPathComponentBenchmarks
 {
     byte[] _payload = null!;
-    byte[] _twoFrames = null!;
-    FrameParser _parser = null!;
+    byte[] _frame = null!;
     string _route = null!;
 
     [GlobalSetup]
@@ -23,9 +22,7 @@ public class HotPathComponentBenchmarks
     {
         _payload = new byte[64];
         _route = "kv://realm/app/users";
-        var frame = FrameCodec.Encode(MessageTypes.KvGet, _payload);
-        _twoFrames = [.. frame, .. frame];
-        _parser = new FrameParser();
+        _frame = FrameCodec.Encode(MessageTypes.KvGet, _payload, FrameCodec.ResponseFinalFlag, correlationId: 1);
     }
 
     /// <summary>
@@ -44,30 +41,16 @@ public class HotPathComponentBenchmarks
         return FrameCodec.Encode(MessageTypes.KvGet, writer.WrittenSpan);
     }
 
-    /// <summary>What the receive loop calls: borrowed payloads, no per-frame allocation.</summary>
-    [Benchmark(Description = "Parse: Append + TryReadFrame (receive-loop path)")]
-    public int ParseBorrowed()
-    {
-        _parser.Append(_twoFrames);
-        var count = 0;
-        while (_parser.TryReadFrame(out _))
-        {
-            count++;
-        }
-
-        return count;
-    }
-
-    /// <summary>The owned-payload public API, for the ownership cost <c>BUF-8</c> documents.</summary>
-    [Benchmark(Description = "Parse: ParseFrames (owned payloads)")]
-    public int ParseCopying() => _parser.ParseFrames(_twoFrames).Count;
+    /// <summary>What the receive loop calls for each transport message.</summary>
+    [Benchmark(Description = "Decode one frame (receive-loop path)")]
+    public int DecodeFrame() => FrameCodec.DecodeStrict(_frame).Payload.Length;
 
     /// <summary>
     /// A received frame's full lifetime: rent sized for the largest message we might see, expose a
     /// small frame, then clear and return. Guards the written-region clearing policy in BUF-5.
     /// </summary>
     [Benchmark(Description = "PooledFrame lifetime (16KB rent, 67B frame)")]
-    public int PooledFrameRoundTrip()
+    public static int PooledFrameRoundTrip()
     {
         var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
         using var frame = PooledFrame.FromRentedBuffer(buffer, 67);
@@ -78,7 +61,7 @@ public class HotPathComponentBenchmarks
     /// The linked token source and timer every transport send builds to apply its timeout.
     /// </summary>
     [Benchmark(Description = "Per-send linked CTS + CancelAfter")]
-    public bool SendTimeoutPlumbing()
+    public static bool SendTimeoutPlumbing()
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
         cts.CancelAfter(TimeSpan.FromSeconds(30));

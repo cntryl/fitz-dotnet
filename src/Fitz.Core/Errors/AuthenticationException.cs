@@ -24,4 +24,16 @@ public sealed class AuthenticationException : FitzException
     public AuthenticationException()
     {
     }
+
+    /// <summary>Initializes the exception for a broker CONNECT_REJECTED.</summary>
+    /// <param name="message">Description of the failure.</param>
+    /// <param name="rejectionCode">Broker CONNECT_REJECTED code, such as 0001 UNAUTHORIZED.</param>
+    public AuthenticationException(string message, ushort rejectionCode)
+        : base(message)
+    {
+        RejectionCode = rejectionCode;
+    }
+
+    /// <summary>The broker's CONNECT_REJECTED code, when the broker sent one.</summary>
+    public ushort? RejectionCode { get; }
 }

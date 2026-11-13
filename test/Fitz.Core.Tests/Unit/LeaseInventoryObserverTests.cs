@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using Cntryl.Fitz.Domains.Lease;
 using Cntryl.Fitz.Protocol;
 
@@ -11,7 +12,7 @@ public sealed class LeaseInventoryObserverTests
     {
         // Arrange
         var broker = new FakeLeaseBroker();
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
 
         // Act
         var options = new LeaseObserveOptions { ListTimeout = TimeSpan.Zero };
@@ -28,7 +29,9 @@ public sealed class LeaseInventoryObserverTests
     public async Task ShouldReturnTypedTimeoutGivenSlowListPassWhenObserving()
     {
         // Arrange
-        using var leaseClient = new LeaseClient(
+        var time = new ManualTimeProvider();
+        var listTimeout = TimeSpan.FromSeconds(7);
+        await using var leaseClient = new LeaseClient(
             async (messageType, _, ct) =>
             {
                 if (messageType == MessageTypes.LeaseSubscribe)
@@ -39,19 +42,25 @@ public sealed class LeaseInventoryObserverTests
                     return response.Build();
                 }
 
+                if (messageType == MessageTypes.LeaseUnsubscribe)
+                {
+                    return new byte[] { 0 };
+                }
+
                 await Task.Delay(Timeout.InfiniteTimeSpan, ct);
                 return ReadOnlyMemory<byte>.Empty;
             },
-            registerNotificationHandler: (_, _) => new TestRegistration());
+            registerNotificationHandler: (_, _) => new TestRegistration(),
+            timeProvider: time);
+        var options = new LeaseObserveOptions { ListTimeout = listTimeout };
+        var observing = leaseClient.ObserveAsync("lease://acme/renderers/*", options);
 
         // Act
-        var options = new LeaseObserveOptions { ListTimeout = TimeSpan.FromMilliseconds(20) };
-
+        await time.WaitForTimerAsync(listTimeout);
+        time.Advance(listTimeout);
+        var error = await Assert.ThrowsAsync<LeaseException>(() => observing.WaitAsync(TimeSpan.FromSeconds(5)));
 
         // Assert
-        var error = await Assert.ThrowsAsync<LeaseException>(() =>
-            leaseClient.ObserveAsync("lease://acme/renderers/*", options));
-
         Assert.Equal("LIST_TIMEOUT", error.Code);
     }
 
@@ -61,7 +70,7 @@ public sealed class LeaseInventoryObserverTests
         // Arrange
         var broker = new FakeLeaseBroker();
         broker.QueueListPage([MakeItem("lease://acme/renderers/a")]);
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
         var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
         var updatesCompleted = Task.Run(async () =>
         {
@@ -70,7 +79,7 @@ public sealed class LeaseInventoryObserverTests
             }
         });
 
-        leaseClient.Dispose();
+        await leaseClient.DisposeAsync();
 
 
         // Act
@@ -99,7 +108,7 @@ public sealed class LeaseInventoryObserverTests
                     return Task.CompletedTask;
                 });
         }
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
 
 
         // Act
@@ -123,7 +132,7 @@ public sealed class LeaseInventoryObserverTests
         broker.QueueListPage([], cursor);
 
         // Act
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
 
 
         // Assert
@@ -147,7 +156,7 @@ public sealed class LeaseInventoryObserverTests
     {
         // Arrange
         var broker = new FakeLeaseBroker();
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
         var options = new LeaseObserveOptions
         {
             ReconciliationInterval = TimeSpan.FromSeconds(intervalSeconds),
@@ -172,7 +181,7 @@ public sealed class LeaseInventoryObserverTests
         broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a") }, before: () => listGate.Task);
         broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a"), MakeItem("lease://acme/renderers/b") });
 
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
 
         // Act
         var observeTask = leaseClient.ObserveAsync("lease://acme/renderers/*");
@@ -210,7 +219,7 @@ public sealed class LeaseInventoryObserverTests
             MakeItem("lease://acme/renderers/b", "worker-2", incarnation: 72, renewals: 3),
         });
 
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
 
         // Act
         await using var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
@@ -243,7 +252,7 @@ public sealed class LeaseInventoryObserverTests
         broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a"), MakeItem("lease://acme/renderers/b") });
         broker.DefaultListPage = new[] { MakeItem("lease://acme/renderers/a"), MakeItem("lease://acme/renderers/b") };
 
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
         var options = new LeaseObserveOptions
         {
             ReconciliationInterval = TimeSpan.FromMilliseconds(20),
@@ -269,7 +278,7 @@ public sealed class LeaseInventoryObserverTests
         broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a") });
         broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a"), MakeItem("lease://acme/renderers/c") });
 
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
 
         // Act
         await using var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
@@ -300,7 +309,7 @@ public sealed class LeaseInventoryObserverTests
         var listGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a") }, before: () => listGate.Task);
 
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
 
         var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
         Assert.True(observer.IsReady);
@@ -341,7 +350,7 @@ public sealed class LeaseInventoryObserverTests
         var listGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/stale") }, before: () => listGate.Task);
         broker.DefaultListPage = new[] { MakeItem("lease://acme/renderers/recovered") };
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
         await using var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
 
         // Act
@@ -364,7 +373,7 @@ public sealed class LeaseInventoryObserverTests
         var broker = new FakeLeaseBroker();
         broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a") });
         broker.DefaultListPage = new[] { MakeItem("lease://acme/renderers/recovered") };
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
         await using var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
         broker.QueueListFailure(new InvalidOperationException("transient LIST failure"));
 
@@ -386,7 +395,7 @@ public sealed class LeaseInventoryObserverTests
         var broker = new FakeLeaseBroker();
         broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a") });
         var rejectNextDispatch = 1;
-        using var leaseClient = new LeaseClient(
+        await using var leaseClient = new LeaseClient(
             async (messageType, payload, ct) => new ReadOnlyMemory<byte>(
                 await broker.RequestAsync(messageType, payload.ToArray(), ct)),
             (messageType, handler) => broker.RegisterNotificationHandler(
@@ -421,7 +430,7 @@ public sealed class LeaseInventoryObserverTests
         broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/a") });
         broker.DefaultListPage = new[] { MakeItem("lease://acme/renderers/a") };
 
-        using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
+        await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
         var options = new LeaseObserveOptions
         {
             ReconciliationInterval = TimeSpan.FromMilliseconds(15),
@@ -450,10 +459,9 @@ public sealed class LeaseInventoryObserverTests
         string route,
         string owner = "worker-1",
         ulong incarnation = 1,
-        string acquiredAt = "2026-08-29T00:00:00Z",
         TimeSpan? expiresIn = null,
         uint renewals = 0) =>
-        new(route, owner, incarnation, acquiredAt, expiresIn ?? TimeSpan.FromSeconds(30), renewals);
+        new(route, owner, incarnation, new DateTimeOffset(2026, 8, 29, 0, 0, 0, TimeSpan.Zero), expiresIn ?? TimeSpan.FromSeconds(30), renewals);
 
     static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null)
     {
@@ -539,7 +547,7 @@ public sealed class LeaseInventoryObserverTests
                     writer.WriteString(item.Route);
                     writer.WriteString(item.OwnerId);
                     writer.WriteU64(item.HolderIncarnation);
-                    writer.WriteString(item.AcquiredAt);
+                    writer.WriteString(item.AcquiredAt.ToString("O", CultureInfo.InvariantCulture));
                     writer.WriteU64((ulong)item.ExpiresIn.TotalSeconds);
                     writer.WriteU32(item.Renewals);
                 }

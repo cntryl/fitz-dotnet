@@ -19,7 +19,7 @@ public sealed class ClientTests
             new Uri("ws://localhost:4190/ws"),
             Transport: (ClientTransport)99);
 
-        Assert.Throws<ArgumentOutOfRangeException>(() => new Client(config));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FitzClient(config));
     }
 
     [Fact]
@@ -30,7 +30,7 @@ public sealed class ClientTests
         // Assert
         var config = new ClientConfig(null!);
 
-        Assert.Throws<ArgumentNullException>(() => new Client(config));
+        Assert.Throws<ArgumentNullException>(() => new FitzClient(config));
         Assert.Throws<ArgumentNullException>(() => TransportResolver.Resolve(config));
     }
 
@@ -96,7 +96,7 @@ public sealed class ClientTests
     {
         // Arrange
         await using var transport = new FakeTransport();
-        await using var client = new Client(new ClientConfig(
+        await using var client = new FitzClient(new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
             TransportFactory: _ => transport));
 
@@ -252,11 +252,10 @@ public sealed class ClientTests
         };
         var config = new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
-            AuthSettleDelay: TimeSpan.Zero,
             TransportFactory: _ => transport,
             TokenProvider: _ => ValueTask.FromResult("token-123")
         );
-        await using var client = new Client(config);
+        await using var client = new FitzClient(config);
 
         // Act
         await client.ConnectAsync();
@@ -279,10 +278,9 @@ public sealed class ClientTests
     {
         // Arrange
         await using var transport = new FakeTransport();
-        await using var client = new Client(
+        await using var client = new FitzClient(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
-                AuthSettleDelay: TimeSpan.FromSeconds(5),
                 TransportFactory: _ => transport
             )
         );
@@ -302,10 +300,9 @@ public sealed class ClientTests
     {
         // Arrange
         await using var transport = new FakeTransport(receive: _ => new ValueTask<PooledFrame>(PooledFrame.Closed));
-        await using var client = new Client(
+        await using var client = new FitzClient(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
-                AuthSettleDelay: TimeSpan.FromMilliseconds(200),
                 TransportFactory: _ => transport
             )
         );
@@ -324,9 +321,8 @@ public sealed class ClientTests
         await using var firstTransport = new QueuedTransport();
         await using var reconnectTransport = new QueuedTransport();
         var factoryCalls = 0;
-        await using var client = new Client(new ClientConfig(
+        await using var client = new FitzClient(new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
-            AuthSettleDelay: TimeSpan.Zero,
             Reconnect: new ReconnectOptions(true, MaxAttempts: 2, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
             TransportFactory: _ => factoryCalls++ == 0 ? firstTransport : reconnectTransport));
 
@@ -357,10 +353,9 @@ public sealed class ClientTests
             }
         };
         var factoryCalls = 0;
-        await using var client = new Client(new ClientConfig(
+        await using var client = new FitzClient(new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
             Timeout: TimeSpan.FromMilliseconds(250),
-            AuthSettleDelay: TimeSpan.Zero,
             Reconnect: new ReconnectOptions(true, MaxAttempts: 2, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
             TransportFactory: _ => factoryCalls++ == 0 ? firstTransport : reconnectTransport));
 
@@ -390,7 +385,6 @@ public sealed class ClientTests
         await using var connection = new FitzConnection(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
-                AuthSettleDelay: TimeSpan.Zero,
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero)),
             () =>
             {
@@ -420,11 +414,10 @@ public sealed class ClientTests
     {
         // Arrange
         var attempts = 0;
-        await using var client = new Client(
+        await using var client = new FitzClient(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
                 Timeout: TimeSpan.FromMilliseconds(100),
-                AuthSettleDelay: TimeSpan.Zero,
                 TransportFactory: _ =>
                 {
                     attempts++;
@@ -454,10 +447,9 @@ public sealed class ClientTests
         var attempts = 0;
 
         // Act
-        await using var client = new Client(
+        await using var client = new FitzClient(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
-                AuthSettleDelay: TimeSpan.FromMilliseconds(200),
                 TransportFactory: _ =>
                 {
                     attempts++;
@@ -482,7 +474,7 @@ public sealed class ClientTests
         var attempts = 0;
 
         // Act
-        await using var client = new Client(
+        await using var client = new FitzClient(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
                 TransportFactory: _ =>
@@ -508,7 +500,7 @@ public sealed class ClientTests
         // Arrange
         var releaseConnect = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var attempts = 0;
-        await using var client = new Client(
+        await using var client = new FitzClient(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
                 TransportFactory: _ =>
@@ -557,10 +549,9 @@ public sealed class ClientTests
         await using var secondTransport = new QueuedTransport();
         var factoryCalls = 0;
 
-        await using var client = new Client(
+        await using var client = new FitzClient(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
-                AuthSettleDelay: TimeSpan.Zero,
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(250), MaxBackoff: TimeSpan.FromMilliseconds(250)),
                 TransportFactory: _ => factoryCalls++ == 0 ? firstTransport : secondTransport
             )
@@ -599,9 +590,8 @@ public sealed class ClientTests
         var neverConnects = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var reconnectTransport = new BlockingConnectTransport(neverConnects.Task);
         var factoryCalls = 0;
-        await using var client = new Client(new ClientConfig(
+        await using var client = new FitzClient(new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
-            AuthSettleDelay: TimeSpan.Zero,
             Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
             TransportFactory: _ => factoryCalls++ == 0 ? firstTransport : reconnectTransport));
         await client.ConnectAsync();
@@ -627,9 +617,8 @@ public sealed class ClientTests
         await using var restoredTransport = CreateConfirmingTransport();
         var lifecycleEvents = new List<string>();
         var factoryCalls = 0;
-        await using var client = new Client(new ClientConfig(
+        await using var client = new FitzClient(new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
-            AuthSettleDelay: TimeSpan.Zero,
             Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
             Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt => lifecycleEvents.Add(evt.Event)),
             TransportFactory: _ => factoryCalls++ switch
@@ -670,9 +659,8 @@ public sealed class ClientTests
         var factoryCalls = 0;
         var lifecycleEvents = new System.Collections.Concurrent.ConcurrentQueue<string>();
         var reconnected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var client = new Client(new ClientConfig(
+        await using var client = new FitzClient(new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
-            AuthSettleDelay: TimeSpan.FromMilliseconds(25),
             Reconnect: new ReconnectOptions(true, MaxAttempts: 3, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
             Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>
             {
@@ -714,7 +702,6 @@ public sealed class ClientTests
         await using var connection = new FitzConnection(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
-                AuthSettleDelay: TimeSpan.Zero,
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 3, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
                 Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>
                 {
@@ -781,7 +768,6 @@ public sealed class ClientTests
         await using var connection = new FitzConnection(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
-                AuthSettleDelay: TimeSpan.Zero,
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 2, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero)),
             () => factoryCalls++ == 0 ? firstTransport : reconnectTransport);
         using var registration = connection.OnReconnect(async ct =>
@@ -850,7 +836,6 @@ public sealed class ClientTests
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
                 Timeout: TimeSpan.FromMilliseconds(50),
-                AuthSettleDelay: TimeSpan.Zero,
                 Retry: new RetryOptions(true, MaxAttempts: 1, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero)),
             () => transport);
         await connection.ConnectAsync();
@@ -939,7 +924,7 @@ public sealed class ClientTests
         // Arrange
         // Act
         // Assert
-        using var client = new Client(new ClientConfig(
+        using var client = new FitzClient(new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
             Retry: new RetryOptions(
                 Backoff: TimeSpan.FromMilliseconds(100),
@@ -969,10 +954,9 @@ public sealed class ClientTests
         var reconnectNeverCompletes = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var reconnectTransport = new BlockingConnectTransport(reconnectNeverCompletes.Task);
         var factoryCalls = 0;
-        await using var client = new Client(new ClientConfig(
+        await using var client = new FitzClient(new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
             Timeout: TimeSpan.FromMilliseconds(100),
-            AuthSettleDelay: TimeSpan.Zero,
             Reconnect: new ReconnectOptions(true, int.MaxValue, TimeSpan.Zero, TimeSpan.Zero),
             TransportFactory: _ => factoryCalls++ == 0 ? firstTransport : reconnectTransport));
         await client.ConnectAsync();
@@ -1006,11 +990,10 @@ public sealed class ClientTests
             writer.WriteU8(0);
             transport.QueueResponse(MessageTypes.LeaseQuery, writer.WrittenSpan);
         };
-        await using var client = new Client(
+        await using var client = new FitzClient(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
                 Timeout: TimeSpan.FromMilliseconds(50),
-                AuthSettleDelay: TimeSpan.Zero,
                 TransportFactory: _ => transport
             )
         );
@@ -1047,7 +1030,6 @@ public sealed class ClientTests
         await using var connection = new FitzConnection(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
-                AuthSettleDelay: TimeSpan.Zero,
                 MaxInFlightRequests: 1,
                 TokenProvider: _ => ValueTask.FromResult("token-123")
             ),
@@ -1089,7 +1071,6 @@ public sealed class ClientTests
         await using var connection = new FitzConnection(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
-                AuthSettleDelay: TimeSpan.Zero,
                 MaxInFlightRequests: 1,
                 MaxRequestQueueSize: 1),
             () => transport);
@@ -1138,10 +1119,9 @@ public sealed class ClientTests
             writer.WriteU8(0);
             transport.QueueResponse(MessageTypes.LeaseQuery, writer.WrittenSpan);
         };
-        await using var client = new Client(
+        await using var client = new FitzClient(
             new ClientConfig(
                 new Uri("ws://localhost:4190/ws"),
-                AuthSettleDelay: TimeSpan.Zero,
                 TransportFactory: _ => transport));
 
         await client.ConnectAsync();
@@ -1336,9 +1316,8 @@ public sealed class ClientTests
         // Arrange
         await using var transport = CreateConfirmingTransport();
         var transportNames = new List<string?>();
-        await using var client = new Client(new ClientConfig(
+        await using var client = new FitzClient(new ClientConfig(
             new Uri("ws://localhost:4190/ws"),
-            AuthSettleDelay: TimeSpan.Zero,
             Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt => transportNames.Add(evt.Transport)),
             TransportFactory: _ => transport));
 

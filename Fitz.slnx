@@ -14,5 +14,8 @@
     <Project Path="test/Fitz.Extensions.Tests/Fitz.Extensions.Tests.csproj" />
     <Project Path="test/Fitz.Testing.Tests/Fitz.Testing.Tests.csproj" />
   </Folder>
-  <Project Path="bench/Fitz.Benchmarks/Fitz.Benchmarks.csproj" />
+  <Folder Name="/bench/">
+    <Project Path="bench/Fitz.Benchmarks/Fitz.Benchmarks.csproj" />
+    <Project Path="bench/Fitz.Benchmarks.Runner/Fitz.Benchmarks.Runner.csproj" />
+  </Folder>
 </Solution>

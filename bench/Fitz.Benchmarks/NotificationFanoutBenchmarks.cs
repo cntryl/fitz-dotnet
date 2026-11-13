@@ -5,7 +5,7 @@ using Cntryl.Fitz.Protocol;
 namespace Cntryl.Fitz.Benchmarks;
 
 /// <summary>
-/// Notification delivery: receive loop -> Multiplexer.Dispatch (global lock, handler-array copy,
+/// Notification delivery: receive loop -> Multiplexer.DispatchNotification (global lock, handler-array copy,
 /// payload copy) -> bounded channel(1024) -> single-reader pump task -> handler.
 /// </summary>
 /// <remarks>
@@ -44,14 +44,25 @@ public class NotificationFanoutBenchmarks : IDisposable
     }
 
     [GlobalCleanup]
+    public void Cleanup() => Dispose();
+
     public void Dispose()
     {
-        foreach (var registration in _registrations)
-        {
-            registration.Dispose();
-        }
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
 
-        _mux.Dispose();
+    protected virtual void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            foreach (var registration in _registrations)
+            {
+                registration.Dispose();
+            }
+
+            _mux.Dispose();
+        }
     }
 
     /// <summary>
@@ -59,5 +70,5 @@ public class NotificationFanoutBenchmarks : IDisposable
     /// handler-array copy, payload copy, and N channel writes.
     /// </summary>
     [Benchmark(Description = "Receive-loop cost of one notification frame, N subscribers")]
-    public void DispatchOneNotification() => _mux.Dispatch(MessageTypes.NoticeNotify, _payload);
+    public void DispatchOneNotification() => _mux.DispatchNotification(MessageTypes.NoticeNotify, _payload);
 }

@@ -8,4 +8,9 @@
     <RootNamespace>Cntryl.Fitz.Abstractions</RootNamespace>
     <Description>Public contracts for Fitz .NET client abstractions.</Description>
   </PropertyGroup>
+  <!-- Internal helpers shared by the runtime assemblies; each compiles its own internal copy. -->
+  <ItemGroup>
+    <Compile Include="..\Shared\ExceptionPolicy.cs" Link="Shared\ExceptionPolicy.cs" />
+    <Compile Include="..\Shared\SemaphoreSlimShutdown.cs" Link="Shared\SemaphoreSlimShutdown.cs" />
+  </ItemGroup>
 </Project>

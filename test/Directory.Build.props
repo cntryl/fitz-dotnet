@@ -3,6 +3,13 @@
 
   <PropertyGroup>
     <TargetFramework>net11.0</TargetFramework>
-    <NoWarn>$(NoWarn);CA1515;CA1707;CA2007</NoWarn>
   </PropertyGroup>
+
+  <!-- Test-naming/structure conventions (Should/Given/When, Arrange/Act/Assert). Test
+       projects only: shipping and benchmark code does not reference them. The package comes
+       from the private cntryl GitHub Packages feed; see CONTRIBUTING.md. -->
+  <ItemGroup>
+    <PackageReference Include="Cntryl.Conventions.Testing.Analyzers" PrivateAssets="all" />
+    <PackageReference Include="Cntryl.Conventions.Testing.CodeFixes" PrivateAssets="all" />
+  </ItemGroup>
 </Project>

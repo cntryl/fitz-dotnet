@@ -1,5 +1,6 @@
 namespace Cntryl.Fitz.Core.Tests.Integration;
 
+[Trait("Category", "Integration")]
 public sealed class QueueWire3Tests
 {
     [Fact]
@@ -9,7 +10,7 @@ public sealed class QueueWire3Tests
         await using var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetAnonymousWebSocketUrl());
         await client.ConnectAsync();
         var route = IntegrationFixture.CreateUniqueRoute("queue");
-        await client.Queue.EnqueueWithOptionsAsync(route, "wire3"u8.ToArray(), new QueueEnqueueOptions(TtlHours: 1));
+        await client.Queue.EnqueueAsync(route, "wire3"u8.ToArray(), new QueueEnqueueOptions(TimeToLive: TimeSpan.FromHours(1)));
         var first = Assert.Single(await client.Queue.ReserveAsync(route, TimeSpan.FromSeconds(30)));
         // Act
         await first.NackAsync();

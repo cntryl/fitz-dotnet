@@ -47,7 +47,7 @@ public sealed class KvClientTests
     public async Task ShouldRejectInvalidFoundFlagGivenMalformedResponseWhenGettingValue()
     {
         // Arrange
-        using var kv = new KvClient((messageType, _, _) =>
+        await using var kv = new KvClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -77,7 +77,7 @@ public sealed class KvClientTests
     public async Task ShouldReportOpenedRouteGivenBegunTransaction()
     {
         // Arrange
-        using var kv = new KvClient((_, _, _) =>
+        await using var kv = new KvClient((_, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -101,7 +101,7 @@ public sealed class KvClientTests
         var requestCalled = false;
 
         // Act
-        using var kv = new KvClient((_, _, _) =>
+        await using var kv = new KvClient((_, _, _) =>
         {
             requestCalled = true;
             return Task.FromResult(Array.Empty<byte>());
@@ -146,7 +146,7 @@ public sealed class KvClientTests
     public async Task ShouldRejectImpossibleScanCountBeforeAllocatingGivenActiveTransactionWhenOperationRuns()
     {
         // Arrange
-        using var kv = new KvClient((messageType, _, _) =>
+        await using var kv = new KvClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
@@ -173,7 +173,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var commitCalls = 0;
-        using var kv = new KvClient((messageType, _, _) =>
+        await using var kv = new KvClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             if (messageType == MessageTypes.KvBegin)
@@ -213,7 +213,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var rollbackRequests = 0;
-        using var kv = new KvClient((messageType, _, _) =>
+        await using var kv = new KvClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(messageType == MessageTypes.KvCommit ? (byte)1 : (byte)0);
@@ -249,7 +249,7 @@ public sealed class KvClientTests
         // Arrange
         Action<ReadOnlyMemory<byte>>? notificationHandler = null;
         var received = new TaskCompletionSource<KvNotification>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var kv = new KvClient(
+        await using var kv = new KvClient(
             request: (messageType, _, _) =>
             {
                 using var writer = new BinaryBufferWriter();
@@ -290,7 +290,7 @@ public sealed class KvClientTests
     public async Task ShouldPreserveDomainErrorGivenInvalidSubscriptionWhenSubscribing()
     {
         // Arrange
-        using var kv = new KvClient(
+        await using var kv = new KvClient(
             request: (_, _, _) =>
             {
                 using var writer = new BinaryBufferWriter();
@@ -314,7 +314,7 @@ public sealed class KvClientTests
     public async Task ShouldThrowKvExceptionGivenTruncatedErrorWhenSubscribing()
     {
         // Arrange
-        using var kv = new KvClient(
+        await using var kv = new KvClient(
             request: (_, _, _) =>
             {
                 using var writer = new BinaryBufferWriter();
@@ -340,7 +340,7 @@ public sealed class KvClientTests
         ushort seenMessageType = 0;
         byte[]? seenPayload = null;
 
-        using var kv = new KvClient((messageType, payload, _) =>
+        await using var kv = new KvClient((messageType, payload, _) =>
         {
             seenMessageType = messageType;
             seenPayload = payload;
@@ -370,7 +370,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var callCount = 0;
-        using var kv = new KvClient((messageType, payload, _) =>
+        await using var kv = new KvClient((messageType, payload, _) =>
         {
             callCount++;
             if (callCount == 1)
@@ -404,7 +404,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var callCount = 0;
-        using var kv = new KvClient((_, _, _) =>
+        await using var kv = new KvClient((_, _, _) =>
         {
             callCount++;
             using var response = new BinaryBufferWriter();
@@ -436,7 +436,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var calls = new List<ushort>();
-        using var kv = new KvClient((messageType, payload, _) =>
+        await using var kv = new KvClient((messageType, payload, _) =>
         {
             calls.Add(messageType);
             using var response = new BinaryBufferWriter();
@@ -463,7 +463,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var calls = new List<ushort>();
-        using var kv = new KvClient((messageType, payload, _) =>
+        await using var kv = new KvClient((messageType, payload, _) =>
         {
             calls.Add(messageType);
             using var response = new BinaryBufferWriter();
@@ -490,7 +490,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var calls = new List<ushort>();
-        using var kv = new KvClient((messageType, payload, _) =>
+        await using var kv = new KvClient((messageType, payload, _) =>
         {
             calls.Add(messageType);
             using var response = new BinaryBufferWriter();
@@ -517,7 +517,7 @@ public sealed class KvClientTests
     {
         // Arrange
         ushort seenMessageType = 0;
-        using var kv = new KvClient((messageType, payload, _) =>
+        await using var kv = new KvClient((messageType, payload, _) =>
         {
             if (seenMessageType == 0)
             {
@@ -625,7 +625,7 @@ public sealed class KvClientTests
     public async Task ShouldRejectScanCountGivenMissingHasMoreByteWhenCallingScanAsync()
     {
         // Arrange
-        using var kv = new KvClient((messageType, _, _) =>
+        await using var kv = new KvClient((messageType, _, _) =>
         {
             using var response = new BinaryBufferWriter();
             response.WriteU8(0);
@@ -657,20 +657,20 @@ public sealed class KvClientTests
     {
         // Arrange
         var requestCount = 0;
-        using var kv = new KvClient((_, _, _) =>
+        await using var kv = new KvClient((_, _, _) =>
         {
             requestCount++;
             return Task.FromResult(Array.Empty<byte>());
         });
 
         // Act
-        var ex = await Assert.ThrowsAsync<KvException>(async () =>
+        var ex = await Assert.ThrowsAsync<ArgumentException>(async () =>
         {
             await kv.BeginAsync("");
         });
 
         // Assert
-        Assert.Equal("INVALID_ROUTE", ex.Code);
+        Assert.Equal("route", ex.ParamName);
         Assert.Contains("must be kv://{realm}/{area}/{resource}", ex.Message, StringComparison.Ordinal);
         Assert.Equal(0, requestCount);
     }
@@ -720,7 +720,7 @@ public sealed class KvClientTests
                 new Uri("ws://localhost:4190/ws"),
                 Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
             transportFactory);
-        using var kv = new KvClient(connection);
+        await using var kv = new KvClient(connection);
 
         await connection.ConnectAsync();
         var tx = await kv.BeginAsync("kv://prod/app/users");
@@ -745,7 +745,7 @@ public sealed class KvClientTests
     {
         // Arrange
         var transportCalls = 0;
-        using var kv = new KvClient((_, _, _) =>
+        await using var kv = new KvClient((_, _, _) =>
         {
             transportCalls++;
             return Task.FromResult(Array.Empty<byte>());

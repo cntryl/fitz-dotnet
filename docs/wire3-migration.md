@@ -1,19 +1,21 @@
 # Wire 3 migration
 
-Fitz .NET 4.0.0 requires a Fitz 0.4.0 broker that supports Wire 3. Upgrade the broker and
+Fitz .NET 4.x requires a Fitz 0.4.0 broker that supports Wire 3. Upgrade the broker and
 client fleet together; Wire 1 and Wire 2 fallback is not supported.
 
 ## Queue changes
 
 Capability 1 enables a positive per-message TTL in hours. Set it with
-`EnqueueWithOptionsAsync()` and `QueueEnqueueOptions(TtlHours: hours)`. TTL begins at
+`EnqueueAsync(route, body, new QueueEnqueueOptions(TimeToLive: TimeSpan.FromHours(hours)))`;
+the time-to-live must be a whole number of hours. TTL begins at
 publication and includes any initial delay. NACK, reservation, restart, and replay do not
 restart the TTL; an omitted TTL uses the broker default.
 
 Capability 2 enables NACK with a nonnegative visibility delay in seconds. Call
 `item.NackAsync(visibilityDelay)`. A successful NACK closes the local reservation. Broker
 NACK deduplication is ephemeral, does not survive restart, and does not change the item body
-or attempt count. Another RESERVE increments attempts.
+or the broker's attempt count. Another RESERVE increments that count, which the wire does not
+report to clients.
 
 ## Negotiation and session behavior
 

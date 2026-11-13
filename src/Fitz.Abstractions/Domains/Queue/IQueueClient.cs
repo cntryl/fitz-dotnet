@@ -5,13 +5,6 @@ namespace Cntryl.Fitz;
 /// </summary>
 public interface IQueueClient
 {
-    /// <summary>Enqueues with optional visibility delay and message lifetime in hours.</summary>
-    /// <param name="route">Concrete queue route.</param>
-    /// <param name="body">Opaque payload.</param>
-    /// <param name="options">Publication controls.</param>
-    /// <param name="ct">Cancellation token.</param>
-    /// <returns>The broker-assigned message identifier.</returns>
-    Task<ulong> EnqueueWithOptionsAsync(string route, ReadOnlyMemory<byte> body, QueueEnqueueOptions options, CancellationToken ct = default);
     /// <summary>
     /// Appends a message to a queue.
     /// </summary>
@@ -27,6 +20,24 @@ public interface IQueueClient
         string route,
         ReadOnlyMemory<byte> body,
         TimeSpan? delay = null,
+        CancellationToken ct = default
+    );
+
+    /// <summary>
+    /// Appends a message to a queue with publication controls such as a message lifetime.
+    /// </summary>
+    /// <param name="route">Concrete <c>queue://</c> route to enqueue on.</param>
+    /// <param name="body">Opaque message payload.</param>
+    /// <param name="options">Delivery delay and time-to-live.</param>
+    /// <param name="ct">Cancellation token for the enqueue.</param>
+    /// <returns>The broker-assigned message identifier.</returns>
+    /// <exception cref="NotSupportedException">
+    /// A time-to-live was requested but the broker did not negotiate queue TTL support.
+    /// </exception>
+    Task<ulong> EnqueueAsync(
+        string route,
+        ReadOnlyMemory<byte> body,
+        QueueEnqueueOptions options,
         CancellationToken ct = default
     );
 
@@ -93,12 +104,6 @@ public interface IQueueReservedItem : IAsyncDisposable
 
     /// <summary>The opaque message payload.</summary>
     ReadOnlyMemory<byte> Body { get; }
-
-    /// <summary>
-    /// Delivery attempt count, or <see cref="QueueItem.AttemptUnavailable"/> when the broker
-    /// does not report one. The current wire protocol never reports it.
-    /// </summary>
-    uint Attempt { get; }
 
     /// <summary>
     /// Extends this message's visibility timeout.

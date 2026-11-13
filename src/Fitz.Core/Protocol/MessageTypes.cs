@@ -16,11 +16,11 @@ static class MessageTypes
     /// </summary>
     public const ushort Connect = 1;
 
-    /// <summary>Completes the Wire-2 CONNECT exchange with negotiated limits.</summary>
+    /// <summary>Completes the CONNECT exchange with negotiated limits.</summary>
     public const ushort Hello = 2;
 
     /// <summary>
-    /// Rejects the Wire-2 CONNECT exchange with a structured authentication error.
+    /// Rejects the CONNECT exchange with a structured authentication error.
     /// </summary>
     public const ushort ConnectRejected = 3;
 
@@ -28,11 +28,6 @@ static class MessageTypes
     /// Announces a broker shutdown or drain.
     /// </summary>
     public const ushort GoAway = 4;
-
-    public const ushort Correlate = 0;
-    public const ushort Correlated = 0;
-    public const ushort ServerHello = Hello;
-    public const ushort SessionMetadata = 0;
 
     /// <summary>
     /// Opens a KV transaction over a route and returns its transaction identifier.
@@ -286,7 +281,7 @@ static class MessageTypes
     /// <summary>
     /// Reads a cursor page of registered schedules.
     /// </summary>
-    public const ushort ScheduleListPage = 702;
+    public const ushort ScheduleList = 702;
 
     /// <summary>
     /// Registers interest in schedule firings matching a pattern.
@@ -305,7 +300,4 @@ static class MessageTypes
 
     /// <summary>Creates several schedules in one broker request.</summary>
     public const ushort ScheduleCreateBatch = 706;
-
-    /// <summary>Reads the broker's cursor-based schedule page.</summary>
-    public const ushort ScheduleListV2 = 702;
 }

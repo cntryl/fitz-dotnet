@@ -26,7 +26,6 @@ sealed class AsyncSubscriptionBuffer<T>(string pattern, int capacity = Subscript
 
     internal void ObserveCompletion(Task completion) => _ = ObserveCompletionAsync(completion);
 
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Every terminal registration failure must be forwarded to the enumerable channel.")]
     async Task ObserveCompletionAsync(Task completion)
     {
         try
@@ -34,7 +33,7 @@ sealed class AsyncSubscriptionBuffer<T>(string pattern, int capacity = Subscript
             await completion.ConfigureAwait(false);
             _channel.Writer.TryComplete();
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
         {
             _channel.Writer.TryComplete(ex);
         }

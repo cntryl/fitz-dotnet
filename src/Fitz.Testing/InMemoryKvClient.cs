@@ -1,3 +1,4 @@
+using System.Text;
 using System.Threading.Channels;
 
 namespace Cntryl.Fitz.Testing;
@@ -6,19 +7,86 @@ namespace Cntryl.Fitz.Testing;
 /// Provides a route-isolated, transactional <see cref="IKvClient"/> for consumer tests.
 /// </summary>
 /// <remarks>
-/// Transactions read from a snapshot, see their own writes, and use optimistic route-level
-/// conflict detection at commit. All input and output bytes are cloned. The type is safe for
-/// concurrent test code and has no dependency on a test or assertion framework.
+/// <para>
+/// All input and output bytes are cloned. The type is safe for concurrent test code and has no
+/// dependency on a test or assertion framework. It models the broker's observable behavior, not
+/// its storage engine, and deliberately fails the way the broker (and the real client) fail.
+/// </para>
+/// <para>
+/// <b>Isolation.</b> A read-write transaction takes an exclusive write lock on its route when it
+/// begins; a second read-write <c>BeginAsync</c> on a route whose lock is held fails immediately
+/// with a <see cref="KvException"/> whose <see cref="KvException.DomainCode"/> is
+/// <see cref="FitzErrorCodes.KvIsolationConflict"/>. The lock is released when the transaction
+/// commits, rolls back, is disposed, or is lost (see <see cref="ExpireOpenTransactions"/> and
+/// <see cref="Reset"/>). Read-only transactions never take or wait on the lock and read the
+/// committed state as of their <c>BeginAsync</c>. Commit does not validate reads. A mutating
+/// commit also fails with the same isolation conflict when <see cref="Seed(string, ReadOnlyMemory{byte}, ReadOnlyMemory{byte})"/>
+/// or <see cref="Clear"/> changed the route after the transaction began (an approximation, at
+/// route granularity, of the broker's storage write-conflict check).
+/// </para>
+/// <para>
+/// <b>Commit failure.</b> The broker removes a transaction as soon as it accepts a COMMIT, so
+/// after a commit fails (isolation conflict or an injected fault) nothing was applied, the write
+/// lock is released, and the transaction is gone from the broker. The handle you hold is not
+/// closed, exactly like the real client's: every further operation, a retried commit, and
+/// <c>RollbackAsync</c> throw a <see cref="KvException"/> with domain code 1050
+/// (transaction not found), and <c>DisposeAsync</c> swallows that. The only fault that leaves the
+/// transaction usable is a <see cref="KvException"/> carrying <see cref="FitzErrorCodes.KvBusy"/>,
+/// because the broker never accepted that request.
+/// </para>
+/// <para>
+/// <b>Mutations.</b> Every successful put, insert, delete, and delete-range counts as one mutation
+/// toward the commit notification, including a delete of a missing key and a delete-range over an
+/// empty range, as on the broker. A delete-range whose start is not below its end is rejected.
+/// </para>
+/// <para>
+/// <b>Errors.</b> Broker-side failures are <see cref="KvException"/>s shaped like the real
+/// client's: <see cref="KvException.Code"/> is <c>{OPERATION}_FAILED</c> (for example
+/// <c>INSERT_FAILED</c>) and <see cref="KvException.DomainCode"/> carries the broker code (1054
+/// write in read-only, 1055 key exists, 1050 transaction not found, 1053 isolation conflict, 1002
+/// for a rejected request). Client-side rejections keep the real client's codes
+/// (<c>INVALID_ROUTE</c>, <c>TX_CLOSED</c>). A request whose encoded frame would exceed
+/// <see cref="InMemoryKvClientOptions.MaxFrameSize"/> throws <see cref="ProtocolException"/> before
+/// anything is recorded as sent. The broker has no separate key or value size limit and accepts an
+/// empty key, so this type does not either.
+/// </para>
+/// <para>
+/// <b>Scans.</b> Bounds are directional: forward scans return <c>start &lt;= key &lt; end</c>,
+/// reverse scans return <c>end &lt; key &lt;= start</c>, and <see cref="KvScanQuery.StartExclusive"/>
+/// makes the start bound strict. Inverted bounds return an empty page. A page never exceeds the
+/// broker's 1024 items or 65,529 bytes of encoded pairs, whichever is reached first, so a consumer
+/// that ignores <see cref="KvScanResult.HasMore"/> fails here as it would against the broker.
+/// <see cref="IKvTransaction.SupportsExclusiveScan"/> is <see langword="true"/>.
+/// </para>
+/// <para>
+/// <b>Not modeled:</b> authorization, realm validation, idle transaction expiry on a clock,
+/// key-level write conflicts, DROP, and per-session lock ownership (one client is one broker).
+/// </para>
 /// </remarks>
 public sealed class InMemoryKvClient : IKvClient
 {
+    // Broker constants. Sources: fitz src/domains/kv/actor/scan.rs (MAX_SCAN_ITEMS),
+    // src/domains/kv/scan_wire_budget.rs (response payload ceiling and envelope overhead).
+    const int BrokerMaxScanItems = 1024;
+    const int BrokerScanItemOverheadBytes = 8;
+    const int BrokerScanResponseCeilingBytes = ushort.MaxValue - 6;
+
+    // Broker KV codes not exposed by FitzErrorCodes (docs/clients/spec/error-codes.md).
+    const uint TransactionNotFoundCode = 1050;
+    const uint WriteInReadOnlyCode = 1054;
+    const uint KeyExistsCode = 1055;
+    const uint InvalidRequestCode = 1002;
+
     readonly object _gate = new();
     readonly Dictionary<string, RouteState> _routes = [with(StringComparer.Ordinal)];
+    readonly Dictionary<string, InMemoryKvTransaction> _writers = [with(StringComparer.Ordinal)];
+    readonly HashSet<InMemoryKvTransaction> _openTransactions = [with(ReferenceEqualityComparer.Instance)];
     readonly List<OperationEntry> _operations = [];
     readonly List<FaultEntry> _faults = [];
     readonly Dictionary<long, SubscriptionEntry> _subscriptions = [];
     readonly int? _scanPageSize;
     readonly int? _subscriptionBufferCapacity;
+    readonly int _maxFrameSize;
     long _nextSubscriptionId;
     long _nextTransactionId;
     long _generation;
@@ -44,9 +112,16 @@ public sealed class InMemoryKvClient : IKvClient
                 nameof(options),
                 "SubscriptionBufferCapacity must be positive when supplied.");
         }
+        if (options.MaxFrameSize is < FitzLimits.MinFrameSize or > FitzLimits.MaxFrameSize)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(options),
+                $"MaxFrameSize must be between {FitzLimits.MinFrameSize} and {FitzLimits.MaxFrameSize} bytes.");
+        }
 
         _scanPageSize = options.ScanPageSize;
         _subscriptionBufferCapacity = options.SubscriptionBufferCapacity;
+        _maxFrameSize = options.MaxFrameSize;
     }
 
     /// <summary>Gets cloned records of operations observed so far.</summary>
@@ -61,7 +136,11 @@ public sealed class InMemoryKvClient : IKvClient
         }
     }
 
-    /// <summary>Seeds or replaces a committed value without opening a transaction.</summary>
+    /// <summary>
+    /// Seeds or replaces a committed value without opening a transaction. Subscribers whose
+    /// pattern matches the route receive one notification with a mutation count of one, as for
+    /// an out-of-band change on the broker.
+    /// </summary>
     /// <param name="route">Exact KV route.</param>
     /// <param name="key">Key bytes.</param>
     /// <param name="value">Value bytes.</param>
@@ -73,25 +152,50 @@ public sealed class InMemoryKvClient : IKvClient
             var state = GetOrCreateRoute(route);
             state.Values[key.ToArray()] = value.ToArray();
             state.Version++;
+            Notify(route, 1);
         }
     }
 
-    /// <summary>Seeds or replaces several committed values without opening a transaction.</summary>
+    /// <summary>
+    /// Seeds or replaces several committed values without opening a transaction. Subscribers
+    /// whose pattern matches the route receive one notification counting every pair written.
+    /// </summary>
     /// <param name="route">Exact KV route.</param>
     /// <param name="pairs">Pairs to clone into the route.</param>
     public void Seed(string route, params KvPair[] pairs)
     {
         ArgumentNullException.ThrowIfNull(pairs);
+        Seed(route, (IEnumerable<KvPair>)pairs);
+    }
+
+    /// <summary>
+    /// Seeds or replaces several committed values without opening a transaction. Subscribers
+    /// whose pattern matches the route receive one notification counting every pair written.
+    /// </summary>
+    /// <param name="route">Exact KV route.</param>
+    /// <param name="pairs">Pairs to clone into the route.</param>
+    public void Seed(string route, IEnumerable<KvPair> pairs)
+    {
+        ArgumentNullException.ThrowIfNull(pairs);
         ValidateRoute(route);
+        var snapshot = pairs.ToArray();
+        foreach (var pair in snapshot)
+        {
+            ArgumentNullException.ThrowIfNull(pair);
+        }
+
         lock (_gate)
         {
             var state = GetOrCreateRoute(route);
-            foreach (var pair in pairs)
+            foreach (var pair in snapshot)
             {
-                ArgumentNullException.ThrowIfNull(pair);
                 state.Values[pair.Key.ToArray()] = pair.Value.ToArray();
             }
-            state.Version++;
+            if (snapshot.Length > 0)
+            {
+                state.Version++;
+                Notify(route, (ulong)snapshot.Length);
+            }
         }
     }
 
@@ -124,17 +228,22 @@ public sealed class InMemoryKvClient : IKvClient
         }
     }
 
-    /// <summary>Removes committed values for one route.</summary>
+    /// <summary>
+    /// Removes committed values for one route. When the route held any, matching subscribers
+    /// receive one notification counting the removed keys.
+    /// </summary>
     /// <param name="route">Exact KV route.</param>
     public void Clear(string route)
     {
         ValidateRoute(route);
         lock (_gate)
         {
-            if (_routes.TryGetValue(route, out var state))
+            if (_routes.TryGetValue(route, out var state) && state.Values.Count > 0)
             {
+                var removed = (ulong)state.Values.Count;
                 state.Values.Clear();
                 state.Version++;
+                Notify(route, removed);
             }
         }
     }
@@ -157,7 +266,10 @@ public sealed class InMemoryKvClient : IKvClient
         }
     }
 
-    /// <summary>Clears committed data, history, faults, and active subscriptions.</summary>
+    /// <summary>
+    /// Clears committed data, history, faults, write locks, and active subscriptions, and
+    /// invalidates every open transaction.
+    /// </summary>
     public void Reset()
     {
         List<Channel<KvNotification>> subscriptions;
@@ -166,6 +278,8 @@ public sealed class InMemoryKvClient : IKvClient
             _routes.Clear();
             _operations.Clear();
             _faults.Clear();
+            _writers.Clear();
+            _openTransactions.Clear();
             _generation++;
             _nextSubscriptionId = 0;
             _nextTransactionId = 0;
@@ -178,10 +292,52 @@ public sealed class InMemoryKvClient : IKvClient
         }
     }
 
-    /// <summary>Queues an exception for the next matching operation.</summary>
+    /// <summary>
+    /// Simulates the broker discarding open transactions, as idle expiry or a disconnect does:
+    /// each affected transaction is rolled back on the broker and releases its write lock, while
+    /// the handles callers hold stay open and fail with "transaction not found" (domain code 1050)
+    /// on their next use.
+    /// </summary>
+    /// <param name="route">Optional exact route filter; every route when omitted.</param>
+    /// <returns>The number of transactions discarded.</returns>
+    public int ExpireOpenTransactions(string? route = null)
+    {
+        if (route is not null)
+        {
+            ValidateRoute(route);
+        }
+
+        lock (_gate)
+        {
+            var expired = _openTransactions
+                .Where(transaction => route is null || string.Equals(transaction.Route, route, StringComparison.Ordinal))
+                .ToArray();
+            foreach (var transaction in expired)
+            {
+                EndTransaction(transaction);
+            }
+            return expired.Length;
+        }
+    }
+
+    /// <summary>
+    /// Queues an exception for the next matching operation. The operation is recorded in
+    /// <see cref="Operations"/> and then throws <paramref name="exception"/>, which counts as the
+    /// broker or transport failing that request. A fault on <see cref="KvTestOperation.Rollback"/>
+    /// leaves the transaction open on the broker, still holding its write lock; one on
+    /// <see cref="KvTestOperation.Commit"/> consumes it (see the type remarks).
+    /// </summary>
     /// <param name="operation">Operation to fail.</param>
     /// <param name="exception">Exception thrown from the operation.</param>
     /// <param name="route">Optional exact route filter.</param>
+    /// <remarks>
+    /// <c>DisposeAsync</c> performs the same best-effort rollback as the real client: it consumes
+    /// and records a queued rollback fault but, like the real client, does not let a
+    /// <see cref="FitzException"/>, <see cref="System.IO.IOException"/>, <see cref="OperationCanceledException"/>,
+    /// or <see cref="TimeoutException"/> escape. A fault of any other type propagates from
+    /// <c>DisposeAsync</c> so a test cannot mistake it for a swallowed failure. Call
+    /// <c>RollbackAsync</c> explicitly to observe a rollback fault of any type.
+    /// </remarks>
     public void FailNext(KvTestOperation operation, Exception exception, string? route = null)
     {
         ArgumentNullException.ThrowIfNull(exception);
@@ -223,13 +379,22 @@ public sealed class InMemoryKvClient : IKvClient
         {
             throw new ArgumentOutOfRangeException(nameof(mode));
         }
+        ValidateFrame(sizeof(int) + Encoding.UTF8.GetByteCount(route) + sizeof(byte));
 
         lock (_gate)
         {
             var transactionId = ++_nextTransactionId;
             RecordAndFault(transactionId, KvTestOperation.Begin, route, mode);
+            if (mode == KvMode.ReadWrite && _writers.ContainsKey(route))
+            {
+                throw BrokerError(
+                    "BEGIN",
+                    FitzErrorCodes.KvIsolationConflict,
+                    "Transaction conflict: resource already has an active read-write transaction");
+            }
+
             var state = GetOrCreateRoute(route);
-            IKvTransaction transaction = new InMemoryKvTransaction(
+            var transaction = new InMemoryKvTransaction(
                 this,
                 transactionId,
                 route,
@@ -238,7 +403,12 @@ public sealed class InMemoryKvClient : IKvClient
                 state.Version,
                 CloneValues(state.Values),
                 _scanPageSize);
-            return Task.FromResult(transaction);
+            _openTransactions.Add(transaction);
+            if (mode == KvMode.ReadWrite)
+            {
+                _writers[route] = transaction;
+            }
+            return Task.FromResult<IKvTransaction>(transaction);
         }
     }
 
@@ -276,6 +446,39 @@ public sealed class InMemoryKvClient : IKvClient
             AllowSynchronousContinuations = false,
         });
 
+    static KvException BrokerError(string operation, uint domainCode, string detail) =>
+        new($"{operation} failed: {detail}", $"{operation}_FAILED", 1, domainCode);
+
+    static string OperationName(KvTestOperation operation) => operation switch
+    {
+        KvTestOperation.Begin => "BEGIN",
+        KvTestOperation.Get => "GET",
+        KvTestOperation.Put => "PUT",
+        KvTestOperation.Insert => "INSERT",
+        KvTestOperation.Delete => "DELETE",
+        KvTestOperation.DeleteRange => "DELETE_RANGE",
+        KvTestOperation.Scan => "SCAN",
+        KvTestOperation.Commit => "COMMIT",
+        KvTestOperation.Rollback => "ROLLBACK",
+        KvTestOperation.Subscribe => "SUBSCRIBE",
+        _ => throw new ArgumentOutOfRangeException(nameof(operation)),
+    };
+
+    static KvException TransactionNotFound(KvTestOperation operation) =>
+        BrokerError(OperationName(operation), TransactionNotFoundCode, "Invalid or unknown transaction ID");
+
+    // The real client encodes the frame before sending, so an oversized request never reaches the
+    // broker and is not recorded as an operation.
+    internal void ValidateFrame(long payloadLength)
+    {
+        var encodedLength = FitzLimits.MinFrameSize + payloadLength;
+        if (encodedLength > _maxFrameSize)
+        {
+            throw new ProtocolException(
+                $"Encoded frame length {encodedLength} exceeds configured or negotiated limit {_maxFrameSize}.");
+        }
+    }
+
     internal void RecordAndFault(
         long? transactionId,
         KvTestOperation operation,
@@ -289,67 +492,184 @@ public sealed class InMemoryKvClient : IKvClient
     {
         lock (_gate)
         {
-            _operations.Add(new OperationEntry(
-                transactionId,
-                operation,
-                route,
-                durability,
-                mode,
-                key?.ToArray(),
-                value?.ToArray(),
-                endKey?.ToArray(),
-                CloneQuery(scanQuery)));
-            var index = _faults.FindIndex(fault =>
-                fault.Operation == operation &&
-                (fault.Route is null || string.Equals(fault.Route, route, StringComparison.Ordinal)));
-            if (index >= 0)
+            if (RecordAndTakeFault(transactionId, operation, route, mode, key, value, endKey, scanQuery, durability)
+                is { } fault)
             {
-                var exception = _faults[index].Exception;
-                _faults.RemoveAt(index);
-                throw exception;
+                throw fault;
             }
         }
     }
 
-    internal void Commit(
+    // Records the operation and removes the first matching queued fault. The caller holds _gate.
+    Exception? RecordAndTakeFault(
+        long? transactionId,
+        KvTestOperation operation,
         string route,
-        long generation,
-        long snapshotVersion,
+        KvMode? mode,
+        ReadOnlyMemory<byte>? key,
+        ReadOnlyMemory<byte>? value,
+        ReadOnlyMemory<byte>? endKey,
+        KvScanQuery? scanQuery,
+        KvDurability? durability)
+    {
+        _operations.Add(new OperationEntry(
+            transactionId,
+            operation,
+            route,
+            durability,
+            mode,
+            key?.ToArray(),
+            value?.ToArray(),
+            endKey?.ToArray(),
+            CloneQuery(scanQuery)));
+        var index = _faults.FindIndex(fault =>
+            fault.Operation == operation &&
+            (fault.Route is null || string.Equals(fault.Route, route, StringComparison.Ordinal)));
+        if (index < 0)
+        {
+            return null;
+        }
+
+        var exception = _faults[index].Exception;
+        _faults.RemoveAt(index);
+        return exception;
+    }
+
+    // Common prologue of GET, PUT, INSERT, DELETE, DELETE_RANGE and SCAN: record, honor a queued
+    // fault, then apply the broker's checks in its order (transaction lookup, then write mode).
+    void Dispatch(
+        InMemoryKvTransaction transaction,
+        KvTestOperation operation,
+        bool isWrite,
+        ReadOnlyMemory<byte>? key = null,
+        ReadOnlyMemory<byte>? value = null,
+        ReadOnlyMemory<byte>? endKey = null,
+        KvScanQuery? scanQuery = null)
+    {
+        lock (_gate)
+        {
+            EnsureGeneration(transaction.Generation);
+            RecordAndFault(
+                transaction.Id,
+                operation,
+                transaction.Route,
+                transaction.Mode,
+                key,
+                value,
+                endKey,
+                scanQuery);
+            if (transaction.BrokerEnded)
+            {
+                throw TransactionNotFound(operation);
+            }
+            if (isWrite && transaction.Mode == KvMode.ReadOnly)
+            {
+                throw BrokerError(OperationName(operation), WriteInReadOnlyCode, "Write attempted in a read-only transaction");
+            }
+        }
+    }
+
+    // Record, apply and publish under one lock so history order, commit order, and notification
+    // order are the same total order.
+    void Commit(
+        InMemoryKvTransaction transaction,
+        KvDurability durability,
         SortedDictionary<byte[], byte[]> values,
         ulong mutationCount)
     {
-        List<Channel<KvNotification>> subscribers;
         lock (_gate)
         {
-            EnsureGeneration(generation);
-            var state = GetOrCreateRoute(route);
-            if (mutationCount > 0 && state.Version != snapshotVersion)
+            EnsureGeneration(transaction.Generation);
+            var fault = RecordAndTakeFault(
+                transaction.Id,
+                KvTestOperation.Commit,
+                transaction.Route,
+                transaction.Mode,
+                null,
+                null,
+                null,
+                null,
+                durability);
+            if (fault is not null)
             {
-                throw new KvException(
-                    "The transaction lost an isolation conflict.",
-                    "ISOLATION_CONFLICT",
-                    domainCode: FitzErrorCodes.KvIsolationConflict);
+                // The broker removes the transaction once it accepts COMMIT; only a BUSY
+                // response means the request was never accepted.
+                if (fault is not KvException { DomainCode: FitzErrorCodes.KvBusy })
+                {
+                    EndTransaction(transaction);
+                }
+                throw fault;
+            }
+            if (transaction.BrokerEnded)
+            {
+                throw TransactionNotFound(KvTestOperation.Commit);
             }
 
+            EndTransaction(transaction);
             if (mutationCount == 0)
             {
                 return;
             }
 
+            var state = GetOrCreateRoute(transaction.Route);
+            if (state.Version != transaction.SnapshotVersion)
+            {
+                throw BrokerError(
+                    "COMMIT",
+                    FitzErrorCodes.KvIsolationConflict,
+                    "Transaction conflict: the route changed after the transaction began");
+            }
+
             state.Values = CloneValues(values);
             state.Version++;
-            subscribers = _subscriptions.Values
-                .Where(subscription => PatternMatches(subscription.Pattern, route))
-                .Select(static subscription => subscription.Channel)
-                .ToList();
+            Notify(transaction.Route, mutationCount);
+        }
+    }
+
+    void Rollback(InMemoryKvTransaction transaction)
+    {
+        lock (_gate)
+        {
+            EnsureGeneration(transaction.Generation);
+            RecordAndFault(transaction.Id, KvTestOperation.Rollback, transaction.Route, transaction.Mode);
+            if (transaction.BrokerEnded)
+            {
+                throw TransactionNotFound(KvTestOperation.Rollback);
+            }
+            EndTransaction(transaction);
+        }
+    }
+
+    // Forgets a transaction on the broker side and releases its write lock. The caller holds _gate.
+    void EndTransaction(InMemoryKvTransaction transaction)
+    {
+        transaction.MarkBrokerEnded();
+        _openTransactions.Remove(transaction);
+        if (_writers.TryGetValue(transaction.Route, out var writer) && ReferenceEquals(writer, transaction))
+        {
+            _writers.Remove(transaction.Route);
+        }
+    }
+
+    // Delivers while holding _gate, so notifications leave in the order state changes happened.
+    // Channel writes never block: a full bounded channel fails the subscription instead.
+    void Notify(string route, ulong mutationCount)
+    {
+        if (mutationCount == 0)
+        {
+            return;
         }
 
         var notification = new KvNotification(route, mutationCount);
-        foreach (var subscriber in subscribers)
+        foreach (var subscription in _subscriptions.Values)
         {
-            if (!subscriber.Writer.TryWrite(notification))
+            if (!PatternMatches(subscription.Pattern, route))
             {
-                subscriber.Writer.TryComplete(new SubscriptionBackpressureException(
+                continue;
+            }
+            if (!subscription.Channel.Writer.TryWrite(notification))
+            {
+                subscription.Channel.Writer.TryComplete(new SubscriptionBackpressureException(
                     "The in-memory KV subscription buffer overflowed."));
             }
         }
@@ -418,7 +738,7 @@ public sealed class InMemoryKvClient : IKvClient
             segments.Length != 3 ||
             segments.Any(static segment => segment.Contains('*', StringComparison.Ordinal)))
         {
-            throw new KvException($"route '{route}' must be kv://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+            throw new ArgumentException($"route '{route}' must be kv://{{realm}}/{{area}}/{{resource}}", nameof(route));
         }
     }
 
@@ -431,9 +751,7 @@ public sealed class InMemoryKvClient : IKvClient
             (segments.Length - segments.Count(static segment => segment == "**") > 3) ||
             (segments.All(static segment => segment != "**") && segments.Length != 3))
         {
-            throw new KvException(
-                $"pattern '{pattern}' must use whole-segment wildcards and match a three-segment KV route",
-                "INVALID_ROUTE");
+            throw new ArgumentException($"pattern '{pattern}' must use whole-segment wildcards and match a three-segment KV route", nameof(pattern));
         }
     }
 
@@ -513,10 +831,15 @@ public sealed class InMemoryKvClient : IKvClient
             Route,
             Durability,
             Mode,
-            Key?.ToArray(),
-            Value?.ToArray(),
-            EndKey?.ToArray(),
+            Copy(Key),
+            Copy(Value),
+            Copy(EndKey),
             CloneQuery(ScanQuery));
+
+        // A conditional with a null arm would pick ReadOnlyMemory<byte> through its implicit
+        // array conversion and yield an empty value rather than null.
+        static ReadOnlyMemory<byte>? Copy(byte[]? bytes) =>
+            bytes is null ? default(ReadOnlyMemory<byte>?) : new ReadOnlyMemory<byte>(bytes.ToArray());
     }
 
     sealed record FaultEntry(KvTestOperation Operation, string? Route, Exception Exception);
@@ -555,16 +878,13 @@ public sealed class InMemoryKvClient : IKvClient
     sealed class InMemoryKvTransaction : IKvTransaction
     {
         readonly InMemoryKvClient _owner;
-        readonly long _transactionId;
-        readonly string _route;
-        readonly KvMode _mode;
-        readonly long _generation;
-        readonly long _snapshotVersion;
         readonly int? _scanPageSize;
         readonly object _gate = new();
         readonly SortedDictionary<byte[], byte[]> _values;
+        readonly long _requestPrefixBytes;
         ulong _mutationCount;
         bool _closed;
+        volatile bool _brokerEnded;
 
         internal InMemoryKvTransaction(
             InMemoryKvClient owner,
@@ -577,16 +897,33 @@ public sealed class InMemoryKvClient : IKvClient
             int? scanPageSize)
         {
             _owner = owner;
-            _transactionId = transactionId;
-            _route = route;
-            _mode = mode;
-            _generation = generation;
-            _snapshotVersion = snapshotVersion;
+            Id = transactionId;
+            Route = route;
+            Mode = mode;
+            Generation = generation;
+            SnapshotVersion = snapshotVersion;
             _values = values;
             _scanPageSize = scanPageSize;
+            // tx_id (u64) and the length-prefixed route open every KV request payload.
+            _requestPrefixBytes = sizeof(ulong) + sizeof(int) + Encoding.UTF8.GetByteCount(route);
         }
 
-        public string Route => _route;
+        internal long Id { get; }
+
+        public string Route { get; }
+
+        internal KvMode Mode { get; }
+
+        internal long Generation { get; }
+
+        internal long SnapshotVersion { get; }
+
+        // Set by the owner under its lock; read here under this transaction's lock.
+        internal bool BrokerEnded => _brokerEnded;
+
+        public bool SupportsExclusiveScan => true;
+
+        internal void MarkBrokerEnded() => _brokerEnded = true;
 
         public Task<KvGetResult> GetAsync(ReadOnlyMemory<byte> key, CancellationToken ct = default)
         {
@@ -594,7 +931,8 @@ public sealed class InMemoryKvClient : IKvClient
             lock (_gate)
             {
                 EnsureOpen();
-                _owner.RecordAndFault(_transactionId, KvTestOperation.Get, _route, _mode, key);
+                _owner.ValidateFrame(_requestPrefixBytes + sizeof(int) + key.Length);
+                _owner.Dispatch(this, KvTestOperation.Get, isWrite: false, key);
                 return Task.FromResult(_values.TryGetValue(key.ToArray(), out var value)
                     ? new KvGetResult(true, value.ToArray())
                     : new KvGetResult(false));
@@ -612,8 +950,10 @@ public sealed class InMemoryKvClient : IKvClient
             ct.ThrowIfCancellationRequested();
             lock (_gate)
             {
-                EnsureWritable();
-                _owner.RecordAndFault(_transactionId, KvTestOperation.Delete, _route, _mode, key);
+                EnsureOpen();
+                _owner.ValidateFrame(_requestPrefixBytes + sizeof(int) + key.Length);
+                _owner.Dispatch(this, KvTestOperation.Delete, isWrite: true, key);
+                // The broker counts every accepted delete, whether or not the key exists.
                 _values.Remove(key.ToArray());
                 _mutationCount++;
                 return Task.CompletedTask;
@@ -628,21 +968,27 @@ public sealed class InMemoryKvClient : IKvClient
             ct.ThrowIfCancellationRequested();
             lock (_gate)
             {
-                EnsureWritable();
-                _owner.RecordAndFault(
-                    _transactionId,
-                    KvTestOperation.DeleteRange,
-                    _route,
-                    _mode,
-                    startKey,
-                    endKey: endKey);
+                EnsureOpen();
+                _owner.ValidateFrame(_requestPrefixBytes + sizeof(int) + startKey.Length + sizeof(int) + endKey.Length);
+                _owner.Dispatch(this, KvTestOperation.DeleteRange, isWrite: true, startKey, endKey: endKey);
+                var start = startKey.ToArray();
+                var end = endKey.ToArray();
+                if (ByteArrayComparer.Instance.Compare(start, end) >= 0)
+                {
+                    throw BrokerError(
+                        "DELETE_RANGE",
+                        InvalidRequestCode,
+                        "Invalid request: start must be less than end");
+                }
+
                 var keys = _values.Keys.Where(key =>
-                    ByteArrayComparer.Instance.Compare(key, startKey.ToArray()) >= 0 &&
-                    ByteArrayComparer.Instance.Compare(key, endKey.ToArray()) < 0).ToArray();
+                    ByteArrayComparer.Instance.Compare(key, start) >= 0 &&
+                    ByteArrayComparer.Instance.Compare(key, end) < 0).ToArray();
                 foreach (var key in keys)
                 {
                     _values.Remove(key);
                 }
+                // An empty range still counts, as on the broker.
                 _mutationCount++;
                 return Task.CompletedTask;
             }
@@ -655,39 +1001,9 @@ public sealed class InMemoryKvClient : IKvClient
             lock (_gate)
             {
                 EnsureOpen();
-                _owner.RecordAndFault(
-                    _transactionId,
-                    KvTestOperation.Scan,
-                    _route,
-                    _mode,
-                    query.StartKey,
-                    scanQuery: query);
-                IEnumerable<KeyValuePair<byte[], byte[]>> candidates = _values;
-                if (query.StartKey is { } start)
-                {
-                    var startBytes = start.ToArray();
-                    candidates = candidates.Where(pair => ByteArrayComparer.Instance.Compare(pair.Key, startBytes) >= 0);
-                }
-                if (query.EndKey is { } end)
-                {
-                    var endBytes = end.ToArray();
-                    candidates = candidates.Where(pair => ByteArrayComparer.Instance.Compare(pair.Key, endBytes) < 0);
-                }
-                if (query.Reverse)
-                {
-                    candidates = candidates.Reverse();
-                }
-
-                var requested = query.Limit is null or 0 or > int.MaxValue
-                    ? int.MaxValue
-                    : (int)query.Limit.Value;
-                var limit = _scanPageSize.HasValue ? Math.Min(requested, _scanPageSize.Value) : requested;
-                var materialized = candidates.Take(limit == int.MaxValue ? int.MaxValue : limit + 1).ToArray();
-                var hasMore = materialized.Length > limit;
-                var pairs = materialized.Take(limit)
-                    .Select(static pair => new KvPair(pair.Key.ToArray(), pair.Value.ToArray()))
-                    .ToArray();
-                return Task.FromResult(new KvScanResult(pairs, hasMore));
+                _owner.ValidateFrame(ScanRequestBytes(query));
+                _owner.Dispatch(this, KvTestOperation.Scan, isWrite: false, query.StartKey, scanQuery: query);
+                return Task.FromResult(Scan(query));
             }
         }
 
@@ -701,8 +1017,8 @@ public sealed class InMemoryKvClient : IKvClient
             lock (_gate)
             {
                 EnsureOpen();
-                _owner.RecordAndFault(_transactionId, KvTestOperation.Commit, _route, _mode, durability: durability);
-                _owner.Commit(_route, _generation, _snapshotVersion, _values, _mutationCount);
+                _owner.ValidateFrame(_requestPrefixBytes + sizeof(byte));
+                _owner.Commit(this, durability, _values, _mutationCount);
                 _closed = true;
                 return Task.CompletedTask;
             }
@@ -717,34 +1033,49 @@ public sealed class InMemoryKvClient : IKvClient
                 {
                     return Task.CompletedTask;
                 }
-                EnsureOpen();
-                _owner.RecordAndFault(_transactionId, KvTestOperation.Rollback, _route, _mode);
+                _owner.ValidateFrame(_requestPrefixBytes);
+                _owner.Rollback(this);
                 _closed = true;
                 return Task.CompletedTask;
             }
         }
 
-        [System.Diagnostics.CodeAnalysis.SuppressMessage(
-            "Design",
-            "CA1031:Do not catch general exception types",
-            Justification = "Test-double disposal mirrors production best-effort rollback and must not hide the test's primary exception.")]
         public ValueTask DisposeAsync()
         {
             lock (_gate)
             {
-                if (!_closed)
+                try
                 {
-                    try
+                    if (!_closed)
                     {
-                        _owner.EnsureGeneration(_generation);
-                        _owner.RecordAndFault(_transactionId, KvTestOperation.Rollback, _route, _mode);
-                    }
-                    catch (Exception)
-                    {
-                        // Disposal mirrors the production client's best-effort rollback cleanup.
+                        // Disposal is the real client's bounded best-effort rollback: failures a
+                        // wire request can produce are swallowed, anything else is a test fault.
+                        try
+                        {
+                            _owner.Rollback(this);
+                        }
+                        catch (FitzException)
+                        {
+                            // Broker rejection, such as "transaction not found" after a failed commit.
+                        }
+                        catch (System.IO.IOException)
+                        {
+                            // Transport failure.
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            // Cleanup deadline.
+                        }
+                        catch (TimeoutException)
+                        {
+                            // Cleanup deadline.
+                        }
                     }
                 }
-                _closed = true;
+                finally
+                {
+                    _closed = true;
+                }
             }
             return ValueTask.CompletedTask;
         }
@@ -759,12 +1090,13 @@ public sealed class InMemoryKvClient : IKvClient
             ct.ThrowIfCancellationRequested();
             lock (_gate)
             {
-                EnsureWritable();
-                _owner.RecordAndFault(_transactionId, operation, _route, _mode, key, value);
+                EnsureOpen();
+                _owner.ValidateFrame(_requestPrefixBytes + sizeof(int) + key.Length + sizeof(int) + value.Length);
+                _owner.Dispatch(this, operation, isWrite: true, key, value);
                 var keyBytes = key.ToArray();
                 if (insertOnly && _values.ContainsKey(keyBytes))
                 {
-                    throw new KvException("The key already exists.", "KEY_EXISTS");
+                    throw BrokerError("INSERT", KeyExistsCode, "Key already exists");
                 }
                 _values[keyBytes] = value.ToArray();
                 _mutationCount++;
@@ -772,13 +1104,94 @@ public sealed class InMemoryKvClient : IKvClient
             }
         }
 
-        void EnsureWritable()
+        // Mirrors the broker's SCAN: directional bounds, strict start on request, empty result for
+        // inverted bounds, and a page capped by item count and by response bytes.
+        KvScanResult Scan(KvScanQuery query)
         {
-            EnsureOpen();
-            if (_mode == KvMode.ReadOnly)
+            var comparer = ByteArrayComparer.Instance;
+            var start = query.StartKey?.ToArray();
+            var end = query.EndKey?.ToArray();
+            if (start is not null && end is not null &&
+                (query.Reverse ? comparer.Compare(start, end) <= 0 : comparer.Compare(start, end) >= 0))
             {
-                throw new KvException("The transaction is read-only.", "READ_ONLY");
+                return new KvScanResult([], false);
             }
+
+            IEnumerable<KeyValuePair<byte[], byte[]>> candidates = _values;
+            if (query.Reverse)
+            {
+                if (start is not null)
+                {
+                    candidates = candidates.Where(pair => query.StartExclusive
+                        ? comparer.Compare(pair.Key, start) < 0
+                        : comparer.Compare(pair.Key, start) <= 0);
+                }
+                if (end is not null)
+                {
+                    candidates = candidates.Where(pair => comparer.Compare(pair.Key, end) > 0);
+                }
+                candidates = candidates.Reverse();
+            }
+            else
+            {
+                if (start is not null)
+                {
+                    candidates = candidates.Where(pair => query.StartExclusive
+                        ? comparer.Compare(pair.Key, start) > 0
+                        : comparer.Compare(pair.Key, start) >= 0);
+                }
+                if (end is not null)
+                {
+                    candidates = candidates.Where(pair => comparer.Compare(pair.Key, end) < 0);
+                }
+            }
+
+            var cap = Math.Min(BrokerMaxScanItems, _scanPageSize ?? BrokerMaxScanItems);
+            var limit = query.Limit is null or 0 ? cap : (int)Math.Min(query.Limit.Value, (uint)cap);
+            var pairs = new List<KvPair>();
+            long used = 0;
+            var hasMore = false;
+            foreach (var pair in candidates)
+            {
+                if (pairs.Count >= limit)
+                {
+                    hasMore = true;
+                    break;
+                }
+
+                var cost = BrokerScanItemOverheadBytes + (long)pair.Key.Length + pair.Value.Length;
+                if (used + cost > BrokerScanResponseCeilingBytes)
+                {
+                    if (pairs.Count == 0)
+                    {
+                        throw BrokerError(
+                            "SCAN",
+                            InvalidRequestCode,
+                            $"Invalid request: scan pair ({pair.Key.Length} byte key) is {cost} wire bytes, " +
+                            $"exceeding the {BrokerScanResponseCeilingBytes}-byte limit a scan response can return");
+                    }
+                    hasMore = true;
+                    break;
+                }
+                used += cost;
+                pairs.Add(new KvPair(pair.Key.ToArray(), pair.Value.ToArray()));
+            }
+            return new KvScanResult(pairs, hasMore);
+        }
+
+        long ScanRequestBytes(KvScanQuery query)
+        {
+            // has_start, has_end, has_limit and the options byte, plus optional bodies.
+            var bytes = _requestPrefixBytes + 4;
+            if (query.StartKey is { } start)
+            {
+                bytes += sizeof(int) + start.Length;
+            }
+            if (query.EndKey is { } end)
+            {
+                bytes += sizeof(int) + end.Length;
+            }
+            return query.Limit.HasValue ? bytes + sizeof(uint) : bytes;
         }
 
         void EnsureOpen()
@@ -787,7 +1200,7 @@ public sealed class InMemoryKvClient : IKvClient
             {
                 throw new KvException("The transaction is closed.", "TX_CLOSED");
             }
-            _owner.EnsureGeneration(_generation);
+            _owner.EnsureGeneration(Generation);
         }
     }
 }

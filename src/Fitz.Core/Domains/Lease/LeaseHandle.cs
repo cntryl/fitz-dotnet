@@ -1,5 +1,5 @@
-using System.Threading;
 using Cntryl.Fitz.Protocol;
+using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Domains.Lease;
 
@@ -12,12 +12,15 @@ namespace Cntryl.Fitz.Domains.Lease;
 /// </remarks>
 sealed class LeaseHandle : ILease
 {
+    static readonly TimeSpan CleanupBudget = TimeSpan.FromSeconds(5);
+
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
-    IDisposable? _disconnectRegistration;
-    int _closed;
+    readonly SessionLatch _session;
+    readonly TimeProvider _time;
     int _disposed;
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Disposal may race active operations; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
     readonly SemaphoreSlim _operationGate = new(1, 1);
+    readonly CancellationTokenSource _closing = new();
+    readonly CancellationToken _closingToken;
     readonly TaskCompletionSource _connectionLost = new(TaskCreationOptions.RunContinuationsAsynchronously);
     readonly TaskCompletionSource _fencingTokenChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -25,20 +28,15 @@ sealed class LeaseHandle : ILease
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
         string route,
         ulong token,
-        Func<Action, IDisposable>? registerOnDisconnect = null)
+        Func<Action, IDisposable>? registerOnDisconnect = null,
+        TimeProvider? timeProvider = null)
     {
         _request = request;
+        _time = timeProvider ?? TimeProvider.System;
+        _closingToken = _closing.Token;
         Route = route;
         FencingToken = token;
-        var disconnectRegistration = registerOnDisconnect?.Invoke(MarkConnectionLost);
-        if (disconnectRegistration is not null)
-        {
-            Interlocked.Exchange(ref _disconnectRegistration, disconnectRegistration)?.Dispose();
-            if (Volatile.Read(ref _closed) != 0)
-            {
-                Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
-            }
-        }
+        _session = new SessionLatch(registerOnDisconnect, () => _connectionLost.TrySetResult());
     }
 
     /// <inheritdoc />
@@ -58,7 +56,7 @@ sealed class LeaseHandle : ILease
     {
         var ttlSecs = WireDuration.ToSeconds(ttl, nameof(ttl));
         ArgumentOutOfRangeException.ThrowIfZero(ttlSecs, nameof(ttl));
-        await _operationGate.WaitAsync(ct).ConfigureAwait(false);
+        await EnterAsync(ct).ConfigureAwait(false);
         try
         {
             ThrowIfClosed();
@@ -81,22 +79,10 @@ sealed class LeaseHandle : ILease
     /// <inheritdoc />
     public async Task ReleaseAsync(CancellationToken ct = default)
     {
-        await _operationGate.WaitAsync(ct).ConfigureAwait(false);
+        await EnterAsync(ct).ConfigureAwait(false);
         try
         {
-            ThrowIfClosed();
-            using var writer = new BinaryBufferWriter();
-            writer.WriteString(Route);
-            writer.WriteString(string.Empty);
-            writer.WriteU64(FencingToken);
-            var response = await _request(MessageTypes.LeaseRelease, writer.WrittenMemory, ct).ConfigureAwait(false);
-            var reader = LeaseWireHelpers.ReadSuccess(response, "RELEASE");
-            if (!reader.IsEof)
-            {
-                throw new LeaseException("RELEASE response has trailing bytes", "RELEASE_INVALID_RESPONSE");
-            }
-
-            MarkClosed();
+            await ReleaseCoreAsync(ct).ConfigureAwait(false);
         }
         finally
         {
@@ -106,7 +92,9 @@ sealed class LeaseHandle : ILease
 
     /// <summary>Releases the lease on a best-effort, bounded basis.</summary>
     /// <returns>A task that completes once cleanup finishes.</returns>
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Lease disposal is bounded best-effort cleanup and must not replace an exception leaving an await-using scope.")]
+    /// <remarks>
+    /// Waits for an in-progress extend or release to finish first; queued calls fail as closed.
+    /// </remarks>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -114,26 +102,49 @@ sealed class LeaseHandle : ILease
             return;
         }
 
+        await _closing.CancelAsync().ConfigureAwait(false);
+        await _operationGate.DrainAndDisposeAsync().ConfigureAwait(false);
+        _closing.Dispose();
         try
         {
-            if (Volatile.Read(ref _closed) == 0)
+            if (!_session.IsClosed)
             {
-                try
-                {
-                    using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    await ReleaseAsync(cleanupDeadline.Token).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Best-effort cleanup must not replace an exception leaving an await-using scope.
-                }
+                using var cleanupDeadline = new CancellationTokenSource(CleanupBudget, _time);
+                await ReleaseCoreAsync(cleanupDeadline.Token).ConfigureAwait(false);
             }
+        }
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
+        {
+            // Best-effort cleanup must not replace an exception leaving an await-using scope.
         }
         finally
         {
             MarkClosed();
-            GC.SuppressFinalize(this);
         }
+    }
+
+    async Task EnterAsync(CancellationToken ct)
+    {
+        if (!await _operationGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
+            throw ClosedException();
+    }
+
+    // Callers hold the gate, or have drained it during disposal.
+    async Task ReleaseCoreAsync(CancellationToken ct)
+    {
+        ThrowIfClosed();
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(Route);
+        writer.WriteString(string.Empty);
+        writer.WriteU64(FencingToken);
+        var response = await _request(MessageTypes.LeaseRelease, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var reader = LeaseWireHelpers.ReadSuccess(response, "RELEASE");
+        if (!reader.IsEof)
+        {
+            throw new LeaseException("RELEASE response has trailing bytes", "RELEASE_INVALID_RESPONSE");
+        }
+
+        MarkClosed();
     }
 
     async Task SendTokenTtlAsync(ushort messageType, ulong ttlSecs, string operation, CancellationToken ct)
@@ -170,34 +181,12 @@ sealed class LeaseHandle : ILease
 
     void ThrowIfClosed()
     {
-        if (Volatile.Read(ref _closed) == 0)
-        {
-            return;
-        }
-
-        throw new LeaseException("Lease handle is no longer valid after disconnect", "CLOSED");
+        if (_session.IsClosed)
+            throw ClosedException();
     }
 
-    void MarkClosed() => _ = TryMarkClosed();
+    static LeaseException ClosedException() =>
+        new("Lease handle is no longer valid after disconnect", "CLOSED");
 
-    void MarkConnectionLost()
-    {
-        if (!TryMarkClosed())
-        {
-            return;
-        }
-
-        _connectionLost.TrySetResult();
-    }
-
-    bool TryMarkClosed()
-    {
-        if (Interlocked.Exchange(ref _closed, 1) != 0)
-        {
-            return false;
-        }
-
-        Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
-        return true;
-    }
+    void MarkClosed() => _session.TryClose();
 }

@@ -1,4 +1,3 @@
-using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Net.Sockets;
 using System.Net.WebSockets;
@@ -14,14 +13,14 @@ using Cntryl.Fitz.Domains.Stream;
 namespace Cntryl.Fitz;
 
 /// <summary>
-/// The default <see cref="IClient"/>: owns one broker connection and every domain API.
+/// The default <see cref="IFitzClient"/>: owns one broker connection and every domain API.
 /// </summary>
 /// <remarks>
 /// Safe for concurrent use. Domain clients are created on first access and share the
 /// connection. Prefer <c>await using</c>; synchronous <see cref="Dispose"/> starts the
 /// asynchronous close without blocking on it.
 /// </remarks>
-public sealed class Client : IClient, IDisposable
+public sealed class FitzClient : IFitzClient, IDisposable
 {
     readonly ClientConfig _config;
     readonly FitzConnection _connection;
@@ -39,7 +38,7 @@ public sealed class Client : IClient, IDisposable
     /// </summary>
     /// <param name="config">Configuration for the connection. Validated immediately.</param>
     /// <exception cref="ArgumentNullException"><paramref name="config"/> is <see langword="null"/>.</exception>
-    public Client(ClientConfig config)
+    public FitzClient(ClientConfig config)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         var transportFactory = _config.TransportFactory ?? TransportResolver.Resolve;
@@ -150,19 +149,19 @@ public sealed class Client : IClient, IDisposable
         finally
         {
             if (_kvClient.IsValueCreated)
-                _kvClient.Value.Dispose();
+                await _kvClient.Value.DisposeAsync().ConfigureAwait(false);
             if (_leaseClient.IsValueCreated)
-                _leaseClient.Value.Dispose();
+                await _leaseClient.Value.DisposeAsync().ConfigureAwait(false);
             if (_noticeClient.IsValueCreated)
-                _noticeClient.Value.Dispose();
+                await _noticeClient.Value.DisposeAsync().ConfigureAwait(false);
             if (_queueClient.IsValueCreated)
-                _queueClient.Value.Dispose();
+                await _queueClient.Value.DisposeAsync().ConfigureAwait(false);
             if (_rpcClient.IsValueCreated)
                 _rpcClient.Value.Dispose();
             if (_scheduleClient.IsValueCreated)
-                _scheduleClient.Value.Dispose();
+                await _scheduleClient.Value.DisposeAsync().ConfigureAwait(false);
             if (_streamClient.IsValueCreated)
-                _streamClient.Value.Dispose();
+                await _streamClient.Value.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -297,15 +296,15 @@ public sealed class Client : IClient, IDisposable
         return resolved;
     }
 
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Synchronous DI disposal starts asynchronous cleanup without surfacing an unobserved background exception.")]
     static async Task ObserveSynchronousDisposeAsync(Task closeTask)
     {
         try
         {
             await closeTask.ConfigureAwait(false);
         }
-        catch
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
         {
+            // The close task's own failure is reported to its caller; this waiter only observes it.
         }
     }
 
@@ -313,7 +312,7 @@ public sealed class Client : IClient, IDisposable
     {
         if (Volatile.Read(ref _disposed) != 0)
         {
-            throw new ConnectionException("Client is closed.");
+            throw new ObjectDisposedException(nameof(FitzClient), "The client is closed.");
         }
     }
 }

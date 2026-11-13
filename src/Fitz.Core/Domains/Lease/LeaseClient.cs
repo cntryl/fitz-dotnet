@@ -1,9 +1,4 @@
-using System.Collections.Concurrent;
-using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
-using System.Runtime.ExceptionServices;
-using System.Security.Cryptography;
-using System.Threading.Channels;
+using System.Globalization;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
@@ -14,58 +9,44 @@ namespace Cntryl.Fitz.Domains.Lease;
 /// The default <see cref="ILeaseClient"/>: distributed leases, including managed lease scopes.
 /// </summary>
 /// <remarks>
-/// Obtained from <see cref="Client"/> rather than constructed directly. The public
+/// Obtained from <see cref="FitzClient"/> rather than constructed directly. The public
 /// constructors exist for testing against a transport delegate.
 /// </remarks>
-sealed class LeaseClient : ILeaseClient, IDisposable
+sealed class LeaseClient : ILeaseClient, IAsyncDisposable
 {
+    // ACQUIRE response_type values (lease spec, "ACQUIRE Response").
+    const byte AcquireResponseAcquired = 0;
+    const byte AcquireResponseAlreadyHeld = 1;
+    const byte AcquireResponseQueued = 2;
+    const byte AcquireResponseAlreadyQueued = 3;
+
+    const uint MaxAcquireWaitSeconds = 30;
+
+    // Slack past wait_seconds before a queued acquisition with no final frame is abandoned.
+    static readonly TimeSpan DeferredGrantGrace = TimeSpan.FromSeconds(5);
+
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
-    readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     readonly Func<Action, IDisposable>? _registerOnDisconnect;
-    readonly AsyncHandlerDispatch? _dispatchAsyncHandler;
-    readonly Action<Exception>? _invalidateSession;
-    readonly int _subscriptionBufferCapacity;
-    readonly NotificationActivationBuffer _activationBuffer;
     readonly FitzConnection? _connection;
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race active subscriptions; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
-    readonly SemaphoreSlim _subscriptionGate = new(1, 1);
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2213:Disposable fields should be disposed", Justification = "Client disposal may race an active acquisition; SemaphoreSlim has no resource to release unless AvailableWaitHandle is used.")]
-    readonly SemaphoreSlim _acquisitionGate = new(1, 1);
-    readonly object _gate = new();
-    readonly Dictionary<string, LeaseSubscriptionState> _subscriptionsByRoute = [with(StringComparer.Ordinal)];
-    readonly Dictionary<ulong, string> _routesBySubscriptionId = [];
-    IDisposable? _notificationRegistration;
+    readonly TimeProvider _time;
     int _disposed;
-    IDisposable? _acquireNotificationRegistration;
-    readonly IDisposable? _acquisitionDisconnectRegistration;
-    readonly ConcurrentQueue<TaskCompletionSource<ReadOnlyMemory<byte>>> _queuedAcquisitions = new();
-    bool _acquireNotificationHandlerInitialized;
-    bool _notificationHandlerInitialized;
-    int _acquisitionLanePoisoned;
-    long _nextHandleId;
-    readonly IDisposable? _reconnectRegistration;
-    readonly List<Func<CancellationToken, ValueTask>> _reconnectListeners = [];
-    readonly object _reconnectListenersGate = new();
+    readonly SubscriptionTable<LeaseChangeEvent> _subscriptions;
+    readonly IDisposable? _connectionBinding;
+    readonly ListenerRegistry<Func<CancellationToken, ValueTask>> _reconnectListeners = new();
 
     internal LeaseClient(FitzConnection connection)
         : this(
             connection.RequestAsync,
-            connection.RegisterBorrowedNotificationHandler,
+            connection.RegisterNotificationHandler,
             connection.OnDisconnect,
             (handler, rejected) => connection.TryDispatchAsyncHandler("lease", handler, rejected),
-            (operation, messageType, payload, ct) =>
-                connection.ExecuteWithRetryAsync(
-                    operation,
-                    innerToken => connection.RequestAsync(messageType, payload, innerToken),
-                    ct),
+            connection.RequestWithRetryAsync,
             connection.SubscriptionBufferCapacity,
-            connection.InvalidateSession)
+            connection.Time)
     {
-        _reconnectRegistration = connection.OnReconnect(HandleReconnect);
-        _acquisitionDisconnectRegistration = connection.OnDisconnect(HandleAcquisitionDisconnect);
         _connection = connection;
-        connection.NotificationDeliveryFailed += FailNotificationDelivery;
+        _connectionBinding = _subscriptions.AttachTo(connection, HandleReconnect);
     }
 
     /// <summary>
@@ -88,16 +69,23 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
         Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null,
         int subscriptionBufferCapacity = SubscriptionRegistration<LeaseChangeEvent>.DefaultCapacity,
-        Action<Exception>? invalidateSession = null)
+        TimeProvider? timeProvider = null)
     {
         _request = request;
-        _registerNotificationHandler = registerNotificationHandler;
+        _time = timeProvider ?? TimeProvider.System;
         _registerOnDisconnect = registerOnDisconnect;
-        _dispatchAsyncHandler = dispatchAsyncHandler;
         _retryRequest = retryRequest;
-        _subscriptionBufferCapacity = subscriptionBufferCapacity;
-        _activationBuffer = new NotificationActivationBuffer(subscriptionBufferCapacity);
-        _invalidateSession = invalidateSession;
+        _subscriptions = new SubscriptionTable<LeaseChangeEvent>(
+            this,
+            "lease",
+            MessageTypes.LeaseNotify,
+            registerNotificationHandler,
+            dispatchAsyncHandler,
+            subscriptionBufferCapacity,
+            SubscribeWireAsync,
+            UnsubscribeWireAsync,
+            DecodeNotification,
+            _time);
     }
 
     /// <inheritdoc />
@@ -107,7 +95,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         return await AcquireLeaseAsync(
             route,
             WireDuration.ToSeconds(ttl, nameof(ttl)),
-            WireDuration.ToSecondsUInt32(wait, nameof(wait)),
+            ToWaitSeconds(wait, nameof(wait)),
             ct).ConfigureAwait(false);
     }
 
@@ -118,68 +106,52 @@ sealed class LeaseClient : ILeaseClient, IDisposable
             throw new LeaseException("ttlSecs must be positive and schedulable", "INVALID_TTL");
         }
 
-        await _acquisitionGate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            if (Volatile.Read(ref _acquisitionLanePoisoned) != 0)
-            {
-                throw new ConnectionException("Queued lease acquisition requires a new connection session after an ambiguous result.");
-            }
-
-            return await AcquireCoreAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            _acquisitionGate.Release();
-        }
+        return await AcquireCoreAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
     }
 
+    // The broker caps an ACQUIRE wait at 30 seconds; reject longer waits rather than truncate.
+    static uint ToWaitSeconds(TimeSpan wait, string paramName)
+    {
+        var seconds = WireDuration.ToSecondsUInt32(wait, paramName);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(seconds, MaxAcquireWaitSeconds, paramName);
+        return seconds;
+    }
+
+    // A contended ACQUIRE answers Queued on a non-final frame, then the grant, timeout, or
+    // error on the final frame of the same correlation. The broker bounds the wait; the guard
+    // only covers a broker that never sends the final frame.
     async Task<LeaseHandle> AcquireCoreAsync(string route, ulong ttlSecs, uint waitSeconds, CancellationToken ct)
     {
         if (!RouteValidation.IsFixedRoute(route, "lease", 3))
         {
-            throw new LeaseException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+            throw new ArgumentException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}}", nameof(route));
         }
 
-        TaskCompletionSource<ReadOnlyMemory<byte>>? deferred = null;
-        if (waitSeconds > 0 && _registerNotificationHandler is not null)
-        {
-            EnsureAcquireNotificationHandlerInitialized();
-            deferred = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _queuedAcquisitions.Enqueue(deferred);
-        }
-        using var cancellationRegistration = ct.Register(() => deferred?.TrySetCanceled(ct));
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteString(string.Empty);
         writer.WriteU64(ttlSecs);
         writer.WriteU32(waitSeconds);
-        ReadOnlyMemory<byte> response;
+
         using var session = new SessionRequestContext(_connection, _request, _registerOnDisconnect);
+        using var waitGuard = waitSeconds > 0
+            ? new CancellationTokenSource(TimeSpan.FromSeconds(waitSeconds) + DeferredGrantGrace, _time)
+            : null;
+        using var acquisition = waitGuard is null ? null : CancellationTokenSource.CreateLinkedTokenSource(ct, waitGuard.Token);
+        ReadOnlyMemory<byte> response;
         try
         {
-            response = await session.RequestAsync(MessageTypes.LeaseAcquire, writer.WrittenMemory, ct).ConfigureAwait(false);
+            response = await session.RequestAsync(MessageTypes.LeaseAcquire, writer.WrittenMemory, acquisition?.Token ?? ct).ConfigureAwait(false);
         }
-        catch
+        catch (OperationCanceledException exception) when (waitGuard is { IsCancellationRequested: true } && !ct.IsCancellationRequested)
         {
-            deferred?.TrySetCanceled(CancellationToken.None);
-            RemoveQueuedAcquisition(deferred);
-            throw;
-        }
-        BinaryBufferReader reader;
-        try
-        {
-            reader = LeaseWireHelpers.ReadSuccess(response, "ACQUIRE");
-        }
-        catch
-        {
-            RemoveQueuedAcquisition(deferred);
-            throw;
+            throw new RequestTimeoutException(
+                $"Queued lease acquisition received no final response within its {waitSeconds}-second wait", exception);
         }
 
+        var reader = LeaseWireHelpers.ReadSuccess(response, "ACQUIRE");
         if (reader.RemainingBytes < 9)
         {
-            RemoveQueuedAcquisition(deferred);
             throw new LeaseException("ACQUIRE response missing fencing token", "MISSING_TOKEN");
         }
 
@@ -187,124 +159,27 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         var fencedToken = reader.ReadU64();
         if (!reader.IsEof)
         {
-            if (responseType is 2 or 3)
-            {
-                PoisonAcquisitionLane(new LeaseException(
-                    "ACQUIRE queued response was malformed and left the positional grant lane ambiguous.",
-                    "ACQUIRE_INVALID_RESPONSE"));
-            }
-            RemoveQueuedAcquisition(deferred);
             throw new LeaseException("ACQUIRE response has trailing bytes", "ACQUIRE_INVALID_RESPONSE");
         }
 
-        if (responseType == 3)
+        switch (responseType)
         {
-            RemoveQueuedAcquisition(deferred);
-            throw new LeaseException("ACQUIRE request is already queued", "ALREADY_QUEUED");
-        }
-
-        if (responseType == 2)
-        {
-            if (deferred is null)
-                throw new LeaseException("ACQUIRE queued without a wait request", "ACQUIRE_INVALID_RESPONSE");
-            try
-            {
-                response = await deferred.Task.WaitAsync(TimeSpan.FromSeconds(waitSeconds), ct).ConfigureAwait(false);
-            }
-            catch (TimeoutException exception)
-            {
-                PoisonAcquisitionLane(exception);
-                RemoveQueuedAcquisition(deferred);
-                throw new RequestTimeoutException($"Queued lease acquisition exceeded its {waitSeconds}-second wait ceiling", exception);
-            }
-            catch (Exception exception)
-            {
-                PoisonAcquisitionLane(exception);
-                RemoveQueuedAcquisition(deferred);
-                throw;
-            }
-            try
-            {
-                reader = LeaseWireHelpers.ReadSuccess(response, "ACQUIRE");
-                if (reader.RemainingBytes < 9)
-                    throw new LeaseException("ACQUIRE deferred response missing fencing token", "ACQUIRE_INVALID_RESPONSE");
-                responseType = reader.ReadU8();
-                fencedToken = reader.ReadU64();
-                if (responseType is not 0 and not 1 || !reader.IsEof)
-                    throw new LeaseException("ACQUIRE deferred response is invalid", "ACQUIRE_INVALID_RESPONSE");
-            }
-            catch (Exception exception)
-            {
-                PoisonAcquisitionLane(exception);
-                throw;
-            }
-        }
-        else
-        {
-            deferred?.TrySetCanceled(CancellationToken.None);
-            RemoveQueuedAcquisition(deferred);
+            case AcquireResponseAcquired:
+            case AcquireResponseAlreadyHeld:
+                break;
+            case AcquireResponseAlreadyQueued:
+                throw new LeaseException("ACQUIRE request is already queued", "ALREADY_QUEUED");
+            case AcquireResponseQueued:
+                throw new LeaseException("ACQUIRE answered Queued on a final frame", "ACQUIRE_INVALID_RESPONSE");
+            default:
+                throw new LeaseException($"ACQUIRE response type {responseType} is unknown", "ACQUIRE_INVALID_RESPONSE");
         }
 
         session.EnsureValid();
-        return new LeaseHandle(session.BoundRequest, route, fencedToken, session.RegisterOnDisconnect);
-    }
-
-    void RemoveQueuedAcquisition(TaskCompletionSource<ReadOnlyMemory<byte>>? target)
-    {
-        if (target is null)
-            return;
-        var retained = new List<TaskCompletionSource<ReadOnlyMemory<byte>>>();
-        while (_queuedAcquisitions.TryDequeue(out var candidate))
-        {
-            if (!ReferenceEquals(candidate, target))
-                retained.Add(candidate);
-        }
-        foreach (var candidate in retained)
-            _queuedAcquisitions.Enqueue(candidate);
-    }
-
-    void PoisonAcquisitionLane(Exception exception)
-    {
-        Volatile.Write(ref _acquisitionLanePoisoned, 1);
-        _invalidateSession?.Invoke(new ConnectionException(
-            "The queued lease acquisition lane became ambiguous and requires a new connection session.",
-            exception));
-    }
-
-    void HandleAcquisitionDisconnect()
-    {
-        Volatile.Write(ref _acquisitionLanePoisoned, 1);
-        while (_queuedAcquisitions.TryDequeue(out var waiter))
-        {
-            waiter.TrySetException(new ConnectionException(
-                "Connection closed while a queued lease acquisition was pending."));
-        }
-    }
-
-    void EnsureAcquireNotificationHandlerInitialized()
-    {
-        ThrowIfDisposed();
-        if (_registerNotificationHandler is null)
-            throw new InvalidOperationException("Notification handlers not configured for queued lease acquisition");
-        lock (_gate)
-        {
-            if (_acquireNotificationHandlerInitialized)
-                return;
-            _acquireNotificationHandlerInitialized = true;
-            _acquireNotificationRegistration = _registerNotificationHandler(MessageTypes.LeaseAcquire, payload =>
-            {
-                while (_queuedAcquisitions.TryDequeue(out var waiter))
-                {
-                    if (waiter.TrySetResult(payload.ToArray()))
-                        break;
-                }
-            });
-        }
+        return new LeaseHandle(session.BoundRequest, route, fencedToken, session.RegisterOnDisconnect, _time);
     }
 
     /// <inheritdoc />
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Lease execution must aggregate arbitrary user callback, renewal, and cleanup failures.")]
-    [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "The await-using declaration must retain the strongly typed lease handle for renewal operations.")]
     public async Task<T> WithLeaseAsync<T>(
         string route,
         TimeSpan ttl,
@@ -323,10 +198,6 @@ sealed class LeaseClient : ILeaseClient, IDisposable
     }
 
     /// <inheritdoc />
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Lease execution must aggregate arbitrary user callback, renewal, and cleanup failures.")]
-    [SuppressMessage("Reliability", "CA2007:Consider calling ConfigureAwait on the awaited task", Justification = "The await-using declaration must retain the strongly typed lease handle for renewal operations.")]
-    [SuppressMessage("Reliability", "CA2025:Do not pass IDisposable instances into unawaited tasks", Justification = "The connection-loss observer is stopped and awaited before either cancellation source is disposed.")]
-    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "The renewal deadline is a using declaration and is disposed on every success and failure path.")]
     public async Task<T> WithLeaseAsync<T>(
         string route,
         TimeSpan ttl,
@@ -344,160 +215,11 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         }
 
         var waitSeconds = options?.WaitForAvailability == true
-            ? WireDuration.ToSecondsUInt32(options.Wait, nameof(LeaseExecutionOptions.Wait))
+            ? ToWaitSeconds(options.Wait, nameof(LeaseExecutionOptions.Wait))
             : 0;
-        await using var lease = await AcquireLeaseAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
-        var authority = new LeaseAuthority(lease.FencingToken);
-
-        using var lifecycle = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        using var connectionLossObserverStop = new CancellationTokenSource();
-        var connectionLossObserver = ObserveConnectionLossAsync(
-            lease.ConnectionLost,
-            lifecycle,
-            connectionLossObserverStop.Token);
-        Task<T> callbackTask;
-        try
-        {
-            callbackTask = callback(authority, lifecycle.Token).AsTask();
-        }
-        catch (Exception error)
-        {
-            callbackTask = Task.FromException<T>(error);
-        }
-
-        Exception? leaseLoss = null;
-        Exception? lifecycleCancellationError = null;
-        while (!callbackTask.IsCompleted)
-        {
-            var renewalInterval = TimeSpan.FromSeconds(ttlSecs / 3d);
-            var delay = Task.Delay(renewalInterval, lifecycle.Token);
-            var completed = await Task.WhenAny(callbackTask, connectionLossObserver, delay).ConfigureAwait(false);
-            if (ct.IsCancellationRequested)
-            {
-                break;
-            }
-            if (lease.ConnectionLost.IsCompleted)
-            {
-                leaseLoss = new LeaseException("Lease ownership was lost", "LEASE_LOST");
-                lifecycleCancellationError = await connectionLossObserver.ConfigureAwait(false);
-                break;
-            }
-
-            if (completed == callbackTask)
-            {
-                break;
-            }
-
-            try
-            {
-                using var renewalDeadline = CancellationTokenSource.CreateLinkedTokenSource(lifecycle.Token);
-                var remainingLeaseTime = TimeSpan.FromSeconds(ttlSecs) - renewalInterval;
-                var renewalBudget = Min(
-                    TimeSpan.FromSeconds(5),
-                    Min(Max(renewalInterval, TimeSpan.FromSeconds(2)), remainingLeaseTime));
-                renewalDeadline.CancelAfter(renewalBudget);
-                await lease.ExtendAsync(ttl, renewalDeadline.Token).ConfigureAwait(false);
-                if (lease.FencingTokenChanged.IsCompleted)
-                {
-                    lease.Invalidate();
-                    var rotation = new LeaseException(
-                        "Lease renewal changed the callback's fencing authority token",
-                        "FENCING_TOKEN_CHANGED");
-                    leaseLoss = new LeaseException("Lease ownership was lost", "LEASE_LOST", rotation);
-                    lifecycleCancellationError = await CaptureCancellationFailureAsync(lifecycle).ConfigureAwait(false);
-                    break;
-                }
-            }
-            catch (Exception error)
-            {
-                lease.Invalidate();
-                leaseLoss = new LeaseException("Lease ownership was lost", "LEASE_LOST", error);
-                lifecycleCancellationError = await CaptureCancellationFailureAsync(lifecycle).ConfigureAwait(false);
-                break;
-            }
-        }
-
-        await connectionLossObserverStop.CancelAsync().ConfigureAwait(false);
-        var observedConnectionLossCancellationError = await connectionLossObserver.ConfigureAwait(false);
-        if (leaseLoss is null && lease.ConnectionLost.IsCompleted)
-        {
-            leaseLoss = new LeaseException("Lease ownership was lost", "LEASE_LOST");
-        }
-        lifecycleCancellationError ??= observedConnectionLossCancellationError;
-
-        T? value = default;
-        Exception? callbackError = null;
-        try
-        {
-            value = await callbackTask.ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (lifecycle.IsCancellationRequested)
-        {
-            // The underlying lifecycle cause is returned below.
-        }
-        catch (Exception error)
-        {
-            callbackError = error;
-        }
-
-        Exception? releaseError = null;
-        if (leaseLoss is null)
-        {
-            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            try
-            {
-                await lease.ReleaseAsync(cleanup.Token).ConfigureAwait(false);
-            }
-            catch (Exception error)
-            {
-                releaseError = error;
-            }
-        }
-
-        ct.ThrowIfCancellationRequested();
-        if (callbackError is not null)
-            ExceptionDispatchInfo.Capture(callbackError).Throw();
-        if (leaseLoss is not null)
-            throw leaseLoss;
-        if (lifecycleCancellationError is not null)
-            ExceptionDispatchInfo.Capture(lifecycleCancellationError).Throw();
-        if (releaseError is not null)
-            ExceptionDispatchInfo.Capture(releaseError).Throw();
-        return value!;
+        var lease = await AcquireLeaseAsync(route, ttlSecs, waitSeconds, ct).ConfigureAwait(false);
+        return await LeaseScope.RunAsync(lease, ttl, callback, _time, ct).ConfigureAwait(false);
     }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Managed lease cancellation must preserve arbitrary callback registration failures for lifecycle aggregation.")]
-    static async Task<Exception?> CaptureCancellationFailureAsync(CancellationTokenSource cancellation)
-    {
-        try
-        {
-            await cancellation.CancelAsync().ConfigureAwait(false);
-            return null;
-        }
-        catch (Exception error)
-        {
-            return error;
-        }
-    }
-
-    static async Task<Exception?> ObserveConnectionLossAsync(
-        Task connectionLost,
-        CancellationTokenSource lifecycle,
-        CancellationToken stop)
-    {
-        var stopped = Task.Delay(Timeout.InfiniteTimeSpan, stop);
-        var completed = await Task.WhenAny(connectionLost, stopped).ConfigureAwait(false);
-        if (completed != connectionLost)
-        {
-            return null;
-        }
-
-        return await CaptureCancellationFailureAsync(lifecycle).ConfigureAwait(false);
-    }
-
-    static TimeSpan Min(TimeSpan left, TimeSpan right) => left <= right ? left : right;
-
-    static TimeSpan Max(TimeSpan left, TimeSpan right) => left >= right ? left : right;
 
     /// <inheritdoc />
     public async Task WithLeaseAsync(
@@ -545,7 +267,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         ThrowIfDisposed();
         if (!RouteValidation.IsFixedRoute(route, "lease", 3))
         {
-            throw new LeaseException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}}", "INVALID_ROUTE");
+            throw new ArgumentException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}}", nameof(route));
         }
 
         using var writer = new BinaryBufferWriter();
@@ -606,7 +328,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        EnsureLeaseRegistrationPattern(pattern);
+        EnsureLeaseRegistrationPattern(pattern, nameof(pattern));
         if (limit.HasValue)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(limit.Value, 1, nameof(limit));
@@ -644,12 +366,18 @@ sealed class LeaseClient : ILeaseClient, IDisposable
             var route = reader.ReadString();
             var ownerId = reader.ReadString();
             var holderIncarnation = reader.ReadU64();
-            var acquiredAt = reader.ReadString();
+            var acquiredAtText = reader.ReadString();
             var expiresInSecs = reader.ReadU64();
             var renewals = reader.ReadU32();
             if (!WireDuration.TryFromSeconds(expiresInSecs, out var expiresIn))
             {
                 throw new LeaseException("LIST response expires_in_secs is out of range", "LIST_INVALID_RESPONSE");
+            }
+
+            // The broker reports acquired_at as an RFC 3339 timestamp.
+            if (!DateTimeOffset.TryParse(acquiredAtText, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var acquiredAt))
+            {
+                throw new LeaseException("LIST response acquired_at is not an RFC 3339 timestamp", "LIST_INVALID_RESPONSE");
             }
 
             items.Add(new LeaseListItem(route, ownerId, holderIncarnation, acquiredAt, expiresIn, renewals));
@@ -691,23 +419,17 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         return SubscribeObserverAsync(route, invalidate: null, ct);
     }
 
-    internal async Task<LeaseSubscription> SubscribeObserverAsync(
+    internal Task<LeaseSubscription> SubscribeObserverAsync(
         string route,
         Action<LeaseChangeEvent>? invalidate,
         CancellationToken ct)
     {
-        var buffer = new AsyncSubscriptionBuffer<LeaseChangeEvent>(route, _subscriptionBufferCapacity);
-        var registration = await SubscribeAsync(route, (notification, _) =>
-        {
-            buffer.Write(notification);
-            return ValueTask.CompletedTask;
-        }, invalidate, ct).ConfigureAwait(false);
-        buffer.ObserveCompletion(registration.Completion);
-        return new LeaseSubscription(route, buffer.ReadAllAsync(CancellationToken.None), async token =>
-        {
-            await registration.UnsubscribeAsync(token).ConfigureAwait(false);
-            buffer.Complete();
-        }, registration.Completion);
+        EnsureLeaseRegistrationPattern(route, nameof(route));
+        return _subscriptions.SubscribeBufferedAsync(
+            route,
+            static (route, notifications, unsubscribe, completion, time) => new LeaseSubscription(route, notifications, unsubscribe, completion, time),
+            invalidate,
+            ct);
     }
 
     internal async Task<LeaseSubscription> SubscribeAsync(
@@ -716,89 +438,17 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         Action<LeaseChangeEvent>? preDispatch = null,
         CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(handler);
-        EnsureLeaseRegistrationPattern(route);
-
-        if (_registerNotificationHandler == null)
-        {
-            throw new InvalidOperationException("Notification handlers not configured for subscription support");
-        }
-
-        EnsureNotificationHandlerInitialized();
-
-        var channel = SubscriptionRegistration<LeaseChangeEvent>.CreateChannel(_subscriptionBufferCapacity);
-        SubscriptionRegistration<LeaseChangeEvent>? registration = null;
-        var handleId = Interlocked.Increment(ref _nextHandleId);
-        var gateAcquired = false;
-
-        try
-        {
-            registration = new SubscriptionRegistration<LeaseChangeEvent>(
-                channel,
-                "lease",
-                route,
-                token => UnsubscribeAsync(route, handleId, token),
-                preDispatch);
-            await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-            gateAcquired = true;
-            ThrowIfDisposed();
-
-            lock (_gate)
-            {
-                ThrowIfDisposed();
-                if (_subscriptionsByRoute.TryGetValue(route, out var existingSubscription))
-                {
-                    existingSubscription.Registrations[handleId] = registration;
-                    var existingHandle = CreateSubscription(route, handleId, registration.Completion);
-                    SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
-                    registration = null;
-                    return existingHandle;
-                }
-            }
-
-            using var activation = _activationBuffer.Begin(route);
-            var subscriptionId = await SubscribeWireAsync(route, ct).ConfigureAwait(false);
-            var subscription = new LeaseSubscriptionState(subscriptionId);
-            subscription.Registrations[handleId] = registration;
-            lock (_gate)
-            {
-                ThrowIfDisposed();
-                _subscriptionsByRoute[route] = subscription;
-                _routesBySubscriptionId[subscriptionId] = route;
-                if (_activationBuffer.Replay(subscriptionId, HandleNotification) is { } activationError)
-                    _ = registration.FailAsync(activationError);
-            }
-
-            var handle = CreateSubscription(route, handleId, registration.Completion);
-            SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
-            registration = null;
-            return handle;
-        }
-        finally
-        {
-            if (gateAcquired)
-            {
-                _subscriptionGate.Release();
-            }
-
-            registration?.Dispose();
-        }
+        EnsureLeaseRegistrationPattern(route, nameof(route));
+        var binding = await _subscriptions.SubscribeAsync(route, handler, preDispatch, ct).ConfigureAwait(false);
+        return new LeaseSubscription(route, binding.Unsubscribe, binding.Completion, _subscriptions.Time);
     }
 
-    static void EnsureLeaseRegistrationPattern(string pattern)
+    static void EnsureLeaseRegistrationPattern(string pattern, string paramName)
     {
         if (!RouteValidation.IsRegistrationPattern(pattern, "lease", 3))
         {
-            throw new LeaseException($"selector '{pattern}' must be lease://{{realm}}/{{area}}/{{resource}} or a whole-segment wildcard pattern", "INVALID_ROUTE");
+            throw new ArgumentException($"selector '{pattern}' must be lease://{{realm}}/{{area}}/{{resource}} or a whole-segment wildcard pattern", paramName);
         }
-    }
-
-    LeaseSubscription CreateSubscription(string route, long handleId, Task completion)
-    {
-        return new LeaseSubscription(
-            route,
-            ct => UnsubscribeAsync(route, handleId, ct),
-            completion);
     }
 
     async Task<ulong> SubscribeWireAsync(string route, CancellationToken ct)
@@ -823,7 +473,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         return subscriptionId;
     }
 
-    async Task UnsubscribeWireAsync(string route, CancellationToken ct)
+    async Task UnsubscribeWireAsync(string route, ulong subscriptionId, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
@@ -836,150 +486,24 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         }
     }
 
-    [SuppressMessage("Reliability", "CA2000:Dispose objects before losing scope", Justification = "Ownership intentionally remains in the subscription table when the wire unsubscribe fails.")]
-    async ValueTask UnsubscribeAsync(string route, long handleId, CancellationToken ct)
+    static DecodedNotification<LeaseChangeEvent>? DecodeNotification(ReadOnlyMemory<byte> payload)
     {
-        SubscriptionRegistration<LeaseChangeEvent>? registration = null;
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            var shouldUnsubscribe = false;
-            lock (_gate)
-            {
-                if (!_subscriptionsByRoute.TryGetValue(route, out var subscription) ||
-                    !subscription.Registrations.TryGetValue(handleId, out registration))
-                {
-                    return;
-                }
-
-                shouldUnsubscribe = subscription.Registrations.Count == 1;
-            }
-
-            if (shouldUnsubscribe)
-            {
-                await UnsubscribeWireAsync(route, ct).ConfigureAwait(false);
-            }
-
-            lock (_gate)
-            {
-                if (!_subscriptionsByRoute.TryGetValue(route, out var subscription) ||
-                    !subscription.Registrations.Remove(handleId, out registration))
-                {
-                    return;
-                }
-
-                if (subscription.Registrations.Count == 0)
-                {
-                    _subscriptionsByRoute.Remove(route);
-                    _routesBySubscriptionId.Remove(subscription.SubscriptionId);
-                }
-            }
-        }
-        finally
-        {
-            _subscriptionGate.Release();
-        }
-
-        registration?.Dispose();
-
-    }
-
-    void FailNotificationDelivery(Exception error)
-    {
-        lock (_gate)
-        {
-            _activationBuffer.Fail(error);
-            var registrations = _subscriptionsByRoute.Values.SelectMany(subscription => subscription.Registrations.Values).ToArray();
-            _subscriptionsByRoute.Clear();
-            _routesBySubscriptionId.Clear();
-            foreach (var registration in registrations)
-                _ = registration.FailAsync(error);
-        }
-    }
-
-    void EnsureNotificationHandlerInitialized()
-    {
-        lock (_gate)
-        {
-            ThrowIfDisposed();
-            if (_notificationHandlerInitialized)
-            {
-                return;
-            }
-
-            if (_registerNotificationHandler is null)
-            {
-                throw new InvalidOperationException("Notification handlers not configured for subscription support");
-            }
-
-            _notificationRegistration = _registerNotificationHandler(MessageTypes.LeaseNotify, HandleNotification);
-            _notificationHandlerInitialized = true;
-        }
-    }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Malformed broker notifications are dropped without disrupting the receive loop.")]
-    void HandleNotification(ReadOnlyMemory<byte> payload)
-    {
-        try
-        {
-            var reader = new BinaryBufferReader(payload);
-            var subscriptionId = reader.ReadU64();
-            var route = reader.ReadString();
-            if (reader.ReadU32() != 0 || !reader.IsEof)
-            {
-                return;
-            }
-            SubscriptionRegistration<LeaseChangeEvent>[] registrations;
-            lock (_gate)
-            {
-                if (!_routesBySubscriptionId.TryGetValue(subscriptionId, out var registeredRoute) ||
-                    !_subscriptionsByRoute.TryGetValue(registeredRoute, out var subscription))
-                {
-                    _activationBuffer.Buffer(subscriptionId, route, payload);
-                    return;
-                }
-
-                registrations = [.. subscription.Registrations.Values];
-            }
-
-            var notification = new LeaseChangeEvent(route);
-            foreach (var registration in registrations)
-            {
-                try
-                {
-                    registration.PreDispatch?.Invoke(notification);
-                    if (!registration.Channel.Writer.TryWrite(notification))
-                        _ = registration.FailOverflowAsync();
-                }
-                catch (Exception exception)
-                {
-                    _ = registration.FailAsync(exception);
-                }
-            }
-        }
-        catch
-        {
-        }
+        var reader = new BinaryBufferReader(payload);
+        var subscriptionId = reader.ReadU64();
+        var route = reader.ReadString();
+        return reader.ReadU32() == 0 && reader.IsEof
+            ? new DecodedNotification<LeaseChangeEvent>(subscriptionId, route, new LeaseChangeEvent(route))
+            : null;
     }
 
     async ValueTask HandleReconnect(CancellationToken ct)
     {
-        await RestoreSubscriptionsAsync(ct).ConfigureAwait(false);
+        await _subscriptions.RestoreAsync(ct).ConfigureAwait(false);
 
-        List<Func<CancellationToken, ValueTask>> listeners;
-        lock (_reconnectListenersGate)
-        {
-            listeners = _reconnectListeners.Count == 0
-                ? []
-                : [.. _reconnectListeners];
-        }
-
-        foreach (var listener in listeners)
+        foreach (var listener in _reconnectListeners.Snapshot())
         {
             await listener(ct).ConfigureAwait(false);
         }
-
-        Volatile.Write(ref _acquisitionLanePoisoned, 0);
     }
 
     /// <summary>
@@ -994,24 +518,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
     /// <see cref="ILeaseInventoryObserver"/> to rebuild its view from scratch, since Lease
     /// subscriptions and state do not survive a broker-side disconnect.
     /// </summary>
-    internal IDisposable RegisterReconnectListener(Func<CancellationToken, ValueTask> listener)
-    {
-        ArgumentNullException.ThrowIfNull(listener);
-        lock (_reconnectListenersGate)
-        {
-            _reconnectListeners.Add(listener);
-        }
-
-        return new ReconnectListenerRegistration(this, listener);
-    }
-
-    void RemoveReconnectListener(Func<CancellationToken, ValueTask> listener)
-    {
-        lock (_reconnectListenersGate)
-        {
-            _reconnectListeners.Remove(listener);
-        }
-    }
+    internal IDisposable RegisterReconnectListener(Func<CancellationToken, ValueTask> listener) => _reconnectListeners.Add(listener);
 
     /// <inheritdoc />
     public async Task<ILeaseInventoryObserver> ObserveAsync(
@@ -1020,7 +527,7 @@ sealed class LeaseClient : ILeaseClient, IDisposable
         CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        EnsureLeaseRegistrationPattern(pattern);
+        EnsureLeaseRegistrationPattern(pattern, nameof(pattern));
 
         options ??= new LeaseObserveOptions();
         if (options.ReconciliationInterval <= TimeSpan.Zero)
@@ -1042,162 +549,25 @@ sealed class LeaseClient : ILeaseClient, IDisposable
             throw new ArgumentOutOfRangeException(nameof(options), "ListTimeout must be positive");
         }
 
-        var observer = new LeaseInventoryObserver(this, pattern, options);
+        var observer = new LeaseInventoryObserver(this, pattern, options, _time);
         await observer.StartAsync(ct).ConfigureAwait(false);
         return observer;
     }
 
-    sealed class ReconnectListenerRegistration : IDisposable
-    {
-        readonly LeaseClient _owner;
-        readonly Func<CancellationToken, ValueTask> _listener;
-        int _disposed;
-
-        public ReconnectListenerRegistration(LeaseClient owner, Func<CancellationToken, ValueTask> listener)
-        {
-            _owner = owner;
-            _listener = listener;
-        }
-
-        public void Dispose()
-        {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            {
-                return;
-            }
-
-            _owner.RemoveReconnectListener(_listener);
-        }
-    }
-
-    [SuppressMessage("Design", "CA1031:Do not catch general exception types", Justification = "Reconnect restoration must best-effort roll back every already-restored subscription before preserving the original failure.")]
-    async ValueTask RestoreSubscriptionsAsync(CancellationToken ct)
-    {
-        await _subscriptionGate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            List<(string Route, LeaseSubscriptionState Subscription)> snapshot;
-            lock (_gate)
-            {
-                if (_subscriptionsByRoute.Count == 0)
-                {
-                    return;
-                }
-
-                snapshot = [with(_subscriptionsByRoute.Count)];
-                foreach (var entry in _subscriptionsByRoute)
-                {
-                    snapshot.Add((entry.Key, entry.Value.Clone()));
-                }
-            }
-
-            var restoredSubscriptions = new Dictionary<string, LeaseSubscriptionState>(StringComparer.Ordinal);
-            var restoredRoutesById = new Dictionary<ulong, string>();
-
-            try
-            {
-                foreach (var entry in snapshot)
-                {
-                    var subscriptionId = await SubscribeWireAsync(entry.Route, ct).ConfigureAwait(false);
-                    restoredSubscriptions[entry.Route] = entry.Subscription.Clone(subscriptionId);
-                    restoredRoutesById[subscriptionId] = entry.Route;
-                }
-            }
-            catch
-            {
-                foreach (var route in restoredSubscriptions.Keys)
-                {
-                    try
-                    {
-                        await UnsubscribeWireAsync(route, CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        // Best effort; preserve the original restore failure.
-                    }
-                }
-
-                throw;
-            }
-
-            lock (_gate)
-            {
-                _subscriptionsByRoute.Clear();
-                _routesBySubscriptionId.Clear();
-
-                foreach (var entry in restoredSubscriptions)
-                {
-                    _subscriptionsByRoute[entry.Key] = entry.Value;
-                }
-
-                foreach (var entry in restoredRoutesById)
-                {
-                    _routesBySubscriptionId[entry.Key] = entry.Value;
-                }
-            }
-        }
-        finally
-        {
-            _subscriptionGate.Release();
-        }
-    }
-
     /// <summary>Releases local resources and ends any registrations this client owns.</summary>
-    public void Dispose()
+    /// <returns>A task that completes once an in-progress subscription change has finished.</returns>
+    /// <remarks>Queued and later subscription changes fail with <see cref="ObjectDisposedException"/>;
+    /// unsubscribes and reconnect restoration become no-ops.</remarks>
+    public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return;
         }
 
-        _connection?.NotificationDeliveryFailed -= FailNotificationDelivery;
-        _activationBuffer.Dispose();
-        _notificationRegistration?.Dispose();
-        _acquireNotificationRegistration?.Dispose();
-        _acquisitionDisconnectRegistration?.Dispose();
-        while (_queuedAcquisitions.TryDequeue(out var waiter))
-            waiter.TrySetCanceled();
-        _reconnectRegistration?.Dispose();
-        lock (_gate)
-        {
-            foreach (var subscription in _subscriptionsByRoute.Values)
-            {
-                foreach (var registration in subscription.Registrations.Values)
-                {
-                    registration.Dispose();
-                }
-            }
-
-            _subscriptionsByRoute.Clear();
-            _routesBySubscriptionId.Clear();
-        }
-
+        _connectionBinding?.Dispose();
+        await _subscriptions.DisposeAsync().ConfigureAwait(false);
     }
 
     void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-
-    sealed class LeaseSubscriptionState
-    {
-        public LeaseSubscriptionState(ulong subscriptionId)
-        {
-            SubscriptionId = subscriptionId;
-        }
-
-        public ulong SubscriptionId { get; init; }
-
-        public Dictionary<long, SubscriptionRegistration<LeaseChangeEvent>> Registrations { get; } = [];
-
-        public LeaseSubscriptionState Clone() => Clone(SubscriptionId);
-
-        public LeaseSubscriptionState Clone(ulong subscriptionId)
-        {
-            var clone = new LeaseSubscriptionState(subscriptionId);
-            foreach (var entry in Registrations)
-            {
-                clone.Registrations.Add(entry.Key, entry.Value);
-            }
-
-            return clone;
-        }
-    }
 }

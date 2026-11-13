@@ -29,8 +29,7 @@ public sealed class ConnectionNegotiationTests
     {
         // Arrange
         await using var transport = new TestQueuedTransport { AutoHello = false };
-        var config = new ClientConfig(new Uri("ws://queued/ws"), AuthSettleDelay: TimeSpan.Zero,
-            Reconnect: new ReconnectOptions(Enabled: false));
+        var config = new ClientConfig(new Uri("ws://queued/ws"), Reconnect: new ReconnectOptions(Enabled: false));
         await using var connection = new FitzConnection(config, () => transport);
 
         // Act
@@ -42,7 +41,6 @@ public sealed class ConnectionNegotiationTests
 
         // Assert
         Assert.False(completedBeforeHello);
-        Assert.True(connection.CorrelationEnabled);
         Assert.Equal(3, connection.Capabilities.ProtocolVersion);
         Assert.Equal(64u, connection.Capabilities.MaxInFlightRequests);
     }
@@ -57,7 +55,7 @@ public sealed class ConnectionNegotiationTests
         payload.WriteU16(50);
         payload.WriteString("no common wire version");
         transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.ConnectRejected, payload.Build()));
-        await using var client = new Client(new ClientConfig(new Uri("ws://queued/ws"), TransportFactory: _ =>
+        await using var client = new FitzClient(new ClientConfig(new Uri("ws://queued/ws"), TransportFactory: _ =>
         {
             attempts++;
             return transport;
@@ -88,7 +86,7 @@ public sealed class ConnectionNegotiationTests
         payload.WriteU16(50);
         payload.WriteString("no common wire version");
         rejected.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.ConnectRejected, payload.Build()));
-        await using var client = new Client(new ClientConfig(
+        await using var client = new FitzClient(new ClientConfig(
             new Uri("ws://queued/ws"),
             Reconnect: new ReconnectOptions(true, MaxAttempts: 3, Backoff: TimeSpan.FromMilliseconds(5), MaxBackoff: TimeSpan.FromMilliseconds(5)),
             Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>

@@ -45,9 +45,8 @@ public sealed class RpcCall : IAsyncEnumerable<RpcResponseFrame>
     public Task<RpcCancellationOutcome> Cancellation { get; }
 
     /// <inheritdoc />
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Naming", "CA1725:Parameter names should match base declaration", Justification = "Fitz public cancellation token parameters use the established ct name.")]
-    public IAsyncEnumerator<RpcResponseFrame> GetAsyncEnumerator(CancellationToken ct = default) =>
-        _frames.GetAsyncEnumerator(ct);
+    public IAsyncEnumerator<RpcResponseFrame> GetAsyncEnumerator(CancellationToken cancellationToken = default) =>
+        _frames.GetAsyncEnumerator(cancellationToken);
 }
 
 /// <summary>
@@ -57,17 +56,20 @@ public sealed class RpcCall : IAsyncEnumerable<RpcResponseFrame>
 public sealed record RpcRequest(string Route, ReadOnlyMemory<byte> Body)
 {
     readonly TimeSpan? _initialRemainingTime;
+    readonly TimeProvider _time = TimeProvider.System;
     readonly long _budgetStartedAt;
 
     /// <summary>Creates a request with an optional remaining end-to-end budget.</summary>
     /// <param name="route">Concrete RPC route.</param>
     /// <param name="body">Opaque request payload.</param>
     /// <param name="remainingTime">Remaining budget, or null when no budget was supplied.</param>
-    public RpcRequest(string route, ReadOnlyMemory<byte> body, TimeSpan? remainingTime)
+    /// <param name="timeProvider">The clock that counts the budget down; the system clock by default.</param>
+    public RpcRequest(string route, ReadOnlyMemory<byte> body, TimeSpan? remainingTime, TimeProvider? timeProvider = null)
         : this(route, body)
     {
         _initialRemainingTime = remainingTime;
-        _budgetStartedAt = System.Diagnostics.Stopwatch.GetTimestamp();
+        _time = timeProvider ?? TimeProvider.System;
+        _budgetStartedAt = _time.GetTimestamp();
     }
 
     /// <summary>Current remaining end-to-end budget, if the caller supplied one.</summary>
@@ -80,7 +82,7 @@ public sealed record RpcRequest(string Route, ReadOnlyMemory<byte> Body)
                 return null;
             }
 
-            var remaining = budget - System.Diagnostics.Stopwatch.GetElapsedTime(_budgetStartedAt);
+            var remaining = budget - _time.GetElapsedTime(_budgetStartedAt);
             return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
         }
     }

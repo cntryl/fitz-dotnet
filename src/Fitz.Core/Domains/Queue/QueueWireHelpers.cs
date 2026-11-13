@@ -4,29 +4,13 @@ namespace Cntryl.Fitz.Domains.Queue;
 
 static class QueueWireHelpers
 {
-    internal static BinaryBufferReader ReadResponse(ReadOnlyMemory<byte> response, string operation)
-    {
-        if (response.IsEmpty)
+    static readonly WireFailureFactory<QueueException> Failure = static failure =>
+        new QueueException(failure.Message, failure.Code, failure.Status, failure.DomainCode)
         {
-            throw new QueueException($"{operation} response is empty", $"{operation}_INVALID_RESPONSE");
-        }
+            ErrorClass = failure.ErrorClass,
+            ErrorEffect = failure.ErrorEffect,
+        };
 
-        return new BinaryBufferReader(response);
-    }
-
-    internal static QueueException ReadError(ReadOnlyMemory<byte> response, string operation, byte status)
-    {
-        try
-        {
-            var error = ResponseError.Read(response);
-            var description = operation == "ENQUEUE" ? error.Message : $"{operation} failed: {error.Message}";
-            var domainError = new QueueException(description, $"{operation}_FAILED", status, error.Code);
-            domainError.SetWireError(error.Class, error.Effect);
-            return domainError;
-        }
-        catch (ProtocolException)
-        {
-            return new QueueException($"{operation} error response is malformed or ambiguous", $"{operation}_INVALID_RESPONSE", status);
-        }
-    }
+    internal static BinaryBufferReader ReadSuccess(ReadOnlyMemory<byte> response, string operation) =>
+        ResponseEnvelope.ReadSuccess(response, operation, Failure);
 }
