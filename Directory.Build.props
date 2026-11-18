@@ -20,7 +20,7 @@
 
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
     <!-- Assembly identity stays fixed permanently; release only by advancing PackageVersion. -->
-    <PackageVersion>5.0.0</PackageVersion>
+    <PackageVersion>4.3.0</PackageVersion>
     <Version>$(PackageVersion)</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <InformationalVersion>$(PackageVersion)</InformationalVersion>
@@ -40,7 +40,7 @@
     <PackageReleaseNotes>See https://github.com/cntryl/fitz-dotnet/blob/v$(PackageVersion)/CHANGELOG.md</PackageReleaseNotes>
     <PackageOutputPath>$(MSBuildThisFileDirectory)artifacts\packages</PackageOutputPath>
     <!-- Compatibility checks on every pack. PackageValidationBaselineVersion is deliberately
-         unset until 5.0.0 ships (a deliberate breaking release); see CONTRIBUTING.md. -->
+         unset until 4.3.0 ships (a deliberate breaking release); see CONTRIBUTING.md. -->
     <EnablePackageValidation>true</EnablePackageValidation>
   </PropertyGroup>
 
