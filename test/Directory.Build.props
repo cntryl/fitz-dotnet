@@ -3,6 +3,9 @@
 
   <PropertyGroup>
     <TargetFramework>net11.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <!-- Keep existing default-token and explicit-cancellation scenarios independent of the runner token. -->
+    <NoWarn>$(NoWarn);xUnit1051</NoWarn>
   </PropertyGroup>
 
   <!-- Test-naming/structure conventions (Should/Given/When, Arrange/Act/Assert). Test

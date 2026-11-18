@@ -73,7 +73,7 @@ public sealed class RpcTimingTests
         // Act
         await time.WaitForTimerAsync(budget);
         time.Advance(budget);
-        var error = await consumed.WaitAsync(TimeSpan.FromSeconds(5));
+        var error = await consumed.AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         await cancelSent.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await time.WaitForTimerAsync(ConfirmationWindow);
         time.Advance(ConfirmationWindow - TimeSpan.FromTicks(1));

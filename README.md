@@ -315,7 +315,7 @@ The conformance artifact uses the shared schema:
 
 [compose.yml](compose.yml) is the repo-owned local broker stack used by CI and local verification.
 
-- both brokers use `ghcr.io/cntryl/fitz` pinned by digest (not a floating tag, so a broker release cannot change results on its own; Dependabot proposes bumps), local storage volumes, and loopback-only ports
+- both brokers use `ghcr.io/cntryl/fitz:latest`, local storage volumes, and loopback-only ports
 - healthchecks are disabled, so `docker compose up -d` returns before the brokers listen; run `.github/scripts/wait-for-broker.sh` before testing
 - `fitz-anon`: `ws://127.0.0.1:4190/ws` and `127.0.0.1:4191`
 - `fitz-auth`: `ws://127.0.0.1:4090/ws` and `127.0.0.1:4091`

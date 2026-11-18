@@ -30,9 +30,3 @@ updates:
     directory: /
     schedule:
       interval: weekly
-
-  # Proposes new digests for the pinned broker image in compose.yml.
-  - package-ecosystem: docker-compose
-    directory: /
-    schedule:
-      interval: weekly

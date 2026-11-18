@@ -97,9 +97,8 @@ otherwise; the one such member carries a comment saying so.
   against it.
 - **`PackageReleaseNotes`** points at `CHANGELOG.md` at the release tag, so it needs no
   per-release edit; the changelog entry and the tag are what matter.
-- **Broker image:** `compose.yml` pins the broker by digest and Dependabot proposes bumps.
-  The nightly Spec workflow therefore only changes when the pin changes. To test a newer
-  broker deliberately, run the Spec workflow manually with its `broker_image` input.
+- Local verification and the nightly Spec workflow use `ghcr.io/cntryl/fitz:latest`.
+  To test a specific broker build, run the Spec workflow manually with its `broker_image` input.
 
 ## Releasing
 

@@ -5,8 +5,7 @@ on:
     inputs:
       broker_image:
         description: >-
-          Broker image to test instead of the digest pinned in compose.yml, for example
-          ghcr.io/cntryl/fitz:latest to check a new broker release deliberately.
+          Optional broker image override. The default is ghcr.io/cntryl/fitz:latest.
         required: false
         default: ""
         type: string
@@ -53,9 +52,8 @@ jobs:
         with:
           global-json-file: global.json
 
-      # The default broker is the image digest pinned in compose.yml, so a broker release
-      # cannot turn the nightly run red without a repository change. A manual dispatch may
-      # name another image; it is applied through compose.override.yml, which compose merges.
+      # The nightly run follows the latest published broker. A manual dispatch can test
+      # another image through compose.override.yml.
       - name: Select broker image override
         if: inputs.broker_image != ''
         env:
