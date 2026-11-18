@@ -18,7 +18,7 @@ public sealed class StreamBoundariesTests
         await session.AppendAsync(0, "empty"u8.ToArray(), ReadOnlyMemory<byte>.Empty);
         await session.AppendAsync(1, "absent"u8.ToArray());
         await session.CommitAsync(StreamCommitMode.Sync);
-        var page = await client.Stream.ReadPageAsync(route, 0, 10);
+        var page = await client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10 }).FirstAsync();
 
         // Assert
         Assert.Equal(2, page.Items.Count);
@@ -72,20 +72,13 @@ public sealed class StreamBoundariesTests
         var records = new List<StreamRecord>();
         ulong next = 0;
         var pages = 0;
-        while (true)
+        await foreach (var batch in client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10 }))
         {
-            var page = await client.Stream.ReadPageAsync(route, next, 10);
             pages++;
-            foreach (var item in page.Items)
-            {
-                records.Add(Assert.IsType<StreamRecord>(item.Record));
-            }
-            if (!page.Cursor.HasMore)
-            {
-                break;
-            }
-            Assert.True(page.Cursor.LastResourceOffset >= next);
-            next = page.Cursor.LastResourceOffset + 1;
+            Assert.Equal(next, batch.FromOffset);
+            Assert.True(batch.NextOffset > next);
+            records.AddRange(batch.Records);
+            next = batch.NextOffset;
         }
 
         // Assert

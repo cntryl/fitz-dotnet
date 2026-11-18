@@ -6,6 +6,138 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class RpcCancellationTests
 {
     [Fact]
+    public async Task ShouldReportUnconfirmedGivenShutdownDuringUncertainWrite()
+    {
+        // Arrange
+        var writing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var rpc = CreateClient(_ => { }, send: async (_, _, _) =>
+        {
+            writing.SetResult();
+            await release.Task;
+            throw new IOException("transport lost during write");
+        });
+        var call = rpc.CallStreamingAsync("rpc://prod/app/work", ReadOnlyMemory<byte>.Empty);
+        await using var reader = call.GetAsyncEnumerator();
+        var pending = reader.MoveNextAsync().AsTask();
+        await writing.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // Act
+        rpc.Dispose();
+        release.SetResult();
+
+        // Assert
+        await Assert.ThrowsAsync<IOException>(() => pending);
+        Assert.Equal(RpcCancellationOutcome.Unconfirmed, await call.Cancellation);
+    }
+
+    [Fact]
+    public async Task ShouldCancelOnOriginatingSessionGivenEarlyExitAfterDispatch()
+    {
+        // Arrange
+        Action<ReadOnlyMemory<byte>>? response = null;
+        Action<ReadOnlyMemory<byte>>? lifecycle = null;
+        using var owner = new CancellationTokenSource();
+        using var replacement = new CancellationTokenSource();
+        var current = owner.Token;
+        var requests = 0;
+        var cancellations = 0;
+        using var rpc = new RpcClient(
+            (_, _, _) => throw new InvalidOperationException(),
+            (_, payload, _) =>
+            {
+                requests++;
+                using var frame = new BinaryBufferWriter();
+                frame.WriteBytes(payload.Span[..16]);
+                frame.WriteU64(0);
+                frame.WriteU8(0);
+                frame.WriteLengthPrefixed("partial"u8);
+                response!(frame.Build());
+                return ValueTask.CompletedTask;
+            },
+            registerNotificationHandler: (type, handler) =>
+            {
+                if (type == MessageTypes.RpcResponse)
+                    response = handler;
+                if (type == MessageTypes.RpcLifecycle)
+                    lifecycle = handler;
+                return new TestRegistration();
+            },
+            getConnectionClosedToken: () => current,
+            sendOnSession: (type, payload, session, _) =>
+            {
+                cancellations++;
+                Assert.Equal(owner.Token, session);
+                Assert.Equal(MessageTypes.RpcCancel, type);
+                var result = payload.ToArray();
+                result[0] = 4;
+                result[17] = 2;
+                lifecycle!(result);
+                return ValueTask.CompletedTask;
+            });
+        var call = rpc.CallStreamingAsync("rpc://prod/app/work", ReadOnlyMemory<byte>.Empty);
+
+        // Act
+        await foreach (var frame in call)
+        {
+            Assert.Equal("partial"u8.ToArray(), frame.Body.ToArray());
+            current = replacement.Token;
+            break;
+        }
+
+        // Assert
+        Assert.Equal(1, requests);
+        Assert.Equal(1, cancellations);
+        Assert.Equal(RpcCancellationOutcome.Forwarded, await call.Cancellation);
+        Assert.Throws<InvalidOperationException>(() => call.GetAsyncEnumerator());
+    }
+
+    [Fact]
+    public async Task ShouldReportUnsentGivenEnumeratorDisposedBeforeFirstMove()
+    {
+        // Arrange
+        var sends = 0;
+        using var rpc = CreateClient(_ => { }, send: (_, _, _) => { sends++; return Task.CompletedTask; });
+        var call = rpc.CallStreamingAsync("rpc://prod/app/work", ReadOnlyMemory<byte>.Empty);
+
+        // Act
+        var enumerator = call.GetAsyncEnumerator();
+        await enumerator.DisposeAsync();
+
+        // Assert
+        Assert.Equal(RpcCancellationOutcome.RequestNotSent, await call.Cancellation.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.Throws<InvalidOperationException>(() => call.GetAsyncEnumerator());
+        Assert.Equal(0, sends);
+    }
+
+    [Fact]
+    public async Task ShouldDispatchOnceGivenConcurrentEnumerationsAndUncertainWrite()
+    {
+        // Arrange
+        var sends = 0;
+        using var rpc = CreateClient(_ => { }, send: (_, _, _) =>
+        {
+            Interlocked.Increment(ref sends);
+            throw new IOException("write outcome unknown");
+        });
+        var call = rpc.CallStreamingAsync("rpc://prod/app/work", ReadOnlyMemory<byte>.Empty);
+
+        // Act
+        var attempts = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => Task.Run(async () =>
+            await Record.ExceptionAsync(async () =>
+            {
+                await foreach (var frame in call)
+                { }
+            }))));
+
+        // Assert
+        Assert.Equal(7, attempts.Count(error => error is InvalidOperationException));
+        Assert.Single(attempts, error => error is IOException);
+        Assert.Equal(1, sends);
+        Assert.Equal(RpcCancellationOutcome.Unconfirmed, await call.Cancellation);
+    }
+
+    [Fact]
     public async Task ShouldCleanUpBufferedInvocationGivenCancellationBeforeDeferredDispatch()
     {
         // Arrange
@@ -57,7 +189,7 @@ public sealed class RpcCancellationTests
                 payload = request;
             return Task.CompletedTask;
         });
-        var call = rpc.CallAsync("rpc://prod/app/work", "work"u8.ToArray(), TimeSpan.FromMilliseconds(20));
+        var call = rpc.CallStreamingAsync("rpc://prod/app/work", "work"u8.ToArray(), TimeSpan.FromMilliseconds(20));
 
         // Act
         var error = await Record.ExceptionAsync(async () =>

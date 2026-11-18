@@ -21,16 +21,20 @@ public enum RpcCancellationOutcome
     UnknownOrUnauthorized,
     /// <summary>The broker could not forward the cancellation signal.</summary>
     ForwardingFailed,
-    /// <summary>No broker result arrived before the local confirmation timeout.</summary>
+    /// <summary>Dispatch or cancellation could not be confirmed.</summary>
     Unconfirmed,
     /// <summary>The connection closed while cancellation was in progress.</summary>
     ConnectionClosed,
 }
 
-/// <summary>A streaming RPC response sequence and its remote cancellation result.</summary>
+/// <summary>A lazy, single-use streaming RPC response sequence and its remote cancellation result.</summary>
 public sealed class RpcCall : IAsyncEnumerable<RpcResponseFrame>
 {
     readonly IAsyncEnumerable<RpcResponseFrame> _frames;
+
+    readonly TaskCompletionSource<Task<RpcCancellationOutcome>> _outcome = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    readonly Task<RpcCancellationOutcome> _dispatchedOutcome;
+    bool _claimed;
 
     /// <summary>Creates a lazy RPC call handle.</summary>
     /// <param name="frames">Response sequence.</param>
@@ -38,15 +42,51 @@ public sealed class RpcCall : IAsyncEnumerable<RpcResponseFrame>
     public RpcCall(IAsyncEnumerable<RpcResponseFrame> frames, Task<RpcCancellationOutcome> cancellation)
     {
         _frames = frames ?? throw new ArgumentNullException(nameof(frames));
-        Cancellation = cancellation ?? throw new ArgumentNullException(nameof(cancellation));
+        _dispatchedOutcome = cancellation ?? throw new ArgumentNullException(nameof(cancellation));
+        Cancellation = _outcome.Task.Unwrap();
     }
 
     /// <summary>Completes with the broker's result after enumeration is cancelled or ends.</summary>
     public Task<RpcCancellationOutcome> Cancellation { get; }
 
     /// <inheritdoc />
-    public IAsyncEnumerator<RpcResponseFrame> GetAsyncEnumerator(CancellationToken cancellationToken = default) =>
-        _frames.GetAsyncEnumerator(cancellationToken);
+    public IAsyncEnumerator<RpcResponseFrame> GetAsyncEnumerator(CancellationToken cancellationToken = default)
+    {
+        if (Interlocked.Exchange(ref _claimed, true))
+            throw new InvalidOperationException("An RPC call can only be enumerated once.");
+        return new Enumerator(this, cancellationToken);
+    }
+
+    sealed class Enumerator(RpcCall call, CancellationToken ct) : IAsyncEnumerator<RpcResponseFrame>
+    {
+        IAsyncEnumerator<RpcResponseFrame>? _inner;
+        bool _disposed;
+
+        public RpcResponseFrame Current => _inner!.Current;
+
+        public ValueTask<bool> MoveNextAsync()
+        {
+            if (_disposed)
+                return ValueTask.FromResult(false);
+            if (_inner is null)
+            {
+                _inner = call._frames.GetAsyncEnumerator(ct);
+                call._outcome.SetResult(call._dispatchedOutcome);
+            }
+            return _inner.MoveNextAsync();
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            if (_disposed)
+                return ValueTask.CompletedTask;
+            _disposed = true;
+            if (_inner is not null)
+                return _inner.DisposeAsync();
+            call._outcome.TrySetResult(Task.FromResult(RpcCancellationOutcome.RequestNotSent));
+            return ValueTask.CompletedTask;
+        }
+    }
 }
 
 /// <summary>

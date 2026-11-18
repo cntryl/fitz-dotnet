@@ -1,6 +1,6 @@
 # fitz-dotnet
 
-Current release: **4.2.0** (unreleased; see [CHANGELOG](CHANGELOG.md) for breaking changes), requiring Fitz **0.4.0 / Wire 3**. See [Wire 3 migration](docs/wire3-migration.md) for Queue TTL, NACK, negotiation, and coordinated upgrade guidance.
+The **5.0.0** SDK targets Fitz **0.4.0 / Wire 3**. See the [changelog](CHANGELOG.md) for migration details and [Wire 3 migration](docs/wire3-migration.md) for Queue TTL, NACK, negotiation, and coordinated upgrade guidance.
 
 `fitz-dotnet` is the .NET Fitz client SDK. The repo now tracks the same shared 24-scenario conformance suite as `fitz-ts`, runs against both WebSocket and TCP, and includes a repo-owned broker baseline in [compose.yml](compose.yml).
 
@@ -70,16 +70,15 @@ in `Cntryl.Fitz.Testing`.
 using Cntryl.Fitz;
 
 await using var client = new FitzClient(
-    new ClientConfig(
-        new Uri("ws://127.0.0.1:4190/ws"),
-        TokenProvider: _ => ValueTask.FromResult("your-jwt-token"),
-        ServiceName: "orders-worker"
-    )
-);
+    new ClientConfig(new Uri("ws://127.0.0.1:4190/ws"))
+    {
+        TokenProvider = _ => ValueTask.FromResult("your-jwt-token"),
+        ServiceName = "orders-worker",
+    });
 
 await client.ConnectWhenReadyAsync();
 
-var tx = await client.Kv.BeginAsync("kv://realm/app/users");
+await using var tx = await client.Kv.BeginAsync("kv://realm/app/users");
 await tx.PutAsync("user-1"u8.ToArray(), """{"name":"Alice"}"""u8.ToArray());
 await tx.CommitAsync(KvDurability.Sync);
 ```
@@ -94,9 +93,10 @@ shutdown; consumers outside Generic Host can continue to call `ConnectAsync`
 or `ConnectWhenReadyAsync` explicitly.
 
 ```csharp
-services.AddFitzClient(new ClientConfig(
-    new Uri("ws://127.0.0.1:4190/ws"),
-    TokenProvider: _ => ValueTask.FromResult("your-jwt-token")));
+services.AddFitzClient(new ClientConfig(new Uri("ws://127.0.0.1:4190/ws"))
+{
+    TokenProvider = _ => ValueTask.FromResult("your-jwt-token"),
+});
 ```
 
 ## Testing KV consumers
@@ -217,8 +217,10 @@ to polling.
 Every duration in the API is a `TimeSpan`, and one finer than the wire can carry is rejected
 rather than silently rounded — see [docs/guide.md](docs/guide.md#durations).
 
-`Stream.ReadAsync` follows validated continuation cursors until `HasMore` is
-false. Use `ReadPageAsync` when the caller needs explicit page boundaries.
+`Stream.ReadAsync(route, fromOffset, StreamReadMode.Replay)` yields batches through the
+first caught-up batch. Use `StreamReadMode.Follow` to keep reading after commits and
+reconnections. Process each batch’s `Records` or its full `Items`, then checkpoint
+`NextOffset`. Empty and filtered-only batches also carry a checkpoint.
 
 Subscriptions use `await client.Notice.SubscribeAsync(pattern)` (and the
 equivalent domain method) and return typed handles implementing both
@@ -241,7 +243,7 @@ If the shared transport notification queue overflows, all subscription handles f
 with `SubscriptionBackpressureException` and the connection is reset. Create new
 subscriptions after that terminal failure; reconnect cannot replay lost notifications.
 For an A→B→C call, pass the handler's `RpcRequest.RemainingTime` and
-`CancellationToken` to the downstream `CallAsync` so its budget and cancellation
+`CancellationToken` to the downstream `CallStreamingAsync` so its budget and cancellation
 are linked explicitly to the parent request.
 
 Schedule broker saturation is `FitzErrorCodes.ScheduleBusy` (`7005`) and is

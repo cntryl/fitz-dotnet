@@ -22,7 +22,7 @@ public sealed class RpcCancellationChainTests
 
         // Act
         var frames = new List<RpcResponseFrame>();
-        await foreach (var frame in caller.Rpc.CallAsync(route, "request"u8.ToArray()))
+        await foreach (var frame in caller.Rpc.CallStreamingAsync(route, "request"u8.ToArray()))
             frames.Add(frame);
 
         // Assert
@@ -123,14 +123,14 @@ public sealed class RpcCancellationChainTests
                 try
                 {
                     await Task.Delay(25, ct);
-                    await foreach (var _ in clients[1].Rpc.CallAsync(routeC, "child"u8.ToArray(), request.RemainingTime, ct))
+                    await foreach (var _ in clients[1].Rpc.CallStreamingAsync(routeC, "child"u8.ToArray(), request.RemainingTime, ct))
                     { }
                 }
                 finally { bCleaned.TrySetResult(); }
             });
             var cancellation = new CancellationTokenSource();
             var started = System.Diagnostics.Stopwatch.GetTimestamp();
-            var call = clients[0].Rpc.CallAsync(routeB, "parent"u8.ToArray(), budget, cancellation.Token);
+            var call = clients[0].Rpc.CallStreamingAsync(routeB, "parent"u8.ToArray(), budget, cancellation.Token);
             var caller = DrainAsync(call);
             var remaining = await childReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
             Assert.True(remaining < budget, "Downstream budget must include parent processing time.");

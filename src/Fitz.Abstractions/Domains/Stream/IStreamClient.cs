@@ -14,45 +14,14 @@ public interface IStreamClient
     /// <returns>A session whose appends become visible only on commit.</returns>
     Task<IStreamSession> BeginAsync(string route, ReadOnlyMemory<byte>? ingestMetadata = null, CancellationToken ct = default);
 
-    /// <summary>
-    /// Reads records from a sequence position, following continuation cursors automatically.
-    /// </summary>
-    /// <param name="route">
-    /// A concrete route, <c>realm/area/*</c>, <c>realm/*/*</c>, or <c>stream://**</c>.
-    /// </param>
-    /// <param name="startOffset">Sequence position to start from.</param>
-    /// <param name="limit">Maximum records per underlying page request.</param>
-    /// <param name="filter">Optional server-side filter applied to each record.</param>
-    /// <param name="maxBytes">Optional cap on the bytes returned per page.</param>
-    /// <param name="cursorFingerprint">Cursor fingerprint used to validate continuation.</param>
-    /// <param name="capturedWatermark">Watermark captured when the read began.</param>
-    /// <param name="ct">Cancellation token for the read.</param>
-    /// <returns>
-    /// Records in sequence order, paging until the stream reports no more. Every record
-    /// carries its concrete matched route. Use <see cref="ReadPageAsync"/> when the caller
-    /// needs explicit page boundaries.
-    /// </returns>
-    IAsyncEnumerable<StreamRecord> ReadAsync(string route, ulong startOffset, ulong limit = 100, StreamFilterSet? filter = null, ulong? maxBytes = null, ulong? cursorFingerprint = null, ulong? capturedWatermark = null, CancellationToken ct = default);
-
-    /// <summary>
-    /// Reads a single page of records, exposing the continuation cursor.
-    /// </summary>
-    /// <param name="route">
-    /// A concrete route, <c>realm/area/*</c>, <c>realm/*/*</c>, or <c>stream://**</c>.
-    /// </param>
-    /// <param name="startOffset">Sequence position to start from.</param>
-    /// <param name="limit">Maximum records to return.</param>
-    /// <param name="filter">Optional server-side filter applied to each record.</param>
-    /// <param name="maxBytes">Optional cap on the bytes returned.</param>
-    /// <param name="cursorFingerprint">Cursor fingerprint used to validate continuation.</param>
-    /// <param name="capturedWatermark">Watermark captured when the read began.</param>
-    /// <param name="ct">Cancellation token for the read.</param>
-    /// <returns>
-    /// One page, its continuation cursor, and whether more records follow. If any item
-    /// carries an invalid concrete route the whole page fails; partial batches are never
-    /// returned.
-    /// </returns>
-    Task<StreamReadPage> ReadPageAsync(string route, ulong startOffset, ulong limit = 100, StreamFilterSet? filter = null, ulong? maxBytes = null, ulong? cursorFingerprint = null, ulong? capturedWatermark = null, CancellationToken ct = default);
+    /// <summary>Reads batches in selector order, including filtered and empty batches.</summary>
+    /// <param name="route">A resource, area, realm, or global stream selector.</param>
+    /// <param name="fromOffset">Inclusive starting position on the selector's cursor axis.</param>
+    /// <param name="mode">Replay a snapshot or follow subsequent commits.</param>
+    /// <param name="options">Optional per-batch limits and filter.</param>
+    /// <param name="ct">Cancellation token for the read and any subsequent wait.</param>
+    /// <returns>Batches with the next offset to persist after processing each batch.</returns>
+    IAsyncEnumerable<StreamReadBatch> ReadAsync(string route, ulong fromOffset, StreamReadMode mode, StreamReadOptions? options = null, CancellationToken ct = default);
 
     /// <summary>
     /// Reads the most recent record on a stream without consuming it.

@@ -756,9 +756,10 @@ public sealed class QueueClientTests
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
         await using var connection = new FitzConnection(
-            new ClientConfig(
-                new Uri("ws://localhost:4190/ws"),
-                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            new ClientConfig(new Uri("ws://localhost:4190/ws"))
+            {
+                Reconnect = new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10)),
+            },
             transportFactory);
         await using var queue = new QueueClient(connection);
 
@@ -842,9 +843,10 @@ public sealed class QueueClientTests
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
         await using var connection = new FitzConnection(
-            new ClientConfig(
-                new Uri("ws://localhost:4190/ws"),
-                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            new ClientConfig(new Uri("ws://localhost:4190/ws"))
+            {
+                Reconnect = new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10)),
+            },
             transportFactory);
         await using var queue = new QueueClient(connection);
 

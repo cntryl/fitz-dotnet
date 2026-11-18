@@ -7,6 +7,32 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class KvClientTests
 {
     [Fact]
+    public async Task ShouldRollBackGivenFailedPutWhenTransactionLeavesScope()
+    {
+        // Arrange
+        var operations = new List<ushort>();
+        KvTransaction Begin() => new((type, _, _) =>
+        {
+            operations.Add(type);
+            if (type == MessageTypes.KvPut)
+                throw new KvException("put rejected");
+            return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
+        }, "kv://prod/app/data", 7);
+
+        // Act
+        var error = await Record.ExceptionAsync(async () =>
+        {
+            await using var tx = Begin();
+            await tx.PutAsync("key"u8.ToArray(), "value"u8.ToArray());
+            await tx.CommitAsync(KvDurability.Sync);
+        });
+
+        // Assert
+        Assert.IsType<KvException>(error);
+        Assert.Equal([MessageTypes.KvPut, MessageTypes.KvRollback], operations);
+    }
+
+    [Fact]
     public async Task ShouldSerializeOperationsGivenConcurrentCallsOnSameTransaction()
     {
         // Arrange
@@ -715,9 +741,10 @@ public sealed class KvClientTests
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
         await using var connection = new FitzConnection(
-            new ClientConfig(
-                new Uri("ws://localhost:4190/ws"),
-                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            new ClientConfig(new Uri("ws://localhost:4190/ws"))
+            {
+                Reconnect = new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10)),
+            },
             transportFactory);
         await using var kv = new KvClient(connection);
 

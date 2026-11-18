@@ -198,7 +198,7 @@ public sealed partial class ConformanceSmokeTests
             Exception? caught = null;
             try
             {
-                await foreach (var _ in client.Rpc.CallAsync(noWorkerRoute, "ping"u8.ToArray()))
+                await foreach (var _ in client.Rpc.CallStreamingAsync(noWorkerRoute, "ping"u8.ToArray()))
                 {
                 }
             }
@@ -279,7 +279,7 @@ public sealed partial class ConformanceSmokeTests
             Exception? rpcError = null;
             try
             {
-                await foreach (var _ in client.Rpc.CallAsync(IntegrationFixture.CreateUniqueRoute("rpc"), "ping"u8.ToArray()))
+                await foreach (var _ in client.Rpc.CallStreamingAsync(IntegrationFixture.CreateUniqueRoute("rpc"), "ping"u8.ToArray()))
                 {
                 }
             }
@@ -361,7 +361,7 @@ public sealed partial class ConformanceSmokeTests
             var started = DateTimeOffset.UtcNow;
             try
             {
-                await foreach (var _ in callerClient.Rpc.CallAsync(route, "block"u8.ToArray()))
+                await foreach (var _ in callerClient.Rpc.CallStreamingAsync(route, "block"u8.ToArray()))
                 {
                 }
             }
@@ -420,7 +420,7 @@ public sealed partial class ConformanceSmokeTests
             using var cts = new CancellationTokenSource();
             var callTask = Task.Run(async () =>
             {
-                await foreach (var _ in callerClient.Rpc.CallAsync(route, "block"u8.ToArray(), cts.Token))
+                await foreach (var _ in callerClient.Rpc.CallStreamingAsync(route, "block"u8.ToArray(), cts.Token))
                 {
                 }
             });
@@ -483,7 +483,7 @@ public sealed partial class ConformanceSmokeTests
 
             var callTask = Task.Run(async () =>
             {
-                await foreach (var _ in callerClient.Rpc.CallAsync(route, "block"u8.ToArray()))
+                await foreach (var _ in callerClient.Rpc.CallStreamingAsync(route, "block"u8.ToArray()))
                 {
                 }
             });
@@ -603,7 +603,7 @@ public sealed partial class ConformanceSmokeTests
 
             var pendingCallTask = Task.Run(async () =>
             {
-                await foreach (var _ in client.Rpc.CallAsync(pendingCallRoute, "block"u8.ToArray()))
+                await foreach (var _ in client.Rpc.CallStreamingAsync(pendingCallRoute, "block"u8.ToArray()))
                 {
                 }
             });
@@ -673,7 +673,7 @@ public sealed partial class ConformanceSmokeTests
             await verifierClient.ConnectAsync();
 
             var rpcResponses = new List<string>();
-            await foreach (var frame in verifierClient.Rpc.CallAsync(restoredWorkerRoute, "verify"u8.ToArray()))
+            await foreach (var frame in verifierClient.Rpc.CallStreamingAsync(restoredWorkerRoute, "verify"u8.ToArray()))
             {
                 rpcResponses.Add(Encoding.UTF8.GetString(frame.Body.Span));
             }
@@ -730,9 +730,9 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("stream session appended 3 records");
 
             var records = new List<StreamRecord>();
-            await foreach (var record in client.Stream.ReadAsync(route, 0, 10))
+            await foreach (var batch in client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10 }))
             {
-                records.Add(record);
+                records.AddRange(batch.Records);
             }
 
             if (records.Count != 3)
@@ -778,9 +778,9 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("stream session committed");
 
             var count = 0;
-            await foreach (var _ in client.Stream.ReadAsync(route, 0, 100))
+            await foreach (var batch in client.Stream.ReadAsync(route, 0, StreamReadMode.Replay))
             {
-                count++;
+                count += batch.Records.Count;
             }
 
             if (count < 2)
@@ -970,9 +970,9 @@ public sealed partial class ConformanceSmokeTests
             };
 
             var records = new List<StreamRecord>();
-            await foreach (var record in client.Stream.ReadAsync(route, 0, 10, filter))
+            await foreach (var batch in client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10, Filter = filter }))
             {
-                records.Add(record);
+                records.AddRange(batch.Records);
             }
 
             if (records.Count != 1)
@@ -993,7 +993,7 @@ public sealed partial class ConformanceSmokeTests
                 return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "filtered read returned the wrong body");
             }
 
-            var page = await client.Stream.ReadPageAsync(route, 0, 10, filter);
+            var page = await client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10, Filter = filter }).FirstAsync();
             if (page.Items.Count != 2)
             {
                 evidence.Add($"page returned {page.Items.Count} items");
@@ -1032,9 +1032,9 @@ public sealed partial class ConformanceSmokeTests
                 return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "filtered marker offset mismatch");
             }
 
-            if (page.Cursor.LastResourceOffset != secondOffset.Value || page.Cursor.HasMore)
+            if (page.NextOffset != secondOffset.Value + 1 || !page.CaughtUp)
             {
-                evidence.Add($"cursor last_resource_offset={page.Cursor.LastResourceOffset}, has_more={page.Cursor.HasMore}");
+                evidence.Add($"next offset={page.NextOffset}, caught up={page.CaughtUp}");
                 return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "cursor did not advance through filtered offsets");
             }
 

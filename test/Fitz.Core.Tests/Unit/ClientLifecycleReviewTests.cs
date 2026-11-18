@@ -18,9 +18,11 @@ public sealed class ClientLifecycleReviewTests
         await using var original = new TestQueuedTransport();
         await using var replacement = new ControlledConnectTransport();
         var attempts = 0;
-        var config = new ClientConfig(original.Url,
-            Timeout: Timeout.InfiniteTimeSpan,
-            Reconnect: new ReconnectOptions(Backoff: TimeSpan.FromMilliseconds(1)));
+        var config = new ClientConfig(original.Url)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+            Reconnect = new ReconnectOptions(Backoff: TimeSpan.FromMilliseconds(1)),
+        };
         await using var connection = new FitzConnection(config,
             () => Interlocked.Increment(ref attempts) == 1 ? original : replacement);
         await using var notice = new NoticeClient(connection);
@@ -58,12 +60,15 @@ public sealed class ClientLifecycleReviewTests
         // Arrange
         await using var transport = new TestQueuedTransport();
         var lost = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var config = new ClientConfig(transport.Url, Reconnect: new ReconnectOptions(Enabled: false),
-            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>
+        var config = new ClientConfig(transport.Url)
+        {
+            Reconnect = new ReconnectOptions(Enabled: false),
+            Observability = new FitzObservabilityOptions(OnLifecycleEvent: evt =>
             {
                 if (evt.Event == "connection_lost")
                     lost.TrySetResult();
-            }));
+            }),
+        };
         await using var connection = new FitzConnection(config, () => transport);
         await using var notice = new NoticeClient(connection);
         using var reply = new BinaryBufferWriter();
@@ -91,14 +96,14 @@ public sealed class ClientLifecycleReviewTests
     {
         // Arrange
         await using var transport = new ControlledCloseTransport();
-        await using var client = new FitzClient(new ClientConfig(transport.Url, TransportFactory: _ => transport));
+        await using var client = new FitzClient(new ClientConfig(transport.Url) { TransportFactory = _ => transport });
         using var firstCaller = new CancellationTokenSource();
         await client.ConnectAsync().WaitAsync(Deadline);
         var first = client.CloseAsync(firstCaller.Token);
         await transport.Closing.Task.WaitAsync(Deadline);
 
         // Act
-        var second = client.CloseAsync();
+        var second = client.DisposeAsync().AsTask();
         await firstCaller.CancelAsync();
 
         // Assert
@@ -114,6 +119,7 @@ public sealed class ClientLifecycleReviewTests
             await Record.ExceptionAsync(() => first.WaitAsync(Deadline));
         }
         Assert.Equal(1, transport.CloseCount);
+        Assert.False(typeof(IDisposable).IsAssignableFrom(typeof(FitzClient)));
     }
 
     [Fact]

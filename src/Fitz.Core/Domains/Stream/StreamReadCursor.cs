@@ -1,4 +1,4 @@
-namespace Cntryl.Fitz;
+namespace Cntryl.Fitz.Domains.Stream;
 
 /// <summary>
 /// Continuation state for a paged stream read.
@@ -13,7 +13,7 @@ namespace Cntryl.Fitz;
 /// </param>
 /// <param name="CapturedWatermark">Stream watermark captured when the read began.</param>
 /// <param name="HasMore">Whether more records follow this page.</param>
-public sealed record StreamReadCursor(
+sealed record StreamReadCursor(
     ulong LastResourceOffset,
     ulong? LastAreaOffset,
     ulong? LastRealmOffset,

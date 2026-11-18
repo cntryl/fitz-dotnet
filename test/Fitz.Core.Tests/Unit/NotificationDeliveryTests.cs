@@ -187,8 +187,10 @@ public sealed class NotificationDeliveryTests
     {
         // Arrange
         await using var transport = new TestQueuedTransport();
-        await using var connection = new FitzConnection(new ClientConfig(
-            new Uri("ws://queued/ws"), Reconnect: new ReconnectOptions(Enabled: false)), () => transport);
+        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"))
+        {
+            Reconnect = new ReconnectOptions(Enabled: false),
+        }, () => transport);
         await using IAsyncDisposable client = domain switch
         {
             "stream" => new StreamClient(connection),

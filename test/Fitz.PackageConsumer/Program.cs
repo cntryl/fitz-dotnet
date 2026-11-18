@@ -5,7 +5,13 @@ using Cntryl.Fitz.Testing;
 using Microsoft.Extensions.DependencyInjection;
 
 var services = new ServiceCollection();
-services.AddFitzClient(new ClientConfig(new Uri("ws://localhost:4190/ws")));
+var config = new ClientConfig(new Uri("ws://localhost:4190/ws")) { ServiceName = "package-consumer" };
+services.AddFitzClient(config);
+await using var client = new FitzClient(config);
+var call = client.Rpc.CallStreamingAsync("rpc://example/app/work", ReadOnlyMemory<byte>.Empty);
+await call.GetAsyncEnumerator().DisposeAsync();
+if (await call.Cancellation != RpcCancellationOutcome.RequestNotSent)
+    throw new InvalidOperationException("Disposing an unstarted RPC must report RequestNotSent.");
 
 Console.WriteLine(typeof(FitzClient).FullName);
 Console.WriteLine(typeof(IKvClient).FullName);
@@ -94,19 +100,13 @@ static async Task CompileStreamSelectorsAsync(
     IStreamClient stream,
     CancellationToken ct)
 {
-    await foreach (var record in stream.ReadAsync(
-        "stream://example/app/*",
-        0,
-        ct: ct).ConfigureAwait(false))
+    await foreach (var batch in stream.ReadAsync("stream://example/app/*", 0, StreamReadMode.Replay,
+        new StreamReadOptions { BatchSize = 20 }, ct).ConfigureAwait(false))
     {
-        Console.WriteLine(record.Route);
+        Console.WriteLine(batch.NextOffset);
+        foreach (var record in batch.Records)
+            Console.WriteLine(record.Route);
     }
-
-    var page = await stream.ReadPageAsync(
-        "stream://**",
-        0,
-        ct: ct).ConfigureAwait(false);
-    Console.WriteLine(page.Items.Count);
 }
 
 Func<IStreamClient, CancellationToken, Task> streamSelectors = CompileStreamSelectorsAsync;

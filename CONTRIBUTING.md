@@ -91,9 +91,9 @@ otherwise; the one such member carries a comment saying so.
   (`GITHUB_ACTIONS=true`) and must not be forced locally. SourceLink and `EmbedUntrackedSources`
   are enabled for packable projects.
 - **Package validation** (`EnablePackageValidation`) runs on every `dotnet pack`. No
-  `PackageValidationBaselineVersion` is set yet, because the next release (4.2.0) deliberately
-  breaks the public API. **After 4.2.0 ships, set `PackageValidationBaselineVersion` to
-  `4.2.0`** in `Directory.Build.props` so later releases are checked for breaking changes
+  `PackageValidationBaselineVersion` is set yet, because the next release (5.0.0) deliberately
+  breaks the public API. **After 5.0.0 ships, set `PackageValidationBaselineVersion` to
+  `5.0.0`** in `Directory.Build.props` so later releases are checked for breaking changes
   against it.
 - **`PackageReleaseNotes`** points at `CHANGELOG.md` at the release tag, so it needs no
   per-release edit; the changelog entry and the tag are what matter.

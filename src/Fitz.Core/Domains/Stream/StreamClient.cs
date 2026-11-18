@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
@@ -102,104 +103,126 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
     }
 
     /// <inheritdoc />
-    public IAsyncEnumerable<StreamRecord> ReadAsync(
-        string route,
-        ulong startOffset,
-        ulong limit = 100,
-        StreamFilterSet? filter = null,
-        ulong? maxBytes = null,
-        ulong? cursorFingerprint = null,
-        ulong? capturedWatermark = null,
-        CancellationToken ct = default)
+    public IAsyncEnumerable<StreamReadBatch> ReadAsync(
+        string route, ulong fromOffset, StreamReadMode mode, StreamReadOptions? options = null, CancellationToken ct = default)
     {
-        // Validate at the call site, not on the first MoveNextAsync.
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(route);
-        ValidateStreamSelector(route);
-        _ = RouteValidation.TryGetStreamSelectorScope(route, out var scope);
-        return ReadCoreAsync(route, scope, startOffset, limit, filter, maxBytes, cursorFingerprint, capturedWatermark, ct);
+        if (!RouteValidation.TryGetStreamSelectorScope(route, out var scope))
+            throw new ArgumentException($"Invalid stream selector '{route}'.", nameof(route));
+        if (mode is not (StreamReadMode.Replay or StreamReadMode.Follow))
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        options ??= new StreamReadOptions();
+        return mode == StreamReadMode.Replay
+            ? ReadSnapshotAsync(route, scope, fromOffset, options, default, ct)
+            : FollowAsync(route, scope, fromOffset, options, ct);
     }
 
-    async IAsyncEnumerable<StreamRecord> ReadCoreAsync(
-        string route,
-        StreamSelectorScope scope,
-        ulong startOffset,
-        ulong limit,
-        StreamFilterSet? filter,
-        ulong? maxBytes,
-        ulong? cursorFingerprint,
-        ulong? capturedWatermark,
-        [EnumeratorCancellation] CancellationToken ct)
+    async IAsyncEnumerable<StreamReadBatch> FollowAsync(
+        string route, StreamSelectorScope scope, ulong fromOffset, StreamReadOptions options, [EnumeratorCancellation] CancellationToken ct)
     {
-        var nextOffset = startOffset;
-        var fingerprint = cursorFingerprint;
-        var watermark = capturedWatermark;
-
-        while (true)
+        // One pending wake covers any number of commits during a read or while yielding a batch.
+        var wake = Channel.CreateBounded<bool>(1);
+        var binding = await _subscriptions.SubscribeAsync(route, (_, _) =>
         {
-            ct.ThrowIfCancellationRequested();
-            var page = await ReadPageAsync(route, nextOffset, limit, filter, maxBytes, fingerprint, watermark, ct).ConfigureAwait(false);
-            foreach (var item in page.Items)
+            wake.Writer.TryWrite(true);
+            return ValueTask.CompletedTask;
+        }, preDispatch: null, ct, bestEffort: true).ConfigureAwait(false);
+        IAsyncDisposable subscription = new StreamSubscription(route, binding.Unsubscribe, binding.Completion, _time);
+        await using var cleanup = subscription.ConfigureAwait(false);
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, binding.Ended);
+        try
+        {
+            while (true)
             {
-                if (item.Kind == StreamReadItemKind.Event && item.Record is not null)
+                lifetime.Token.ThrowIfCancellationRequested();
+                var session = _connection is null ? CancellationToken.None
+                    : await _connection.WaitUntilReadyAsync(Timeout.InfiniteTimeSpan, lifetime.Token).ConfigureAwait(false);
+                using var snapshot = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token, session);
+                await foreach (var batch in ReadSnapshotAsync(route, scope, fromOffset, options, session, snapshot.Token).ConfigureAwait(false))
                 {
-                    yield return item.Record;
+                    lifetime.Token.ThrowIfCancellationRequested();
+                    yield return batch;
+                    fromOffset = batch.NextOffset;
+                }
+
+                try
+                {
+                    _ = await wake.Reader.ReadAsync(snapshot.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (session.IsCancellationRequested && !lifetime.IsCancellationRequested)
+                {
+                    // Restart with a fresh snapshot after the replacement session restores subscriptions.
                 }
             }
+        }
+        finally
+        {
+            // Preserve a delivery failure that interrupted a read or wait.
+            if (binding.Ended.IsCancellationRequested && !ct.IsCancellationRequested)
+                await binding.Completion.ConfigureAwait(false);
+        }
+    }
 
-            if (!page.Cursor.HasMore)
+    async IAsyncEnumerable<StreamReadBatch> ReadSnapshotAsync(
+        string route, StreamSelectorScope scope, ulong fromOffset, StreamReadOptions options,
+        CancellationToken session, [EnumeratorCancellation] CancellationToken ct)
+    {
+        ulong? fingerprint = null;
+        ulong? watermark = null;
+        ulong? previousNext = null;
+        while (!session.IsCancellationRequested)
+        {
+            StreamReadPage page;
+            try
+            {
+                ct.ThrowIfCancellationRequested();
+                page = await ReadPageAsync(route, fromOffset, options, fingerprint, watermark, session, ct).ConfigureAwait(false);
+            }
+            catch (Exception error) when (session.IsCancellationRequested &&
+                error is OperationCanceledException or ConnectionException or IOException)
             {
                 yield break;
             }
 
-            var lastOffset = scope switch
+            var next = page.NextOffset(scope, fromOffset);
+            if (page.Cursor.HasMore)
             {
-                StreamSelectorScope.Resource => page.Cursor.LastResourceOffset,
-                StreamSelectorScope.Area => page.Cursor.LastAreaOffset,
-                StreamSelectorScope.Realm => page.Cursor.LastRealmOffset,
-                StreamSelectorScope.Global => page.Cursor.LastGlobalOffset,
-                _ => null,
-            };
-            if (!lastOffset.HasValue || lastOffset.Value < nextOffset || lastOffset.Value == ulong.MaxValue)
-            {
-                throw new StreamException("READ response contains a non-progressing continuation cursor", "READ_INVALID_RESPONSE");
+                if (next == previousNext)
+                    throw new StreamException("Two consecutive READ pages have a stalled cursor.", "READ_STALLED");
+                previousNext = next;
+                if (scope == StreamSelectorScope.Global)
+                {
+                    fingerprint = page.Cursor.CursorFingerprint
+                        ?? throw new StreamException("READ response is missing the global cursor fingerprint", "READ_INVALID_RESPONSE");
+                    watermark = page.Cursor.CapturedWatermark
+                        ?? throw new StreamException("READ response is missing the captured watermark", "READ_INVALID_RESPONSE");
+                }
             }
-
-            nextOffset = lastOffset.Value + 1;
-            if (scope == StreamSelectorScope.Global)
-            {
-                fingerprint = page.Cursor.CursorFingerprint
-                    ?? throw new StreamException("READ response is missing the global cursor fingerprint", "READ_INVALID_RESPONSE");
-                watermark = page.Cursor.CapturedWatermark
-                    ?? throw new StreamException("READ response is missing the captured watermark", "READ_INVALID_RESPONSE");
-            }
+            yield return new StreamReadBatch(page.Items, fromOffset, next, !page.Cursor.HasMore);
+            if (!page.Cursor.HasMore)
+                yield break;
+            fromOffset = next;
         }
     }
 
-    /// <inheritdoc />
-    public async Task<StreamReadPage> ReadPageAsync(
-        string route,
-        ulong startOffset,
-        ulong limit = 100,
-        StreamFilterSet? filter = null,
-        ulong? maxBytes = null,
-        ulong? cursorFingerprint = null, ulong? capturedWatermark = null,
-        CancellationToken ct = default)
+    async Task<StreamReadPage> ReadPageAsync(
+        string route, ulong startOffset, StreamReadOptions options, ulong? cursorFingerprint, ulong? capturedWatermark,
+        CancellationToken session, CancellationToken ct)
     {
         ThrowIfDisposed();
-        ValidateStreamSelector(route);
-
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteU64(startOffset);
-        writer.WriteU64(limit);
+        writer.WriteU64(options.BatchSize);
+        var maxBytes = options.MaxBytes;
         writer.WriteU8((byte)(maxBytes.HasValue ? 1 : 0));
         if (maxBytes.HasValue)
         {
             writer.WriteU64(maxBytes.Value);
         }
 
-        var filterBytes = StreamWireHelpers.EncodeStreamFilterSet(filter);
+        var filterBytes = StreamWireHelpers.EncodeStreamFilterSet(options.Filter);
         writer.WriteU8((byte)(filterBytes.Length > 0 ? 1 : 0));
         if (filterBytes.Length > 0)
         {
@@ -213,13 +236,11 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
         if (capturedWatermark.HasValue)
             writer.WriteU64(capturedWatermark.Value);
 
-        var response = await RequestWithRetryAsync(
-            RetryOperations.StreamRead,
-            MessageTypes.StreamRead,
-            writer.WrittenMemory,
-            ct).ConfigureAwait(false);
-        var data = StreamWireHelpers.ReadOptionalPayload(response, "READ");
-        return data.IsEmpty ? new StreamReadPage(Array.Empty<StreamReadItem>(), new StreamReadCursor(0, null, null, null, null, null, false)) : StreamWireHelpers.ReadReadPage(data, "READ", route);
+        var response = session.CanBeCanceled && _connection is not null
+            ? await _connection.ExecuteWithRetryAsync(RetryOperations.StreamRead,
+                token => _connection.RequestOnSessionAsync(MessageTypes.StreamRead, writer.WrittenMemory, session, token), ct).ConfigureAwait(false)
+            : await RequestWithRetryAsync(RetryOperations.StreamRead, MessageTypes.StreamRead, writer.WrittenMemory, ct).ConfigureAwait(false);
+        return StreamWireHelpers.ReadReadPage(StreamWireHelpers.ReadOptionalPayload(response, "READ"), "READ", route);
     }
 
     /// <inheritdoc />
@@ -370,16 +391,6 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
         }
 
         ThrowInvalidExactRoute(route, failure);
-    }
-
-    static void ValidateStreamSelector(string route)
-    {
-        if (RouteValidation.IsStreamSelector(route))
-        {
-            return;
-        }
-
-        throw new ArgumentException($"stream selector '{route}' must use the canonical resource, area, realm, or global selector shape", nameof(route));
     }
 
     static void ThrowInvalidExactRoute(string route, RouteValidationFailure failure)

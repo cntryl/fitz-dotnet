@@ -186,12 +186,13 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     /// <see cref="FitzException"/> it throws faults only this handle.
     /// </param>
     /// <param name="ct">Cancellation token for the subscribe request.</param>
+    /// <param name="bestEffort">Always withdraw the local handle on automatic reader cleanup.</param>
     /// <returns>The handle's unsubscribe callback and completion signal.</returns>
     internal async Task<SubscriptionBinding> SubscribeAsync(
         string pattern,
         Func<TNotification, CancellationToken, ValueTask> handler,
         Action<TNotification>? preDispatch,
-        CancellationToken ct)
+        CancellationToken ct, bool bestEffort = false)
     {
         ArgumentNullException.ThrowIfNull(handler);
         EnsureNotificationHandlerRegistered();
@@ -204,7 +205,11 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
             token => UnsubscribeAsync(pattern, handleId, token),
             preDispatch,
             _time);
-        var binding = new SubscriptionBinding(token => UnsubscribeAsync(pattern, handleId, token), registration.Completion);
+        ValueTask Unsubscribe(CancellationToken token) => bestEffort
+            ? UnsubscribeFollowAsync(pattern, handleId, token)
+            : UnsubscribeAsync(pattern, handleId, token);
+        var binding = new SubscriptionBinding(Unsubscribe, registration.Completion,
+            bestEffort ? registration.CancellationToken : default);
         var gateEntered = false;
         try
         {
@@ -288,30 +293,30 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         try
         {
             var session = CurrentSession();
-            KeyValuePair<string, PatternSubscription>[] snapshot;
+            string[] snapshot;
             lock (_gate)
             {
                 if (_byPattern.Count == 0)
                     return;
-                snapshot = [.. _byPattern];
+                snapshot = [.. _byPattern.Keys];
             }
 
-            var restored = new List<(string Pattern, PatternSubscription Subscription)>(snapshot.Length);
+            var restored = new List<(string Pattern, ulong Id)>(snapshot.Length);
             try
             {
-                foreach (var (pattern, subscription) in snapshot)
+                foreach (var pattern in snapshot)
                 {
                     var subscriptionId = await _subscribe(pattern, session, ct).ConfigureAwait(false);
-                    restored.Add((pattern, subscription.WithId(subscriptionId)));
+                    restored.Add((pattern, subscriptionId));
                 }
             }
             catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
             {
-                foreach (var (pattern, subscription) in restored)
+                foreach (var (pattern, id) in restored)
                 {
                     try
                     {
-                        await _unsubscribe(pattern, subscription.SubscriptionId, session, CancellationToken.None).ConfigureAwait(false);
+                        await _unsubscribe(pattern, id, session, CancellationToken.None).ConfigureAwait(false);
                     }
                     catch (Exception cleanupError) when (ExceptionPolicy.IsRecoverable(cleanupError))
                     {
@@ -322,15 +327,28 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                 throw;
             }
 
+            List<(string Pattern, ulong Id)>? withdrawn = null;
             lock (_gate)
             {
-                _byPattern.Clear();
                 _patternById.Clear();
-                foreach (var (pattern, subscription) in restored)
+                foreach (var (pattern, id) in restored)
                 {
-                    _byPattern[pattern] = subscription;
-                    _patternById[subscription.SubscriptionId] = pattern;
+                    if (_byPattern.TryGetValue(pattern, out var subscription))
+                    {
+                        _byPattern[pattern] = subscription.WithId(id);
+                        _patternById[id] = pattern;
+                    }
+                    else
+                    {
+                        // The reader left while SUBSCRIBE was in flight.
+                        (withdrawn ??= []).Add((pattern, id));
+                    }
                 }
+            }
+            if (withdrawn is not null)
+            {
+                foreach (var (pattern, id) in withdrawn)
+                    await _unsubscribe(pattern, id, session, ct).ConfigureAwait(false);
             }
         }
         finally
@@ -373,6 +391,29 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
 
         await _changeGate.DrainAndDisposeAsync().ConfigureAwait(false);
         _closing.Dispose();
+    }
+
+    async ValueTask UnsubscribeFollowAsync(string pattern, long handleId, CancellationToken ct)
+    {
+        try
+        {
+            await UnsubscribeAsync(pattern, handleId, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            // The iterator has ended. A failed wire unsubscribe must not restore its callback.
+            SubscriptionRegistration<TNotification>? removed = null;
+            lock (_gate)
+            {
+                if (_byPattern.TryGetValue(pattern, out var subscription) &&
+                    subscription.Handles.Remove(handleId, out removed) && subscription.Handles.Count == 0)
+                {
+                    _byPattern.Remove(pattern);
+                    _patternById.Remove(subscription.SubscriptionId);
+                }
+            }
+            removed?.Dispose();
+        }
     }
 
     async ValueTask UnsubscribeAsync(string pattern, long handleId, CancellationToken ct)

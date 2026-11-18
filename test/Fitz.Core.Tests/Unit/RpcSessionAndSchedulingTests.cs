@@ -22,10 +22,11 @@ public sealed class RpcSessionAndSchedulingTests
                 return new TestRegistration();
             },
             getConnectionClosedToken: () => previous.Token,
-            sendInSession: async (_, payload, _) =>
+            sendInSession: async (_, payload, onWrite, _) =>
             {
                 // Sending may wait for reconnect before it chooses a transport. Its returned
                 // lifetime, rather than the previously published token, owns this request.
+                onWrite();
                 await previous.CancelAsync();
                 var request = new BinaryBufferReader(payload);
                 using var frame = new BinaryBufferWriter();
@@ -37,7 +38,7 @@ public sealed class RpcSessionAndSchedulingTests
                 response!(frame.Build());
                 return sendingSession.Token;
             });
-        var call = rpc.CallAsync("rpc://prod/app/work", ReadOnlyMemory<byte>.Empty);
+        var call = rpc.CallStreamingAsync("rpc://prod/app/work", ReadOnlyMemory<byte>.Empty);
         var frames = new List<RpcResponseFrame>();
 
         // Act
@@ -71,7 +72,7 @@ public sealed class RpcSessionAndSchedulingTests
             connectionTimeout: TimeSpan.FromMilliseconds(100));
 
         // Act
-        var call = rpc.CallAsync("rpc://prod/app/work", ReadOnlyMemory<byte>.Empty);
+        var call = rpc.CallStreamingAsync("rpc://prod/app/work", ReadOnlyMemory<byte>.Empty);
         await using var reader = call.GetAsyncEnumerator();
 
         // Assert

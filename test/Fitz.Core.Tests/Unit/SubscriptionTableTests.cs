@@ -5,6 +5,26 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class SubscriptionTableTests
 {
     [Fact]
+    public async Task ShouldWithdrawRestoredSubscriptionGivenFollowCleanupDuringRestore()
+    {
+        // Arrange
+        var restoring = new TaskCompletionSource<ulong>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var fake = new FakeWire { RestoreReply = restoring.Task };
+        await using var table = fake.CreateTable();
+        var follow = await table.SubscribeAsync("kv://a/b/*", Ignore, preDispatch: null, CancellationToken.None, bestEffort: true);
+        var restore = table.RestoreAsync(CancellationToken.None).AsTask();
+        Assert.Equal(2, fake.SubscribeCalls);
+
+        // Act
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => follow.Unsubscribe(new CancellationToken(true)).AsTask());
+        restoring.SetResult(2);
+        await restore;
+
+        // Assert
+        Assert.Equal([("kv://a/b/*", 2UL)], fake.Unsubscribed);
+    }
+
+    [Fact]
     public async Task ShouldUnsubscribeRestoredPatternsGivenPartialRestoreFailureWhenReconnecting()
     {
         // Arrange
@@ -112,6 +132,8 @@ public sealed class SubscriptionTableTests
 
         internal int SubscribeCalls { get; private set; }
 
+        internal Task<ulong>? RestoreReply { get; init; }
+
         internal int FailSubscribeCall { get; init; }
 
         internal List<(string Pattern, ulong SubscriptionId)> Unsubscribed { get; } = [];
@@ -130,6 +152,8 @@ public sealed class SubscriptionTableTests
             (_, _, _) =>
             {
                 SubscribeCalls++;
+                if (SubscribeCalls > 1 && RestoreReply is not null)
+                    return RestoreReply;
                 return SubscribeCalls == FailSubscribeCall
                     ? Task.FromException<ulong>(new InvalidOperationException("restore rejected"))
                     : Task.FromResult((ulong)SubscribeCalls);

@@ -53,13 +53,15 @@ public sealed class ConnectionLossSignallingTests
         await using var second = new TestQueuedTransport();
         var factoryCalls = 0;
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"),
-            Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(1), MaxBackoff: TimeSpan.FromMilliseconds(1)),
-            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>
+        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"))
+        {
+            Reconnect = new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(1), MaxBackoff: TimeSpan.FromMilliseconds(1)),
+            Observability = new FitzObservabilityOptions(OnLifecycleEvent: evt =>
             {
                 if (evt.Event == "reconnect_succeeded")
                     reconnected.TrySetResult();
-            })), () => Interlocked.Increment(ref factoryCalls) == 1 ? first : second);
+            }),
+        }, () => Interlocked.Increment(ref factoryCalls) == 1 ? first : second);
         await connection.ConnectAsync();
         var retiredSession = connection.ConnectionClosedToken;
 
@@ -93,15 +95,17 @@ public sealed class ConnectionLossSignallingTests
         var interruptedLossReported = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var lossHandlerParked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var releaseLossHandler = new ManualResetEventSlim();
-        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"),
-            Reconnect: new ReconnectOptions(true, MaxAttempts: 3, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
-            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>
+        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"))
+        {
+            Reconnect = new ReconnectOptions(true, MaxAttempts: 3, Backoff: TimeSpan.Zero, MaxBackoff: TimeSpan.Zero),
+            Observability = new FitzObservabilityOptions(OnLifecycleEvent: evt =>
             {
                 if (evt.Event == "reconnect_succeeded" && Volatile.Read(ref factoryCalls) >= 3)
                     restoredSession.TrySetResult();
                 if (evt.Event == "connection_lost" && Interlocked.Increment(ref connectionLosses) == 2)
                     interruptedLossReported.TrySetResult();
-            })), () => Interlocked.Increment(ref factoryCalls) switch
+            }),
+        }, () => Interlocked.Increment(ref factoryCalls) switch
             {
                 1 => first,
                 2 => interrupted,
@@ -180,7 +184,7 @@ public sealed class ConnectionLossSignallingTests
     }
 
     static ClientConfig NoReconnectConfig() =>
-        new(new Uri("ws://queued/ws"), Reconnect: new ReconnectOptions(Enabled: false));
+        new(new Uri("ws://queued/ws")) { Reconnect = new ReconnectOptions(Enabled: false) };
 
     static byte[] ConnectRejectedFrame(ushort code, string message)
     {

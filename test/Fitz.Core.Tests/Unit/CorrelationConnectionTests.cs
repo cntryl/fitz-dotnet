@@ -7,11 +7,12 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 /// <summary>Wire 3 negotiation and correlated routing through the real receive loop.</summary>
 public sealed class CorrelationConnectionTests
 {
-    static ClientConfig Config(TimeSpan? timeout = null) => new(
-        new Uri("ws://queued/ws"),
-        Retry: new RetryOptions(Enabled: false),
-        Reconnect: new ReconnectOptions(Enabled: false),
-        Timeout: timeout ?? TimeSpan.FromSeconds(10));
+    static ClientConfig Config(TimeSpan? timeout = null) => new(new Uri("ws://queued/ws"))
+    {
+        Retry = new RetryOptions(Enabled: false),
+        Reconnect = new ReconnectOptions(Enabled: false),
+        Timeout = timeout ?? TimeSpan.FromSeconds(10),
+    };
 
     static async Task WaitForAsync(Func<bool> condition, string because)
     {

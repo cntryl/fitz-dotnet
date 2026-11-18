@@ -26,7 +26,7 @@ namespace Cntryl.Fitz.DependencyInjection;
 /// package stays trim and Native AOT safe.
 /// </para>
 /// <para>
-/// The container owns and disposes what it creates. Disposing the provider closes the client.
+/// The container owns and disposes what it creates. Asynchronously disposing the provider closes the client.
 /// </para>
 /// </remarks>
 public static class ServiceCollectionExtensions
@@ -284,6 +284,6 @@ public static class ServiceCollectionExtensions
         // CloseAsync throws before doing any work when its token is already canceled, which is
         // exactly the state of a host whose shutdown timeout expired. Close regardless and let
         // the token bound only how long the host waits.
-        public Task StopAsync(CancellationToken ct) => client.CloseAsync(CancellationToken.None).WaitAsync(ct);
+        public Task StopAsync(CancellationToken ct) => client.CloseAsync(ct);
     }
 }

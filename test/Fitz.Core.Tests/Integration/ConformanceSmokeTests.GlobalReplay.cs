@@ -3,6 +3,35 @@ namespace Cntryl.Fitz.Core.Tests.Integration;
 public sealed partial class ConformanceSmokeTests
 {
     [Fact]
+    public async Task ShouldFollowFirstAppendGivenInitiallyEmptyResource()
+    {
+        // Arrange
+        var transport = IntegrationFixture.GetConformanceTransport();
+        var authMode = IntegrationFixture.GetConformanceAuthMode();
+        await using var client = IntegrationFixture.CreateClientForMode(transport, authMode);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        var ct = deadline.Token;
+        await client.ConnectAsync(ct);
+        var route = IntegrationFixture.CreateUniqueRoute("stream");
+        await using var batches = client.Stream.ReadAsync(route, 0, StreamReadMode.Follow, ct: ct).GetAsyncEnumerator(ct);
+
+        // Act
+        Assert.True(await batches.MoveNextAsync());
+        var empty = batches.Current;
+        await using var session = await client.Stream.BeginAsync(route, ct: ct);
+        await session.AppendAsync(0, "first"u8.ToArray(), ct: ct);
+        await session.CommitAsync(StreamCommitMode.Sync, ct);
+        Assert.True(await batches.MoveNextAsync());
+
+        // Assert
+        Assert.Empty(empty.Items);
+        Assert.True(empty.CaughtUp);
+        Assert.Equal(0UL, empty.NextOffset);
+        Assert.Equal(0UL, Assert.Single(batches.Current.Records).Offset);
+        Assert.Equal(1UL, batches.Current.NextOffset);
+    }
+
+    [Fact]
     public async Task ShouldReplayGlobalStreamGivenFilteredMultiPageSelectionWhenConnected()
     {
         // Arrange
@@ -31,8 +60,7 @@ public sealed partial class ConformanceSmokeTests
             {
                 Clauses = [new StreamFilterClause { Kind = StreamFilterClauseKind.Equals, Value = discriminator }],
             };
-            var initial = await client.Stream.ReadPageAsync("stream://**", 0, 1);
-            var next = initial.Cursor.CapturedWatermark ?? throw new InvalidOperationException("Missing global watermark");
+            var tail = await client.Stream.ReadAsync("stream://**", 0, StreamReadMode.Replay).LastAsync();
             foreach (var route in new[] { firstRoute, secondRoute })
             {
                 await using var session = await client.Stream.BeginAsync(route);
@@ -42,25 +70,17 @@ public sealed partial class ConformanceSmokeTests
             }
 
             var records = new List<StreamRecord>();
-            ulong? fingerprint = null;
-            ulong? watermark = null;
             var filteredOnly = false;
             var pages = 0;
-            while (true)
+            var next = tail.NextOffset;
+            var options = new StreamReadOptions { BatchSize = 1, Filter = filter };
+            await foreach (var batch in client.Stream.ReadAsync("stream://**", next, StreamReadMode.Replay, options))
             {
-                var page = await client.Stream.ReadPageAsync("stream://**", next, 1, filter, cursorFingerprint: fingerprint, capturedWatermark: watermark);
+                Assert.Equal(next, batch.FromOffset);
+                filteredOnly |= batch.Items.Count > 0 && batch.Records.Count == 0;
+                records.AddRange(batch.Records);
+                next = batch.NextOffset;
                 pages++;
-                filteredOnly |= page.Items.Count > 0 && page.Items.All(item => item.Record is null);
-                records.AddRange(page.Items.Where(item => item.Record is not null).Select(item => item.Record!));
-                if (!page.Cursor.HasMore)
-                {
-                    break;
-                }
-                var last = page.Cursor.LastGlobalOffset ?? throw new InvalidOperationException("Missing global cursor offset");
-                Assert.True(last >= next);
-                next = last + 1;
-                fingerprint = page.Cursor.CursorFingerprint;
-                watermark = page.Cursor.CapturedWatermark;
             }
 
             Assert.True(pages > 1);

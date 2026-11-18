@@ -16,22 +16,19 @@ public sealed class DependencyInjectionTests
     {
         // Arrange
         await using var transport = new TestQueuedTransport();
-        var services = new ServiceCollection();
-        services.AddFitzClient(new ClientConfig(
-            new Uri("ws://localhost:4190/ws"),
-            TransportFactory: _ => transport));
-        await using var provider = services.BuildServiceProvider();
+        var builder = Host.CreateApplicationBuilder();
+        var config = new ClientConfig(transport.Url) { TransportFactory = _ => transport };
+        builder.Services.AddFitzClient(config);
+        using var host = builder.Build();
+        var client = host.Services.GetRequiredService<FitzClient>();
 
         // Act
-        var client = provider.GetRequiredService<IFitzClient>();
+        await host.StartAsync();
+        Assert.True(client.IsConnected);
+        await host.StopAsync();
 
         // Assert
-        var hostedService = Assert.Single(provider.GetServices<IHostedService>());
-
-        await hostedService.StartAsync(CancellationToken.None);
-        Assert.Equal(ConnectionState.Authenticated, client.State);
-
-        await hostedService.StopAsync(CancellationToken.None);
+        Assert.Same(config, client.Config);
         Assert.Equal(ConnectionState.Closed, client.State);
     }
 
@@ -206,9 +203,10 @@ public sealed class DependencyInjectionTests
         {
             builds++;
             var settings = sp.GetRequiredService<BrokerSettings>();
-            return new ClientConfig(
-                new Uri(settings.Url),
-                TokenProvider: _ => new ValueTask<string>(settings.Token));
+            return new ClientConfig(new Uri(settings.Url))
+            {
+                TokenProvider = _ => new ValueTask<string>(settings.Token),
+            };
         });
         await using var provider = services.BuildServiceProvider();
 
@@ -246,9 +244,10 @@ public sealed class DependencyInjectionTests
         var attempts = 0;
         await using var up = new TestQueuedTransport();
         var services = new ServiceCollection().AddFitzClient(
-            new ClientConfig(
-                new Uri("ws://localhost:4190/ws"),
-                TransportFactory: _ => ++attempts < 3 ? new RefusingTransport() : up),
+            new ClientConfig(new Uri("ws://localhost:4190/ws"))
+            {
+                TransportFactory = _ => ++attempts < 3 ? new RefusingTransport() : up,
+            },
             new FitzClientHostingOptions { ConnectWhenReady = FastRetry });
         await using var provider = services.BuildServiceProvider();
         var hosted = Assert.Single(provider.GetServices<IHostedService>());
@@ -266,9 +265,10 @@ public sealed class DependencyInjectionTests
     {
         // Arrange
         var services = new ServiceCollection().AddFitzClient(
-            new ClientConfig(
-                new Uri("ws://localhost:4190/ws"),
-                TransportFactory: _ => new RefusingTransport()),
+            new ClientConfig(new Uri("ws://localhost:4190/ws"))
+            {
+                TransportFactory = _ => new RefusingTransport(),
+            },
             new FitzClientHostingOptions
             {
                 ConnectWhenReady = new ConnectWhenReadyOptions(
@@ -292,14 +292,15 @@ public sealed class DependencyInjectionTests
         // Arrange
         var attempts = 0;
         var services = new ServiceCollection().AddFitzClient(
-            new ClientConfig(
-                new Uri("ws://localhost:4190/ws"),
-                Reconnect: new ReconnectOptions(Enabled: false),
-                TransportFactory: _ =>
+            new ClientConfig(new Uri("ws://localhost:4190/ws"))
+            {
+                Reconnect = new ReconnectOptions(Enabled: false),
+                TransportFactory = _ =>
                 {
                     attempts++;
                     return new RefusingTransport();
-                }),
+                },
+            },
             new FitzClientHostingOptions { Startup = FitzClientStartupMode.Connect });
         await using var provider = services.BuildServiceProvider();
         var hosted = Assert.Single(provider.GetServices<IHostedService>());
@@ -318,13 +319,14 @@ public sealed class DependencyInjectionTests
         // Arrange
         var attempts = 0;
         var services = new ServiceCollection().AddFitzClient(
-            new ClientConfig(
-                new Uri("ws://localhost:4190/ws"),
-                TransportFactory: _ =>
+            new ClientConfig(new Uri("ws://localhost:4190/ws"))
+            {
+                TransportFactory = _ =>
                 {
                     attempts++;
                     return new RefusingTransport();
-                }),
+                },
+            },
             new FitzClientHostingOptions { Startup = FitzClientStartupMode.Manual });
         await using var provider = services.BuildServiceProvider();
         var hosted = Assert.Single(provider.GetServices<IHostedService>());
@@ -406,9 +408,10 @@ public sealed class DependencyInjectionTests
     }
 
     static ClientConfig Config(string url = "ws://localhost:4190/ws", TestQueuedTransport? transport = null) =>
-        new(
-            new Uri(url),
-            TransportFactory: transport is null ? null : _ => transport);
+        new(new Uri(url))
+        {
+            TransportFactory = transport is null ? null : _ => transport,
+        };
 
     sealed record BrokerSettings(string Url, string Token);
 

@@ -29,7 +29,7 @@ public sealed class ConnectionNegotiationTests
     {
         // Arrange
         await using var transport = new TestQueuedTransport { AutoHello = false };
-        var config = new ClientConfig(new Uri("ws://queued/ws"), Reconnect: new ReconnectOptions(Enabled: false));
+        var config = new ClientConfig(new Uri("ws://queued/ws")) { Reconnect = new ReconnectOptions(Enabled: false) };
         await using var connection = new FitzConnection(config, () => transport);
 
         // Act
@@ -55,11 +55,14 @@ public sealed class ConnectionNegotiationTests
         payload.WriteU16(50);
         payload.WriteString("no common wire version");
         transport.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.ConnectRejected, payload.Build()));
-        await using var client = new FitzClient(new ClientConfig(new Uri("ws://queued/ws"), TransportFactory: _ =>
+        await using var client = new FitzClient(new ClientConfig(new Uri("ws://queued/ws"))
+        {
+            TransportFactory = _ =>
         {
             attempts++;
             return transport;
-        }));
+        },
+        });
 
         // Act
         var error = await Record.ExceptionAsync(() => client.ConnectWhenReadyAsync(new ConnectWhenReadyOptions(
@@ -86,15 +89,16 @@ public sealed class ConnectionNegotiationTests
         payload.WriteU16(50);
         payload.WriteString("no common wire version");
         rejected.QueueIncomingFrame(FrameCodec.Encode(MessageTypes.ConnectRejected, payload.Build()));
-        await using var client = new FitzClient(new ClientConfig(
-            new Uri("ws://queued/ws"),
-            Reconnect: new ReconnectOptions(true, MaxAttempts: 3, Backoff: TimeSpan.FromMilliseconds(5), MaxBackoff: TimeSpan.FromMilliseconds(5)),
-            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>
+        await using var client = new FitzClient(new ClientConfig(new Uri("ws://queued/ws"))
+        {
+            Reconnect = new ReconnectOptions(true, MaxAttempts: 3, Backoff: TimeSpan.FromMilliseconds(5), MaxBackoff: TimeSpan.FromMilliseconds(5)),
+            Observability = new FitzObservabilityOptions(OnLifecycleEvent: evt =>
             {
                 if (evt.Event == "reconnect_failed")
                     failed.TrySetResult(true);
             }),
-            TransportFactory: _ => Interlocked.Increment(ref attempts) switch { 1 => first, 2 => rejected, _ => unexpected }));
+            TransportFactory = _ => Interlocked.Increment(ref attempts) switch { 1 => first, 2 => rejected, _ => unexpected },
+        });
         await client.ConnectAsync();
 
         // Act
