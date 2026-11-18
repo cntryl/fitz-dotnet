@@ -12,8 +12,10 @@
     <PackageReference Include="xunit.v3.mtp-off" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="../../docs/clients/spec/stream-read-conformance.json" Link="Fixtures/stream-read-conformance.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Fixtures/wire3_vectors.txt" CopyToOutputDirectory="PreserveNewest" />
     <Using Include="Xunit" />
   </ItemGroup>

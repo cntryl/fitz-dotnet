@@ -17,13 +17,15 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
         await using var second = new TestQueuedTransport();
         var factoryCalls = 0;
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"),
-            Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(1), MaxBackoff: TimeSpan.FromMilliseconds(1)),
-            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>
+        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"))
+        {
+            Reconnect = new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(1), MaxBackoff: TimeSpan.FromMilliseconds(1)),
+            Observability = new FitzObservabilityOptions(OnLifecycleEvent: evt =>
             {
                 if (evt.Event == "reconnect_succeeded")
                     reconnected.TrySetResult();
-            })), () => Interlocked.Increment(ref factoryCalls) == 1 ? first : second);
+            }),
+        }, () => Interlocked.Increment(ref factoryCalls) == 1 ? first : second);
         await connection.ConnectAsync();
         first.QueueResponse(MessageTypes.KvBegin, new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 9 });
         var response = await connection.RequestInSessionAsync(MessageTypes.KvBegin, ReadOnlyMemory<byte>.Empty);
@@ -49,8 +51,10 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
         // Arrange
         using var cancellation = new CancellationTokenSource();
         await using var transport = new InterruptedWriteTransport(cancellation);
-        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"),
-            Reconnect: new ReconnectOptions(false)), () => transport);
+        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"))
+        {
+            Reconnect = new ReconnectOptions(false),
+        }, () => transport);
         await connection.ConnectAsync();
         transport.FailWrites = true;
 
@@ -68,7 +72,7 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
     public async Task ShouldCompleteCloseGivenThrowingWorkerCancellationWhenClosingConnection()
     {
         // Arrange
-        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://unused/ws"), Reconnect: new ReconnectOptions(false)), () => throw new InvalidOperationException());
+        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://unused/ws")) { Reconnect = new ReconnectOptions(false) }, () => throw new InvalidOperationException());
         Action<byte[]>? receive = null;
         var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -118,14 +122,16 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
         await using var second = new TestQueuedTransport();
         var factoryCalls = 0;
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"),
-            Timeout: TimeSpan.FromSeconds(1),
-            Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(1), MaxBackoff: TimeSpan.FromMilliseconds(1)),
-            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>
+        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"))
+        {
+            Timeout = TimeSpan.FromSeconds(1),
+            Reconnect = new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(1), MaxBackoff: TimeSpan.FromMilliseconds(1)),
+            Observability = new FitzObservabilityOptions(OnLifecycleEvent: evt =>
             {
                 if (evt.Event == "reconnect_succeeded")
                     reconnected.TrySetResult();
-            })), () => Interlocked.Increment(ref factoryCalls) == 1 ? first : second);
+            }),
+        }, () => Interlocked.Increment(ref factoryCalls) == 1 ? first : second);
         await connection.ConnectAsync();
         using var callback = connection.ConnectionClosedToken.Register(() => throw new InvalidOperationException("Application cancellation callback failed."));
 

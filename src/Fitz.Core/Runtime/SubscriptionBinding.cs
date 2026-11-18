@@ -6,4 +6,5 @@ namespace Cntryl.Fitz.Runtime;
 /// </summary>
 /// <param name="Unsubscribe">Withdraws the registration; safe to call more than once.</param>
 /// <param name="Completion">Completes on unsubscribe and faults if delivery terminates.</param>
-readonly record struct SubscriptionBinding(Func<CancellationToken, ValueTask> Unsubscribe, Task Completion);
+/// <param name="Ended">Optional signal for consumers with pending reads to interrupt.</param>
+readonly record struct SubscriptionBinding(Func<CancellationToken, ValueTask> Unsubscribe, Task Completion, CancellationToken Ended = default);

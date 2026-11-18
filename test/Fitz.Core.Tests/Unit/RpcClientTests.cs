@@ -80,8 +80,8 @@ public sealed class RpcClientTests
                 return new TestRegistration();
             });
 
-        await DrainAsync(rpc.CallAsync("rpc://prod/app/one", ReadOnlyMemory<byte>.Empty));
-        await DrainAsync(rpc.CallAsync("rpc://prod/app/two", ReadOnlyMemory<byte>.Empty));
+        await DrainAsync(rpc.CallStreamingAsync("rpc://prod/app/one", ReadOnlyMemory<byte>.Empty));
+        await DrainAsync(rpc.CallStreamingAsync("rpc://prod/app/two", ReadOnlyMemory<byte>.Empty));
 
         Assert.Equal(1, responseRegistrations);
 
@@ -102,7 +102,7 @@ public sealed class RpcClientTests
         using var rpc = new RpcClient((_, _, _) => Task.FromResult(Array.Empty<byte>()));
 
         var exception = Assert.Throws<ArgumentException>(() =>
-            rpc.CallAsync("not-a-route", ReadOnlyMemory<byte>.Empty));
+            rpc.CallStreamingAsync("not-a-route", ReadOnlyMemory<byte>.Empty));
 
         Assert.Equal("route", exception.ParamName);
     }
@@ -176,7 +176,7 @@ public sealed class RpcClientTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
         var task = Task.Run(async () =>
         {
-            await foreach (var _ in rpc.CallAsync("rpc://prod/app/echo", new ReadOnlyMemory<byte>("ping"u8.ToArray()), cts.Token))
+            await foreach (var _ in rpc.CallStreamingAsync("rpc://prod/app/echo", new ReadOnlyMemory<byte>("ping"u8.ToArray()), cts.Token))
             {
                 frames.Add(_);
             }
@@ -248,7 +248,7 @@ public sealed class RpcClientTests
 
         var ex = await Assert.ThrowsAsync<RpcException>(async () =>
         {
-            await foreach (var _ in rpc.CallAsync("rpc://prod/app/echo", new ReadOnlyMemory<byte>("ping"u8.ToArray())))
+            await foreach (var _ in rpc.CallStreamingAsync("rpc://prod/app/echo", new ReadOnlyMemory<byte>("ping"u8.ToArray())))
             {
             }
         });
@@ -311,7 +311,7 @@ public sealed class RpcClientTests
         // Act
         var error = await Assert.ThrowsAsync<RpcException>(async () =>
         {
-            await foreach (var _ in rpc.CallAsync("rpc://prod/app/error", ReadOnlyMemory<byte>.Empty))
+            await foreach (var _ in rpc.CallStreamingAsync("rpc://prod/app/error", ReadOnlyMemory<byte>.Empty))
             {
             }
         });
@@ -599,7 +599,7 @@ public sealed class RpcClientTests
         // Act
         var ex = await Assert.ThrowsAsync<RequestTimeoutException>(async () =>
         {
-            await foreach (var _ in rpc.CallAsync("rpc://prod/app/slow", "ping"u8.ToArray()))
+            await foreach (var _ in rpc.CallStreamingAsync("rpc://prod/app/slow", "ping"u8.ToArray()))
             {
             }
         });
@@ -628,7 +628,7 @@ public sealed class RpcClientTests
         // Act / Assert
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
         {
-            await foreach (var _ in rpc.CallAsync("rpc://prod/app/cancel", "ping"u8.ToArray(), cts.Token))
+            await foreach (var _ in rpc.CallStreamingAsync("rpc://prod/app/cancel", "ping"u8.ToArray(), cts.Token))
             {
             }
         });
@@ -666,7 +666,7 @@ public sealed class RpcClientTests
                 return new TestRegistration();
             });
         using var cts = new CancellationTokenSource();
-        var call = rpc.CallAsync("rpc://prod/app/cancel", "ping"u8.ToArray(), TimeSpan.FromSeconds(5), cts.Token);
+        var call = rpc.CallStreamingAsync("rpc://prod/app/cancel", "ping"u8.ToArray(), TimeSpan.FromSeconds(5), cts.Token);
 
         // Act
         var enumeration = Task.Run(async () =>
@@ -793,7 +793,7 @@ public sealed class RpcClientTests
 
         var callTask = Task.Run(async () =>
         {
-            await foreach (var _ in rpc.CallAsync("rpc://prod/app/disconnect", "ping"u8.ToArray()))
+            await foreach (var _ in rpc.CallStreamingAsync("rpc://prod/app/disconnect", "ping"u8.ToArray()))
             {
             }
         });

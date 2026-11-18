@@ -28,7 +28,7 @@ public sealed class RpcTimingTests
             },
             registerNotificationHandler: static (_, _) => new Registration(),
             timeProvider: time);
-        var call = rpc.CallAsync(Route, ReadOnlyMemory<byte>.Empty, cancellation.Token);
+        var call = rpc.CallStreamingAsync(Route, ReadOnlyMemory<byte>.Empty, cancellation.Token);
         await using var enumerator = call.GetAsyncEnumerator();
         var response = enumerator.MoveNextAsync().AsTask();
 
@@ -62,7 +62,7 @@ public sealed class RpcTimingTests
                 cancelSent.TrySetResult();
         });
         var budget = TimeSpan.FromSeconds(2);
-        var call = rpc.CallAsync(Route, "work"u8.ToArray(), budget);
+        var call = rpc.CallStreamingAsync(Route, "work"u8.ToArray(), budget);
         var consumed = Record.ExceptionAsync(async () =>
         {
             await foreach (var _ in call)

@@ -29,6 +29,29 @@ public sealed class FitzUsageAnalyzerTests
     }
 
     [Fact]
+    public async Task ShouldReportInvalidRoutesGivenStreamingRpcAndReplay()
+    {
+        // Arrange
+        const string Source = """
+            using Cntryl.Fitz;
+            class Consumer
+            {
+                static void Run(IRpcClient rpc, IStreamClient stream)
+                {
+                    _ = rpc.CallStreamingAsync("notice://prod/app/work", ReadOnlyMemory<byte>.Empty);
+                    _ = stream.ReadAsync("stream://prod/bad*segment/*", 0, StreamReadMode.Replay);
+                }
+            }
+            """;
+
+        // Act
+        var diagnostics = await GetDiagnosticsAsync(Source);
+
+        // Assert
+        Assert.Equal(2, diagnostics.Count(diagnostic => diagnostic.Id is FitzDiagnostics.InvalidRouteId or FitzDiagnostics.InvalidPatternId));
+    }
+
+    [Fact]
     public async Task ShouldReportDiscardedLifecycleHandleGivenAnalyzerInputWhenAnalyzing()
     {
         // Arrange
@@ -113,12 +136,12 @@ public sealed class FitzUsageAnalyzerTests
             {
                 static async Task Run(IStreamClient client)
                 {
-                    await foreach (var record in client.ReadAsync("stream://prod/app/*", 0))
+                    await foreach (var record in client.ReadAsync("stream://prod/app/*", 0, StreamReadMode.Replay))
                     {
                         _ = record;
                     }
 
-                    _ = await client.ReadPageAsync("stream://**", 0);
+                    _ = client.ReadAsync("stream://**", 0, StreamReadMode.Follow);
                 }
             }
             """);

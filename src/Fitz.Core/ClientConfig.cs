@@ -7,57 +7,61 @@ namespace Cntryl.Fitz;
 /// The complete configuration for a <see cref="FitzClient"/>.
 /// </summary>
 /// <param name="Url">
-/// Broker endpoint. The scheme selects the transport when <paramref name="Transport"/> is
+/// Broker endpoint. The scheme selects the transport when <see cref="Transport"/> is
 /// <see cref="ClientTransport.Auto"/>. Must be absolute.
 /// </param>
-/// <param name="Transport">Transport override. Defaults to selecting from the URL scheme.</param>
-/// <param name="Timeout">Per-request deadline. Defaults to 30 seconds.</param>
-/// <param name="TokenProvider">
-/// Supplies a bearer token per connection attempt. Invoked again on every reconnect, so it
-/// can return a freshly minted token.
-/// </param>
-/// <param name="Reconnect">Automatic reconnection behavior. Enabled by default.</param>
-/// <param name="Retry">Automatic per-request retry behavior. Enabled by default.</param>
-/// <param name="Heartbeat">Transport keepalive behavior. Enabled by default.</param>
-/// <param name="WebSocket">WebSocket-specific settings, such as upgrade headers.</param>
-/// <param name="Observability">Logging, tracing, metrics, and lifecycle hooks.</param>
-/// <param name="AsyncHandlers">Bounds on callback dispatch and subscription buffering.</param>
-/// <param name="MaxFrameSize">
-/// Largest transport frame accepted or produced, including the fixed Wire 3 header. This is
-/// bounded by the protocol: see
-/// <see cref="FitzLimits.MinFrameSize"/> and <see cref="FitzLimits.MaxFrameSize"/>.
-/// </param>
-/// <param name="MaxInFlightRequests">Maximum requests awaiting a response at once.</param>
-/// <param name="MaxRequestQueueSize">
-/// Depth of the pending-request queue. Exceeding it raises <c>RequestQueueFullException</c>.
-/// </param>
-/// <param name="TransportFactory">
-/// Supplies a custom <see cref="ITransport"/> instead of the built-in ones. Override
-/// <see cref="ITransport.TransportName"/> to label it in telemetry.
-/// </param>
-/// <param name="ServiceName">Optional friendly service name included in the CONNECT payload.</param>
 /// <remarks>
 /// This record is validated centrally before any connection work starts, so invalid
 /// configuration fails fast rather than at first use.
 /// </remarks>
-public sealed record ClientConfig(
-    Uri Url,
-    ClientTransport Transport = ClientTransport.Auto,
-    TimeSpan? Timeout = null,
-    Func<CancellationToken, ValueTask<string>>? TokenProvider = null,
-    ReconnectOptions? Reconnect = null,
-    RetryOptions? Retry = null,
-    HeartbeatOptions? Heartbeat = null,
-    WebSocketOptions? WebSocket = null,
-    FitzObservabilityOptions? Observability = null,
-    AsyncHandlerOptions? AsyncHandlers = null,
-    int MaxFrameSize = FitzLimits.MaxFrameSize,
-    int MaxInFlightRequests = 256,
-    int MaxRequestQueueSize = 1024,
-    Func<ClientConfig, ITransport>? TransportFactory = null,
-    string? ServiceName = null
-)
+public sealed record ClientConfig(Uri Url)
 {
+    /// <summary>Transport override. Defaults to selecting from the URL scheme.</summary>
+    public ClientTransport Transport { get; init; } = ClientTransport.Auto;
+
+    /// <summary>Per-request deadline. Defaults to 30 seconds.</summary>
+    public TimeSpan? Timeout { get; init; }
+
+    /// <summary>Supplies a bearer token per connection attempt. Invoked again on every reconnect, so it
+    /// can return a freshly minted token.</summary>
+    public Func<CancellationToken, ValueTask<string>>? TokenProvider { get; init; }
+
+    /// <summary>Automatic reconnection behavior. Enabled by default.</summary>
+    public ReconnectOptions? Reconnect { get; init; }
+
+    /// <summary>Automatic per-request retry behavior. Enabled by default.</summary>
+    public RetryOptions? Retry { get; init; }
+
+    /// <summary>Transport keepalive behavior. Enabled by default.</summary>
+    public HeartbeatOptions? Heartbeat { get; init; }
+
+    /// <summary>WebSocket-specific settings, such as upgrade headers.</summary>
+    public WebSocketOptions? WebSocket { get; init; }
+
+    /// <summary>Logging, tracing, metrics, and lifecycle hooks.</summary>
+    public FitzObservabilityOptions? Observability { get; init; }
+
+    /// <summary>Bounds on callback dispatch and subscription buffering.</summary>
+    public AsyncHandlerOptions? AsyncHandlers { get; init; }
+
+    /// <summary>Largest transport frame accepted or produced, including the fixed Wire 3 header. This is
+    /// bounded by the protocol: see
+    /// <see cref="FitzLimits.MinFrameSize"/> and <see cref="FitzLimits.MaxFrameSize"/>.</summary>
+    public int MaxFrameSize { get; init; } = FitzLimits.MaxFrameSize;
+
+    /// <summary>Maximum requests awaiting a response at once.</summary>
+    public int MaxInFlightRequests { get; init; } = 256;
+
+    /// <summary>Depth of the pending-request queue. Exceeding it raises <c>RequestQueueFullException</c>.</summary>
+    public int MaxRequestQueueSize { get; init; } = 1024;
+
+    /// <summary>Supplies a custom <see cref="ITransport"/> instead of the built-in ones. Override
+    /// <see cref="ITransport.TransportName"/> to label it in telemetry.</summary>
+    public Func<ClientConfig, ITransport>? TransportFactory { get; init; }
+
+    /// <summary>Optional friendly service name included in the CONNECT payload.</summary>
+    public string? ServiceName { get; init; }
+
     static readonly ReconnectOptions DefaultReconnect = new();
     static readonly RetryOptions DefaultRetry = new();
     static readonly HeartbeatOptions DefaultHeartbeat = new();

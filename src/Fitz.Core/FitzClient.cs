@@ -17,10 +17,9 @@ namespace Cntryl.Fitz;
 /// </summary>
 /// <remarks>
 /// Safe for concurrent use. Domain clients are created on first access and share the
-/// connection. Prefer <c>await using</c>; synchronous <see cref="Dispose"/> starts the
-/// asynchronous close without blocking on it.
+/// connection. Use <c>await using</c> to await shutdown.
 /// </remarks>
-public sealed class FitzClient : IFitzClient, IDisposable
+public sealed class FitzClient : IFitzClient
 {
     readonly ClientConfig _config;
     readonly FitzConnection _connection;
@@ -139,9 +138,6 @@ public sealed class FitzClient : IFitzClient, IDisposable
     /// <inheritdoc />
     public Task CloseAsync(CancellationToken ct = default)
     {
-        if (ct.IsCancellationRequested)
-            return Task.FromCanceled(ct);
-
         TaskCompletionSource<Task> start;
         Task shutdown;
         lock (_lifecycleGate)
@@ -187,21 +183,6 @@ public sealed class FitzClient : IFitzClient, IDisposable
     /// <summary>Closes the connection and releases everything it owns.</summary>
     /// <returns>A task that completes once the client is closed.</returns>
     public async ValueTask DisposeAsync() => await CloseAsync().ConfigureAwait(false);
-
-    /// <summary>
-    /// Starts closing the connection without blocking, for containers that dispose
-    /// synchronously. Prefer <see cref="DisposeAsync"/> when you can await it.
-    /// </summary>
-    public void Dispose()
-    {
-        var closeTask = CloseAsync();
-        if (!closeTask.IsCompletedSuccessfully)
-        {
-            _ = ObserveSynchronousDisposeAsync(closeTask);
-        }
-
-        GC.SuppressFinalize(this);
-    }
 
     /// <inheritdoc />
     public IKvClient Kv => GetDomain(ref _kvClient, static connection => new KvClient(connection));
@@ -256,18 +237,6 @@ public sealed class FitzClient : IFitzClient, IDisposable
         }
 
         return resolved;
-    }
-
-    static async Task ObserveSynchronousDisposeAsync(Task closeTask)
-    {
-        try
-        {
-            await closeTask.ConfigureAwait(false);
-        }
-        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
-        {
-            // The close task's own failure is reported to its caller; this waiter only observes it.
-        }
     }
 
     T GetDomain<T>(ref T? domain, Func<FitzConnection, T> create) where T : class

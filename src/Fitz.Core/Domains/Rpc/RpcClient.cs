@@ -18,7 +18,7 @@ sealed class RpcClient : IRpcClient, IDisposable
 {
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
     readonly RpcSessionSend _sendOnSession;
-    readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<CancellationToken>> _sendInSession;
+    readonly Func<ushort, ReadOnlyMemory<byte>, Action, CancellationToken, ValueTask<CancellationToken>> _sendInSession;
     readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? _registerNotificationHandler;
     readonly Func<CancellationToken>? _getConnectionClosedToken;
     readonly RpcWorkerHost? _workers;
@@ -47,7 +47,7 @@ sealed class RpcClient : IRpcClient, IDisposable
             (handler, rejected) => connection.TryDispatchAsyncHandler("rpc", handler, rejected),
             connectionTimeout: connection.Timeout,
             onWorkerError: connection.ReportAsyncHandlerError,
-            sendInSession: (type, payload, ct) => connection.SendInSessionAsync(type, payload, correlate: true, ct),
+            sendInSession: (type, payload, onWrite, ct) => connection.SendInSessionAsync(type, payload, correlate: true, ct, onWriteAttempt: onWrite),
             timeProvider: connection.Time,
             sendOnSession: async (type, payload, session, ct) =>
             {
@@ -103,7 +103,7 @@ sealed class RpcClient : IRpcClient, IDisposable
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
         TimeSpan? connectionTimeout = null,
         Action<Exception>? onWorkerError = null,
-        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<CancellationToken>>? sendInSession = null,
+        Func<ushort, ReadOnlyMemory<byte>, Action, CancellationToken, ValueTask<CancellationToken>>? sendInSession = null,
         TimeProvider? timeProvider = null,
         RpcSessionSend? sendOnSession = null)
     {
@@ -132,23 +132,24 @@ sealed class RpcClient : IRpcClient, IDisposable
     async ValueTask<CancellationToken> SendWithCapturedSessionAsync(
         ushort messageType,
         ReadOnlyMemory<byte> payload,
-        CancellationToken ct)
+        Action onWrite, CancellationToken ct)
     {
         // Delegate-backed test clients have no transport-generation API. Capture their
         // supplied lifetime before sending; real connections return the actual lifetime.
         var session = _getConnectionClosedToken?.Invoke() ?? CancellationToken.None;
+        onWrite();
         await _send(messageType, payload, ct).ConfigureAwait(false);
         return session;
     }
 
     /// <inheritdoc />
-    public RpcCall CallAsync(
+    public RpcCall CallStreamingAsync(
         string route,
         ReadOnlyMemory<byte> body,
-        CancellationToken ct = default) => CallAsync(route, body, null, ct);
+        CancellationToken ct = default) => CallStreamingAsync(route, body, null, ct);
 
     /// <inheritdoc />
-    public RpcCall CallAsync(
+    public RpcCall CallStreamingAsync(
         string route,
         ReadOnlyMemory<byte> body,
         TimeSpan? timeout,
@@ -198,26 +199,27 @@ sealed class RpcClient : IRpcClient, IDisposable
         var correlationBytes = RpcWire.GuidToNetworkBytes(correlationId);
         var channel = new SubscriptionChannel<RpcResponseFrame>();
         var call = new RpcCallState(channel, cancellation);
-        lock (_responseSync)
-        {
-            EnsureRpcResponseHandlerInitializedLocked();
-            _calls.Add(correlationId, call);
-        }
-
-        using var writer = RpcWire.EncodeRequest(
-            correlationBytes,
-            route,
-            body.Span,
-            timeout - _time.GetElapsedTime(budgetStartedAt));
-
-        var requestSent = false;
+        var writeAttempted = false;
         var connectionClosedToken = CancellationToken.None;
         byte cancellationReason = 1;
         try
         {
             callToken.ThrowIfCancellationRequested();
-            connectionClosedToken = await _sendInSession(MessageTypes.RpcRequest, writer.WrittenMemory, callToken).ConfigureAwait(false);
-            requestSent = true;
+            lock (_responseSync)
+            {
+                EnsureRpcResponseHandlerInitializedLocked();
+                _calls.Add(correlationId, call);
+            }
+
+            using var writer = RpcWire.EncodeRequest(
+                correlationBytes,
+                route,
+                body.Span,
+                timeout - _time.GetElapsedTime(budgetStartedAt));
+
+            connectionClosedToken = await _sendInSession(MessageTypes.RpcRequest, writer.WrittenMemory, () => writeAttempted = true, callToken).ConfigureAwait(false);
+            call.MarkSent();
+            ThrowIfDisposed();
 
             using var connectionClosedRegistration = connectionClosedToken.CanBeCanceled
                 ? connectionClosedToken.Register(static state => ((SubscriptionChannel<RpcResponseFrame>)state!).Dispose(), channel)
@@ -265,11 +267,11 @@ sealed class RpcClient : IRpcClient, IDisposable
             {
                 cancellation.TrySetResult(RpcCancellationOutcome.NotRequested);
             }
-            else if (!requestSent)
+            else if (!call.WasSent)
             {
-                cancellation.TrySetResult(RpcCancellationOutcome.RequestNotSent);
+                cancellation.TrySetResult(writeAttempted ? RpcCancellationOutcome.Unconfirmed : RpcCancellationOutcome.RequestNotSent);
             }
-            else if (connectionClosedToken.IsCancellationRequested)
+            else if (connectionClosedToken.IsCancellationRequested || Volatile.Read(ref _disposed))
             {
                 cancellation.TrySetResult(RpcCancellationOutcome.ConnectionClosed);
             }
@@ -412,9 +414,7 @@ sealed class RpcClient : IRpcClient, IDisposable
                 pending,
                 session.IsCancellationRequested || exception is ConnectionException or ObjectDisposedException
                     ? RpcCancellationOutcome.ConnectionClosed
-                    : budget.IsCancellationRequested
-                        ? RpcCancellationOutcome.Unconfirmed
-                        : RpcCancellationOutcome.RequestNotSent);
+                    : RpcCancellationOutcome.Unconfirmed);
         }
     }
 
@@ -545,7 +545,9 @@ sealed class RpcClient : IRpcClient, IDisposable
         foreach (var call in calls)
         {
             call.Channel.Complete(new ObjectDisposedException(nameof(RpcClient)));
-            call.Cancellation.TrySetResult(RpcCancellationOutcome.ConnectionClosed);
+            // A send still in progress settles its own outcome when the write returns.
+            if (call.WasSent)
+                call.Cancellation.TrySetResult(RpcCancellationOutcome.ConnectionClosed);
         }
         foreach (var pending in pendingCancellations)
         {
@@ -564,6 +566,10 @@ sealed class RpcClient : IRpcClient, IDisposable
         readonly Lock _gate = new();
         ulong _nextSequence;
         bool _terminal;
+        bool _sent;
+
+        internal bool WasSent => Volatile.Read(ref _sent);
+        internal void MarkSent() => Volatile.Write(ref _sent, true);
 
         internal SubscriptionChannel<RpcResponseFrame> Channel { get; } = channel;
         internal TaskCompletionSource<RpcCancellationOutcome> Cancellation { get; } = cancellation;

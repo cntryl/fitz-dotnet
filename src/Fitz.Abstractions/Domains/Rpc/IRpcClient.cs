@@ -12,18 +12,18 @@ public interface IRpcClient
     /// <param name="body">Opaque request payload.</param>
     /// <param name="ct">Cancellation token for the call.</param>
     /// <returns>
-    /// A lazy response sequence and a task for the broker's cancellation result. No request
-    /// is sent until enumeration starts. A unary call yields one frame.
+    /// A single-use sequence and its cancellation outcome. The first MoveNextAsync sends the request.
+    /// A unary call yields one frame.
     /// </returns>
-    RpcCall CallAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default);
+    RpcCall CallStreamingAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default);
 
     /// <summary>Invokes a route with an explicit end-to-end budget.</summary>
     /// <param name="route">Concrete <c>rpc://</c> route to invoke.</param>
     /// <param name="body">Opaque request payload.</param>
     /// <param name="timeout">End-to-end budget propagated to supporting workers.</param>
     /// <param name="ct">Cancellation token for the call.</param>
-    /// <returns>A lazy response sequence and a task for the broker's cancellation result.</returns>
-    RpcCall CallAsync(string route, ReadOnlyMemory<byte> body, TimeSpan? timeout, CancellationToken ct = default);
+    /// <returns>A single-use response sequence and its cancellation outcome. The first MoveNextAsync sends the request.</returns>
+    RpcCall CallStreamingAsync(string route, ReadOnlyMemory<byte> body, TimeSpan? timeout, CancellationToken ct = default);
 
     /// <summary>
     /// Registers a handler that serves invocations for routes matching a pattern.

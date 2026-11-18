@@ -1,6 +1,22 @@
 # Changelog
 
-## 4.2.0 (unreleased)
+## 5.0.0 (unreleased)
+
+### Breaking changes
+
+- Use `await using` for `FitzClient`. Concurrent calls to `DisposeAsync()` and
+  `CloseAsync(ct)` await the same shutdown. Cancelling a close wait lets cleanup finish in the background.
+- Construct `ClientConfig` with its endpoint and set optional settings with an object initializer.
+  Direct clients and dependency injection accept the same configuration.
+- Rename RPC `CallAsync` to `CallStreamingAsync`. The first `MoveNextAsync()` sends the request.
+  Each call permits one enumeration. Disposing before dispatch reports `RequestNotSent`.
+  An uncertain write reports `Unconfirmed`.
+- Replace record reads and `ReadPageAsync` with `ReadAsync(route, fromOffset, mode, options?, ct)`.
+  Choose `StreamReadMode.Replay` for a finite snapshot or `Follow` to resume after catch-up and
+  reconnection. Each batch exposes all tagged `Items`, visible `Records`, and the next offset to
+  checkpoint. The SDK manages global snapshot continuation internally.
+
+## 4.2.0 (2026-11-13)
 
 This release deliberately breaks the public API to remove Wire 2 leftovers and make the
 surface more idiomatic. The package stays on 4.x.

@@ -303,16 +303,16 @@ static class IntegrationFixture
         }
 
         return new FitzClient(
-            new ClientConfig(
-                new Uri(normalizedUrl),
-                Transport: transportKind,
-                Timeout: scaledTimeout,
-                MaxInFlightRequests: maxInFlightRequests ?? 256,
-                TokenProvider: tokenProvider,
-                Reconnect: reconnect,
-                Observability: observability,
-                AsyncHandlers: asyncHandlers
-            )
+            new ClientConfig(new Uri(normalizedUrl))
+            {
+                Transport = transportKind,
+                Timeout = scaledTimeout,
+                MaxInFlightRequests = maxInFlightRequests ?? 256,
+                TokenProvider = tokenProvider,
+                Reconnect = reconnect,
+                Observability = observability,
+                AsyncHandlers = asyncHandlers,
+            }
         );
     }
 

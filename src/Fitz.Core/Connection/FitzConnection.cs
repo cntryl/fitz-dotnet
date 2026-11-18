@@ -341,7 +341,7 @@ sealed class FitzConnection : IAsyncDisposable
         await WaitUntilReadyAsync(Timeout, ct).ConfigureAwait(false);
     }
 
-    internal async Task WaitUntilReadyAsync(TimeSpan waitTimeout, CancellationToken ct = default)
+    internal async Task<CancellationToken> WaitUntilReadyAsync(TimeSpan waitTimeout, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -362,9 +362,9 @@ sealed class FitzConnection : IAsyncDisposable
                 Task waitTask;
                 lock (_gate)
                 {
-                    if (State == ConnectionState.Authenticated)
+                    if (State == ConnectionState.Authenticated && !_connectionClosedToken.IsCancellationRequested)
                     {
-                        return;
+                        return _connectionClosedToken;
                     }
 
                     failure = GetReadyFailure();
@@ -486,7 +486,7 @@ sealed class FitzConnection : IAsyncDisposable
 
     internal async ValueTask<CancellationToken> SendInSessionAsync(
         ushort messageType, ReadOnlyMemory<byte> payload, bool correlate, CancellationToken ct,
-        CancellationToken? expectedSession = null)
+        CancellationToken? expectedSession = null, Action? onWriteAttempt = null)
     {
         if (expectedSession.HasValue)
             _ = CaptureTransportSession(expectedSession);
@@ -498,6 +498,7 @@ sealed class FitzConnection : IAsyncDisposable
         var frame = EncodeFrame(messageType, payload.Span, 0, correlationId);
         try
         {
+            onWriteAttempt?.Invoke();
             await sendTransport.SendAsync(frame, ct).ConfigureAwait(false);
             return session;
         }

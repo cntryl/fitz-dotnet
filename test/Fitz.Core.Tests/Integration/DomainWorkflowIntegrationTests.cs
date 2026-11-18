@@ -117,9 +117,9 @@ public sealed class DomainWorkflowIntegrationTests
 
 
         // Act
-        await foreach (var record in client.Stream.ReadAsync(IntegrationFixture.CreateUniqueRoute("stream"), 999_999, 10))
+        await foreach (var batch in client.Stream.ReadAsync(IntegrationFixture.CreateUniqueRoute("stream"), 999_999, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10 }))
         {
-            records.Add(record);
+            records.AddRange(batch.Records);
         }
 
         // Assert
@@ -350,9 +350,9 @@ public sealed class DomainWorkflowIntegrationTests
 
 
         // Act
-        await foreach (var record in client.Stream.ReadAsync(route, 0, 10))
+        await foreach (var batch in client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10 }))
         {
-            records.Add(record);
+            records.AddRange(batch.Records);
         }
 
         // Assert
@@ -380,7 +380,7 @@ public sealed class DomainWorkflowIntegrationTests
         });
 
         var responses = new List<string>();
-        await foreach (var response in callerClient.Rpc.CallAsync(route, "ping"u8.ToArray()))
+        await foreach (var response in callerClient.Rpc.CallStreamingAsync(route, "ping"u8.ToArray()))
         {
             responses.Add(Encoding.UTF8.GetString(response.Body.Span));
         }
@@ -459,9 +459,9 @@ public sealed class DomainWorkflowIntegrationTests
         var records = new List<string>();
 
         // Act
-        await foreach (var record in client.Stream.ReadAsync(route, startOffset: 0, limit: 10))
+        await foreach (var batch in client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10 }))
         {
-            records.Add(Encoding.UTF8.GetString(record.Body.Span));
+            records.AddRange(batch.Records.Select(record => Encoding.UTF8.GetString(record.Body.Span)));
         }
 
         // Assert
@@ -496,19 +496,19 @@ public sealed class DomainWorkflowIntegrationTests
         };
 
         var records = new List<string>();
-        await foreach (var record in client.Stream.ReadAsync(route, startOffset: 0, limit: 10, filter: filter))
+        await foreach (var batch in client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10, Filter = filter }))
         {
-            records.Add(Encoding.UTF8.GetString(record.Body.Span));
+            records.AddRange(batch.Records.Select(record => Encoding.UTF8.GetString(record.Body.Span)));
         }
 
         // Act
-        var page = await client.Stream.ReadPageAsync(route, startOffset: 0, limit: 10, filter: filter);
+        var page = await client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10, Filter = filter }).FirstAsync();
 
 
         // Assert
         Assert.Equal("alpha", Assert.Single(records));
-        Assert.Equal((ulong)1, page.Cursor.LastResourceOffset);
-        Assert.False(page.Cursor.HasMore);
+        Assert.Equal(2UL, page.NextOffset);
+        Assert.True(page.CaughtUp);
         Assert.Collection(
             page.Items,
             item =>

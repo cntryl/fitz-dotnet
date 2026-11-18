@@ -280,7 +280,7 @@ public sealed class LeaseClientTests
             acquired.WriteU64(91);
             transport.QueueResponse(MessageTypes.LeaseAcquire, acquired.WrittenSpan);
         };
-        var config = new ClientConfig(new Uri("ws://queued/ws"), Reconnect: new ReconnectOptions(Enabled: false));
+        var config = new ClientConfig(new Uri("ws://queued/ws")) { Reconnect = new ReconnectOptions(Enabled: false) };
         await using var connection = new FitzConnection(config, () => transport);
         await using var leaseClient = new LeaseClient(connection);
         await connection.ConnectAsync();
@@ -656,7 +656,7 @@ public sealed class LeaseClientTests
             }
         };
 
-        var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), TransportFactory: _ => transport);
+        var config = new ClientConfig(new Uri("ws://localhost:4190/ws")) { TransportFactory = _ => transport };
         await using var connection = new FitzConnection(config, () => transport);
         await using var leaseClient = new LeaseClient(connection);
 
@@ -714,9 +714,10 @@ public sealed class LeaseClientTests
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
         await using var connection = new FitzConnection(
-            new ClientConfig(
-                new Uri("ws://localhost:4190/ws"),
-                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            new ClientConfig(new Uri("ws://localhost:4190/ws"))
+            {
+                Reconnect = new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10)),
+            },
             transportFactory);
         await using var leaseClient = new LeaseClient(connection);
 
@@ -888,9 +889,10 @@ public sealed class LeaseClientTests
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
         await using var connection = new FitzConnection(
-            new ClientConfig(
-                new Uri("ws://localhost:4190/ws"),
-                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            new ClientConfig(new Uri("ws://localhost:4190/ws"))
+            {
+                Reconnect = new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10)),
+            },
             transportFactory);
         await using var leaseClient = new LeaseClient(connection);
 

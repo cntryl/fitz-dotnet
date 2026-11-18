@@ -7,6 +7,20 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class StreamClientTests
 {
     [Fact]
+    public async Task ShouldRejectMissingPageGivenSuccessfulReadEnvelope()
+    {
+        // Arrange
+        await using var stream = new StreamClient((_, _, _) => Task.FromResult(new byte[6]));
+
+        // Act
+        var read = () => stream.ReadAsync("stream://prod/app/events", 0, StreamReadMode.Replay).FirstAsync().AsTask();
+
+        // Assert
+        var error = await Assert.ThrowsAsync<StreamException>(read);
+        Assert.False(Retryability.IsRetryable(error));
+    }
+
+    [Fact]
     public void ShouldPreserveMissingValueGivenOptionalBytesWhenDecoded()
     {
         // Arrange
@@ -150,7 +164,7 @@ public sealed class StreamClientTests
             return Task.FromResult(response.Build());
         });
 
-        await foreach (var _ in stream.ReadAsync("stream://prod/app/events", 0))
+        await foreach (var _ in stream.ReadAsync("stream://prod/app/events", 0, StreamReadMode.Replay))
         {
         }
 
@@ -323,14 +337,14 @@ public sealed class StreamClientTests
             Assert.Equal((byte)0, request.ReadU8());
             Assert.Equal((byte)0, request.ReadU8());
 
-            return Task.FromResult(new byte[] { 0, 0, 0, 0, 0, 0 });
+            return Task.FromResult(StreamReplayTests.Page());
         });
 
         // Act
         var records = new List<StreamRecord>();
-        await foreach (var record in stream.ReadAsync("stream://prod/app/*", 4, 2))
+        await foreach (var batch in stream.ReadAsync("stream://prod/app/*", 4, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 2 }))
         {
-            records.Add(record);
+            records.AddRange(batch.Records);
         }
 
         // Assert
@@ -355,12 +369,12 @@ public sealed class StreamClientTests
             Assert.Equal((byte)0, request.ReadU8());
             Assert.Equal((byte)0, request.ReadU8());
             Assert.Equal((byte)0, request.ReadU8());
-            return Task.FromResult(new byte[] { 0, 0, 0, 0, 0, 0 });
+            return Task.FromResult(StreamReplayTests.Page(global: selector.StartsWith("stream://*", StringComparison.Ordinal)));
         });
 
-        await stream.ReadPageAsync("stream://**", 42);
-        await stream.ReadPageAsync("stream://*/app/*", 0);
-        await stream.ReadPageAsync("stream://tenant/**", 0);
+        await stream.ReadAsync("stream://**", 42, StreamReadMode.Replay).FirstAsync();
+        await stream.ReadAsync("stream://*/app/*", 0, StreamReadMode.Replay).FirstAsync();
+        await stream.ReadAsync("stream://tenant/**", 0, StreamReadMode.Replay).FirstAsync();
     }
 
     [Fact]
@@ -393,7 +407,7 @@ public sealed class StreamClientTests
             Assert.Equal((uint)expectedFilter.Length, filterLength);
             Assert.Equal(expectedFilter, request.ReadBytes((int)filterLength));
 
-            return Task.FromResult(new byte[] { 0, 0, 0, 0, 0, 0 });
+            return Task.FromResult(StreamReplayTests.Page());
         });
 
         var filter = new StreamFilterSet
@@ -410,9 +424,9 @@ public sealed class StreamClientTests
 
         // Act
         var records = new List<StreamRecord>();
-        await foreach (var record in stream.ReadAsync("stream://prod/app/events", 4, 2, filter))
+        await foreach (var batch in stream.ReadAsync("stream://prod/app/events", 4, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 2, Filter = filter }))
         {
-            records.Add(record);
+            records.AddRange(batch.Records);
         }
 
         // Assert
@@ -470,9 +484,9 @@ public sealed class StreamClientTests
 
         // Act
         var records = new List<StreamRecord>();
-        await foreach (var record in stream.ReadAsync("stream://prod/app/events", 4, 2))
+        await foreach (var batch in stream.ReadAsync("stream://prod/app/events", 4, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 2 }))
         {
-            records.Add(record);
+            records.AddRange(batch.Records);
         }
 
         // Assert
@@ -528,7 +542,7 @@ public sealed class StreamClientTests
         // Act
         var act = async () =>
         {
-            await foreach (var _ in stream.ReadAsync("stream://prod/app/events", 4, 2))
+            await foreach (var _ in stream.ReadAsync("stream://prod/app/events", 4, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 2 }))
             {
             }
         };
@@ -583,7 +597,7 @@ public sealed class StreamClientTests
         // Act
         var act = async () =>
         {
-            await foreach (var _ in stream.ReadAsync("stream://prod/app/events", 4, 2))
+            await foreach (var _ in stream.ReadAsync("stream://prod/app/events", 4, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 2 }))
             {
             }
         };
@@ -659,12 +673,10 @@ public sealed class StreamClientTests
             },
         };
 
-        var page = await stream.ReadPageAsync("stream://prod/app/events", 0, 10, filter);
+        var page = await stream.ReadAsync("stream://prod/app/events", 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10, Filter = filter }).FirstAsync();
 
-        Assert.Equal((ulong)45, page.Cursor.LastResourceOffset);
-        Assert.Equal((ulong)52, page.Cursor.LastAreaOffset);
-        Assert.Null(page.Cursor.LastRealmOffset);
-        Assert.True(page.Cursor.HasMore);
+        Assert.Equal(46UL, page.NextOffset);
+        Assert.False(page.CaughtUp);
         Assert.Collection(
             page.Items,
             item =>
@@ -720,7 +732,7 @@ public sealed class StreamClientTests
         });
 
         // Act
-        var page = await stream.ReadPageAsync("stream://prod/app/*", 0);
+        var page = await stream.ReadAsync("stream://prod/app/*", 0, StreamReadMode.Replay).FirstAsync();
 
         // Assert
         var item = Assert.Single(page.Items);
@@ -753,7 +765,7 @@ public sealed class StreamClientTests
         });
 
         // Act
-        var result = () => stream.ReadPageAsync("stream://*/app/*", 0);
+        var result = () => stream.ReadAsync("stream://*/app/*", 0, StreamReadMode.Replay).FirstAsync().AsTask();
 
         // Assert
         await Assert.ThrowsAsync<StreamException>(result);
@@ -1187,7 +1199,7 @@ public sealed class StreamClientTests
             }
         };
 
-        var config = new ClientConfig(new Uri("ws://localhost:4190/ws"), TransportFactory: _ => transport);
+        var config = new ClientConfig(new Uri("ws://localhost:4190/ws")) { TransportFactory = _ => transport };
         await using var connection = new FitzConnection(config, () => transport);
         await using var stream = new StreamClient(connection);
 
@@ -1248,9 +1260,10 @@ public sealed class StreamClientTests
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
         await using var connection = new FitzConnection(
-            new ClientConfig(
-                new Uri("ws://localhost:4190/ws"),
-                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            new ClientConfig(new Uri("ws://localhost:4190/ws"))
+            {
+                Reconnect = new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10)),
+            },
             transportFactory);
         await using var stream = new StreamClient(connection);
 
@@ -1333,9 +1346,10 @@ public sealed class StreamClientTests
         var transportFactoryCalls = 0;
         Func<ITransport> transportFactory = () => transportFactoryCalls++ == 0 ? firstTransport : secondTransport;
         await using var connection = new FitzConnection(
-            new ClientConfig(
-                new Uri("ws://localhost:4190/ws"),
-                Reconnect: new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10))),
+            new ClientConfig(new Uri("ws://localhost:4190/ws"))
+            {
+                Reconnect = new ReconnectOptions(true, MaxAttempts: 1, Backoff: TimeSpan.FromMilliseconds(10), MaxBackoff: TimeSpan.FromMilliseconds(10)),
+            },
             transportFactory);
         await using var stream = new StreamClient(connection);
 

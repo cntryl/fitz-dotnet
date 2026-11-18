@@ -36,9 +36,10 @@ the DI helpers:
 using Cntryl.Fitz;
 
 await using var client = new FitzClient(
-    new ClientConfig(
-        new Uri("ws://127.0.0.1:4190/ws"),
-        TokenProvider: _ => ValueTask.FromResult("your-jwt-token")));
+    new ClientConfig(new Uri("ws://127.0.0.1:4190/ws"))
+    {
+        TokenProvider = _ => ValueTask.FromResult("your-jwt-token"),
+    });
 
 await client.ConnectAsync(ct);
 ```
@@ -94,8 +95,8 @@ Handles are `IAsyncDisposable` and must be awaited with `await using`, not `usin
 await using var tx = await client.Kv.BeginAsync(route, ct: ct);
 ```
 
-`FitzClient.CloseAsync` is the explicit, idempotent shutdown. `DisposeAsync` delegates to it, so
-`await using var client = ...` is sufficient.
+`FitzClient.CloseAsync` and `DisposeAsync` await the same shutdown. A cancellation token passed to
+`CloseAsync` bounds the caller’s wait while cleanup continues.
 
 ## Durations
 
@@ -263,7 +264,9 @@ No delivery guarantee and no persistence: subscribers connected at publish time 
 
 ### RPC — request/response with streaming
 
-RPC calls are lazy: enumeration starts the request. `CallAsync(route, body,
+The first `MoveNextAsync` sends the request. Each call supports one enumeration.
+Disposing the enumerator before that move reports `RequestNotSent` through `call.Cancellation`.
+Breaking out after dispatch requests cancellation on the sending session. An uncertain write reports `Unconfirmed`. `CallStreamingAsync(route, body,
 timeout, ct)` adds an end-to-end budget, capped at one day. Worker
 `RpcRequest.RemainingTime` accounts for time since transport receipt, including
 time waiting in the local dispatcher. The handler token is cancelled by broker
@@ -275,7 +278,7 @@ For an A → B → C chain, B passes both the remaining budget and its handler t
 await using var worker = await client.Rpc.RegisterWorkerAsync(
     "rpc://prod/app/b", async (request, writer, handlerToken) =>
     {
-        await foreach (var frame in client.Rpc.CallAsync(
+        await foreach (var frame in client.Rpc.CallStreamingAsync(
             "rpc://prod/app/c", request.Body, request.RemainingTime, handlerToken))
         {
             await writer.SendAsync(frame.Body, ct: handlerToken);
@@ -316,7 +319,7 @@ Compose services. The test fixture invokes the configured executable directly,
 without a shell, and waits for the selected endpoint to become ready again.
 
 ```csharp
-await foreach (var frame in client.Rpc.CallAsync("rpc://prod/app/resize", body, ct))
+await foreach (var frame in client.Rpc.CallStreamingAsync("rpc://prod/app/resize", body, ct))
 {
     Accumulate(frame.Body);
 }
@@ -374,9 +377,11 @@ var options = new LeaseExecutionOptions { WaitForAvailability = true, Wait = Tim
 ### Stream — ordered, offset-addressed records
 
 ```csharp
-await foreach (var record in client.Stream.ReadAsync(route, startOffset: 0, ct: ct))
+await foreach (var batch in client.Stream.ReadAsync(route, fromOffset: 0, StreamReadMode.Replay, ct: ct))
 {
-    Handle(record.Body.Span, record.Offset);
+    foreach (var record in batch.Records)
+        Handle(record.Body.Span, record.Offset);
+    await SaveCheckpointAsync(batch.NextOffset, ct);
 }
 ```
 
@@ -398,11 +403,15 @@ FitzErrorCodes.StreamConcurrencyConflict`. `BeginAsync` reports
 stream. These are distinct structured write-contention conditions; classify on the
 code, never on the message.
 
-Use `ReadPageAsync` when you need to see what the broker withheld: a `StreamReadPage` contains
-`StreamReadItem`s whose `Kind` distinguishes delivered records from filtered ones, so gaps in
-offsets are explicit rather than something you infer. A filtered item's `Reason` is
-`StreamFilteredReason.None` when the broker withheld it without saying why; a null `Reason`
-means the item is not a filtered one at all.
+`Replay` yields the first caught-up batch and completes. `Follow` subscribes before reading
+and resumes at the last yielded `NextOffset` after commits and successful reconnections.
+Use `StreamReadOptions` to set `BatchSize` (default 100), `Filter`, and `MaxBytes`.
+
+Each batch includes its requested `FromOffset` and its `NextOffset` on the selector’s axis.
+Process empty and filtered-only batches too. `Items` contains the delivered events and
+filtered markers, including the broker’s reason when supplied. `Records` contains the
+visible events in order.
+
 
 ### Schedule — cron-driven delivery
 
@@ -433,13 +442,14 @@ use `AddKeyedFitzClient` for more than one.
 The core takes no logging dependency. Supply your own through `FitzObservabilityOptions`:
 
 ```csharp
-new ClientConfig(
-    url,
-    Observability: new FitzObservabilityOptions(
+new ClientConfig(url)
+{
+    Observability = new FitzObservabilityOptions(
         Logger: myLogger,      // IFitzLogger
         Tracer: myTracer,      // IFitzTracer
         Meter: myMeter,        // IFitzMeter
-        OnLifecycleEvent: e => ...));
+        OnLifecycleEvent: e => ...),
+};
 ```
 
 Lifecycle events cover connect, authentication rejection, connection loss, reconnect, retry,

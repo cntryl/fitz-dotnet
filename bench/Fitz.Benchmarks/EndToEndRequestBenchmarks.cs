@@ -29,12 +29,13 @@ public class EndToEndRequestBenchmarks : IAsyncDisposable
     public async Task Setup()
     {
         _payload = new byte[64];
-        var config = new ClientConfig(
-            new Uri("ws://loopback/ws"),
-            Retry: new RetryOptions(Enabled: false),
-            Reconnect: new ReconnectOptions(Enabled: false),
-            MaxInFlightRequests: 1024,
-            MaxRequestQueueSize: 8192);
+        var config = new ClientConfig(new Uri("ws://loopback/ws"))
+        {
+            Retry = new RetryOptions(Enabled: false),
+            Reconnect = new ReconnectOptions(Enabled: false),
+            MaxInFlightRequests = 1024,
+            MaxRequestQueueSize = 8192,
+        };
 
         _connection = new FitzConnection(
             config,

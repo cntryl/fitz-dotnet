@@ -153,7 +153,7 @@ public sealed class Wire3Tests
         var hello = ExtensionCodec.Decode(FrameCodec.DecodeStrict(ConnectionNegotiationTests.HelloFrame())).Core.ToArray();
         BinaryPrimitives.WriteUInt32BigEndian(hello.AsSpan(6), 128);
         transport.QueueIncomingFrame(FrameCodec.Encode(2, ExtensionCodec.Encode(hello, 1, ExtensionCodec.ClientCapabilities), 4));
-        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws"), Timeout: TimeSpan.FromMilliseconds(100)), () => transport);
+        await using var connection = new FitzConnection(new ClientConfig(new Uri("ws://queued/ws")) { Timeout = TimeSpan.FromMilliseconds(100) }, () => transport);
         await connection.ConnectAsync();
         // Act
         var error = await Record.ExceptionAsync(() => connection.RequestAsync(MessageTypes.KvPut, new byte[128]).AsTask());
@@ -167,7 +167,7 @@ public sealed class Wire3Tests
     {
         // Arrange
         await using var transport = new TestQueuedTransport();
-        await using var client = new FitzClient(new ClientConfig(new Uri("ws://queued/ws"), TransportFactory: _ => transport));
+        await using var client = new FitzClient(new ClientConfig(new Uri("ws://queued/ws")) { TransportFactory = _ => transport });
         // Act
         await client.ConnectAsync();
         // Assert
@@ -179,7 +179,7 @@ public sealed class Wire3Tests
     {
         // Arrange
         await using var transport = new TestQueuedTransport();
-        await using var client = new FitzClient(new ClientConfig(new Uri("ws://queued/ws"), TransportFactory: _ => transport));
+        await using var client = new FitzClient(new ClientConfig(new Uri("ws://queued/ws")) { TransportFactory = _ => transport });
         await client.ConnectAsync();
         // Act
         await client.CloseAsync();
@@ -193,13 +193,15 @@ public sealed class Wire3Tests
         // Arrange
         await using var transport = new TestQueuedTransport();
         var disconnected = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var config = new ClientConfig(new Uri("ws://queued/ws"),
-            Reconnect: new ReconnectOptions(Enabled: false),
-            Observability: new FitzObservabilityOptions(OnLifecycleEvent: evt =>
+        var config = new ClientConfig(new Uri("ws://queued/ws"))
+        {
+            Reconnect = new ReconnectOptions(Enabled: false),
+            Observability = new FitzObservabilityOptions(OnLifecycleEvent: evt =>
             {
                 if (evt.Event == "connection_lost")
                     disconnected.TrySetResult(true);
-            }));
+            }),
+        };
         await using var connection = new FitzConnection(config, () => transport);
         await connection.ConnectAsync();
         // Act

@@ -171,11 +171,6 @@ static class StreamWireHelpers
         }
 
         var reader = new BinaryBufferReader(payload);
-        if (reader.IsEof)
-        {
-            return new StreamReadPage(Array.Empty<StreamReadItem>(), new StreamReadCursor(0, null, null, null, null, null, false));
-        }
-
         if (reader.RemainingBytes < 4)
         {
             throw new StreamException($"{operation} response missing item count", $"{operation}_INVALID_RESPONSE");
