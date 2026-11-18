@@ -5,7 +5,7 @@ namespace Cntryl.Fitz.Connection;
 sealed class RequestGate
 {
     readonly Lock _gate = new();
-    readonly Queue<RequestWaiter> _waiters = new();
+    readonly LinkedList<RequestWaiter> _waiters = new();
     int _maxConcurrency;
     readonly int _maxQueueSize;
     int _activeCount;
@@ -36,22 +36,11 @@ sealed class RequestGate
             }
 
             if (_waiters.Count >= _maxQueueSize)
-            {
-                // Canceled waiters cannot consume admission capacity while active work
-                // keeps the queue from draining. Preserve FIFO among live waiters.
-                for (var remaining = _waiters.Count; remaining > 0; remaining--)
-                {
-                    var candidate = _waiters.Dequeue();
-                    if (!candidate.IsCanceled)
-                        _waiters.Enqueue(candidate);
-                }
+                throw new RequestQueueFullException();
 
-                if (_waiters.Count >= _maxQueueSize)
-                    throw new RequestQueueFullException();
-            }
-
-            var waiter = new RequestWaiter(this, ct);
-            _waiters.Enqueue(waiter);
+            var waiter = new RequestWaiter(this);
+            _waiters.AddLast(waiter.Node);
+            waiter.RegisterCancellation(ct);
             return new ValueTask<Releaser>(waiter.Task);
         }
     }
@@ -63,15 +52,11 @@ sealed class RequestGate
         lock (_gate)
         {
             _maxConcurrency = maxConcurrency;
-            while (!_closed && _activeCount < _maxConcurrency && _waiters.Count > 0)
+            while (!_closed && _activeCount < _maxConcurrency && _waiters.First is { } first)
             {
-                var next = _waiters.Dequeue();
-                if (next.IsCanceled)
-                {
-                    continue;
-                }
+                _waiters.RemoveFirst();
                 _activeCount++;
-                granted.Add(next);
+                granted.Add(first.Value);
             }
         }
         foreach (var waiter in granted)
@@ -112,17 +97,11 @@ sealed class RequestGate
                 _activeCount--;
             }
 
-            while (!_closed && _activeCount < _maxConcurrency && _waiters.Count > 0)
+            if (!_closed && _activeCount < _maxConcurrency && _waiters.First is { } first)
             {
-                var next = _waiters.Dequeue();
-                if (next.IsCanceled)
-                {
-                    continue;
-                }
-
+                _waiters.RemoveFirst();
                 _activeCount++;
-                granted = next;
-                break;
+                granted = first.Value;
             }
         }
 
@@ -141,75 +120,55 @@ sealed class RequestGate
         public void Dispose() => _owner?.Release();
     }
 
-    sealed class RequestWaiter
+    void Cancel(RequestWaiter waiter, CancellationToken ct)
     {
-        readonly Lock _gate = new();
-        readonly CancellationTokenRegistration _registration;
-        readonly TaskCompletionSource<Releaser> _tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        bool _completed;
-
-        internal RequestWaiter(RequestGate owner, CancellationToken ct)
+        lock (_gate)
         {
-            if (ct.CanBeCanceled)
-            {
-                _registration = ct.Register(static state =>
-                {
-                    ((RequestWaiter)state!).Cancel();
-                }, this);
-            }
+            // Removing the node claims completion. A release or Close may already own it.
+            if (waiter.Node.List is null)
+                return;
+            _waiters.Remove(waiter.Node);
         }
 
-        internal Task<Releaser> Task => _tcs.Task;
+        waiter.Cancel(ct);
+    }
 
-        internal bool IsCanceled => _tcs.Task.IsCanceled;
+    sealed class RequestWaiter
+    {
+        readonly RequestGate _owner;
+        readonly TaskCompletionSource<Releaser> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationTokenRegistration _registration;
+
+        internal RequestWaiter(RequestGate owner)
+        {
+            _owner = owner;
+            Node = new LinkedListNode<RequestWaiter>(this);
+        }
+
+        internal LinkedListNode<RequestWaiter> Node { get; }
+        internal Task<Releaser> Task => _completion.Task;
+
+        internal void RegisterCancellation(CancellationToken ct)
+        {
+            _registration = ct.UnsafeRegister(static (state, token) =>
+            {
+                var waiter = (RequestWaiter)state!;
+                waiter._owner.Cancel(waiter, token);
+            }, this);
+        }
 
         internal void Grant(Releaser releaser)
         {
-            lock (_gate)
-            {
-                if (_completed)
-                {
-                    releaser.Dispose();
-                    return;
-                }
-
-                _completed = true;
-            }
-
             _registration.Dispose();
-            _tcs.TrySetResult(releaser);
+            _completion.SetResult(releaser);
         }
 
         internal void Fail(Exception exception)
         {
-            lock (_gate)
-            {
-                if (_completed)
-                {
-                    return;
-                }
-
-                _completed = true;
-            }
-
             _registration.Dispose();
-            _tcs.TrySetException(exception);
+            _completion.SetException(exception);
         }
 
-        void Cancel()
-        {
-            lock (_gate)
-            {
-                if (_completed)
-                {
-                    return;
-                }
-
-                _completed = true;
-            }
-
-            _registration.Dispose();
-            _tcs.TrySetCanceled();
-        }
+        internal void Cancel(CancellationToken ct) => _completion.SetCanceled(ct);
     }
 }

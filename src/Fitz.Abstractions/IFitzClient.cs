@@ -34,7 +34,7 @@ public interface IFitzClient : IAsyncDisposable
     /// <summary>
     /// Closes the connection and releases the subscriptions and registrations it owns.
     /// </summary>
-    /// <param name="ct">Cancellation token bounding the close.</param>
+    /// <param name="ct">Cancellation token for the caller's wait. Cleanup continues once started.</param>
     /// <returns>A task that completes once the connection is closed.</returns>
     Task CloseAsync(CancellationToken ct = default);
 

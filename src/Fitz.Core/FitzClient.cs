@@ -24,14 +24,15 @@ public sealed class FitzClient : IFitzClient, IDisposable
 {
     readonly ClientConfig _config;
     readonly FitzConnection _connection;
-    readonly Lazy<KvClient> _kvClient;
-    readonly Lazy<LeaseClient> _leaseClient;
-    readonly Lazy<NoticeClient> _noticeClient;
-    readonly Lazy<QueueClient> _queueClient;
-    readonly Lazy<RpcClient> _rpcClient;
-    readonly Lazy<ScheduleClient> _scheduleClient;
-    readonly Lazy<StreamClient> _streamClient;
-    bool _disposed;
+    KvClient? _kvClient;
+    LeaseClient? _leaseClient;
+    NoticeClient? _noticeClient;
+    QueueClient? _queueClient;
+    RpcClient? _rpcClient;
+    ScheduleClient? _scheduleClient;
+    StreamClient? _streamClient;
+    readonly Lock _lifecycleGate = new();
+    Task? _shutdown;
 
     /// <summary>
     /// Creates a client. No connection is opened until you call a connect method.
@@ -51,13 +52,6 @@ public sealed class FitzClient : IFitzClient, IDisposable
         _config = config ?? throw new ArgumentNullException(nameof(config));
         var transportFactory = _config.TransportFactory ?? TransportResolver.Resolve;
         _connection = new FitzConnection(_config, () => transportFactory(_config), time);
-        _kvClient = new Lazy<KvClient>(() => new KvClient(_connection), LazyThreadSafetyMode.ExecutionAndPublication);
-        _leaseClient = new Lazy<LeaseClient>(() => new LeaseClient(_connection), LazyThreadSafetyMode.ExecutionAndPublication);
-        _noticeClient = new Lazy<NoticeClient>(() => new NoticeClient(_connection), LazyThreadSafetyMode.ExecutionAndPublication);
-        _queueClient = new Lazy<QueueClient>(() => new QueueClient(_connection), LazyThreadSafetyMode.ExecutionAndPublication);
-        _rpcClient = new Lazy<RpcClient>(() => new RpcClient(_connection), LazyThreadSafetyMode.ExecutionAndPublication);
-        _scheduleClient = new Lazy<ScheduleClient>(() => new ScheduleClient(_connection), LazyThreadSafetyMode.ExecutionAndPublication);
-        _streamClient = new Lazy<StreamClient>(() => new StreamClient(_connection), LazyThreadSafetyMode.ExecutionAndPublication);
     }
 
     /// <summary>The configuration this client was created with.</summary>
@@ -116,7 +110,7 @@ public sealed class FitzClient : IFitzClient, IDisposable
             {
                 throw;
             }
-            catch (ConnectionException) when (Volatile.Read(ref _disposed) || State == ConnectionState.Closed)
+            catch (ConnectionException) when (State == ConnectionState.Closed)
             {
                 throw;
             }
@@ -143,33 +137,50 @@ public sealed class FitzClient : IFitzClient, IDisposable
     }
 
     /// <inheritdoc />
-    public async Task CloseAsync(CancellationToken ct = default)
+    public Task CloseAsync(CancellationToken ct = default)
     {
-        ct.ThrowIfCancellationRequested();
-        if (Interlocked.Exchange(ref _disposed, true))
+        if (ct.IsCancellationRequested)
+            return Task.FromCanceled(ct);
+
+        TaskCompletionSource<Task> start;
+        Task shutdown;
+        lock (_lifecycleGate)
         {
-            return;
+            if (_shutdown is { } existing)
+                return existing.WaitAsync(ct);
+
+            start = new TaskCompletionSource<Task>(TaskCreationOptions.RunContinuationsAsynchronously);
+            shutdown = start.Task.Unwrap();
+            Volatile.Write(ref _shutdown, shutdown);
         }
+
+        // Publish the completion task before running any session cleanup callbacks.
+        start.SetResult(CloseCoreAsync());
+        return shutdown.WaitAsync(ct);
+    }
+
+    async Task CloseCoreAsync()
+    {
         try
         {
             await _connection.DisposeAsync().ConfigureAwait(false);
         }
         finally
         {
-            if (_kvClient.IsValueCreated)
-                await _kvClient.Value.DisposeAsync().ConfigureAwait(false);
-            if (_leaseClient.IsValueCreated)
-                await _leaseClient.Value.DisposeAsync().ConfigureAwait(false);
-            if (_noticeClient.IsValueCreated)
-                await _noticeClient.Value.DisposeAsync().ConfigureAwait(false);
-            if (_queueClient.IsValueCreated)
-                await _queueClient.Value.DisposeAsync().ConfigureAwait(false);
-            if (_rpcClient.IsValueCreated)
-                _rpcClient.Value.Dispose();
-            if (_scheduleClient.IsValueCreated)
-                await _scheduleClient.Value.DisposeAsync().ConfigureAwait(false);
-            if (_streamClient.IsValueCreated)
-                await _streamClient.Value.DisposeAsync().ConfigureAwait(false);
+            if (_kvClient is { } kv)
+                await kv.DisposeAsync().ConfigureAwait(false);
+            if (_leaseClient is { } lease)
+                await lease.DisposeAsync().ConfigureAwait(false);
+            if (_noticeClient is { } notice)
+                await notice.DisposeAsync().ConfigureAwait(false);
+            if (_queueClient is { } queue)
+                await queue.DisposeAsync().ConfigureAwait(false);
+            if (_rpcClient is { } rpc)
+                rpc.Dispose();
+            if (_scheduleClient is { } schedule)
+                await schedule.DisposeAsync().ConfigureAwait(false);
+            if (_streamClient is { } stream)
+                await stream.DisposeAsync().ConfigureAwait(false);
         }
     }
 
@@ -193,77 +204,28 @@ public sealed class FitzClient : IFitzClient, IDisposable
     }
 
     /// <inheritdoc />
-    public IKvClient Kv
-    {
-        get
-        {
-            ThrowIfDisposed();
-            return _kvClient.Value;
-        }
-    }
+    public IKvClient Kv => GetDomain(ref _kvClient, static connection => new KvClient(connection));
 
     /// <inheritdoc />
-    public ILeaseClient Lease
-    {
-        get
-        {
-            ThrowIfDisposed();
-            return _leaseClient.Value;
-        }
-    }
+    public ILeaseClient Lease => GetDomain(ref _leaseClient, static connection => new LeaseClient(connection));
 
     /// <inheritdoc />
-    public INoticeClient Notice
-    {
-        get
-        {
-            ThrowIfDisposed();
-            return _noticeClient.Value;
-        }
-    }
+    public INoticeClient Notice => GetDomain(ref _noticeClient, static connection => new NoticeClient(connection));
 
     /// <inheritdoc />
-    public IQueueClient Queue
-    {
-        get
-        {
-            ThrowIfDisposed();
-            return _queueClient.Value;
-        }
-    }
+    public IQueueClient Queue => GetDomain(ref _queueClient, static connection => new QueueClient(connection));
 
     /// <inheritdoc />
-    public IRpcClient Rpc
-    {
-        get
-        {
-            ThrowIfDisposed();
-            return _rpcClient.Value;
-        }
-    }
+    public IRpcClient Rpc => GetDomain(ref _rpcClient, static connection => new RpcClient(connection));
 
     /// <inheritdoc />
-    public IScheduleClient Schedule
-    {
-        get
-        {
-            ThrowIfDisposed();
-            return _scheduleClient.Value;
-        }
-    }
+    public IScheduleClient Schedule => GetDomain(ref _scheduleClient, static connection => new ScheduleClient(connection));
 
     /// <inheritdoc />
-    public IStreamClient Stream
-    {
-        get
-        {
-            ThrowIfDisposed();
-            return _streamClient.Value;
-        }
-    }
+    public IStreamClient Stream => GetDomain(ref _streamClient, static connection => new StreamClient(connection));
 
     /// <inheritdoc />
-    public bool IsConnected => _connection.State == ConnectionState.Authenticated;
+    public bool IsConnected => State == ConnectionState.Authenticated;
 
     /// <summary>Numeric capabilities negotiated for the current live session.</summary>
     public IReadOnlyList<uint> CapabilityIds => IsConnected
@@ -271,7 +233,7 @@ public sealed class FitzClient : IFitzClient, IDisposable
         : Array.Empty<uint>();
 
     /// <inheritdoc />
-    public ConnectionState State => Volatile.Read(ref _disposed) ? ConnectionState.Closed : _connection.State;
+    public ConnectionState State => Volatile.Read(ref _shutdown) is not null ? ConnectionState.Closed : _connection.State;
 
     static bool IsStartupReadinessFailure(ConnectionState state) => state is not ConnectionState.Closed;
 
@@ -308,9 +270,18 @@ public sealed class FitzClient : IFitzClient, IDisposable
         }
     }
 
+    T GetDomain<T>(ref T? domain, Func<FitzConnection, T> create) where T : class
+    {
+        lock (_lifecycleGate)
+        {
+            ThrowIfDisposed();
+            return domain ??= create(_connection);
+        }
+    }
+
     void ThrowIfDisposed()
     {
-        if (Volatile.Read(ref _disposed))
+        if (Volatile.Read(ref _shutdown) is not null)
         {
             throw new ObjectDisposedException(nameof(FitzClient), "The client is closed.");
         }

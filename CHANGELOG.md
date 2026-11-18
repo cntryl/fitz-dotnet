@@ -42,6 +42,13 @@ surface more idiomatic. The package stays on 4.x.
 
 ### Fixes and improvements
 
+- Subscription changes during reconnect wait outside the restoration gate and send on the validated session.
+- RPC cancellation sends are bounded and stay on the session that sent the call. RPC worker replies and cleanup
+  acknowledgements also stay on their originating session.
+- Concurrent `CloseAsync` calls share the same shutdown. Each caller can cancel its own wait.
+- Request admission discards canceled waiters immediately and preserves FIFO order for live requests.
+- The CONNECT build identifier is generated at compile time.
+
 - Lease acquisition follows Wire 3: a queued ACQUIRE is one correlated request whose grant, timeout, or error
   arrives on the final frame. The multiplexer stops the response timeout once a non-final frame arrives.
 - `WithLeaseAsync` cancels the callback's token when the connection drops, even while the callback is busy

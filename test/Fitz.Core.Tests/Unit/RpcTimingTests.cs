@@ -9,6 +9,48 @@ public sealed class RpcTimingTests
     static readonly TimeSpan ConfirmationWindow = TimeSpan.FromSeconds(5);
 
     [Fact]
+    public async Task ShouldEndEnumerationGivenPendingCancellationSendWhenCleanupBudgetExpires()
+    {
+        // Arrange
+        var time = new ManualTimeProvider();
+        var sendingCancel = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSend = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var cancellation = new CancellationTokenSource();
+        using var rpc = new RpcClient(
+            static (_, _, _) => ValueTask.FromResult(ReadOnlyMemory<byte>.Empty),
+            async (messageType, _, ct) =>
+            {
+                if (messageType == MessageTypes.RpcCancel)
+                {
+                    sendingCancel.SetResult();
+                    await releaseSend.Task.WaitAsync(ct);
+                }
+            },
+            registerNotificationHandler: static (_, _) => new Registration(),
+            timeProvider: time);
+        var call = rpc.CallAsync(Route, ReadOnlyMemory<byte>.Empty, cancellation.Token);
+        await using var enumerator = call.GetAsyncEnumerator();
+        var response = enumerator.MoveNextAsync().AsTask();
+
+        // Act
+        await cancellation.CancelAsync();
+        await sendingCancel.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        time.Advance(ConfirmationWindow);
+
+        // Assert
+        try
+        {
+            Assert.Equal(RpcCancellationOutcome.Unconfirmed, await call.Cancellation.WaitAsync(TimeSpan.FromSeconds(3)));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => response.WaitAsync(TimeSpan.FromSeconds(3)));
+        }
+        finally
+        {
+            releaseSend.TrySetResult();
+            await Record.ExceptionAsync(() => response.WaitAsync(TimeSpan.FromSeconds(3)));
+        }
+    }
+
+    [Fact]
     public async Task ShouldTimeOutCallAndReportUnconfirmedGivenNoBrokerAcknowledgementWhenClockAdvances()
     {
         // Arrange

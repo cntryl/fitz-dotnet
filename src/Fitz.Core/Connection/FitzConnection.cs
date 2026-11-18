@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Reflection;
 using System.Security.Cryptography;
 using Cntryl.Fitz.Observability;
 using Cntryl.Fitz.Protocol;
@@ -138,15 +137,6 @@ sealed class FitzConnection : IAsyncDisposable
         });
         return ValueTask.CompletedTask;
     }
-
-    /// <summary>
-    /// Whether an outbound message carries its own asynchronous RPC routing semantics.
-    /// </summary>
-    /// <remarks>
-    /// RPC protocol messages are sent without awaiting a client-side response, but still carry a
-    /// nonzero Wire 3 frame correlation identifier.
-    /// </remarks>
-    static bool IsRpcMessage(ushort messageType) => messageType is >= 300 and <= 305;
 
     /// <summary>
     /// Allocates an identifier that is unique among this connection's in-flight requests.
@@ -433,9 +423,10 @@ sealed class FitzConnection : IAsyncDisposable
         ushort messageType, ReadOnlyMemory<byte> payload, byte flags,
         CancellationToken? expectedSession, TimeSpan extraResponseTime, CancellationToken ct)
     {
-        if (expectedSession?.IsCancellationRequested == true)
-            throw new ConnectionException("The owning connection session has ended.");
-        await WaitForRequestReadyAsync(ct).ConfigureAwait(false);
+        if (expectedSession.HasValue)
+            _ = CaptureTransportSession(expectedSession);
+        else
+            await WaitForRequestReadyAsync(ct).ConfigureAwait(false);
 
         using var slot = await AcquireRequestSlotAsync(ct).ConfigureAwait(false);
         var (requestTransport, session) = CaptureTransportSession(expectedSession);
@@ -491,19 +482,19 @@ sealed class FitzConnection : IAsyncDisposable
         ushort messageType,
         ReadOnlyMemory<byte> payload,
         CancellationToken ct = default) =>
-        _ = await SendInSessionAsync(messageType, payload, ct).ConfigureAwait(false);
+        _ = await SendInSessionAsync(messageType, payload, correlate: false, ct).ConfigureAwait(false);
 
     internal async ValueTask<CancellationToken> SendInSessionAsync(
-        ushort messageType, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
+        ushort messageType, ReadOnlyMemory<byte> payload, bool correlate, CancellationToken ct,
+        CancellationToken? expectedSession = null)
     {
-        await WaitForRequestReadyAsync(ct).ConfigureAwait(false);
+        if (expectedSession.HasValue)
+            _ = CaptureTransportSession(expectedSession);
+        else
+            await WaitForRequestReadyAsync(ct).ConfigureAwait(false);
         using var slot = await AcquireRequestSlotAsync(ct).ConfigureAwait(false);
-        var (sendTransport, session) = CaptureTransportSession(expectedSession: null);
-        var rpcResponseWithoutRequestCorrelation = messageType is 303 or 305 ||
-            (messageType == 304 && (payload.IsEmpty || payload.Span[0] != 1));
-        var correlationId = IsRpcMessage(messageType) && !rpcResponseWithoutRequestCorrelation
-            ? NextCorrelationId()
-            : 0UL;
+        var (sendTransport, session) = CaptureTransportSession(expectedSession);
+        var correlationId = correlate ? NextCorrelationId() : 0UL;
         var frame = EncodeFrame(messageType, payload.Span, 0, correlationId);
         try
         {
@@ -732,7 +723,7 @@ sealed class FitzConnection : IAsyncDisposable
         }
     }
 
-    async Task WaitForRequestReadyAsync(CancellationToken ct)
+    internal async Task WaitForRequestReadyAsync(CancellationToken ct)
     {
         if (State == ConnectionState.Authenticated ||
             (_restoreRequestDepth.Value > 0 && State == ConnectionState.Reconnecting))
@@ -792,8 +783,6 @@ sealed class FitzConnection : IAsyncDisposable
             var token = tokenProvider is null
                 ? string.Empty
                 : await tokenProvider(ct).ConfigureAwait(false);
-            var clientVersion = typeof(FitzConnection).Assembly
-                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "unknown";
             byte[] connectPayload;
             using (var writer = new BinaryBufferWriter())
             {
@@ -802,7 +791,7 @@ sealed class FitzConnection : IAsyncDisposable
                 writer.WriteU32(0);
                 writer.WriteString(token);
                 writer.WriteString(_config.ServiceName?.Trim() ?? string.Empty);
-                writer.WriteString($"fitz-dotnet/{clientVersion}");
+                writer.WriteString("fitz-dotnet/" + FitzBuild.Version);
                 connectPayload = writer.Build();
             }
             connectPayload = ExtensionCodec.Encode(connectPayload, 1, ExtensionCodec.ClientCapabilities);
@@ -1424,9 +1413,18 @@ sealed class FitzConnection : IAsyncDisposable
 
     void EnsureSessionReady()
     {
-        if (_closeRequested || (State != ConnectionState.Authenticated &&
-            !(_restoreRequestDepth.Value > 0 && State == ConnectionState.Reconnecting)))
+        if (!IsRequestSessionReady)
             throw new ConnectionException("The connection session changed while waiting to send.");
+    }
+
+    bool IsRequestSessionReady => !_closeRequested && (State == ConnectionState.Authenticated ||
+        (_restoreRequestDepth.Value > 0 && State == ConnectionState.Reconnecting));
+
+    internal bool IsRequestSessionCurrent(CancellationToken session)
+    {
+        lock (_gate)
+            return IsRequestSessionReady && _transport is not null &&
+                _connectionClosedToken == session && !session.IsCancellationRequested;
     }
 
     void EnsureAuthenticated()

@@ -38,6 +38,21 @@
             Visible="false" />
     </ItemGroup>
   </Target>
+  <Target Name="GenerateFitzBuildVersion"
+          BeforeTargets="CoreCompile"
+          DependsOnTargets="GetAssemblyVersion;AddSourceRevisionToInformationalVersion">
+    <PropertyGroup>
+      <_FitzBuildSource>$(IntermediateOutputPath)FitzBuild.g.cs</_FitzBuildSource>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_FitzBuildSource)"
+                      Lines="namespace Cntryl.Fitz%3B internal static class FitzBuild { internal const string Version = &quot;$(InformationalVersion)&quot;%3B }"
+                      Overwrite="true"
+                      WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <Compile Include="$(_FitzBuildSource)" />
+      <FileWrites Include="$(_FitzBuildSource)" />
+    </ItemGroup>
+  </Target>
   <!-- The route grammar is shared with the analyzer so the two cannot drift. -->
   <ItemGroup>
     <Compile Include="..\Shared\RouteGrammar.cs" Link="Shared\RouteGrammar.cs" />

@@ -451,12 +451,12 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
         }
     }
 
-    async Task<ulong> SubscribeWireAsync(string route, CancellationToken ct)
+    async Task<ulong> SubscribeWireAsync(string route, SubscriptionSession session, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
 
-        var response = await _request(MessageTypes.LeaseSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await session.RequestAsync(_request, MessageTypes.LeaseSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = LeaseWireHelpers.ReadSuccess(response, "SUBSCRIBE");
 
         if (reader.RemainingBytes != 8)
@@ -473,12 +473,12 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
         return subscriptionId;
     }
 
-    async Task UnsubscribeWireAsync(string route, ulong subscriptionId, CancellationToken ct)
+    async Task UnsubscribeWireAsync(string route, ulong subscriptionId, SubscriptionSession session, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
 
-        var response = await _request(MessageTypes.LeaseUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await session.RequestAsync(_request, MessageTypes.LeaseUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = LeaseWireHelpers.ReadSuccess(response, "UNSUBSCRIBE");
         if (!reader.IsEof)
         {

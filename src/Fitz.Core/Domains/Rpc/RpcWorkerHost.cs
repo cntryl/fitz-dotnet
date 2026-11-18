@@ -18,7 +18,7 @@ sealed class RpcWorkerHost : IDisposable
 {
     readonly object _owner;
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
-    readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
+    readonly RpcSessionSend _send;
     readonly Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable> _registerNotificationHandler;
     readonly Action _ensureLifecycleHandler;
     readonly Func<Func<CancellationToken, ValueTask>, IDisposable>? _onReconnect;
@@ -42,7 +42,7 @@ sealed class RpcWorkerHost : IDisposable
     internal RpcWorkerHost(
         object owner,
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
-        Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send,
+        RpcSessionSend send,
         Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable> registerNotificationHandler,
         Action ensureLifecycleHandler,
         Func<Func<CancellationToken, ValueTask>, IDisposable>? onReconnect,
@@ -516,7 +516,7 @@ sealed class RpcWorkerHost : IDisposable
         ack.WriteBytes(correlationId);
         try
         {
-            await _send(MessageTypes.RpcCancel, ack.WrittenMemory, connectionClosed).ConfigureAwait(false);
+            await _send(MessageTypes.RpcCancel, ack.WrittenMemory, connectionClosed, connectionClosed).ConfigureAwait(false);
         }
         catch (Exception exception) when (ExceptionPolicy.IsRecoverable(exception))
         {

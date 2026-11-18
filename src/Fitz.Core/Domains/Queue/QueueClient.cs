@@ -293,12 +293,12 @@ sealed class QueueClient : IQueueClient, IAsyncDisposable
         }
     }
 
-    async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken ct)
+    async Task<ulong> SubscribeWireAsync(string pattern, SubscriptionSession session, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.QueueSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await session.RequestAsync(_request, MessageTypes.QueueSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = QueueWireHelpers.ReadSuccess(response, "SUBSCRIBE");
 
         if (reader.RemainingBytes != 9 || reader.ReadU8() != 1)
@@ -315,12 +315,12 @@ sealed class QueueClient : IQueueClient, IAsyncDisposable
         return subscriptionId;
     }
 
-    async Task UnsubscribeWireAsync(string pattern, ulong subscriptionId, CancellationToken ct)
+    async Task UnsubscribeWireAsync(string pattern, ulong subscriptionId, SubscriptionSession session, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.QueueUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await session.RequestAsync(_request, MessageTypes.QueueUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = QueueWireHelpers.ReadSuccess(response, "UNSUBSCRIBE");
 
         if (!reader.IsEof)

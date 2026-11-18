@@ -1,3 +1,4 @@
+using System.Reflection;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Protocol;
 
@@ -67,6 +68,9 @@ public sealed class CorrelationConnectionTests
         Assert.Equal(0u, reader.ReadU32());
         Assert.Equal(string.Empty, reader.ReadString());
         Assert.Equal("orders-worker", reader.ReadString());
+        var informationalVersion = typeof(FitzClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>();
+        Assert.NotNull(informationalVersion);
+        Assert.Equal("fitz-dotnet/" + informationalVersion.InformationalVersion, reader.ReadString());
     }
 
     [Fact]

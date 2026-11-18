@@ -6,7 +6,7 @@ namespace Cntryl.Fitz.Domains.Rpc;
 // send that starts afterwards fails, because the response stream no longer exists.
 sealed class RpcResponseWriter : IRpcResponseWriter, IAsyncDisposable
 {
-    readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> _send;
+    readonly RpcSessionSend _send;
     readonly byte[] _correlationId;
     readonly CancellationToken _connectionClosed;
     readonly SemaphoreSlim _sendGate = new(1, 1);
@@ -18,7 +18,7 @@ sealed class RpcResponseWriter : IRpcResponseWriter, IAsyncDisposable
 
     internal bool IsEnded => _ended;
 
-    internal RpcResponseWriter(Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> send, byte[] correlationId,
+    internal RpcResponseWriter(RpcSessionSend send, byte[] correlationId,
         CancellationToken connectionClosed)
     {
         _send = send;
@@ -46,7 +46,7 @@ sealed class RpcResponseWriter : IRpcResponseWriter, IAsyncDisposable
             writer.WriteU8(isEnd ? RpcWire.ResponseFlagStreamEnd : (byte)0);
             writer.WriteLengthPrefixed(body.Span);
 
-            await _send(MessageTypes.RpcResponse, writer.WrittenMemory, sendToken).ConfigureAwait(false);
+            await _send(MessageTypes.RpcResponse, writer.WrittenMemory, _connectionClosed, sendToken).ConfigureAwait(false);
             _sequence++;
             _ended = isEnd;
         }

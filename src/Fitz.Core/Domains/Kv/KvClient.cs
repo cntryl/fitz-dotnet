@@ -168,20 +168,20 @@ sealed class KvClient : IKvClient, IAsyncDisposable
         }
     }
 
-    async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken ct)
+    async Task<ulong> SubscribeWireAsync(string pattern, SubscriptionSession session, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
-        var response = await _request(MessageTypes.KvSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await session.RequestAsync(_request, MessageTypes.KvSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = ReadSubscriptionResponse(response, "SUBSCRIBE", expectedBytes: 8);
         return reader.ReadU64();
     }
 
-    async Task UnsubscribeWireAsync(string pattern, ulong subscriptionId, CancellationToken ct)
+    async Task UnsubscribeWireAsync(string pattern, ulong subscriptionId, SubscriptionSession session, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
-        var response = await _request(MessageTypes.KvUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await session.RequestAsync(_request, MessageTypes.KvUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         ReadSubscriptionResponse(response, "UNSUBSCRIBE", expectedBytes: 0);
     }
 
