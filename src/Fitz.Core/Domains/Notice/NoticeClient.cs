@@ -158,7 +158,7 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
         }
     }
 
-    async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken ct)
+    async Task<ulong> SubscribeWireAsync(string pattern, SubscriptionSession session, CancellationToken ct)
     {
         if (_request is null)
         {
@@ -168,7 +168,7 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.NoticeSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await session.RequestAsync(_request, MessageTypes.NoticeSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = NoticeWireHelpers.ReadSuccess(response, "SUBSCRIBE");
 
         if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
@@ -186,7 +186,7 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
     }
 
     // NOTICE unsubscribes by subscription id; the pattern is not on the wire.
-    async Task UnsubscribeWireAsync(string pattern, ulong subscriptionId, CancellationToken ct)
+    async Task UnsubscribeWireAsync(string pattern, ulong subscriptionId, SubscriptionSession session, CancellationToken ct)
     {
         if (_request is null)
         {
@@ -196,7 +196,7 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(subscriptionId);
 
-        var response = await _request(MessageTypes.NoticeUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await session.RequestAsync(_request, MessageTypes.NoticeUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = NoticeWireHelpers.ReadSuccess(response, "UNSUBSCRIBE");
         if (!reader.IsEof)
         {
@@ -204,9 +204,9 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
         }
     }
 
-    async Task UnsubscribeAllWireAsync(CancellationToken ct)
+    async Task UnsubscribeAllWireAsync(SubscriptionSession session, CancellationToken ct)
     {
-        var response = await _request!(MessageTypes.NoticeUnsubscribeAll, ReadOnlyMemory<byte>.Empty, ct).ConfigureAwait(false);
+        var response = await session.RequestAsync(_request!, MessageTypes.NoticeUnsubscribeAll, ReadOnlyMemory<byte>.Empty, ct).ConfigureAwait(false);
         var reader = NoticeWireHelpers.ReadSuccess(response, "UNSUBSCRIBE_ALL");
         if (!reader.IsEof)
         {

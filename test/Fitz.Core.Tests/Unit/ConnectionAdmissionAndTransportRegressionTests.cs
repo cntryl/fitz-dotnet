@@ -8,6 +8,30 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 public sealed class ConnectionAdmissionAndTransportRegressionTests
 {
     [Fact]
+    public async Task ShouldPreserveFifoGivenCanceledMiddleWaiterWhenCapacityBecomesAvailable()
+    {
+        // Arrange
+        var gate = new RequestGate(maxConcurrency: 1, maxQueueSize: 3);
+        var active = await gate.AcquireAsync(CancellationToken.None);
+        var first = gate.AcquireAsync(CancellationToken.None).AsTask();
+        using var cancellation = new CancellationTokenSource();
+        var canceled = gate.AcquireAsync(cancellation.Token).AsTask();
+        var last = gate.AcquireAsync(CancellationToken.None).AsTask();
+
+        // Act
+        await cancellation.CancelAsync();
+        active.Dispose();
+
+        // Assert
+        using (await first.WaitAsync(TimeSpan.FromSeconds(3)))
+        {
+            Assert.False(last.IsCompleted);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceled);
+        }
+        using var lastSlot = await last.WaitAsync(TimeSpan.FromSeconds(3));
+    }
+
+    [Fact]
     public async Task ShouldFreeQueueCapacityGivenCanceledWaiterWhenReplacingRequest()
     {
         // Arrange
@@ -16,13 +40,14 @@ public sealed class ConnectionAdmissionAndTransportRegressionTests
         using var canceled = new CancellationTokenSource();
         var waiting = gate.AcquireAsync(canceled.Token).AsTask();
         await canceled.CancelAsync();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        var cancellation = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
         using var replacementCancellation = new CancellationTokenSource();
 
         // Act
         var replacement = gate.AcquireAsync(replacementCancellation.Token).AsTask();
 
         // Assert
+        Assert.Equal(canceled.Token, cancellation.CancellationToken);
         Assert.False(replacement.IsCompleted);
         await replacementCancellation.CancelAsync();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => replacement);

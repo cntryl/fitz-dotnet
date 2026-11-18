@@ -326,21 +326,21 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
         }
     }
 
-    async Task<ulong> SubscribeWireAsync(string pattern, CancellationToken ct)
+    async Task<ulong> SubscribeWireAsync(string pattern, SubscriptionSession session, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.StreamSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await session.RequestAsync(_request, MessageTypes.StreamSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         return StreamWireHelpers.ReadSubscriptionId(response);
     }
 
-    async Task UnsubscribeWireAsync(string pattern, ulong subscriptionId, CancellationToken ct)
+    async Task UnsubscribeWireAsync(string pattern, ulong subscriptionId, SubscriptionSession session, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
 
-        var response = await _request(MessageTypes.StreamUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await session.RequestAsync(_request, MessageTypes.StreamUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         StreamWireHelpers.EnsureSuccessStatusOnly(response, "UNSUBSCRIBE");
     }
 

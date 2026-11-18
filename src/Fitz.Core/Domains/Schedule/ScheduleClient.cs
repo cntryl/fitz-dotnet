@@ -265,12 +265,12 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
         }
     }
 
-    async Task<ulong> SubscribeWireAsync(string route, CancellationToken ct)
+    async Task<ulong> SubscribeWireAsync(string route, SubscriptionSession session, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
 
-        var response = await _request(MessageTypes.ScheduleSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var response = await session.RequestAsync(_request, MessageTypes.ScheduleSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = ScheduleWireHelpers.ReadSuccess(response, "SUBSCRIBE");
         if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
         {
@@ -286,13 +286,13 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
         return subscriptionId;
     }
 
-    async Task UnsubscribeWireAsync(string route, ulong subscriptionId, CancellationToken ct)
+    async Task UnsubscribeWireAsync(string route, ulong subscriptionId, SubscriptionSession session, CancellationToken ct)
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
 
-        var data = await RequestSuccessAsync(MessageTypes.ScheduleUnsubscribe, writer.WrittenMemory, "UNSUBSCRIBE", ct).ConfigureAwait(false);
-        if (!data.IsEmpty)
+        var response = await session.RequestAsync(_request, MessageTypes.ScheduleUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+        if (!ScheduleWireHelpers.ReadSuccess(response, "UNSUBSCRIBE").IsEof)
         {
             throw new ScheduleException("UNSUBSCRIBE response has trailing bytes", "UNSUBSCRIBE_INVALID_RESPONSE");
         }

@@ -2,6 +2,8 @@ using Cntryl.Fitz.Protocol;
 
 namespace Cntryl.Fitz.Domains.Rpc;
 
+delegate ValueTask RpcSessionSend(ushort messageType, ReadOnlyMemory<byte> payload, CancellationToken session, CancellationToken ct);
+
 /// <summary>An RPC request delivered to a local worker, decoded once on receipt.</summary>
 /// <param name="CorrelationId">The call's correlation UUID in network byte order.</param>
 /// <param name="Route">The concrete route the caller invoked.</param>
@@ -18,6 +20,11 @@ static class RpcWire
 {
     internal const int CorrelationIdLength = 16;
     internal const byte ResponseFlagStreamEnd = 0x01;
+    internal const byte CancelRequest = 1;
+
+    internal static bool UsesRequestCorrelation(ushort messageType, ReadOnlySpan<byte> payload) =>
+        messageType == MessageTypes.RpcRequest ||
+        (messageType == MessageTypes.RpcCancel && !payload.IsEmpty && payload[0] == CancelRequest);
 
     /// <summary>The wire carries a remaining budget as u32 milliseconds; the broker caps it at one day.</summary>
     internal static readonly TimeSpan MaxCallBudget = TimeSpan.FromDays(1);

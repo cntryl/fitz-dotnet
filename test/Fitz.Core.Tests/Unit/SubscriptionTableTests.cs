@@ -127,14 +127,14 @@ public sealed class SubscriptionTableTests
             },
             dispatchAsyncHandler: null,
             bufferCapacity: 16,
-            (_, _) =>
+            (_, _, _) =>
             {
                 SubscribeCalls++;
                 return SubscribeCalls == FailSubscribeCall
                     ? Task.FromException<ulong>(new InvalidOperationException("restore rejected"))
                     : Task.FromResult((ulong)SubscribeCalls);
             },
-            (pattern, subscriptionId, _) =>
+            (pattern, subscriptionId, _, _) =>
             {
                 Unsubscribed.Add((pattern, subscriptionId));
                 return Task.CompletedTask;
