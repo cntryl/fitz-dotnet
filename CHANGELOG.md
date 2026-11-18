@@ -1,6 +1,6 @@
 # Changelog
 
-## 5.0.0 (unreleased)
+## 4.3.0 (unreleased)
 
 ### Breaking changes
 
