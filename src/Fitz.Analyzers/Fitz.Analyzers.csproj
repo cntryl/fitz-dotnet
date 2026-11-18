@@ -15,7 +15,7 @@
     <IncludeSymbols>false</IncludeSymbols>
   </PropertyGroup>
   <ItemGroup>
-    <!-- Keep shipped analyzers loadable by the .NET 11 SDK (Roslyn 5.9). -->
+    <!-- The compiler version is set centrally to match the SDK in global.json. -->
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
     <!-- Enforces analyzer correctness and release tracking (AnalyzerReleases.*.md) on this project. -->
     <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all" />

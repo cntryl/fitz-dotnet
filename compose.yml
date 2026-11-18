@@ -15,12 +15,8 @@
 # - Anon WS:      ws://127.0.0.1:${FITZ_ANON_HOST_HTTP_PORT:-4190}/ws
 # - Anon TCP:     tcp://127.0.0.1:${FITZ_ANON_HOST_TCP_PORT:-4191}
 
-# The broker image is pinned by digest on each service below, so a broker release cannot
-# change what CI or a local run tests without a reviewed change here. Dependabot (docker-compose
-# ecosystem) proposes digest bumps. To try another build deliberately, put a compose.override.yml
-# next to this file (do not commit it) with `services.<name>.image`, or dispatch the Spec workflow
-# with its broker_image input. The image carries no version label; the pin below is the
-# `latest` index as of 2026-11-13 (amd64 + arm64, built 2026-11-11).
+# Local verification and CI test the latest published Fitz broker. To test another image,
+# use a local compose.override.yml or dispatch the Spec workflow with its broker_image input.
 x-broker-common: &broker-common
   restart: unless-stopped
   # The broker drains for up to 25 seconds on SIGTERM. A shorter grace period makes Docker kill
@@ -40,7 +36,7 @@ x-broker-common-env: &broker-common-env
 services:
   fitz-auth:
     <<: *broker-common
-    image: ghcr.io/cntryl/fitz:latest@sha256:b86d47cec33c9bdc84bbbede11da9825310f45e2900d625157a50fd8cbb09c8a
+    image: ghcr.io/cntryl/fitz:latest
     container_name: fitz-auth
     ports:
       - "127.0.0.1:${FITZ_AUTH_HOST_HTTP_PORT:-4090}:${FITZ_AUTH_HTTP_PORT:-4090}"
@@ -60,7 +56,7 @@ services:
       - fitz_auth_data:/data
   fitz-anon:
     <<: *broker-common
-    image: ghcr.io/cntryl/fitz:latest@sha256:b86d47cec33c9bdc84bbbede11da9825310f45e2900d625157a50fd8cbb09c8a
+    image: ghcr.io/cntryl/fitz:latest
     container_name: fitz-anon
     ports:
       - "127.0.0.1:${FITZ_ANON_HOST_HTTP_PORT:-4190}:${FITZ_ANON_HTTP_PORT:-4090}"
