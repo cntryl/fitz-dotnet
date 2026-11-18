@@ -735,6 +735,9 @@ public sealed class StreamClientTests
         var page = await stream.ReadAsync("stream://prod/app/*", 0, StreamReadMode.Replay).FirstAsync();
 
         // Assert
+        Assert.True(page.CaughtUp);
+        Assert.Equal(page.FromOffset, page.NextOffset);
+        Assert.Empty(page.Records);
         var item = Assert.Single(page.Items);
         Assert.Equal("stream://prod/app/event-1", item.Route);
         Assert.Equal(StreamReadItemKind.Filtered, item.Kind);

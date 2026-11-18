@@ -327,6 +327,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                 throw;
             }
 
+            List<(string Pattern, ulong Id)>? withdrawn = null;
             lock (_gate)
             {
                 _patternById.Clear();
@@ -337,7 +338,17 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                         _byPattern[pattern] = subscription.WithId(id);
                         _patternById[id] = pattern;
                     }
+                    else
+                    {
+                        // The reader left while SUBSCRIBE was in flight.
+                        (withdrawn ??= []).Add((pattern, id));
+                    }
                 }
+            }
+            if (withdrawn is not null)
+            {
+                foreach (var (pattern, id) in withdrawn)
+                    await _unsubscribe(pattern, id, session, ct).ConfigureAwait(false);
             }
         }
         finally

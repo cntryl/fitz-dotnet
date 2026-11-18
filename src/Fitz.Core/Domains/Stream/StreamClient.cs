@@ -210,6 +210,7 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
         string route, ulong startOffset, StreamReadOptions options, ulong? cursorFingerprint, ulong? capturedWatermark,
         CancellationToken session, CancellationToken ct)
     {
+        ThrowIfDisposed();
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         writer.WriteU64(startOffset);
