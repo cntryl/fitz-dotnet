@@ -15,8 +15,8 @@
     <PackageReference Include="Cntryl.Conventions.CodeFixes" PrivateAssets="all"/>
   </ItemGroup>
   <ItemGroup Condition="'$(ManagePackageVersionsCentrally)' != 'true'">
-    <PackageReference Include="Cntryl.Conventions.Analyzers" Version="1.0.4" PrivateAssets="all"/>
-    <PackageReference Include="Cntryl.Conventions.CodeFixes" Version="1.0.4" PrivateAssets="all"/>
+    <PackageReference Include="Cntryl.Conventions.Analyzers" Version="1.0.5" PrivateAssets="all"/>
+    <PackageReference Include="Cntryl.Conventions.CodeFixes" Version="1.0.5" PrivateAssets="all"/>
   </ItemGroup>
 
   <!-- Reproducible, SourceLink-resolvable binaries. ContinuousIntegrationBuild rewrites
