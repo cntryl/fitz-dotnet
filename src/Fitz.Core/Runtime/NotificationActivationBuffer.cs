@@ -40,6 +40,7 @@ sealed class NotificationActivationBuffer(int capacity) : IDisposable
                     _failure = new SubscriptionBackpressureException("The subscription activation overflow-ID tracking limit was exceeded.");
                 else
                     _overflowedSubscriptionIds.Add(subscriptionId);
+
                 return;
             }
 
@@ -62,8 +63,11 @@ sealed class NotificationActivationBuffer(int capacity) : IDisposable
         {
             _active = false;
             var failure = _failure;
+
             if (failure is null && _overflowedSubscriptionIds.Contains(subscriptionId))
                 failure = new SubscriptionBackpressureException("The subscription activation buffer is full.");
+
+
             if (failure is null)
             {
                 while (_notifications.TryDequeue(out var notification))
@@ -72,6 +76,7 @@ sealed class NotificationActivationBuffer(int capacity) : IDisposable
                         handler(notification.Payload);
                 }
             }
+
             Dispose();
             return failure;
         }

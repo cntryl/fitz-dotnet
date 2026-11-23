@@ -22,17 +22,22 @@ public sealed class WebSocketTransport : ITransport
         TimeSpan timeout,
         int maxFrameSize,
         WebSocketOptions? options = null,
-        HeartbeatOptions? heartbeat = null)
+        HeartbeatOptions? heartbeat = null
+    )
     {
         ArgumentNullException.ThrowIfNull(url);
+
         if (!url.IsAbsoluteUri || url.Scheme is not ("ws" or "wss"))
         {
             throw new ArgumentException("WebSocket transport requires an absolute ws:// or wss:// URL.", nameof(url));
         }
+
+
         if (timeout != Timeout.InfiniteTimeSpan && timeout <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Timeout must be positive or infinite.");
         }
+
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxFrameSize);
 
         _uri = url;
@@ -57,10 +62,12 @@ public sealed class WebSocketTransport : ITransport
         }
 
         var socket = new ClientWebSocket();
+
         if (_heartbeat.Enabled)
         {
             ConfigureHeartbeat(socket.Options, _heartbeat);
         }
+
 
         if (_options?.Headers is not null)
         {
@@ -72,6 +79,7 @@ public sealed class WebSocketTransport : ITransport
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(_timeout);
+
         try
         {
             await socket.ConnectAsync(_uri, timeoutCts.Token).ConfigureAwait(false);
@@ -103,11 +111,13 @@ public sealed class WebSocketTransport : ITransport
         }
 
         await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+
         try
         {
             var socket = EnsureSocket();
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(_timeout);
+
             try
             {
                 await socket.SendAsync(data, WebSocketMessageType.Binary, endOfMessage: true, timeoutCts.Token).ConfigureAwait(false);
@@ -136,11 +146,13 @@ public sealed class WebSocketTransport : ITransport
         var buffer = ArrayPool<byte>.Shared.Rent(initialBufferSize);
         var length = 0;
         var ownsBuffer = true;
+
         try
         {
             while (true)
             {
                 var remaining = buffer.Length - length;
+
                 if (remaining == 0)
                 {
                     if (buffer.Length >= _maxFrameSize)
@@ -156,7 +168,9 @@ public sealed class WebSocketTransport : ITransport
                     remaining = buffer.Length - length;
                 }
 
+
                 var result = await socket.ReceiveAsync(buffer.AsMemory(length, remaining), ct).ConfigureAwait(false);
+
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
                     if (ownsBuffer)
@@ -166,13 +180,16 @@ public sealed class WebSocketTransport : ITransport
 
                     return PooledFrame.Closed;
                 }
+
                 EnsureBinaryMessage(result.MessageType);
 
                 length += result.Count;
+
                 if (length > _maxFrameSize)
                 {
                     throw new ProtocolException($"WebSocket frame length exceeds max frame size {_maxFrameSize}.");
                 }
+
 
                 if (result.EndOfMessage)
                 {
@@ -233,6 +250,7 @@ public sealed class WebSocketTransport : ITransport
     public async Task CloseAsync(CancellationToken ct = default)
     {
         await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+
         try
         {
             var socket = Interlocked.Exchange(ref _socket, null);
@@ -271,10 +289,12 @@ public sealed class WebSocketTransport : ITransport
     ClientWebSocket EnsureSocket()
     {
         var socket = Volatile.Read(ref _socket);
+
         if (socket is null || socket.State != WebSocketState.Open)
         {
             throw new InvalidOperationException("Transport is not connected.");
         }
+
 
         return socket;
     }

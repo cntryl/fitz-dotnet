@@ -179,6 +179,7 @@ public sealed class ManagedLeaseAuthorityTests
             {
                 if (messageType == MessageTypes.LeaseAcquire)
                     await Task.Delay(Timeout.Infinite, ct);
+
                 return SuccessResponse();
             });
         var pending = leaseClient.WithLeaseAsync(

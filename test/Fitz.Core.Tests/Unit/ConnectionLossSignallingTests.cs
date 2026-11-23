@@ -102,6 +102,7 @@ public sealed class ConnectionLossSignallingTests
             {
                 if (evt.Event == "reconnect_succeeded" && Volatile.Read(ref factoryCalls) >= 3)
                     restoredSession.TrySetResult();
+
                 if (evt.Event == "connection_lost" && Interlocked.Increment(ref connectionLosses) == 2)
                     interruptedLossReported.TrySetResult();
             }),

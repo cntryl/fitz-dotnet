@@ -17,6 +17,7 @@ public sealed class NoticeClientTests
             (messageType, payload, _) =>
             {
                 sent.Add(messageType);
+
                 if (messageType == MessageTypes.NoticeSubscribe)
                 {
                     using var response = new BinaryBufferWriter();
@@ -25,6 +26,7 @@ public sealed class NoticeClientTests
                     response.WriteU64(++subscriptionId);
                     return Task.FromResult(response.Build());
                 }
+
                 Assert.Empty(payload);
                 return Task.FromResult(new byte[] { 0 });
             },
@@ -95,11 +97,13 @@ public sealed class NoticeClientTests
             {
                 using var response = new BinaryBufferWriter();
                 response.WriteU8(0);
+
                 if (messageType == MessageTypes.NoticeSubscribe)
                 {
                     response.WriteU8(1);
                     response.WriteU64(55);
                 }
+
                 return ValueTask.FromResult<ReadOnlyMemory<byte>>(response.Build());
             },
             (_, handler) =>
@@ -143,11 +147,13 @@ public sealed class NoticeClientTests
 
                 using var response = new BinaryBufferWriter();
                 response.WriteU8(0);
+
                 if (messageType == MessageTypes.NoticeSubscribe)
                 {
                     response.WriteU8(1);
                     response.WriteU64(55);
                 }
+
                 return ValueTask.FromResult<ReadOnlyMemory<byte>>(response.Build());
             },
             (_, handler) =>
@@ -218,11 +224,13 @@ public sealed class NoticeClientTests
             {
                 using var response = new BinaryBufferWriter();
                 response.WriteU8(0);
+
                 if (messageType == MessageTypes.NoticeSubscribe)
                 {
                     response.WriteU8(1);
                     response.WriteU64(55);
                 }
+
                 return Task.FromResult(response.Build());
             },
             (_, handler) =>
@@ -293,11 +301,13 @@ public sealed class NoticeClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+
                 if (messageType == MessageTypes.NoticeSubscribe)
                 {
                     writer.WriteU8(1);
                     writer.WriteU64(55);
                 }
+
                 return Task.FromResult(writer.Build());
             },
             (messageType, handler) =>
@@ -380,6 +390,7 @@ public sealed class NoticeClientTests
         var subscription = await notice.SubscribeAsync("notice://prod/app/*", async (_, ct) =>
         {
             handlerStarted.TrySetResult(ct);
+
             try
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, ct);

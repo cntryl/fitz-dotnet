@@ -18,15 +18,19 @@ public sealed class CommitPersistenceTests
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
+
             if (kind == MessageTypes.KvBegin)
             {
                 beginPayload = payload.ToArray();
                 writer.WriteU64(7);
             }
+
+
             if (kind == MessageTypes.KvCommit)
             {
                 commitPayload = payload.ToArray();
             }
+
             return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
         });
 

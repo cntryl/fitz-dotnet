@@ -19,6 +19,7 @@ static class StreamWireHelpers
         writer.WriteU8(0);
         writer.WriteU8(0xF1);
         writer.WriteU32((uint)filter.Clauses.Count);
+
         foreach (var clause in filter.Clauses)
         {
             if (clause.Kind is not StreamFilterClauseKind.Equals and not StreamFilterClauseKind.NotEquals
@@ -28,6 +29,7 @@ static class StreamWireHelpers
             }
 
             writer.WriteU8((byte)clause.Kind);
+
             switch (clause.Kind)
             {
                 case StreamFilterClauseKind.Equals:
@@ -46,14 +48,17 @@ static class StreamWireHelpers
             }
         }
 
+
         return writer.Build();
     }
 
     internal static void EnsureSuccessStatusOnly(ReadOnlyMemory<byte> response, string operation)
     {
         var reader = ReadSuccess(response, operation);
+
         if (operation == "COMMIT")
             _ = ReadLengthPrefixedData(reader, operation);
+
         if (!reader.IsEof)
             throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
     }
@@ -61,10 +66,12 @@ static class StreamWireHelpers
     internal static ulong ReadBeginSessionId(ReadOnlyMemory<byte> response)
     {
         var reader = ReadSuccess(response, "BEGIN");
+
         if (reader.RemainingBytes < 12)
         {
             throw new StreamException("BEGIN response missing session id or payload length", "MISSING_SESSION_ID");
         }
+
         var sessionId = reader.ReadU64();
         _ = ReadLengthPrefixedData(reader, "BEGIN");
         return sessionId;
@@ -73,27 +80,36 @@ static class StreamWireHelpers
     internal static ulong ReadSubscriptionId(ReadOnlyMemory<byte> response)
     {
         var reader = ReadSuccess(response, "SUBSCRIBE");
+
         if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
             throw new StreamException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
+
         var subscriptionId = reader.ReadU64();
+
         if (!reader.IsEof)
         {
             _ = ReadLengthPrefixedData(reader, "SUBSCRIBE");
         }
+
         return subscriptionId;
     }
 
     internal static ReadOnlyMemory<byte> ReadOptionalPayload(ReadOnlyMemory<byte> response, string operation)
     {
         var reader = ReadSuccess(response, operation);
+
         if (operation == "READ")
         {
             if (reader.IsEof || reader.ReadU8() != 0)
                 throw new StreamException("READ response has invalid session flag", "READ_INVALID_RESPONSE");
+
             return ReadLengthPrefixedData(reader, operation);
         }
+
+
         if (operation == "APPEND")
             return ReadLengthPrefixedData(reader, operation);
+
         return reader.ReadMemory(reader.RemainingBytes);
     }
 
@@ -101,9 +117,12 @@ static class StreamWireHelpers
     {
         if (reader.RemainingBytes < 4)
             throw new StreamException($"{operation} response missing payload length", $"{operation}_INVALID_RESPONSE");
+
         var length = reader.ReadU32();
+
         if (length > int.MaxValue || length != reader.RemainingBytes)
             throw new StreamException($"{operation} response has invalid payload length", $"{operation}_INVALID_RESPONSE");
+
         return reader.ReadMemory(length);
     }
 
@@ -111,10 +130,12 @@ static class StreamWireHelpers
     {
         var reader = new BinaryBufferReader(payload);
         var record = ReadRecord(reader, operation, route);
+
         if (!reader.IsEof)
         {
             throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
         }
+
 
         return record;
     }
@@ -123,15 +144,19 @@ static class StreamWireHelpers
     {
         var reader = new BinaryBufferReader(payload);
         var route = reader.ReadString();
+
         if (!RouteValidation.TryValidateFixedRoute(route, "stream", 3, out _))
         {
             throw new StreamException($"{operation} response contains invalid concrete stream route: {route}", $"{operation}_INVALID_RESPONSE");
         }
+
         var record = ReadRecord(reader, operation, route);
+
         if (!reader.IsEof)
         {
             throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
         }
+
         return record;
     }
 
@@ -171,28 +196,36 @@ static class StreamWireHelpers
         }
 
         var reader = new BinaryBufferReader(payload);
+
         if (reader.RemainingBytes < 4)
         {
             throw new StreamException($"{operation} response missing item count", $"{operation}_INVALID_RESPONSE");
         }
 
+
         var itemCount = reader.ReadU32();
+
         if (itemCount > int.MaxValue || itemCount > (uint)(reader.RemainingBytes / 5))
         {
             throw new StreamException($"{operation} response item count too large", $"{operation}_INVALID_RESPONSE");
         }
 
+
         var global = scope == StreamSelectorScope.Global;
         var items = new List<StreamReadItem>((int)itemCount);
+
         for (var index = 0; index < itemCount; index++)
         {
             var route = reader.ReadString();
+
             if (!RouteValidation.IsFixedRoute(route, "stream", 3))
             {
                 throw new StreamException($"{operation} response contains invalid concrete stream route '{route}'", $"{operation}_INVALID_RESPONSE");
             }
+
             items.Add(ReadReadItem(reader, operation, route, global));
         }
+
 
         if (reader.RemainingBytes < 8)
         {
@@ -330,16 +363,20 @@ static class StreamWireHelpers
         }
 
         var payloadLength = reader.ReadU32();
+
         if (payloadLength > int.MaxValue)
         {
             throw new StreamException($"{operation} response {fieldName} length too large", $"{operation}_INVALID_RESPONSE");
         }
 
+
         var payloadLengthInt = (int)payloadLength;
+
         if (reader.RemainingBytes < payloadLengthInt)
         {
             throw new StreamException($"{operation} response truncated {fieldName}", $"{operation}_INVALID_RESPONSE");
         }
+
 
         return reader.ReadMemory(payloadLengthInt);
     }
@@ -350,18 +387,23 @@ static class StreamWireHelpers
     {
         OffsetField last = default;
         OffsetField first = default;
+
         try
         {
             var reader = new Utf8JsonReader(payload, isFinalBlock: true, state: default);
+
             if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
                 return (0, StreamCommitOffsetStatus.Malformed);
+
 
             while (reader.Read() && reader.TokenType == JsonTokenType.PropertyName)
             {
                 var isLast = reader.ValueTextEquals("last_resource_offset"u8);
                 var isFirst = !isLast && reader.ValueTextEquals("first_resource_offset"u8);
+
                 if (!reader.Read())
                     return (0, StreamCommitOffsetStatus.Malformed);
+
 
                 if (isLast)
                     last = OffsetField.Read(ref reader);
@@ -376,9 +418,12 @@ static class StreamWireHelpers
             return (0, StreamCommitOffsetStatus.Malformed);
         }
 
+
         var chosen = last.Seen ? last : first;
+
         if (!chosen.Seen)
             return (0, StreamCommitOffsetStatus.Absent);
+
 
         return chosen.Valid ? (chosen.Value, StreamCommitOffsetStatus.Present) : (0, StreamCommitOffsetStatus.Malformed);
     }

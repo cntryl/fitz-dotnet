@@ -22,10 +22,12 @@ public sealed class RpcCancellationChainTests
 
         // Act
         var frames = new List<RpcResponseFrame>();
+
         await foreach (var frame in caller.Rpc.CallStreamingAsync(route, "request"u8.ToArray()))
             frames.Add(frame);
 
         // Assert
+
         Assert.Equal(2, frames.Count);
         Assert.Equal("first"u8.ToArray(), frames[0].Body.ToArray());
         Assert.Equal("last"u8.ToArray(), frames[1].Body.ToArray());
@@ -83,8 +85,15 @@ public sealed class RpcCancellationChainTests
         internal Task<Exception?> Caller { get; }
         internal TimeSpan Elapsed => System.Diagnostics.Stopwatch.GetElapsedTime(_startedAt);
 
-        Chain(FitzClient[] clients, RpcWorkerRegistration[] workers, CancellationTokenSource cancellation,
-            Task[] cleanup, RpcCall call, Task<Exception?> caller, long startedAt)
+        Chain(
+            FitzClient[] clients,
+            RpcWorkerRegistration[] workers,
+            CancellationTokenSource cancellation,
+            Task[] cleanup,
+            RpcCall call,
+            Task<Exception?> caller,
+            long startedAt
+        )
         {
             _clients = clients;
             _workers = workers;
@@ -101,10 +110,12 @@ public sealed class RpcCancellationChainTests
                 ?? IntegrationFixture.GetAnonymousWebSocketUrl();
             var clients = Enumerable.Range(0, 3)
                 .Select(_ => CreateClient(address)).ToArray();
+
             foreach (var client in clients)
             {
                 await client.ConnectAsync();
             }
+
             var suffix = Guid.NewGuid().ToString("N");
             var routeB = $"rpc://chain/app/b-{suffix}";
             var routeC = $"rpc://chain/app/c-{suffix}";
@@ -114,6 +125,7 @@ public sealed class RpcCancellationChainTests
             var workerC = await clients[2].Rpc.RegisterWorkerAsync(routeC, async (request, _, ct) =>
             {
                 childReceived.TrySetResult(request.RemainingTime!.Value);
+
                 try
                 { await Task.Delay(Timeout.InfiniteTimeSpan, ct); }
                 finally { cCleaned.TrySetResult(); }
@@ -123,6 +135,7 @@ public sealed class RpcCancellationChainTests
                 try
                 {
                     await Task.Delay(25, ct);
+
                     await foreach (var _ in clients[1].Rpc.CallStreamingAsync(routeC, "child"u8.ToArray(), request.RemainingTime, ct))
                     { }
                 }
@@ -146,10 +159,14 @@ public sealed class RpcCancellationChainTests
         public async ValueTask DisposeAsync()
         {
             await _callerCancellation.CancelAsync();
+
             foreach (var worker in _workers)
                 await worker.DisposeAsync();
+
+
             foreach (var client in _clients)
                 await client.DisposeAsync();
+
             _callerCancellation.Dispose();
         }
 

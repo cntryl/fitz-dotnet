@@ -72,38 +72,44 @@ public sealed class LeaseClientCompatibilityTests
             string route,
             TimeSpan ttl,
             TimeSpan wait = default,
-            CancellationToken ct = default) => Task.FromException<ILease>(new NotSupportedException());
+            CancellationToken ct = default
+        ) => Task.FromException<ILease>(new NotSupportedException());
 
         public async Task<T> WithLeaseAsync<T>(
             string route,
             TimeSpan ttl,
             Func<LeaseAuthority, CancellationToken, ValueTask<T>> callback,
             LeaseExecutionOptions? options = null,
-            CancellationToken ct = default) => await callback(new LeaseAuthority(FencingToken), ct);
+            CancellationToken ct = default
+        ) => await callback(new LeaseAuthority(FencingToken), ct);
 
         public async Task WithLeaseAsync(
             string route,
             TimeSpan ttl,
             Func<LeaseAuthority, CancellationToken, ValueTask> callback,
             LeaseExecutionOptions? options = null,
-            CancellationToken ct = default) => await callback(new LeaseAuthority(FencingToken), ct);
+            CancellationToken ct = default
+        ) => await callback(new LeaseAuthority(FencingToken), ct);
 
         public Task<LeaseInfo> QueryAsync(string route, CancellationToken ct = default) =>
             Task.FromException<LeaseInfo>(new NotSupportedException());
 
         public Task<LeaseSubscription> SubscribeAsync(
             string route,
-            CancellationToken ct = default) => Task.FromException<LeaseSubscription>(new NotSupportedException());
+            CancellationToken ct = default
+        ) => Task.FromException<LeaseSubscription>(new NotSupportedException());
 
         public Task<LeaseListResult> ListAsync(
             string pattern,
             LeaseListCursor? cursor = null,
             int? limit = null,
-            CancellationToken ct = default) => Task.FromException<LeaseListResult>(new NotSupportedException());
+            CancellationToken ct = default
+        ) => Task.FromException<LeaseListResult>(new NotSupportedException());
 
         public Task<ILeaseInventoryObserver> ObserveAsync(
             string pattern,
             LeaseObserveOptions? options = null,
-            CancellationToken ct = default) => Task.FromException<ILeaseInventoryObserver>(new NotSupportedException());
+            CancellationToken ct = default
+        ) => Task.FromException<ILeaseInventoryObserver>(new NotSupportedException());
     }
 }

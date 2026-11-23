@@ -83,6 +83,7 @@ sealed class BinaryBufferWriter : IDisposable
     public void WriteOptionalLengthPrefixed(ReadOnlyMemory<byte>? bytes)
     {
         WriteU8(bytes.HasValue ? (byte)1 : (byte)0);
+
         if (bytes is { } present)
             WriteLengthPrefixed(present.Span);
     }
@@ -149,6 +150,7 @@ sealed class BinaryBufferWriter : IDisposable
 
         _disposed = true;
         var buffer = Interlocked.Exchange(ref _buffer, null);
+
         if (buffer is not null)
         {
             ReturnCleared(buffer, _position);
@@ -170,10 +172,12 @@ sealed class BinaryBufferWriter : IDisposable
         ThrowIfDisposed();
         var buffer = _buffer!;
         var required = checked(_position + needed);
+
         if (required <= buffer.Length)
         {
             return;
         }
+
 
         var doubled = buffer.Length <= int.MaxValue / 2 ? buffer.Length * 2 : int.MaxValue;
         var newSize = Math.Max(doubled, required);

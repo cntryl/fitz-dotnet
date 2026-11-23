@@ -170,8 +170,10 @@ public sealed class SubscriptionLifecycleRegressionTests
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(0);
+
         if (domain is not ("kv" or "lease"))
             writer.WriteU8(1);
+
         writer.WriteU64(id);
         return writer.Build();
     }
@@ -181,6 +183,7 @@ public sealed class SubscriptionLifecycleRegressionTests
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(id);
         writer.WriteString(route);
+
         if (domain == "queue")
         {
             writer.WriteU64(1);
@@ -197,6 +200,7 @@ public sealed class SubscriptionLifecycleRegressionTests
             writer.WriteU32((uint)payload.Length);
             writer.WriteBytes(payload);
         }
+
         return writer.Build();
     }
 
@@ -250,8 +254,10 @@ public sealed class SubscriptionLifecycleRegressionTests
         {
             var result = _source.GetResult(token);
             Resuming.TrySetResult();
+
             if (!AllowResume.Wait(TimeSpan.FromSeconds(10)))
                 throw new TimeoutException("Subscription continuation was not released.");
+
             return result;
         }
         public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);

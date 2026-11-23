@@ -37,6 +37,7 @@ public class NotificationFanoutBenchmarks : IDisposable
         _mux.SetConnected();
         _payload = new byte[128];
         _registrations = new IDisposable[Subscribers];
+
         for (var i = 0; i < Subscribers; i++)
         {
             _registrations[i] = _mux.RegisterNotificationHandler(MessageTypes.NoticeNotify, static _ => { });

@@ -55,6 +55,7 @@ public sealed class QueueClientTests
             {
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+
                 if (messageType == MessageTypes.QueueSubscribe)
                 {
                     writer.WriteU8(1);
@@ -64,6 +65,7 @@ public sealed class QueueClientTests
                 {
                     writer.WriteU8(42);
                 }
+
 
                 return Task.FromResult(writer.Build());
             },
@@ -86,7 +88,8 @@ public sealed class QueueClientTests
     [InlineData(30, -1)]
     public async Task ShouldRejectInvalidLeaseArgumentsGivenReserveWhenBeforeTransport(
         int leaseSeconds,
-        int? waitSeconds)
+        int? waitSeconds
+    )
     {
         // Arrange
         var requestCalled = false;
@@ -199,6 +202,7 @@ public sealed class QueueClientTests
         await using var queue = new QueueClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
+
             if (messageType == MessageTypes.QueueReserve)
             {
                 writer.WriteU8(0);
@@ -217,6 +221,7 @@ public sealed class QueueClientTests
             {
                 writer.WriteU8(0);
             }
+
             return Task.FromResult(writer.Build());
         });
 
@@ -238,6 +243,7 @@ public sealed class QueueClientTests
         await using var queue = new QueueClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
+
             if (messageType == MessageTypes.QueueReserve)
             {
                 writer.WriteU8(0);
@@ -253,6 +259,7 @@ public sealed class QueueClientTests
                 TestErrorEnvelope.Write(writer, 4050);
                 writer.WriteString("InvalidToken");
             }
+
             return Task.FromResult(writer.Build());
         });
         var item = Assert.Single(await queue.ReserveAsync("queue://prod/app/tasks", TimeSpan.FromSeconds(30)));
@@ -623,6 +630,7 @@ public sealed class QueueClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
+
             if (messageType == MessageTypes.QueueReserve)
             {
                 writer.WriteU32(2);
@@ -635,6 +643,7 @@ public sealed class QueueClientTests
                 writer.WriteU32(5);
                 writer.WriteBytes("job-2"u8);
             }
+
 
             return Task.FromResult(writer.Build());
         });
@@ -700,8 +709,10 @@ public sealed class QueueClientTests
 
         // Act
         Assert.Single(disconnects);
+
         foreach (var disconnect in disconnects.ToArray())
             disconnect();
+
 
         var ex = await Assert.ThrowsAsync<QueueException>(() => item.ExtendAsync(TimeSpan.FromSeconds(10)));
 
@@ -854,6 +865,7 @@ public sealed class QueueClientTests
         var subscription = await queue.SubscribeAsync("queue://prod/app/*", (evt, _) =>
         {
             var seen = Interlocked.Increment(ref notificationCount);
+
             if (seen == 1)
             {
                 firstNotification.TrySetResult(evt);
@@ -862,6 +874,7 @@ public sealed class QueueClientTests
             {
                 secondNotification.TrySetResult(evt);
             }
+
 
             return ValueTask.CompletedTask;
         });

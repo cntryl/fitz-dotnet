@@ -121,9 +121,11 @@ public sealed class NotificationDeliveryTests
         // Act
         response.Complete(SubscriptionReply(domain));
         await response.Resuming.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
         try
         {
             notify!(Notification(domain, route));
+
             if (overflow)
                 notify!(Notification(domain, route));
         }
@@ -131,14 +133,17 @@ public sealed class NotificationDeliveryTests
         {
             response.AllowResume.Set();
         }
+
         var subscription = await subscribing.WaitAsync(TimeSpan.FromSeconds(5));
 
         // Assert
+
         if (overflow)
         {
             await Assert.ThrowsAsync<SubscriptionBackpressureException>(() => subscription.Completion.WaitAsync(TimeSpan.FromSeconds(2)));
             return;
         }
+
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         var receivedRoute = subscription switch
         {
@@ -250,8 +255,10 @@ public sealed class NotificationDeliveryTests
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(0);
+
         if (domain is not ("kv" or "lease"))
             writer.WriteU8(1);
+
         writer.WriteU64(55);
         return writer.Build();
     }
@@ -261,6 +268,7 @@ public sealed class NotificationDeliveryTests
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(55);
         writer.WriteString(route);
+
         if (domain == "queue")
         {
             writer.WriteU64(1);
@@ -277,6 +285,7 @@ public sealed class NotificationDeliveryTests
             writer.WriteU32((uint)payload.Length);
             writer.WriteBytes(payload);
         }
+
         return writer.Build();
     }
 
@@ -291,8 +300,10 @@ public sealed class NotificationDeliveryTests
         {
             var result = _source.GetResult(token);
             Resuming.TrySetResult();
+
             if (!AllowResume.Wait(TimeSpan.FromSeconds(10)))
                 throw new TimeoutException("Subscription continuation was not released.");
+
             return result;
         }
         public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);

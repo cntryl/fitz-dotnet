@@ -26,7 +26,8 @@ public sealed class RpcWorkerRegistration : IAsyncDisposable
     /// <param name="unregister">Callback that withdraws the registration from the broker.</param>
     public RpcWorkerRegistration(
         string pattern,
-        Func<CancellationToken, ValueTask> unregister)
+        Func<CancellationToken, ValueTask> unregister
+    )
     {
         Pattern = pattern;
         _unregister = unregister;
@@ -79,6 +80,7 @@ public sealed class RpcWorkerRegistration : IAsyncDisposable
         await _closing.CancelAsync().ConfigureAwait(false);
         await _unregisterGate.DrainAndDisposeAsync().ConfigureAwait(false);
         _closing.Dispose();
+
         try
         {
             using var cleanupDeadline = new CancellationTokenSource(CleanupBudget);

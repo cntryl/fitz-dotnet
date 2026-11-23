@@ -22,7 +22,8 @@ public static class KvDirectory
         string name,
         JsonTypeInfo<T> valueTypeInfo,
         Func<T, TKey> identity,
-        Func<TKey, LexKeyPart[]> identityKey) => new(name, valueTypeInfo, identity, identityKey);
+        Func<TKey, LexKeyPart[]> identityKey
+    ) => new(name, valueTypeInfo, identity, identityKey);
 }
 
 /// <summary>Collects the parts of a <see cref="KvDirectory{T, TKey}"/> definition.</summary>
@@ -41,7 +42,8 @@ public sealed class KvDirectoryBuilder<T, TKey>
         string name,
         JsonTypeInfo<T> valueTypeInfo,
         Func<T, TKey> identity,
-        Func<TKey, LexKeyPart[]> identityKey)
+        Func<TKey, LexKeyPart[]> identityKey
+    )
     {
         _name = name;
         _valueTypeInfo = valueTypeInfo;

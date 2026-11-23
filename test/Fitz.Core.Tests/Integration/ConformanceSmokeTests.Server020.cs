@@ -16,10 +16,12 @@ public sealed partial class ConformanceSmokeTests
         // Act
         await connection.ConnectAsync();
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+
         while (connection.Capabilities.ProtocolVersion == 0 && DateTime.UtcNow < deadline)
         {
             await Task.Delay(10);
         }
+
         var capabilities = connection.Capabilities;
 
         // Assert
@@ -38,10 +40,12 @@ public sealed partial class ConformanceSmokeTests
         await client.ConnectAsync();
         var route = IntegrationFixture.CreateUniqueRoute("kv");
         await using var seed = await client.Kv.BeginAsync(route);
+
         foreach (var key in new byte[][] { [0x10], [0x10, 0], [0x20] })
         {
             await seed.PutAsync(key, key);
         }
+
         await seed.CommitAsync(KvDurability.Sync);
         await using var tx = await client.Kv.BeginAsync(route, KvMode.ReadOnly);
         var first = await tx.ScanAsync(new KvScanQuery(Limit: 1, Reverse: reverse));

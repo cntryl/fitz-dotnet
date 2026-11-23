@@ -17,13 +17,16 @@ sealed class SessionRequestContext : IDisposable
     long _nextId;
     bool _ended;
 
-    internal SessionRequestContext(FitzConnection? connection,
+    internal SessionRequestContext(
+        FitzConnection? connection,
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
-        Func<Action, IDisposable>? registerOnDisconnect)
+        Func<Action, IDisposable>? registerOnDisconnect
+    )
     {
         _connection = connection;
         _request = request;
         _registerOnDisconnect = registerOnDisconnect;
+
         if (connection is null)
             _earlyRegistration = registerOnDisconnect?.Invoke(OnDisconnected);
     }
@@ -31,9 +34,14 @@ sealed class SessionRequestContext : IDisposable
     // extraResponseTime lengthens the connection's response timeout for requests the broker
     // deliberately holds open, such as a Queue RESERVE long poll.
     internal async ValueTask<ReadOnlyMemory<byte>> RequestAsync(
-        ushort type, ReadOnlyMemory<byte> payload, CancellationToken ct, TimeSpan extraResponseTime = default)
+        ushort type,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken ct,
+        TimeSpan extraResponseTime = default
+    )
     {
         ReadOnlyMemory<byte> response;
+
         if (_connection is not null)
         {
             var result = await _connection.RequestInSessionAsync(type, payload, extraResponseTime, ct).ConfigureAwait(false);
@@ -44,6 +52,7 @@ sealed class SessionRequestContext : IDisposable
         {
             response = await _request(type, payload, ct).ConfigureAwait(false);
         }
+
         EnsureValid();
         return response;
     }
@@ -63,6 +72,7 @@ sealed class SessionRequestContext : IDisposable
         {
             if (_connection is not { } connection)
                 return _request;
+
             var session = _session;
             return (type, payload, ct) => connection.RequestOnSessionAsync(type, payload, session, ct);
         }
@@ -73,6 +83,7 @@ sealed class SessionRequestContext : IDisposable
     {
         if (retry is null || _connection is not { } connection)
             return retry;
+
         var request = BoundRequest;
         return (operation, type, payload, ct) => connection.ExecuteWithRetryAsync(
             operation, token => request(type, payload, token), ct);
@@ -92,8 +103,10 @@ sealed class SessionRequestContext : IDisposable
             ended = _ended;
         }
         var registration = _registerOnDisconnect?.Invoke(listener);
+
         if (ended)
             listener();
+
         return new PendingRegistration(this, id, registration);
     }
 
@@ -105,6 +118,7 @@ sealed class SessionRequestContext : IDisposable
             _ended = true;
             listeners = [.. _pendingListeners.Values];
         }
+
         foreach (var listener in listeners)
         {
             try
@@ -126,6 +140,7 @@ sealed class SessionRequestContext : IDisposable
         {
             if (Interlocked.Exchange(ref _disposed, true))
                 return;
+
             registration?.Dispose();
             lock (owner._gate)
                 owner._pendingListeners.Remove(id);

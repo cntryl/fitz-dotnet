@@ -20,54 +20,67 @@ static class RouteValidation
         string route,
         string scheme,
         int requiredSegments,
-        out RouteValidationFailure failure) => RouteGrammar.TryValidateRegistrationPattern(route, scheme, requiredSegments, out failure);
+        out RouteValidationFailure failure
+    ) => RouteGrammar.TryValidateRegistrationPattern(route, scheme, requiredSegments, out failure);
 
     internal static bool MatchesPattern(string route, string pattern)
     {
         var routeMarker = route.IndexOf("://", StringComparison.Ordinal);
         var patternMarker = pattern.IndexOf("://", StringComparison.Ordinal);
+
         if (routeMarker < 1 || patternMarker < 1 ||
             !route.AsSpan(0, routeMarker).SequenceEqual(pattern.AsSpan(0, patternMarker)))
         {
             return false;
         }
+
         var routeSegments = RouteGrammar.Segments(route);
         var patternSegments = RouteGrammar.Segments(pattern);
+
         if (routeSegments.Length == 0 || patternSegments.Length == 0)
         {
             return false;
         }
 
+
         var routeIndex = 0;
         var patternIndex = 0;
         var lastDoubleWildcard = -1;
         var lastDoubleMatch = 0;
+
         while (routeIndex < routeSegments.Length)
         {
             var segment = patternIndex < patternSegments.Length ? patternSegments[patternIndex] : null;
+
             if (segment == "*" || string.Equals(segment, routeSegments[routeIndex], StringComparison.Ordinal))
             {
                 routeIndex++;
                 patternIndex++;
                 continue;
             }
+
             if (segment == "**")
             {
                 lastDoubleWildcard = patternIndex++;
                 lastDoubleMatch = routeIndex;
                 continue;
             }
+
             if (lastDoubleWildcard < 0)
             {
                 return false;
             }
+
             routeIndex = ++lastDoubleMatch;
             patternIndex = lastDoubleWildcard + 1;
         }
+
+
         while (patternIndex < patternSegments.Length && patternSegments[patternIndex] == "**")
         {
             patternIndex++;
         }
+
         return patternIndex == patternSegments.Length;
     }
 

@@ -35,7 +35,8 @@ sealed class KvTransaction : IKvTransaction
         Func<Action, IDisposable>? registerOnDisconnect = null,
         Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null,
         Func<bool>? supportsExclusiveScan = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _request = request;
         _time = timeProvider ?? TimeProvider.System;
@@ -73,10 +74,12 @@ sealed class KvTransaction : IKvTransaction
         }
 
         var found = reader.ReadU8();
+
         if (found > 1)
         {
             throw new KvException($"GET response has invalid found flag {found}", "GET_INVALID_RESPONSE");
         }
+
 
         if (found != 1)
         {
@@ -99,16 +102,20 @@ sealed class KvTransaction : IKvTransaction
         }
 
         var valueLength = reader.ReadU32();
+
         if (reader.RemainingBytes < valueLength)
         {
             throw new KvException("GET response truncated value", "GET_INVALID_RESPONSE");
         }
 
+
         var value = reader.ReadBytes(valueLength);
+
         if (!reader.IsEof)
         {
             throw new KvException("GET response has trailing bytes", "GET_INVALID_RESPONSE");
         }
+
 
         return new KvFound(value);
     }
@@ -155,12 +162,14 @@ sealed class KvTransaction : IKvTransaction
         writer.WriteOptionalLengthPrefixed(query.StartKey);
         writer.WriteOptionalLengthPrefixed(query.EndKey);
         writer.WriteU8(query.Limit.HasValue ? (byte)1 : (byte)0);
+
         if (query.Limit is { } limit)
         {
             writer.WriteU32(limit);
         }
 
         // Wire 3 combines reverse and exclusive-start into the final options byte.
+
         writer.WriteU8((byte)((query.Reverse ? 1 : 0) | (query.StartExclusive ? 2 : 0)));
 
         var response = await RequestWithRetryAsync(
@@ -171,11 +180,14 @@ sealed class KvTransaction : IKvTransaction
         var reader = KvWireHelpers.ReadSuccess(response, "SCAN");
 
         var pairCount = reader.ReadU32();
+
         if (reader.RemainingBytes < 1 || pairCount > (uint)((reader.RemainingBytes - 1) / 8))
         {
             throw new KvException("SCAN response pair count exceeds the remaining payload", "SCAN_INVALID_RESPONSE");
         }
+
         var pairs = new List<KvPair>(checked((int)pairCount));
+
         for (var i = 0; i < pairCount; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -184,19 +196,26 @@ sealed class KvTransaction : IKvTransaction
             pairs.Add(new KvPair(keyPath, value));
         }
 
+
+
         if (reader.RemainingBytes != 1)
         {
             throw new KvException("SCAN response missing has_more", "SCAN_INVALID_RESPONSE");
         }
+
         var hasMoreByte = reader.ReadU8();
+
         if (hasMoreByte > 1)
         {
             throw new KvException("SCAN response has invalid has_more", "SCAN_INVALID_RESPONSE");
         }
+
+
         if (!reader.IsEof)
         {
             throw new KvException("SCAN response has trailing bytes", "SCAN_INVALID_RESPONSE");
         }
+
         return new KvScanResult(pairs, hasMoreByte == 1);
     }
 
@@ -204,10 +223,12 @@ sealed class KvTransaction : IKvTransaction
     public Task CommitAsync(KvDurability durability, CancellationToken ct = default)
     {
         ThrowIfClosed();
+
         if (durability is not KvDurability.Buffered and not KvDurability.Sync)
         {
             throw new ArgumentOutOfRangeException(nameof(durability), durability, "Unknown KV commit persistence");
         }
+
         return FinalizeAsync(MessageTypes.KvCommit, "COMMIT", ct, durability);
     }
 
@@ -239,6 +260,7 @@ sealed class KvTransaction : IKvTransaction
         await _finalizationGate.DrainAndDisposeAsync().ConfigureAwait(false);
         await _operationGate.DrainAndDisposeAsync().ConfigureAwait(false);
         _closing.Dispose();
+
         try
         {
             if (!_session.IsClosed)
@@ -293,22 +315,26 @@ sealed class KvTransaction : IKvTransaction
     BinaryBufferWriter FinalizationPayload(KvDurability? durability)
     {
         var writer = Payload();
+
         if (durability is { } persistence)
         {
             writer.WriteU8((byte)persistence);
         }
+
         return writer;
     }
 
     async Task ExpectStatusAsync(ushort messageType, ReadOnlyMemory<byte> payload, string operation, CancellationToken ct, bool ensureOpen = true)
     {
         await EnterOperationAsync(ct).ConfigureAwait(false);
+
         try
         {
             if (ensureOpen)
             {
                 ThrowIfClosed();
             }
+
             await SendStatusAsync(messageType, payload, operation, ct).ConfigureAwait(false);
         }
         finally
@@ -322,6 +348,7 @@ sealed class KvTransaction : IKvTransaction
     {
         var response = await _request(messageType, payload, ct).ConfigureAwait(false);
         var reader = KvWireHelpers.ReadSuccess(response, operation);
+
         if (!reader.IsEof)
         {
             throw new KvException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
@@ -338,16 +365,20 @@ sealed class KvTransaction : IKvTransaction
         RetryOperation operation,
         ushort messageType,
         ReadOnlyMemory<byte> payload,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         await EnterOperationAsync(ct).ConfigureAwait(false);
+
         try
         {
             ThrowIfClosed();
+
             if (_retryRequest is null)
             {
                 return await _request(messageType, payload, ct).ConfigureAwait(false);
             }
+
 
             return await _retryRequest(operation, messageType, payload, ct).ConfigureAwait(false);
         }

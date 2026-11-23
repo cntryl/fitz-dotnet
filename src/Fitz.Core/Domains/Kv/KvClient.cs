@@ -55,7 +55,8 @@ sealed class KvClient : IKvClient, IAsyncDisposable
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
         int subscriptionBufferCapacity = SubscriptionRegistration<KvNotification>.DefaultCapacity,
         Func<bool>? supportsExclusiveScan = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _request = request;
         _time = timeProvider ?? TimeProvider.System;
@@ -79,13 +80,16 @@ sealed class KvClient : IKvClient, IAsyncDisposable
     public async Task<IKvTransaction> BeginAsync(
         string route,
         KvMode mode = KvMode.ReadWrite,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
+
         if (!RouteValidation.IsFixedRoute(route, "kv", 3))
         {
             throw new ArgumentException($"route '{route}' must be kv://{{realm}}/{{area}}/{{resource}}", nameof(route));
         }
+
         if (mode is not KvMode.ReadOnly and not KvMode.ReadWrite)
         {
             throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown KV transaction mode");
@@ -105,10 +109,12 @@ sealed class KvClient : IKvClient, IAsyncDisposable
         }
 
         var txId = reader.ReadU64();
+
         if (!reader.IsEof)
         {
             throw new KvException("BEGIN response has trailing bytes", "BEGIN_INVALID_RESPONSE");
         }
+
 
         session.EnsureValid();
         return new KvTransaction(
@@ -124,7 +130,8 @@ sealed class KvClient : IKvClient, IAsyncDisposable
     /// <inheritdoc />
     public Task<KvSubscription> SubscribeAsync(
         string pattern,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         EnsurePattern(pattern);
@@ -138,7 +145,8 @@ sealed class KvClient : IKvClient, IAsyncDisposable
     internal async Task<KvSubscription> SubscribeAsync(
         string pattern,
         Func<KvNotification, CancellationToken, ValueTask> handler,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         EnsurePattern(pattern);
         var binding = await _subscriptions.SubscribeAsync(pattern, handler, preDispatch: null, ct).ConfigureAwait(false);
@@ -188,10 +196,12 @@ sealed class KvClient : IKvClient, IAsyncDisposable
     static BinaryBufferReader ReadSubscriptionResponse(ReadOnlyMemory<byte> response, string operation, int expectedBytes)
     {
         var reader = KvWireHelpers.ReadSuccess(response, operation);
+
         if (reader.RemainingBytes != expectedBytes)
         {
             throw KvWireHelpers.InvalidResponse(operation, $"expected {expectedBytes} payload bytes, got {reader.RemainingBytes}");
         }
+
 
         return reader;
     }

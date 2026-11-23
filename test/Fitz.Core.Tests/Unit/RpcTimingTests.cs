@@ -99,6 +99,7 @@ public sealed class RpcTimingTests
         await using var worker = await rpc.RegisterWorkerAsync(Route, async (request, _, ct) =>
         {
             started.TrySetResult(request.RemainingTime);
+
             try
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, ct);
@@ -127,7 +128,8 @@ public sealed class RpcTimingTests
     static RpcClient CreateClient(
         TimeProvider time,
         Action<ushort, ReadOnlyMemory<byte>>? send = null,
-        Action<Action<ReadOnlyMemory<byte>>>? onRequestHandler = null) => new(
+        Action<Action<ReadOnlyMemory<byte>>>? onRequestHandler = null
+    ) => new(
         (_, _, _) => ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0, 0, 0, 0, 0 }),
         (messageType, payload, _) =>
         {
@@ -138,6 +140,7 @@ public sealed class RpcTimingTests
         {
             if (messageType == MessageTypes.RpcRequest)
                 onRequestHandler?.Invoke(handler);
+
             return new Registration();
         },
         timeProvider: time);

@@ -30,14 +30,17 @@ public sealed class LoopbackTransport : ITransport
     public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
         var remaining = data.Span;
+
         while (FrameCodec.TryReadHeader(remaining, out var messageType, out _, out var correlationId, out var payloadLength))
         {
             remaining = remaining[(FrameCodec.MaxHeaderSize + (int)payloadLength)..];
+
             if (messageType == MessageTypes.Connect)
             {
                 _inbound.Writer.TryWrite(HelloFrame());
                 continue;
             }
+
 
             if (correlationId == 0)
             {
@@ -46,6 +49,7 @@ public sealed class LoopbackTransport : ITransport
             }
 
             var response = FrameCodec.Encode(messageType, _responsePayload, FrameCodec.ResponseFinalFlag, correlationId);
+
             if (_roundTripLatency <= TimeSpan.Zero)
             {
                 _inbound.Writer.TryWrite(response);
@@ -55,6 +59,7 @@ public sealed class LoopbackTransport : ITransport
                 _ = RespondAfterLatencyAsync(response);
             }
         }
+
 
         return Task.CompletedTask;
     }

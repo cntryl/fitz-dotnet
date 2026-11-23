@@ -107,6 +107,7 @@ public sealed class ClientLifecycleReviewTests
         await firstCaller.CancelAsync();
 
         // Assert
+
         try
         {
             Assert.False(second.IsCompleted);
@@ -118,6 +119,7 @@ public sealed class ClientLifecycleReviewTests
             await second.WaitAsync(Deadline);
             await Record.ExceptionAsync(() => first.WaitAsync(Deadline));
         }
+
         Assert.Equal(1, transport.CloseCount);
         Assert.False(typeof(IDisposable).IsAssignableFrom(typeof(FitzClient)));
     }

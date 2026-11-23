@@ -21,10 +21,12 @@ static class WireDuration
         ThrowIfFractionalSeconds(value, paramName);
 
         var seconds = value.TotalSeconds;
+
         if (seconds > ulong.MaxValue)
         {
             throw new ArgumentOutOfRangeException(paramName, value, "Duration exceeds the Fitz wire range.");
         }
+
 
         return (ulong)seconds;
     }
@@ -35,10 +37,12 @@ static class WireDuration
         ThrowIfFractionalSeconds(value, paramName);
 
         var seconds = value.TotalSeconds;
+
         if (seconds > uint.MaxValue)
         {
             throw new ArgumentOutOfRangeException(paramName, value, "Duration exceeds the Fitz wire range.");
         }
+
 
         return (uint)seconds;
     }

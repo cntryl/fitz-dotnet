@@ -48,6 +48,7 @@ static class RpcWire
     {
         if (bytes.Length != CorrelationIdLength)
             throw new ProtocolException("RPC correlation UUID must contain 16 bytes.");
+
         return new Guid(bytes, bigEndian: true);
     }
 
@@ -65,21 +66,29 @@ static class RpcWire
         try
         {
             var reader = new BinaryBufferReader(payload);
+
             if (reader.RemainingBytes < CorrelationIdLength)
                 return null;
 
+
             var correlationId = reader.ReadBytes(CorrelationIdLength);
             var route = reader.ReadString();
+
             if (reader.RemainingBytes < 4)
                 return null;
 
+
             var bodyLength = reader.ReadU32();
+
             if (reader.RemainingBytes < bodyLength)
                 return null;
 
+
             var body = reader.ReadBytes(bodyLength);
+
             if (reader.RemainingBytes < 1)
                 return null;
+
 
             switch (reader.ReadU8())
             {
@@ -109,6 +118,7 @@ static class RpcWire
         writer.WriteBytes(correlationId);
         writer.WriteString(route);
         writer.WriteLengthPrefixed(body);
+
         if (remainingBudget is { } remaining)
         {
             writer.WriteU8(1);
@@ -119,6 +129,7 @@ static class RpcWire
             writer.WriteU8(0);
         }
 
+
         return writer;
     }
 
@@ -128,6 +139,7 @@ static class RpcWire
     internal static RpcException? TryDecodeTerminalError(byte[] body)
     {
         ResponseErrorEnvelope error;
+
         try
         {
             error = ResponseError.Read(body);
@@ -136,6 +148,7 @@ static class RpcWire
         {
             return null;
         }
+
 
         return new RpcException(
             string.IsNullOrWhiteSpace(error.Message) ? "RPC error" : error.Message,
@@ -165,8 +178,10 @@ static class RpcWire
     {
         var reader = ResponseEnvelope.ReadSuccess(response, operation, Failure, MapErrorCode);
         var body = reader.ReadLengthPrefixed();
+
         if (!reader.IsEof)
             throw new ProtocolException($"{operation} response has trailing bytes.");
+
 
         return body;
     }

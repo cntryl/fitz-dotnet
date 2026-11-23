@@ -207,7 +207,8 @@ public sealed class RouteGrammarParityTests
         string description,
         List<string> mismatches,
         ref int accepted,
-        ref int rejected)
+        ref int rejected
+    )
     {
         if (analyzer != core)
         {

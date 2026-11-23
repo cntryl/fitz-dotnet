@@ -24,10 +24,12 @@ public sealed class AsyncSubscriptionBufferTests
             () => slowEnumerator.MoveNextAsync().AsTask());
 
         var siblingValues = new List<int>();
+
         await foreach (var value in sibling.ReadAllAsync())
         {
             siblingValues.Add(value);
         }
+
 
         Assert.Equal([7], siblingValues);
     }

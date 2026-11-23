@@ -24,7 +24,10 @@ readonly record struct SubscriptionSession(FitzConnection? Connection, Cancellat
 
     internal ValueTask<ReadOnlyMemory<byte>> RequestAsync(
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
-        ushort messageType, ReadOnlyMemory<byte> payload, CancellationToken ct) =>
+        ushort messageType,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken ct
+    ) =>
         Connection is { } connection
             ? connection.RequestOnSessionAsync(messageType, payload, Closed, ct)
             : request(messageType, payload, ct);
@@ -54,7 +57,8 @@ delegate TSubscription BufferedSubscriptionFactory<TNotification, TSubscription>
     IAsyncEnumerable<TNotification> notifications,
     Func<CancellationToken, ValueTask> unsubscribe,
     Task completion,
-    TimeProvider time);
+    TimeProvider time
+);
 
 /// <summary>
 /// The subscription bookkeeping every notification domain shares: one broker subscription per
@@ -112,7 +116,8 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         SubscribeWire subscribe,
         UnsubscribeWire unsubscribe,
         NotificationDecoder<TNotification> decode,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _owner = owner;
         _time = timeProvider ?? TimeProvider.System;
@@ -159,7 +164,8 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         string pattern,
         BufferedSubscriptionFactory<TNotification, TSubscription> create,
         Action<TNotification>? preDispatch,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var buffer = new AsyncSubscriptionBuffer<TNotification>(pattern, BufferCapacity);
         var binding = await SubscribeAsync(pattern, (notification, _) =>
@@ -192,7 +198,9 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         string pattern,
         Func<TNotification, CancellationToken, ValueTask> handler,
         Action<TNotification>? preDispatch,
-        CancellationToken ct, bool bestEffort = false)
+        CancellationToken ct,
+        bool bestEffort = false
+    )
     {
         ArgumentNullException.ThrowIfNull(handler);
         EnsureNotificationHandlerRegistered();
@@ -211,6 +219,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         var binding = new SubscriptionBinding(Unsubscribe, registration.Completion,
             bestEffort ? registration.CancellationToken : default);
         var gateEntered = false;
+
         try
         {
             var acquired = await TryEnterChangeAsync(ct).ConfigureAwait(false);
@@ -220,6 +229,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
             lock (_gate)
             {
                 ThrowIfDisposed();
+
                 if (_byPattern.TryGetValue(pattern, out var existing))
                 {
                     // Sibling handles share the broker subscription already in place.
@@ -237,10 +247,13 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
             lock (_gate)
             {
                 ThrowIfDisposed();
+
                 if (!session.IsCurrent)
                     throw new ConnectionException("The subscription response belongs to an ended session.");
+
                 _byPattern[pattern] = subscription;
                 _patternById[subscriptionId] = pattern;
+
                 if (_activationBuffer.Replay(subscriptionId, HandleNotification) is { } activationError)
                     _ = registration.FailAsync(activationError);
             }
@@ -253,6 +266,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         {
             if (gateEntered)
                 _changeGate.Release();
+
             registration?.Dispose();
         }
     }
@@ -267,9 +281,11 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     {
         var acquired = await TryEnterChangeAsync(ct).ConfigureAwait(false);
         ObjectDisposedException.ThrowIf(!acquired.HasValue, _owner);
+
         try
         {
             await request(acquired.GetValueOrDefault(), ct).ConfigureAwait(false);
+
             foreach (var registration in DetachAll())
                 registration.Dispose();
         }
@@ -298,10 +314,12 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
             {
                 if (_byPattern.Count == 0)
                     return;
+
                 snapshot = [.. _byPattern.Keys];
             }
 
             var restored = new List<(string Pattern, ulong Id)>(snapshot.Length);
+
             try
             {
                 foreach (var pattern in snapshot)
@@ -327,10 +345,12 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                 throw;
             }
 
+
             List<(string Pattern, ulong Id)>? withdrawn = null;
             lock (_gate)
             {
                 _patternById.Clear();
+
                 foreach (var (pattern, id) in restored)
                 {
                     if (_byPattern.TryGetValue(pattern, out var subscription))
@@ -345,6 +365,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                     }
                 }
             }
+
             if (withdrawn is not null)
             {
                 foreach (var (pattern, id) in withdrawn)
@@ -367,6 +388,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         lock (_gate)
         {
             _activationBuffer.Fail(error);
+
             foreach (var registration in DetachAllUnsafe())
                 _ = registration.FailAsync(error);
         }
@@ -386,8 +408,10 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         await _closing.CancelAsync().ConfigureAwait(false);
         _activationBuffer.Dispose();
         _notificationRegistration?.Dispose();
+
         foreach (var registration in DetachAll())
             registration.Dispose();
+
 
         await _changeGate.DrainAndDisposeAsync().ConfigureAwait(false);
         _closing.Dispose();
@@ -422,9 +446,11 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
             return;
 
         var session = CurrentSession();
+
         while (true)
         {
             SubscriptionRegistration<TNotification>? removed = null;
+
             try
             {
                 ulong subscriptionId;
@@ -468,9 +494,12 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                 removed?.Dispose();
             }
 
+
             var acquired = await TryEnterChangeAsync(ct).ConfigureAwait(false);
+
             if (!acquired.HasValue)
                 return;
+
             session = acquired.GetValueOrDefault();
         }
     }
@@ -484,6 +513,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                 ? default(SubscriptionSession) : null;
 
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(_closingToken, ct);
+
         try
         {
             while (true)
@@ -491,10 +521,14 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                 // Restoration needs this gate before the connection can become ready.
                 await connection.WaitForRequestReadyAsync(wait.Token).ConfigureAwait(false);
                 var session = CurrentSession();
+
                 if (!await _changeGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
                     return null;
+
+
                 if (session.IsCurrent)
                     return session;
+
                 _changeGate.Release();
             }
         }
@@ -512,6 +546,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     void HandleNotification(ReadOnlyMemory<byte> payload)
     {
         DecodedNotification<TNotification> decoded;
+
         try
         {
             if (_decode(payload) is not { } result)
@@ -527,6 +562,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
             FitzDiagnostics.RecordDroppedNotification(_domain, "malformed");
             return;
         }
+
 
         SubscriptionRegistration<TNotification>[] registrations;
         lock (_gate)
@@ -564,10 +600,14 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+
             if (_notificationRegistration is not null)
                 return;
+
+
             if (_registerNotificationHandler is null)
                 throw new InvalidOperationException("Notification handlers not configured for subscription support");
+
             _notificationRegistration = _registerNotificationHandler(_notifyMessageType, HandleNotification);
         }
     }
@@ -610,6 +650,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         {
             if (Interlocked.Exchange(ref _disposed, true))
                 return;
+
             _connection.NotificationDeliveryFailed -= _onDeliveryFailed;
             _reconnect.Dispose();
         }
@@ -626,8 +667,10 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         internal PatternSubscription WithId(ulong subscriptionId)
         {
             var copy = new PatternSubscription(subscriptionId);
+
             foreach (var (handleId, registration) in Handles)
                 copy.Handles.Add(handleId, registration);
+
             return copy;
         }
     }

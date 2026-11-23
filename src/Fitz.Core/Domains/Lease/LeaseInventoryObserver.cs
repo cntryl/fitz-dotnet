@@ -63,6 +63,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
     internal async Task StartAsync(CancellationToken ct)
     {
         _reconnectRegistration = _client.RegisterReconnectListener(HandleReconnectAsync);
+
         try
         {
             await BootstrapAsync(ct).ConfigureAwait(false);
@@ -119,6 +120,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
     async Task BootstrapAsync(CancellationToken ct, bool isReconnect = false)
     {
         await _refreshGate.WaitAsync(ct).ConfigureAwait(false);
+
         try
         {
             // A disposed observer's bootstrap must abort cleanly instead of proceeding to
@@ -143,6 +145,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
             if (!isReconnect || _subscription is null)
             {
                 await StopConsumerLoopAsync().ConfigureAwait(false);
+
                 if (_subscription is not null)
                 {
                     await _subscription.DisposeAsync().ConfigureAwait(false);
@@ -150,6 +153,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
                 }
 
                 // 1. Subscribe and wait for the acknowledgement (subscription id).
+
                 var subscription = await _client.SubscribeObserverAsync(
                     _pattern,
                     InvalidateNotification,
@@ -172,6 +176,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
             // immediate passes, then publish the latest complete snapshot;
             // pending routes and periodic reconciliation converge afterward.
             var convergencePass = 0;
+
             while (true)
             {
                 convergencePass++;
@@ -252,6 +257,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
                 lock (_gate)
                 {
                     ready = _isReady;
+
                     if (!ready)
                     {
                         _bootstrapDirty = true;
@@ -325,6 +331,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
             _bootstrapDirty = true;
             _subscriptionGeneration++;
             _subscriptionRecoveryRequested = true;
+
             if (_subscriptionRecoveryTask is null || _subscriptionRecoveryTask.IsCompleted)
             {
                 _subscriptionRecoveryTask = Task.Run(RecoverSubscriptionLoopAsync, CancellationToken.None);
@@ -335,6 +342,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
     async Task RecoverSubscriptionLoopAsync()
     {
         var attempt = 0;
+
         while (!Volatile.Read(ref _disposed))
         {
             lock (_gate)
@@ -387,10 +395,12 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
     {
         await _refreshGate.WaitAsync(ct).ConfigureAwait(false);
         var updates = new List<LeaseInventoryUpdate>();
+
         try
         {
             var affectedRoutes = new HashSet<string>(StringComparer.Ordinal);
             var convergencePass = 0;
+
             while (true)
             {
                 convergencePass++;
@@ -424,11 +434,13 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
                     affectedRoutes.UnionWith(_pendingRoutes);
                     _pendingRoutes.Clear();
                     _view = refreshed;
+
                     foreach (var route in affectedRoutes)
                     {
                         refreshed.TryGetValue(route, out var item);
                         updates.Add(new LeaseInventoryUpdate(route, item));
                     }
+
                     break;
                 }
             }
@@ -437,6 +449,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         {
             _refreshGate.Release();
         }
+
 
         foreach (var update in updates)
         {
@@ -449,6 +462,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         while (!ct.IsCancellationRequested)
         {
             var delay = NextReconciliationDelay(_options);
+
             try
             {
                 await Task.Delay(delay, _time, ct).ConfigureAwait(false);
@@ -458,6 +472,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
                 return;
             }
 
+
             if (ct.IsCancellationRequested)
             {
                 return;
@@ -466,6 +481,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
             try
             {
                 await _refreshGate.WaitAsync(ct).ConfigureAwait(false);
+
                 try
                 {
                     var relisted = await ListAllAsync(ct).ConfigureAwait(false);
@@ -505,6 +521,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         var result = new Dictionary<string, LeaseListItem>(StringComparer.Ordinal);
         LeaseListCursor? cursor = null;
         var pageCount = 0;
+
         try
         {
             do
@@ -515,10 +532,12 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
                 }
 
                 var page = await _client.ListAsync(_pattern, cursor, limit: null, listToken).ConfigureAwait(false);
+
                 foreach (var item in page.Items)
                 {
                     result[item.Route] = item;
                 }
+
 
                 if (page.NextCursor is not null && page.NextCursor == cursor)
                 {
@@ -532,6 +551,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         {
             throw new LeaseException("Inventory LIST pass timed out", "LIST_TIMEOUT", error);
         }
+
 
         return result;
     }
@@ -549,6 +569,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         }
 
         await cts.CancelAsync().ConfigureAwait(false);
+
         try
         {
             if (task is not null)
@@ -593,6 +614,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         {
             subscriptionRecoveryTask = _subscriptionRecoveryTask;
         }
+
         if (subscriptionRecoveryTask is not null)
         {
             try
@@ -609,7 +631,9 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         // start past this point (both check it before ever touching _refreshGate). Acquiring the
         // gate here therefore just waits out one that is already in flight - once acquired, it is
         // safe to tear down (and, at the very end, dispose) the shared state without racing it.
+
         await _refreshGate.WaitAsync().ConfigureAwait(false);
+
         try
         {
             await StopConsumerLoopAsync().ConfigureAwait(false);
@@ -624,6 +648,7 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
         {
             _refreshGate.Release();
         }
+
 
         _updates.Writer.TryComplete();
         _lifetimeCts.Dispose();

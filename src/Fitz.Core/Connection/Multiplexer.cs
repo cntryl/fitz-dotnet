@@ -59,7 +59,8 @@ sealed class Multiplexer : IDisposable
         Action<Exception>? onDispatchError = null,
         Action<Exception>? onSessionReset = null,
         int maxCorrelationTombstones = DefaultMaxCorrelationTombstones,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _time = timeProvider ?? TimeProvider.System;
         ArgumentOutOfRangeException.ThrowIfNegative(maxCorrelationTombstones);
@@ -116,6 +117,7 @@ sealed class Multiplexer : IDisposable
             }
 
             failure = _notificationRestoreFailure;
+
             while (failure is null && _restoringNotifications.TryDequeue(out var buffered))
             {
                 if (!_notificationQueue.Writer.TryWrite(buffered))
@@ -124,6 +126,7 @@ sealed class Multiplexer : IDisposable
                         "The multiplexer notification dispatch queue filled while reconnect state was being restored.");
                 }
             }
+
 
             ClearRestoreUnsafe();
         }
@@ -170,11 +173,13 @@ sealed class Multiplexer : IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             handlerId = ++_nextHandlerId;
+
             if (!_notificationHandlers.TryGetValue(messageType, out var registrations))
             {
                 registrations = [];
                 _notificationHandlers[messageType] = registrations;
             }
+
 
             registrations[handlerId] = handler;
             RebuildHandlerSnapshotUnsafe(messageType, registrations);
@@ -247,6 +252,7 @@ sealed class Multiplexer : IDisposable
             }
 
             dispatch = new NotificationDispatch(handlers, payload.IsEmpty ? [] : payload.ToArray(), _sessionEpoch);
+
             if (_notificationRestoreActive)
             {
                 if (_restoringNotifications.Count >= RestoreBufferCapacity)
@@ -285,7 +291,8 @@ sealed class Multiplexer : IDisposable
         Func<ReadOnlyMemory<byte>, CancellationToken, Task> send,
         TimeSpan timeout,
         ulong correlationId,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(send);
         ArgumentOutOfRangeException.ThrowIfZero(correlationId);
@@ -386,10 +393,12 @@ sealed class Multiplexer : IDisposable
             }
 
             _correlated.Remove(request.CorrelationId);
+
             if (!request.RetainCorrelationTombstone)
             {
                 return;
             }
+
 
             if (_correlationTombstones.Count < _maxCorrelationTombstones)
             {

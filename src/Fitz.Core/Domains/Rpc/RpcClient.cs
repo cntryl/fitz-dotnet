@@ -67,7 +67,8 @@ sealed class RpcClient : IRpcClient, IDisposable
         Func<Func<CancellationToken, ValueTask>, IDisposable>? onReconnect = null,
         Func<CancellationToken>? getConnectionClosedToken = null,
         Func<Func<CancellationToken, ValueTask>, bool>? dispatchAsyncHandler = null,
-        TimeSpan? connectionTimeout = null)
+        TimeSpan? connectionTimeout = null
+    )
         : this(
             async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
             AdaptSend(request, send),
@@ -86,7 +87,8 @@ sealed class RpcClient : IRpcClient, IDisposable
     // Without a send delegate, fire-and-forget frames go through the request delegate.
     static Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask> AdaptSend(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
-        Func<ushort, byte[], CancellationToken, Task>? send)
+        Func<ushort, byte[], CancellationToken, Task>? send
+    )
     {
         if (send is null)
             return async (messageType, payload, ct) => _ = await request(messageType, payload.ToArray(), ct).ConfigureAwait(false);
@@ -105,7 +107,8 @@ sealed class RpcClient : IRpcClient, IDisposable
         Action<Exception>? onWorkerError = null,
         Func<ushort, ReadOnlyMemory<byte>, Action, CancellationToken, ValueTask<CancellationToken>>? sendInSession = null,
         TimeProvider? timeProvider = null,
-        RpcSessionSend? sendOnSession = null)
+        RpcSessionSend? sendOnSession = null
+    )
     {
         _time = timeProvider ?? TimeProvider.System;
         _send = send;
@@ -132,7 +135,9 @@ sealed class RpcClient : IRpcClient, IDisposable
     async ValueTask<CancellationToken> SendWithCapturedSessionAsync(
         ushort messageType,
         ReadOnlyMemory<byte> payload,
-        Action onWrite, CancellationToken ct)
+        Action onWrite,
+        CancellationToken ct
+    )
     {
         // Delegate-backed test clients have no transport-generation API. Capture their
         // supplied lifetime before sending; real connections return the actual lifetime.
@@ -146,30 +151,36 @@ sealed class RpcClient : IRpcClient, IDisposable
     public RpcCall CallStreamingAsync(
         string route,
         ReadOnlyMemory<byte> body,
-        CancellationToken ct = default) => CallStreamingAsync(route, body, null, ct);
+        CancellationToken ct = default
+    ) => CallStreamingAsync(route, body, null, ct);
 
     /// <inheritdoc />
     public RpcCall CallStreamingAsync(
         string route,
         ReadOnlyMemory<byte> body,
         TimeSpan? timeout,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
+
         if (!RouteValidation.IsConcreteRoute(route, "rpc"))
         {
             throw new ArgumentException($"route '{route}' must be a concrete rpc route", nameof(route));
         }
+
 
         if (_registerNotificationHandler == null)
         {
             throw new InvalidOperationException("Notification handlers not configured for RPC streaming");
         }
 
+
         if (timeout is { } requestedTimeout && requestedTimeout < TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(timeout), "RPC timeout cannot be negative.");
         }
+
         if (timeout is { } boundedTimeout && boundedTimeout > RpcWire.MaxCallBudget)
         {
             throw new ArgumentOutOfRangeException(nameof(timeout), "RPC timeout cannot exceed one day.");
@@ -184,7 +195,8 @@ sealed class RpcClient : IRpcClient, IDisposable
         ReadOnlyMemory<byte> body,
         TimeSpan? timeout,
         TaskCompletionSource<RpcCancellationOutcome> cancellation,
-        [EnumeratorCancellation] CancellationToken ct)
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
         var budgetStartedAt = _time.GetTimestamp();
         using var timeoutCts = timeout is { } duration ? new CancellationTokenSource(duration, _time) : null;
@@ -202,6 +214,7 @@ sealed class RpcClient : IRpcClient, IDisposable
         var writeAttempted = false;
         var connectionClosedToken = CancellationToken.None;
         byte cancellationReason = 1;
+
         try
         {
             callToken.ThrowIfCancellationRequested();
@@ -228,6 +241,7 @@ sealed class RpcClient : IRpcClient, IDisposable
             while (true)
             {
                 SubscriptionReadResult<RpcResponseFrame> result;
+
                 try
                 {
                     result = await channel.ReadAsync(callToken).AsTask().WaitAsync(frameTimeout, _time, callToken).ConfigureAwait(false);
@@ -242,6 +256,7 @@ sealed class RpcClient : IRpcClient, IDisposable
                     cancellationReason = 2;
                     throw new RequestTimeoutException($"RPC stream timed out after {frameTimeout.TotalMilliseconds}ms without a response frame");
                 }
+
 
                 if (connectionClosedToken.IsCancellationRequested)
                 {
@@ -263,6 +278,7 @@ sealed class RpcClient : IRpcClient, IDisposable
                 _calls.Remove(correlationId);
             }
             channel.Dispose();
+
             if (call.IsTerminal)
             {
                 cancellation.TrySetResult(RpcCancellationOutcome.NotRequested);
@@ -287,10 +303,12 @@ sealed class RpcClient : IRpcClient, IDisposable
         try
         {
             var reader = new BinaryBufferReader(payload);
+
             if (reader.RemainingBytes < RpcWire.CorrelationIdLength)
             {
                 return;
             }
+
 
             var correlationId = RpcWire.GuidFromNetworkBytes(reader.ReadSpan(RpcWire.CorrelationIdLength));
             RpcCallState? call;
@@ -298,30 +316,38 @@ sealed class RpcClient : IRpcClient, IDisposable
             {
                 _calls.TryGetValue(correlationId, out call);
             }
+
             if (call is null)
             {
                 return;
             }
 
+
             var sequence = reader.ReadU64();
             var flags = reader.ReadU8();
+
             if ((flags & ~RpcWire.ResponseFlagStreamEnd) != 0)
             {
                 throw new ProtocolException("RPC response contains unsupported flags.");
             }
 
+
             var responseBody = reader.ReadLengthPrefixed();
+
             if (!reader.IsEof)
             {
                 throw new ProtocolException("RPC response contains trailing bytes.");
             }
 
+
             var streamEnd = (flags & RpcWire.ResponseFlagStreamEnd) != 0;
+
             if (streamEnd && RpcWire.TryDecodeTerminalError(responseBody) is { } rpcError)
             {
                 CompleteRpcCall(correlationId, call, rpcError);
                 return;
             }
+
 
             if (!call.TryAcceptSequence(sequence))
             {
@@ -347,6 +373,7 @@ sealed class RpcClient : IRpcClient, IDisposable
             {
                 _calls.TryGetValue(failedId, out call);
             }
+
             if (call is not null)
             {
                 CompleteRpcCall(failedId, call, exception);
@@ -372,6 +399,7 @@ sealed class RpcClient : IRpcClient, IDisposable
             {
                 return;
             }
+
             call.MarkTerminal();
             _calls.Remove(correlationId);
         }
@@ -384,7 +412,8 @@ sealed class RpcClient : IRpcClient, IDisposable
         byte[] correlationBytes,
         RpcCallState call,
         byte reason,
-        CancellationToken session)
+        CancellationToken session
+    )
     {
         var pending = new PendingCancellation(call.Cancellation);
         lock (_responseSync)
@@ -393,6 +422,7 @@ sealed class RpcClient : IRpcClient, IDisposable
             {
                 return;
             }
+
             _pendingCancellations.Add(correlationId, pending);
         }
         _ = ExpireCancellationAsync(correlationId, pending, session);
@@ -403,6 +433,7 @@ sealed class RpcClient : IRpcClient, IDisposable
         writer.WriteU8(RpcWire.CancelRequest);
         writer.WriteBytes(correlationBytes);
         writer.WriteU8(reason);
+
         try
         {
             await _sendOnSession(MessageTypes.RpcCancel, writer.WrittenMemory, session, cleanup.Token).ConfigureAwait(false);
@@ -437,7 +468,8 @@ sealed class RpcClient : IRpcClient, IDisposable
     void CompleteCancellation(
         Guid correlationId,
         PendingCancellation pending,
-        RpcCancellationOutcome outcome)
+        RpcCancellationOutcome outcome
+    )
     {
         lock (_responseSync)
         {
@@ -445,6 +477,7 @@ sealed class RpcClient : IRpcClient, IDisposable
             {
                 return;
             }
+
             _pendingCancellations.Remove(correlationId);
         }
         pending.Result.TrySetResult(outcome);
@@ -458,11 +491,13 @@ sealed class RpcClient : IRpcClient, IDisposable
         }
 
         var correlationId = RpcWire.GuidFromNetworkBytes(payload.Span.Slice(1, RpcWire.CorrelationIdLength));
+
         if (payload.Span[0] == 2 && payload.Span[17] is >= 1 and <= 4)
         {
             _workers?.Cancel(correlationId);
             return;
         }
+
 
         if (payload.Span[0] != 4 || RpcWire.MapCancellationStatus(payload.Span[17]) is not { } outcome)
         {
@@ -474,6 +509,7 @@ sealed class RpcClient : IRpcClient, IDisposable
         {
             _pendingCancellations.TryGetValue(correlationId, out pending);
         }
+
         if (pending is not null)
         {
             CompleteCancellation(correlationId, pending, outcome);
@@ -486,6 +522,7 @@ sealed class RpcClient : IRpcClient, IDisposable
         {
             return;
         }
+
         lock (_responseSync)
         {
             ThrowIfDisposed();
@@ -498,14 +535,17 @@ sealed class RpcClient : IRpcClient, IDisposable
         string pattern,
         Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask> handler,
         RpcWorkerOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(handler);
+
         if (!RouteValidation.IsRegistrationPattern(pattern, "rpc"))
         {
             throw new ArgumentException($"pattern '{pattern}' must use whole-segment * or ** wildcards", nameof(pattern));
         }
+
 
         if (_workers is null)
         {
@@ -513,10 +553,12 @@ sealed class RpcClient : IRpcClient, IDisposable
         }
 
         var maxConcurrency = options?.MaxConcurrency ?? 1;
+
         if (maxConcurrency is < 1 or > 1024)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "MaxConcurrency must be between 1 and 1024.");
         }
+
 
         return _workers.RegisterAsync(pattern, handler, maxConcurrency, ct);
     }
@@ -542,6 +584,7 @@ sealed class RpcClient : IRpcClient, IDisposable
             pendingCancellations = [.. _pendingCancellations.Values];
             _pendingCancellations.Clear();
         }
+
         foreach (var call in calls)
         {
             call.Channel.Complete(new ObjectDisposedException(nameof(RpcClient)));
@@ -549,6 +592,7 @@ sealed class RpcClient : IRpcClient, IDisposable
             if (call.WasSent)
                 call.Cancellation.TrySetResult(RpcCancellationOutcome.ConnectionClosed);
         }
+
         foreach (var pending in pendingCancellations)
         {
             pending.Result.TrySetResult(RpcCancellationOutcome.ConnectionClosed);

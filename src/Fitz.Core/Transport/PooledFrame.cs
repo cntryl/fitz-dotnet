@@ -63,6 +63,7 @@ public sealed class PooledFrame : IDisposable
     public void Dispose()
     {
         var buffer = Interlocked.Exchange(ref _buffer, null);
+
         if (buffer is null || ReferenceEquals(buffer, Array.Empty<byte>()))
         {
             return;
@@ -70,6 +71,7 @@ public sealed class PooledFrame : IDisposable
 
         // Clear only the region that held frame bytes. Zeroing the whole rented array costs
         // time proportional to the rent size (16 KB is typical) rather than the frame size.
+
         buffer.AsSpan(0, Length).Clear();
         ArrayPool<byte>.Shared.Return(buffer);
     }

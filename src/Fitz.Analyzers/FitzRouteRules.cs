@@ -48,6 +48,7 @@ static class FitzRouteRules
             var method = invocation.TargetMethod;
             var containingType = method.ContainingType;
             var receiverType = invocation.Instance?.Type as INamedTypeSymbol;
+
             foreach (var client in _clients)
             {
                 // The receiver matters when a base class declares the method and only the derived
@@ -60,6 +61,7 @@ static class FitzRouteRules
                     return true;
                 }
             }
+
 
             clientName = string.Empty;
             return false;
@@ -99,10 +101,12 @@ static class FitzRouteRules
             }
 
             handleName = "subscription";
+
             if (_subscriptionHandle is null)
             {
                 return false;
             }
+
 
             for (var current = type; current is not null; current = current.BaseType)
             {
@@ -167,7 +171,8 @@ static class FitzRouteRules
         static void AddType(
             ImmutableArray<INamedTypeSymbol>.Builder symbols,
             Compilation compilation,
-            string metadataName)
+            string metadataName
+        )
         {
             if (compilation.GetTypeByMetadataName(metadataName) is { } symbol)
             {
@@ -179,7 +184,8 @@ static class FitzRouteRules
             ImmutableArray<HandleSymbol>.Builder handles,
             Compilation compilation,
             string metadataName,
-            string name)
+            string name
+        )
         {
             if (compilation.GetTypeByMetadataName(metadataName) is { } symbol)
             {
@@ -227,10 +233,12 @@ static class FitzRouteRules
     internal static bool TryGetRule(IInvocationOperation invocation, ApiSymbols apiSymbols, out Rule rule)
     {
         rule = default;
+
         if (!apiSymbols.TryGetClientName(invocation, out var type))
         {
             return false;
         }
+
 
         var name = invocation.TargetMethod.Name;
         rule = (type, name) switch

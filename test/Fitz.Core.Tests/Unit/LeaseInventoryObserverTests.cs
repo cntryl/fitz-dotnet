@@ -98,6 +98,7 @@ public sealed class LeaseInventoryObserverTests
     {
         // Arrange
         var broker = new FakeLeaseBroker();
+
         for (var i = 0; i < 10; i++)
         {
             broker.QueueListPage(
@@ -108,6 +109,7 @@ public sealed class LeaseInventoryObserverTests
                     return Task.CompletedTask;
                 });
         }
+
         await using var leaseClient = new LeaseClient(broker.RequestAsync, broker.RegisterNotificationHandler);
 
 
@@ -152,7 +154,8 @@ public sealed class LeaseInventoryObserverTests
     public async Task ShouldRejectInvalidObserverResourceOptionsGivenActiveObserverWhenLifecycleChanges(
         int intervalSeconds,
         double jitterRatio,
-        int updateBufferCapacity)
+        int updateBufferCapacity
+    )
     {
         // Arrange
         var broker = new FakeLeaseBroker();
@@ -460,12 +463,14 @@ public sealed class LeaseInventoryObserverTests
         string owner = "worker-1",
         ulong incarnation = 1,
         TimeSpan? expiresIn = null,
-        uint renewals = 0) =>
+        uint renewals = 0
+    ) =>
         new(route, owner, incarnation, new DateTimeOffset(2026, 8, 29, 0, 0, 0, TimeSpan.Zero), expiresIn ?? TimeSpan.FromSeconds(30), renewals);
 
     static async Task WaitUntilAsync(Func<bool> condition, TimeSpan? timeout = null)
     {
         var deadline = DateTime.UtcNow + (timeout ?? TimeSpan.FromSeconds(2));
+
         while (!condition())
         {
             if (DateTime.UtcNow > deadline)
@@ -503,10 +508,12 @@ public sealed class LeaseInventoryObserverTests
             if (messageType == MessageTypes.LeaseSubscribe)
             {
                 Calls.Enqueue("SUBSCRIBE");
+
                 if (_subscribeFailures.TryDequeue(out var subscribeFailure))
                 {
                     throw subscribeFailure;
                 }
+
                 LastSubscriptionId = (ulong)Interlocked.Increment(ref _nextSubscriptionId);
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
@@ -525,10 +532,12 @@ public sealed class LeaseInventoryObserverTests
             if (messageType == MessageTypes.LeaseList)
             {
                 Calls.Enqueue("LIST");
+
                 if (_listFailures.TryDequeue(out var listFailure))
                 {
                     throw listFailure;
                 }
+
                 if (!_listPages.TryDequeue(out var page))
                 {
                     page = (DefaultListPage ?? Array.Empty<LeaseListItem>(), null, null);
@@ -542,6 +551,7 @@ public sealed class LeaseInventoryObserverTests
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
                 writer.WriteU32((uint)page.Items.Count);
+
                 foreach (var item in page.Items)
                 {
                     writer.WriteString(item.Route);
@@ -552,12 +562,15 @@ public sealed class LeaseInventoryObserverTests
                     writer.WriteU32(item.Renewals);
                 }
 
+
                 writer.WriteU8((byte)(page.Next is null ? 0 : 1));
+
                 if (page.Next is not null)
                 {
                     writer.WriteU64(page.Next.SnapshotId);
                     writer.WriteU32(page.Next.Offset);
                 }
+
 
                 return writer.Build();
             }

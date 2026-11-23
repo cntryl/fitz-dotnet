@@ -39,7 +39,8 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
     public NoticeClient(
         Func<ushort, byte[], CancellationToken, Task> send,
         Func<ushort, byte[], CancellationToken, Task<byte[]>>? request = null,
-        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null
+    )
         : this(
             async (messageType, payload, ct) => await send(messageType, payload.ToArray(), ct).ConfigureAwait(false),
             request is null
@@ -57,7 +58,8 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
         int subscriptionBufferCapacity = SubscriptionRegistration<NoticeMessage>.DefaultCapacity,
         Func<ushort, ReadOnlyMemory<byte>, byte, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? requestWithFlags = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _send = send;
         _request = request;
@@ -79,10 +81,12 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
     public async Task PublishAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default)
     {
         ThrowIfDisposed();
+
         if (!RouteValidation.IsFixedRoute(route, "notice", 3))
         {
             throw new ArgumentException($"route '{route}' must be notice://{{realm}}/{{area}}/{{resource}}", nameof(route));
         }
+
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
@@ -94,10 +98,12 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
     public async Task PublishWithAckAsync(string route, ReadOnlyMemory<byte> body, CancellationToken ct = default)
     {
         ThrowIfDisposed();
+
         if (!RouteValidation.IsFixedRoute(route, "notice", 3))
         {
             throw new ArgumentException($"route '{route}' must be notice://{{realm}}/{{area}}/{{resource}}", nameof(route));
         }
+
         if (_requestWithFlags is null)
         {
             throw new InvalidOperationException("Request support with frame flags is required for acknowledged notice publish");
@@ -112,6 +118,7 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
             FrameCodec.AckRequestedFlag,
             ct).ConfigureAwait(false);
         var reader = NoticeWireHelpers.ReadSuccess(response, "PUBLISH");
+
         if (!reader.IsEof)
         {
             throw new NoticeException("PUBLISH acknowledgement has trailing bytes", "PUBLISH_INVALID_RESPONSE");
@@ -142,10 +149,12 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
     public Task UnsubscribeAllAsync(CancellationToken ct = default)
     {
         ThrowIfDisposed();
+
         if (_request is null)
         {
             throw new InvalidOperationException("Request support is required for notice unsubscription");
         }
+
 
         return _subscriptions.RemoveAllAsync(UnsubscribeAllWireAsync, ct);
     }
@@ -177,10 +186,12 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
         }
 
         var subscriptionId = reader.ReadU64();
+
         if (!reader.IsEof)
         {
             throw new NoticeException("SUBSCRIBE response has trailing bytes", "SUBSCRIBE_INVALID_RESPONSE");
         }
+
 
         return subscriptionId;
     }
@@ -198,6 +209,7 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
 
         var response = await session.RequestAsync(_request, MessageTypes.NoticeUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = NoticeWireHelpers.ReadSuccess(response, "UNSUBSCRIBE");
+
         if (!reader.IsEof)
         {
             throw new NoticeException("UNSUBSCRIBE response has trailing bytes", "UNSUBSCRIBE_INVALID_RESPONSE");
@@ -208,6 +220,7 @@ sealed class NoticeClient : INoticeClient, IAsyncDisposable
     {
         var response = await session.RequestAsync(_request!, MessageTypes.NoticeUnsubscribeAll, ReadOnlyMemory<byte>.Empty, ct).ConfigureAwait(false);
         var reader = NoticeWireHelpers.ReadSuccess(response, "UNSUBSCRIBE_ALL");
+
         if (!reader.IsEof)
         {
             throw new NoticeException("UNSUBSCRIBE_ALL response has trailing bytes", "UNSUBSCRIBE_ALL_INVALID_RESPONSE");

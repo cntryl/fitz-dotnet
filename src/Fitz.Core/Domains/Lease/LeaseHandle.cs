@@ -29,7 +29,8 @@ sealed class LeaseHandle : ILease
         string route,
         ulong token,
         Func<Action, IDisposable>? registerOnDisconnect = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _request = request;
         _time = timeProvider ?? TimeProvider.System;
@@ -57,9 +58,11 @@ sealed class LeaseHandle : ILease
         var ttlSecs = WireDuration.ToSeconds(ttl, nameof(ttl));
         ArgumentOutOfRangeException.ThrowIfZero(ttlSecs, nameof(ttl));
         await EnterAsync(ct).ConfigureAwait(false);
+
         try
         {
             ThrowIfClosed();
+
             try
             {
                 await SendTokenTtlAsync(MessageTypes.LeaseRenew, ttlSecs, "EXTEND", ct).ConfigureAwait(false);
@@ -80,6 +83,7 @@ sealed class LeaseHandle : ILease
     public async Task ReleaseAsync(CancellationToken ct = default)
     {
         await EnterAsync(ct).ConfigureAwait(false);
+
         try
         {
             await ReleaseCoreAsync(ct).ConfigureAwait(false);
@@ -105,6 +109,7 @@ sealed class LeaseHandle : ILease
         await _closing.CancelAsync().ConfigureAwait(false);
         await _operationGate.DrainAndDisposeAsync().ConfigureAwait(false);
         _closing.Dispose();
+
         try
         {
             if (!_session.IsClosed)
@@ -139,10 +144,12 @@ sealed class LeaseHandle : ILease
         writer.WriteU64(FencingToken);
         var response = await _request(MessageTypes.LeaseRelease, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = LeaseWireHelpers.ReadSuccess(response, "RELEASE");
+
         if (!reader.IsEof)
         {
             throw new LeaseException("RELEASE response has trailing bytes", "RELEASE_INVALID_RESPONSE");
         }
+
 
         MarkClosed();
     }
@@ -158,16 +165,20 @@ sealed class LeaseHandle : ILease
         writer.WriteU64(ttlSecs);
         var response = await _request(messageType, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = LeaseWireHelpers.ReadSuccess(response, operation);
+
         if (reader.RemainingBytes >= 8)
         {
             var previousToken = FencingToken;
             var renewedToken = reader.ReadU64();
+
             if (!reader.IsEof)
             {
                 throw new LeaseException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
             }
 
+
             FencingToken = renewedToken;
+
             if (renewedToken != previousToken)
             {
                 _fencingTokenChanged.TrySetResult();

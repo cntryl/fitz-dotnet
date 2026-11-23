@@ -102,22 +102,26 @@ public sealed class InMemoryKvClient : IKvClient
     public InMemoryKvClient(InMemoryKvClientOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
+
         if (options.ScanPageSize is <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "ScanPageSize must be positive when supplied.");
         }
+
         if (options.SubscriptionBufferCapacity is <= 0)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(options),
                 "SubscriptionBufferCapacity must be positive when supplied.");
         }
+
         if (options.MaxFrameSize is < FitzLimits.MinFrameSize or > FitzLimits.MaxFrameSize)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(options),
                 $"MaxFrameSize must be between {FitzLimits.MinFrameSize} and {FitzLimits.MaxFrameSize} bytes.");
         }
+
 
         _scanPageSize = options.ScanPageSize;
         _subscriptionBufferCapacity = options.SubscriptionBufferCapacity;
@@ -179,18 +183,22 @@ public sealed class InMemoryKvClient : IKvClient
         ArgumentNullException.ThrowIfNull(pairs);
         ValidateRoute(route);
         var snapshot = pairs.ToArray();
+
         foreach (var pair in snapshot)
         {
             ArgumentNullException.ThrowIfNull(pair);
         }
 
+
         lock (_gate)
         {
             var state = GetOrCreateRoute(route);
+
             foreach (var pair in snapshot)
             {
                 state.Values[pair.Key.ToArray()] = pair.Value.ToArray();
             }
+
             if (snapshot.Length > 0)
             {
                 state.Version++;
@@ -286,6 +294,7 @@ public sealed class InMemoryKvClient : IKvClient
             subscriptions = _subscriptions.Values.Select(static entry => entry.Channel).ToList();
             _subscriptions.Clear();
         }
+
         foreach (var subscription in subscriptions)
         {
             subscription.Writer.TryComplete();
@@ -312,10 +321,12 @@ public sealed class InMemoryKvClient : IKvClient
             var expired = _openTransactions
                 .Where(transaction => route is null || string.Equals(transaction.Route, route, StringComparison.Ordinal))
                 .ToArray();
+
             foreach (var transaction in expired)
             {
                 EndTransaction(transaction);
             }
+
             return expired.Length;
         }
     }
@@ -341,10 +352,12 @@ public sealed class InMemoryKvClient : IKvClient
     public void FailNext(KvTestOperation operation, Exception exception, string? route = null)
     {
         ArgumentNullException.ThrowIfNull(exception);
+
         if (route is not null)
         {
             ValidateRoute(route);
         }
+
 
         lock (_gate)
         {
@@ -361,7 +374,8 @@ public sealed class InMemoryKvClient : IKvClient
         KvTestOperation operation,
         string code,
         string? message = null,
-        string? route = null)
+        string? route = null
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(code);
         FailNext(operation, new KvException(message ?? $"Injected {operation} failure.", code), route);
@@ -371,20 +385,24 @@ public sealed class InMemoryKvClient : IKvClient
     public Task<IKvTransaction> BeginAsync(
         string route,
         KvMode mode = KvMode.ReadWrite,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ct.ThrowIfCancellationRequested();
         ValidateRoute(route);
+
         if (mode is not KvMode.ReadOnly and not KvMode.ReadWrite)
         {
             throw new ArgumentOutOfRangeException(nameof(mode));
         }
+
         ValidateFrame(sizeof(int) + Encoding.UTF8.GetByteCount(route) + sizeof(byte));
 
         lock (_gate)
         {
             var transactionId = ++_nextTransactionId;
             RecordAndFault(transactionId, KvTestOperation.Begin, route, mode);
+
             if (mode == KvMode.ReadWrite && _writers.ContainsKey(route))
             {
                 throw BrokerError(
@@ -392,6 +410,7 @@ public sealed class InMemoryKvClient : IKvClient
                     FitzErrorCodes.KvIsolationConflict,
                     "Transaction conflict: resource already has an active read-write transaction");
             }
+
 
             var state = GetOrCreateRoute(route);
             var transaction = new InMemoryKvTransaction(
@@ -404,10 +423,12 @@ public sealed class InMemoryKvClient : IKvClient
                 CloneValues(state.Values),
                 _scanPageSize);
             _openTransactions.Add(transaction);
+
             if (mode == KvMode.ReadWrite)
             {
                 _writers[route] = transaction;
             }
+
             return Task.FromResult<IKvTransaction>(transaction);
         }
     }
@@ -472,6 +493,7 @@ public sealed class InMemoryKvClient : IKvClient
     internal void ValidateFrame(long payloadLength)
     {
         var encodedLength = FitzLimits.MinFrameSize + payloadLength;
+
         if (encodedLength > _maxFrameSize)
         {
             throw new ProtocolException(
@@ -488,7 +510,8 @@ public sealed class InMemoryKvClient : IKvClient
         ReadOnlyMemory<byte>? value = null,
         ReadOnlyMemory<byte>? endKey = null,
         KvScanQuery? scanQuery = null,
-        KvDurability? durability = null)
+        KvDurability? durability = null
+    )
     {
         lock (_gate)
         {
@@ -510,7 +533,8 @@ public sealed class InMemoryKvClient : IKvClient
         ReadOnlyMemory<byte>? value,
         ReadOnlyMemory<byte>? endKey,
         KvScanQuery? scanQuery,
-        KvDurability? durability)
+        KvDurability? durability
+    )
     {
         _operations.Add(new OperationEntry(
             transactionId,
@@ -525,10 +549,12 @@ public sealed class InMemoryKvClient : IKvClient
         var index = _faults.FindIndex(fault =>
             fault.Operation == operation &&
             (fault.Route is null || string.Equals(fault.Route, route, StringComparison.Ordinal)));
+
         if (index < 0)
         {
             return null;
         }
+
 
         var exception = _faults[index].Exception;
         _faults.RemoveAt(index);
@@ -544,7 +570,8 @@ public sealed class InMemoryKvClient : IKvClient
         ReadOnlyMemory<byte>? key = null,
         ReadOnlyMemory<byte>? value = null,
         ReadOnlyMemory<byte>? endKey = null,
-        KvScanQuery? scanQuery = null)
+        KvScanQuery? scanQuery = null
+    )
     {
         lock (_gate)
         {
@@ -558,10 +585,12 @@ public sealed class InMemoryKvClient : IKvClient
                 value,
                 endKey,
                 scanQuery);
+
             if (transaction.BrokerEnded)
             {
                 throw TransactionNotFound(operation);
             }
+
             if (isWrite && transaction.Mode == KvMode.ReadOnly)
             {
                 throw BrokerError(OperationName(operation), WriteInReadOnlyCode, "Write attempted in a read-only transaction");
@@ -575,7 +604,8 @@ public sealed class InMemoryKvClient : IKvClient
         InMemoryKvTransaction transaction,
         KvDurability durability,
         SortedDictionary<byte[], byte[]> values,
-        ulong mutationCount)
+        ulong mutationCount
+    )
     {
         lock (_gate)
         {
@@ -590,6 +620,7 @@ public sealed class InMemoryKvClient : IKvClient
                 null,
                 null,
                 durability);
+
             if (fault is not null)
             {
                 // The broker removes the transaction once it accepts COMMIT; only a BUSY
@@ -598,20 +629,25 @@ public sealed class InMemoryKvClient : IKvClient
                 {
                     EndTransaction(transaction);
                 }
+
                 throw fault;
             }
+
             if (transaction.BrokerEnded)
             {
                 throw TransactionNotFound(KvTestOperation.Commit);
             }
 
             EndTransaction(transaction);
+
             if (mutationCount == 0)
             {
                 return;
             }
 
+
             var state = GetOrCreateRoute(transaction.Route);
+
             if (state.Version != transaction.SnapshotVersion)
             {
                 throw BrokerError(
@@ -619,6 +655,7 @@ public sealed class InMemoryKvClient : IKvClient
                     FitzErrorCodes.KvIsolationConflict,
                     "Transaction conflict: the route changed after the transaction began");
             }
+
 
             state.Values = CloneValues(values);
             state.Version++;
@@ -632,10 +669,12 @@ public sealed class InMemoryKvClient : IKvClient
         {
             EnsureGeneration(transaction.Generation);
             RecordAndFault(transaction.Id, KvTestOperation.Rollback, transaction.Route, transaction.Mode);
+
             if (transaction.BrokerEnded)
             {
                 throw TransactionNotFound(KvTestOperation.Rollback);
             }
+
             EndTransaction(transaction);
         }
     }
@@ -645,6 +684,7 @@ public sealed class InMemoryKvClient : IKvClient
     {
         transaction.MarkBrokerEnded();
         _openTransactions.Remove(transaction);
+
         if (_writers.TryGetValue(transaction.Route, out var writer) && ReferenceEquals(writer, transaction))
         {
             _writers.Remove(transaction.Route);
@@ -661,12 +701,14 @@ public sealed class InMemoryKvClient : IKvClient
         }
 
         var notification = new KvNotification(route, mutationCount);
+
         foreach (var subscription in _subscriptions.Values)
         {
             if (!PatternMatches(subscription.Pattern, route))
             {
                 continue;
             }
+
             if (!subscription.Channel.Writer.TryWrite(notification))
             {
                 subscription.Channel.Writer.TryComplete(new SubscriptionBackpressureException(
@@ -678,10 +720,12 @@ public sealed class InMemoryKvClient : IKvClient
     static SortedDictionary<byte[], byte[]> CloneValues(SortedDictionary<byte[], byte[]> source)
     {
         var clone = new SortedDictionary<byte[], byte[]>(ByteArrayComparer.Instance);
+
         foreach (var pair in source)
         {
             clone[pair.Key.ToArray()] = pair.Value.ToArray();
         }
+
         return clone;
     }
 
@@ -706,6 +750,7 @@ public sealed class InMemoryKvClient : IKvClient
             state = new RouteState();
             _routes.Add(route, state);
         }
+
         return state;
     }
 
@@ -759,6 +804,7 @@ public sealed class InMemoryKvClient : IKvClient
     {
         segments = [];
         const string prefix = "kv://";
+
         if (!route.StartsWith(prefix, StringComparison.Ordinal) ||
             route.Length == prefix.Length ||
             route.Contains('?', StringComparison.Ordinal) ||
@@ -766,6 +812,7 @@ public sealed class InMemoryKvClient : IKvClient
         {
             return false;
         }
+
 
         segments = route[prefix.Length..].Split('/');
         return segments.All(static segment => segment.Length > 0);
@@ -779,32 +826,40 @@ public sealed class InMemoryKvClient : IKvClient
         var patternIndex = 0;
         var lastDoubleWildcard = -1;
         var lastDoubleMatch = 0;
+
         while (routeIndex < routeSegments.Length)
         {
             var segment = patternIndex < patternSegments.Length ? patternSegments[patternIndex] : null;
+
             if (segment == "*" || string.Equals(segment, routeSegments[routeIndex], StringComparison.Ordinal))
             {
                 routeIndex++;
                 patternIndex++;
                 continue;
             }
+
             if (segment == "**")
             {
                 lastDoubleWildcard = patternIndex++;
                 lastDoubleMatch = routeIndex;
                 continue;
             }
+
             if (lastDoubleWildcard < 0)
             {
                 return false;
             }
+
             routeIndex = ++lastDoubleMatch;
             patternIndex = lastDoubleWildcard + 1;
         }
+
+
         while (patternIndex < patternSegments.Length && patternSegments[patternIndex] == "**")
         {
             patternIndex++;
         }
+
         return patternIndex == patternSegments.Length;
     }
 
@@ -855,14 +910,17 @@ public sealed class InMemoryKvClient : IKvClient
             {
                 return 0;
             }
+
             if (left is null)
             {
                 return -1;
             }
+
             if (right is null)
             {
                 return 1;
             }
+
             return left.AsSpan().SequenceCompareTo(right);
         }
 
@@ -894,7 +952,8 @@ public sealed class InMemoryKvClient : IKvClient
             long generation,
             long snapshotVersion,
             SortedDictionary<byte[], byte[]> values,
-            int? scanPageSize)
+            int? scanPageSize
+        )
         {
             _owner = owner;
             Id = transactionId;
@@ -963,7 +1022,8 @@ public sealed class InMemoryKvClient : IKvClient
         public Task DeleteRangeAsync(
             ReadOnlyMemory<byte> startKey,
             ReadOnlyMemory<byte> endKey,
-            CancellationToken ct = default)
+            CancellationToken ct = default
+        )
         {
             ct.ThrowIfCancellationRequested();
             lock (_gate)
@@ -973,6 +1033,7 @@ public sealed class InMemoryKvClient : IKvClient
                 _owner.Dispatch(this, KvTestOperation.DeleteRange, isWrite: true, startKey, endKey: endKey);
                 var start = startKey.ToArray();
                 var end = endKey.ToArray();
+
                 if (ByteArrayComparer.Instance.Compare(start, end) >= 0)
                 {
                     throw BrokerError(
@@ -981,14 +1042,17 @@ public sealed class InMemoryKvClient : IKvClient
                         "Invalid request: start must be less than end");
                 }
 
+
                 var keys = _values.Keys.Where(key =>
                     ByteArrayComparer.Instance.Compare(key, start) >= 0 &&
                     ByteArrayComparer.Instance.Compare(key, end) < 0).ToArray();
+
                 foreach (var key in keys)
                 {
                     _values.Remove(key);
                 }
                 // An empty range still counts, as on the broker.
+
                 _mutationCount++;
                 return Task.CompletedTask;
             }
@@ -1013,6 +1077,7 @@ public sealed class InMemoryKvClient : IKvClient
             {
                 throw new ArgumentOutOfRangeException(nameof(durability));
             }
+
             ct.ThrowIfCancellationRequested();
             lock (_gate)
             {
@@ -1033,6 +1098,7 @@ public sealed class InMemoryKvClient : IKvClient
                 {
                     return Task.CompletedTask;
                 }
+
                 _owner.ValidateFrame(_requestPrefixBytes);
                 _owner.Rollback(this);
                 _closed = true;
@@ -1085,7 +1151,8 @@ public sealed class InMemoryKvClient : IKvClient
             ReadOnlyMemory<byte> key,
             ReadOnlyMemory<byte> value,
             bool insertOnly,
-            CancellationToken ct)
+            CancellationToken ct
+        )
         {
             ct.ThrowIfCancellationRequested();
             lock (_gate)
@@ -1094,10 +1161,12 @@ public sealed class InMemoryKvClient : IKvClient
                 _owner.ValidateFrame(_requestPrefixBytes + sizeof(int) + key.Length + sizeof(int) + value.Length);
                 _owner.Dispatch(this, operation, isWrite: true, key, value);
                 var keyBytes = key.ToArray();
+
                 if (insertOnly && _values.ContainsKey(keyBytes))
                 {
                     throw BrokerError("INSERT", KeyExistsCode, "Key already exists");
                 }
+
                 _values[keyBytes] = value.ToArray();
                 _mutationCount++;
                 return Task.CompletedTask;
@@ -1111,13 +1180,16 @@ public sealed class InMemoryKvClient : IKvClient
             var comparer = ByteArrayComparer.Instance;
             var start = query.StartKey?.ToArray();
             var end = query.EndKey?.ToArray();
+
             if (start is not null && end is not null &&
                 (query.Reverse ? comparer.Compare(start, end) <= 0 : comparer.Compare(start, end) >= 0))
             {
                 return new KvScanResult([], false);
             }
 
+
             IEnumerable<KeyValuePair<byte[], byte[]>> candidates = _values;
+
             if (query.Reverse)
             {
                 if (start is not null)
@@ -1126,10 +1198,13 @@ public sealed class InMemoryKvClient : IKvClient
                         ? comparer.Compare(pair.Key, start) < 0
                         : comparer.Compare(pair.Key, start) <= 0);
                 }
+
+
                 if (end is not null)
                 {
                     candidates = candidates.Where(pair => comparer.Compare(pair.Key, end) > 0);
                 }
+
                 candidates = candidates.Reverse();
             }
             else
@@ -1140,17 +1215,20 @@ public sealed class InMemoryKvClient : IKvClient
                         ? comparer.Compare(pair.Key, start) > 0
                         : comparer.Compare(pair.Key, start) >= 0);
                 }
+
                 if (end is not null)
                 {
                     candidates = candidates.Where(pair => comparer.Compare(pair.Key, end) < 0);
                 }
             }
 
+
             var cap = Math.Min(BrokerMaxScanItems, _scanPageSize ?? BrokerMaxScanItems);
             var limit = query.Limit is null or 0 ? cap : (int)Math.Min(query.Limit.Value, (uint)cap);
             var pairs = new List<KvPair>();
             long used = 0;
             var hasMore = false;
+
             foreach (var pair in candidates)
             {
                 if (pairs.Count >= limit)
@@ -1160,6 +1238,7 @@ public sealed class InMemoryKvClient : IKvClient
                 }
 
                 var cost = BrokerScanItemOverheadBytes + (long)pair.Key.Length + pair.Value.Length;
+
                 if (used + cost > BrokerScanResponseCeilingBytes)
                 {
                     if (pairs.Count == 0)
@@ -1170,12 +1249,15 @@ public sealed class InMemoryKvClient : IKvClient
                             $"Invalid request: scan pair ({pair.Key.Length} byte key) is {cost} wire bytes, " +
                             $"exceeding the {BrokerScanResponseCeilingBytes}-byte limit a scan response can return");
                     }
+
                     hasMore = true;
                     break;
                 }
+
                 used += cost;
                 pairs.Add(new KvPair(pair.Key.ToArray(), pair.Value.ToArray()));
             }
+
             return new KvScanResult(pairs, hasMore);
         }
 
@@ -1183,14 +1265,18 @@ public sealed class InMemoryKvClient : IKvClient
         {
             // has_start, has_end, has_limit and the options byte, plus optional bodies.
             var bytes = _requestPrefixBytes + 4;
+
             if (query.StartKey is { } start)
             {
                 bytes += sizeof(int) + start.Length;
             }
+
+
             if (query.EndKey is { } end)
             {
                 bytes += sizeof(int) + end.Length;
             }
+
             return query.Limit.HasValue ? bytes + sizeof(uint) : bytes;
         }
 
@@ -1200,6 +1286,7 @@ public sealed class InMemoryKvClient : IKvClient
             {
                 throw new KvException("The transaction is closed.", "TX_CLOSED");
             }
+
             _owner.EnsureGeneration(Generation);
         }
     }

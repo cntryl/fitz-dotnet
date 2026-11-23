@@ -67,10 +67,12 @@ public class EndToEndRequestBenchmarks : IAsyncDisposable
     public async Task ConcurrentRequests()
     {
         var tasks = new Task[Concurrency];
+
         for (var i = 0; i < Concurrency; i++)
         {
             tasks[i] = _connection.RequestAsync(MessageTypes.KvGet, _payload).AsTask();
         }
+
 
         await Task.WhenAll(tasks).ConfigureAwait(false);
     }

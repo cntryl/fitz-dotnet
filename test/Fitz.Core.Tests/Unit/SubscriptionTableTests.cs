@@ -152,8 +152,10 @@ public sealed class SubscriptionTableTests
             (_, _, _) =>
             {
                 SubscribeCalls++;
+
                 if (SubscribeCalls > 1 && RestoreReply is not null)
                     return RestoreReply;
+
                 return SubscribeCalls == FailSubscribeCall
                     ? Task.FromException<ulong>(new InvalidOperationException("restore rejected"))
                     : Task.FromResult((ulong)SubscribeCalls);

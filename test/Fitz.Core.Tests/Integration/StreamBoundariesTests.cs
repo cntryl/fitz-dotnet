@@ -57,6 +57,7 @@ public sealed class StreamBoundariesTests
         for (ulong offset = 0; offset < 3; offset++)
         {
             await using var session = await client.Stream.BeginAsync(route);
+
             if (offset == 0)
             {
                 var oversized = new byte[body.Length + 1];
@@ -65,6 +66,7 @@ public sealed class StreamBoundariesTests
                 Assert.Equal((uint)2008, error.DomainCode);
                 Assert.Equal((byte)0, error.ErrorEffect);
             }
+
             Assert.Equal(offset, await session.AppendAsync(offset, body, metadata));
             await session.CommitAsync(StreamCommitMode.Sync);
         }
@@ -72,6 +74,7 @@ public sealed class StreamBoundariesTests
         var records = new List<StreamRecord>();
         ulong next = 0;
         var pages = 0;
+
         await foreach (var batch in client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10 }))
         {
             pages++;
@@ -82,8 +85,10 @@ public sealed class StreamBoundariesTests
         }
 
         // Assert
+
         Assert.True(pages > 1);
         Assert.Equal(3, records.Count);
+
         for (var offset = 0; offset < records.Count; offset++)
         {
             Assert.Equal(route, records[offset].Route);

@@ -51,7 +51,8 @@ public sealed class KvDirectoryQueryException : ArgumentException
         KvDirectoryQueryError kind,
         string message,
         string? paramName = null,
-        Exception? innerException = null)
+        Exception? innerException = null
+    )
         : base(message, paramName, innerException)
     {
         Kind = kind;

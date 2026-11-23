@@ -65,5 +65,6 @@ public interface IScheduleClient
     /// </returns>
     Task<ScheduleSubscription> SubscribeAsync(
         string pattern,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 }

@@ -125,9 +125,11 @@ public sealed class ConnectionAdmissionAndTransportRegressionTests
         // Act
         // The peer deliberately does not read until cancellation. Every frame stays within
         // the protocol limit; a bounded series of writes fills the socket send buffers.
+
         for (var i = 0; i < 64; i++)
         {
             using var cancellation = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
             try
             {
                 await transport.SendAsync(frame, cancellation.Token);
@@ -138,10 +140,12 @@ public sealed class ConnectionAdmissionAndTransportRegressionTests
                 break;
             }
         }
+
         Assert.True(canceled, "The bounded write series must reach socket backpressure.");
         var drain = Task.Run(async () =>
         {
             var buffer = new byte[64 * 1024];
+
             try
             {
                 while (await server.GetStream().ReadAsync(buffer) != 0)

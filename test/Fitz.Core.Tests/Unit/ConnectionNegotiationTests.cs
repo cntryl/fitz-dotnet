@@ -19,8 +19,10 @@ public sealed class ConnectionNegotiationTests
         list.WriteU16((ushort)(capabilities > 2 ? 3 : 2));
         list.WriteU32(1);
         list.WriteU32(2);
+
         if (capabilities > 2)
             list.WriteU32(capabilities);
+
         return FrameCodec.Encode(MessageTypes.Hello, ExtensionCodec.Encode(payload, 1, list.WrittenMemory.Span), ExtensionCodec.PresentFlag);
     }
 

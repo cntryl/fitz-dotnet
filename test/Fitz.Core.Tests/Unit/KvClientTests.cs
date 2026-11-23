@@ -14,8 +14,10 @@ public sealed class KvClientTests
         KvTransaction Begin() => new((type, _, _) =>
         {
             operations.Add(type);
+
             if (type == MessageTypes.KvPut)
                 throw new KvException("put rejected");
+
             return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
         }, "kv://prod/app/data", 7);
 
@@ -44,15 +46,18 @@ public sealed class KvClientTests
         async ValueTask<ReadOnlyMemory<byte>> RequestAsync(
             ushort messageType,
             ReadOnlyMemory<byte> payload,
-            CancellationToken ct)
+            CancellationToken ct
+        )
         {
             _ = messageType;
             _ = payload;
+
             if (Interlocked.Increment(ref requestCount) == 1)
             {
                 firstStarted.TrySetResult();
                 await releaseFirst.Task.WaitAsync(ct);
             }
+
 
             return new byte[] { 0 };
         }
@@ -77,6 +82,7 @@ public sealed class KvClientTests
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
+
             if (messageType == MessageTypes.KvBegin)
             {
                 writer.WriteU64(7);
@@ -85,6 +91,7 @@ public sealed class KvClientTests
             {
                 writer.WriteU8(2);
             }
+
 
             return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
         });
@@ -176,10 +183,12 @@ public sealed class KvClientTests
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
+
             if (messageType == MessageTypes.KvBegin)
                 writer.WriteU64(7);
             else if (messageType == MessageTypes.KvScan)
                 writer.WriteU32(uint.MaxValue);
+
             return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
         });
 
@@ -202,6 +211,7 @@ public sealed class KvClientTests
         await using var kv = new KvClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
+
             if (messageType == MessageTypes.KvBegin)
             {
                 writer.WriteU8(0);
@@ -217,6 +227,7 @@ public sealed class KvClientTests
             {
                 writer.WriteU8(0);
             }
+
 
             return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
         });
@@ -243,14 +254,18 @@ public sealed class KvClientTests
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(messageType == MessageTypes.KvCommit ? (byte)1 : (byte)0);
+
             if (messageType == MessageTypes.KvBegin)
             {
                 writer.WriteU64(7);
             }
+
+
             if (messageType == MessageTypes.KvRollback)
             {
                 rollbackRequests++;
             }
+
             return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
         });
 
@@ -280,10 +295,12 @@ public sealed class KvClientTests
             {
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+
                 if (messageType == MessageTypes.KvSubscribe)
                 {
                     writer.WriteU64(42);
                 }
+
                 return ValueTask.FromResult<ReadOnlyMemory<byte>>(writer.Build());
             },
             registerNotificationHandler: (messageType, handler) =>
@@ -399,6 +416,7 @@ public sealed class KvClientTests
         await using var kv = new KvClient((messageType, payload, _) =>
         {
             callCount++;
+
             if (callCount == 1)
             {
                 using var begin = new BinaryBufferWriter();
@@ -406,6 +424,7 @@ public sealed class KvClientTests
                 begin.WriteU64(900);
                 return Task.FromResult(begin.Build());
             }
+
 
             Assert.Equal(MessageTypes.KvGet, messageType);
             using var get = new BinaryBufferWriter();
@@ -435,6 +454,7 @@ public sealed class KvClientTests
             callCount++;
             using var response = new BinaryBufferWriter();
             response.WriteU8(0);
+
             if (callCount == 1)
             {
                 response.WriteU64(901);
@@ -444,6 +464,7 @@ public sealed class KvClientTests
                 response.WriteU8(0);
                 response.WriteU32(0);
             }
+
 
             return Task.FromResult(response.Build());
         });
@@ -466,10 +487,12 @@ public sealed class KvClientTests
             calls.Add(messageType);
             using var response = new BinaryBufferWriter();
             response.WriteU8(0);
+
             if (messageType == MessageTypes.KvBegin)
             {
                 response.WriteU64(123);
             }
+
             return Task.FromResult(response.Build());
         });
 
@@ -493,10 +516,12 @@ public sealed class KvClientTests
             calls.Add(messageType);
             using var response = new BinaryBufferWriter();
             response.WriteU8(0);
+
             if (messageType == MessageTypes.KvBegin)
             {
                 response.WriteU64(124);
             }
+
             return Task.FromResult(response.Build());
         });
 
@@ -520,10 +545,12 @@ public sealed class KvClientTests
             calls.Add(messageType);
             using var response = new BinaryBufferWriter();
             response.WriteU8(0);
+
             if (messageType == MessageTypes.KvBegin)
             {
                 response.WriteU64(125);
             }
+
             return Task.FromResult(response.Build());
         });
 
@@ -598,6 +625,7 @@ public sealed class KvClientTests
                 {
                     return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
                 }
+
                 Assert.Equal(MessageTypes.KvScan, messageType);
                 requestPayload = payload.ToArray();
                 using var response = new BinaryBufferWriter();
@@ -631,6 +659,7 @@ public sealed class KvClientTests
                 {
                     return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
                 }
+
                 requestCount++;
                 return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0, 0, 0, 0, 0, 0 });
             },
@@ -654,6 +683,7 @@ public sealed class KvClientTests
         {
             using var response = new BinaryBufferWriter();
             response.WriteU8(0);
+
             if (messageType == MessageTypes.KvBegin)
             {
                 response.WriteU64(127);
@@ -664,6 +694,7 @@ public sealed class KvClientTests
                 response.WriteU32(0); // empty key
                 response.WriteU32(0); // empty value; has_more is missing
             }
+
 
             return Task.FromResult(response.Build());
         });

@@ -13,11 +13,13 @@ public sealed class Wire3Tests
         get
         {
             var result = new TheoryData<string, string>();
+
             foreach (var line in File.ReadLines(Path.Combine(AppContext.BaseDirectory, "Fixtures", "wire3_vectors.txt")))
             {
                 var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 result.Add(parts[0], parts[1]);
             }
+
             return result;
         }
     }
@@ -32,8 +34,10 @@ public sealed class Wire3Tests
         var decoded = ExtensionCodec.Decode(frame);
         // Assert
         Assert.False(decoded.Core.IsEmpty);
+
         if (name == "hello_wire3_queue_capabilities")
             Assert.Equal(6u, decoded.CapabilityMask);
+
         if (name == "unknown_extension_type104_corr1_core_hi")
             Assert.Equal("hi"u8.ToArray(), decoded.Core.ToArray());
     }

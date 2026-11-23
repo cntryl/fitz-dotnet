@@ -23,11 +23,15 @@ sealed record StreamReadPage(
             StreamSelectorScope.Global => Cursor.LastGlobalOffset,
             _ => throw new ArgumentOutOfRangeException(nameof(scope)),
         };
+
         if (last is null || last < from ||
             (scope != StreamSelectorScope.Global && Items.Count == 0 && !Cursor.HasMore && last == from))
             return from;
+
+
         if (last == ulong.MaxValue)
             throw new StreamException("READ cursor exceeds the resumable offset range.", "READ_INVALID_RESPONSE");
+
         return last.Value + 1;
     }
 }

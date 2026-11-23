@@ -18,6 +18,7 @@ public sealed class KvDirectoryContractTests
     {
         // Arrange
         var client = new InMemoryKvClient();
+
         foreach (var name in new[] { "Alpha", "Beta", "Gamma" })
         {
             await WriteAsync(client, transaction => Directory.InsertAsync(
@@ -25,6 +26,7 @@ public sealed class KvDirectoryContractTests
         }
 
         // Act
+
         var page = await Directory.QueryAsync(client, Route, ByName.Query().Descending().Take(3));
 
         // Assert
@@ -37,11 +39,13 @@ public sealed class KvDirectoryContractTests
     {
         // Arrange
         var client = new InMemoryKvClient();
+
         foreach (var name in new[] { "Alpha", "Beta", "Gamma" })
         {
             await WriteAsync(client, transaction => Directory.InsertAsync(
                 transaction, new Widget(Guid.NewGuid(), name, 1)));
         }
+
         var first = await Directory.QueryAsync(client, Route, ByName.Query().Descending().Take(1));
         client.ClearOperations();
 
@@ -60,6 +64,7 @@ public sealed class KvDirectoryContractTests
     {
         // Arrange
         var client = new InMemoryKvClient(new InMemoryKvClientOptions { ScanPageSize = 1 });
+
         foreach (var name in new[] { "A", "B", "C", "D", "E" })
         {
             await WriteAsync(client, transaction => Directory.InsertAsync(
@@ -67,6 +72,7 @@ public sealed class KvDirectoryContractTests
         }
 
         // Act
+
         var names = new List<string>();
         string? cursor = null;
         do
@@ -311,6 +317,7 @@ public sealed class KvDirectoryContractTests
     static void BreakStoredJson(InMemoryKvClient client)
     {
         var rows = client.Snapshot(Route);
+
         foreach (var row in rows)
         {
             var original = JsonSerializer.Deserialize(row.Value.Span, WidgetJsonContext.Default.Widget)!;

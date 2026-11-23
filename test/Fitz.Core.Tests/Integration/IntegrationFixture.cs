@@ -56,10 +56,12 @@ static class IntegrationFixture
     internal static string GetBrokerUrl(string transport, string authMode)
     {
         var configured = Environment.GetEnvironmentVariable("CONFORMANCE_BROKER_ADDR") ?? Environment.GetEnvironmentVariable("CONFORMANCE_BROKER_ADDRESS");
+
         if (!string.IsNullOrWhiteSpace(configured))
         {
             return configured;
         }
+
 
         var normalizedTransport = NormalizeTransport(transport);
         var normalizedAuthMode = authMode.ToUpperInvariant();
@@ -86,12 +88,14 @@ static class IntegrationFixture
     internal static string GetConformanceSuitePath()
     {
         var configured = Environment.GetEnvironmentVariable("CONFORMANCE_SUITE_PATH");
+
         if (!string.IsNullOrWhiteSpace(configured))
         {
             return Path.IsPathRooted(configured)
                 ? configured
                 : Path.GetFullPath(Path.Combine(GetRepositoryRoot(), configured));
         }
+
 
         return Path.GetFullPath(Path.Combine(GetRepositoryRoot(), "conformance", "cross-language-conformance-suite.yaml"));
     }
@@ -107,10 +111,12 @@ static class IntegrationFixture
     internal static bool? GetConformanceReconnectEnabledOverride()
     {
         var configured = Environment.GetEnvironmentVariable("CONFORMANCE_RECONNECT_ENABLED_OVERRIDE");
+
         if (string.IsNullOrWhiteSpace(configured))
         {
             return null;
         }
+
 
         return bool.TryParse(configured, out var parsed) ? parsed : null;
     }
@@ -126,6 +132,7 @@ static class IntegrationFixture
     internal static string GetBrokerComposePath()
     {
         var configured = Environment.GetEnvironmentVariable("FITZ_BROKER_COMPOSE_PATH");
+
         if (!string.IsNullOrWhiteSpace(configured))
         {
             return Path.IsPathRooted(configured)
@@ -133,12 +140,14 @@ static class IntegrationFixture
                 : Path.GetFullPath(Path.Combine(GetRepositoryRoot(), configured));
         }
 
+
         return Path.GetFullPath(Path.Combine(GetRepositoryRoot(), "compose.yml"));
     }
 
     internal static async Task RestartBrokerForModeAsync(string transport, string authMode, CancellationToken ct = default)
     {
         var executable = Environment.GetEnvironmentVariable("FITZ_BROKER_RESTART_EXECUTABLE");
+
         if (string.IsNullOrWhiteSpace(executable))
         {
             var serviceName = GetBrokerServiceName(authMode);
@@ -152,18 +161,21 @@ static class IntegrationFixture
                 ?? throw new InvalidOperationException($"{argumentKey} is required with a custom restart executable.");
             await RunProcessAsync(executable, arguments, ct);
         }
+
         await WaitForBrokerReadyAsync(transport, authMode, TimeSpan.FromSeconds(30), ct);
     }
 
     internal static string GetOutputPath()
     {
         var outputPath = Environment.GetEnvironmentVariable("CONFORMANCE_OUTPUT");
+
         if (!string.IsNullOrWhiteSpace(outputPath))
         {
             return Path.IsPathRooted(outputPath)
                 ? outputPath
                 : Path.Combine(GetRepositoryRoot(), outputPath);
         }
+
 
         return Path.Combine(GetRepositoryRoot(), "artifacts", "conformance-results.json");
     }
@@ -175,7 +187,8 @@ static class IntegrationFixture
         ReconnectOptions? reconnect = null,
         int? maxInFlightRequests = null,
         FitzObservabilityOptions? observability = null,
-        AsyncHandlerOptions? asyncHandlers = null) => CreateClient(url, transport, timeout, reconnect, tokenProvider: null, maxInFlightRequests, observability, asyncHandlers);
+        AsyncHandlerOptions? asyncHandlers = null
+    ) => CreateClient(url, transport, timeout, reconnect, tokenProvider: null, maxInFlightRequests, observability, asyncHandlers);
 
     internal static FitzClient CreateValidJwtClient(
         string url,
@@ -184,7 +197,8 @@ static class IntegrationFixture
         ReconnectOptions? reconnect = null,
         int? maxInFlightRequests = null,
         FitzObservabilityOptions? observability = null,
-        AsyncHandlerOptions? asyncHandlers = null)
+        AsyncHandlerOptions? asyncHandlers = null
+    )
     {
         var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "dev-test-secret";
         var audience = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_AUDIENCE") ?? "fitz";
@@ -208,7 +222,8 @@ static class IntegrationFixture
         ReconnectOptions? reconnect = null,
         int? maxInFlightRequests = null,
         FitzObservabilityOptions? observability = null,
-        AsyncHandlerOptions? asyncHandlers = null)
+        AsyncHandlerOptions? asyncHandlers = null
+    )
     {
         var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "dev-test-secret";
         var audience = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_AUDIENCE") ?? "fitz";
@@ -232,7 +247,8 @@ static class IntegrationFixture
         ReconnectOptions? reconnect = null,
         int? maxInFlightRequests = null,
         FitzObservabilityOptions? observability = null,
-        AsyncHandlerOptions? asyncHandlers = null)
+        AsyncHandlerOptions? asyncHandlers = null
+    )
     {
         var url = GetBrokerUrl(transport, authMode);
         return authMode.ToUpperInvariant() switch
@@ -256,10 +272,12 @@ static class IntegrationFixture
     {
         outputPath ??= GetOutputPath();
         var outputDir = Path.GetDirectoryName(outputPath);
+
         if (!string.IsNullOrWhiteSpace(outputDir))
         {
             Directory.CreateDirectory(outputDir);
         }
+
 
         await File.WriteAllTextAsync(
             outputPath,
@@ -282,7 +300,8 @@ static class IntegrationFixture
         Func<CancellationToken, ValueTask<string>>? tokenProvider,
         int? maxInFlightRequests = null,
         FitzObservabilityOptions? observability = null,
-        AsyncHandlerOptions? asyncHandlers = null)
+        AsyncHandlerOptions? asyncHandlers = null
+    )
     {
         var normalizedTransport = NormalizeTransport(transport);
         var transportKind = normalizedTransport == "tcp"
@@ -297,10 +316,12 @@ static class IntegrationFixture
             : null;
 
         var reconnectOverride = GetConformanceReconnectEnabledOverride();
+
         if (reconnectOverride is { } enabled)
         {
             reconnect = reconnect is null ? new ReconnectOptions(enabled) : reconnect with { Enabled = enabled };
         }
+
 
         return new FitzClient(
             new ClientConfig(new Uri(normalizedUrl))
@@ -426,10 +447,12 @@ static class IntegrationFixture
 
         var stdout = await stdoutTask;
         var stderr = await stderrTask;
+
         if (process.ExitCode == 0)
         {
             return;
         }
+
 
         var details = string.Join(Environment.NewLine, new[] { stdout.Trim(), stderr.Trim() }.Where(value => !string.IsNullOrWhiteSpace(value)));
         throw new InvalidOperationException($"Process '{fileName} {arguments}' failed with exit code {process.ExitCode}.{Environment.NewLine}{details}".TrimEnd());
@@ -438,6 +461,7 @@ static class IntegrationFixture
     static string GetRepositoryRoot()
     {
         var current = new DirectoryInfo(AppContext.BaseDirectory);
+
         while (current is not null)
         {
             if (File.Exists(Path.Combine(current.FullName, "Fitz.slnx")))
@@ -447,6 +471,7 @@ static class IntegrationFixture
 
             current = current.Parent;
         }
+
 
         return Directory.GetCurrentDirectory();
     }

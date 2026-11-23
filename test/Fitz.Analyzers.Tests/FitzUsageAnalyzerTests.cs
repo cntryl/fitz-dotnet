@@ -662,10 +662,12 @@ public sealed class FitzUsageAnalyzerTests
             CancellationToken.None);
         var action = await provider.GetFixAllProvider().GetFixAsync(context);
         Assert.NotNull(action);
+
         foreach (var operation in await action.GetOperationsAsync(CancellationToken.None))
         {
             operation.Apply(workspace, CancellationToken.None);
         }
+
 
         var changed = workspace.CurrentSolution.GetDocument(document.Id);
         Assert.NotNull(changed);
@@ -718,10 +720,12 @@ public sealed class FitzUsageAnalyzerTests
     {
         var trustedAssemblies = (string?)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES");
         Assert.NotNull(trustedAssemblies);
+
         foreach (var path in trustedAssemblies.Split(Path.PathSeparator))
         {
             yield return MetadataReference.CreateFromFile(path);
         }
+
 
         yield return MetadataReference.CreateFromFile(typeof(ILeaseClient).Assembly.Location);
         yield return MetadataReference.CreateFromFile(typeof(FitzClient).Assembly.Location);

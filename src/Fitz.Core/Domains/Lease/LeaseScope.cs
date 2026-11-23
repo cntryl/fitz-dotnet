@@ -27,7 +27,8 @@ static class LeaseScope
         TimeSpan ttl,
         Func<LeaseAuthority, CancellationToken, ValueTask<T>> callback,
         TimeProvider time,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         await using var leaseScope = lease.ConfigureAwait(false);
         using var lifecycle = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -39,16 +40,19 @@ static class LeaseScope
 
         var (leaseLoss, cancellationError) = await KeepRenewedAsync(lease, ttl, callbackTask, lifecycle, time, ct).ConfigureAwait(false);
         var watchCancellationError = await connectionLossWatch.StopAsync().ConfigureAwait(false);
+
         if (leaseLoss is null && lease.ConnectionLost.IsCompleted)
         {
             leaseLoss = LeaseLost();
             cancellationError = await CancelAsync(lifecycle).ConfigureAwait(false);
         }
 
+
         cancellationError ??= watchCancellationError;
 
         T? value = default;
         Exception? callbackError = null;
+
         try
         {
             value = await callbackTask.ConfigureAwait(false);
@@ -62,17 +66,24 @@ static class LeaseScope
             callbackError = error;
         }
 
+
         var releaseError = leaseLoss is null ? await ReleaseAsync(lease, time).ConfigureAwait(false) : null;
 
         ct.ThrowIfCancellationRequested();
+
         if (callbackError is not null)
             ExceptionDispatchInfo.Capture(callbackError).Throw();
+
         if (leaseLoss is not null)
             throw leaseLoss;
+
         if (cancellationError is not null)
             ExceptionDispatchInfo.Capture(cancellationError).Throw();
+
+
         if (releaseError is not null)
             ExceptionDispatchInfo.Capture(releaseError).Throw();
+
         return value!;
     }
 
@@ -96,16 +107,20 @@ static class LeaseScope
         Task callbackTask,
         CancellationTokenSource lifecycle,
         TimeProvider time,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var schedule = LeaseRenewalSchedule.For(ttl);
         var lastRenewal = time.GetTimestamp();
+
         while (!callbackTask.IsCompleted)
         {
             var delay = Task.Delay(schedule.Interval, time, lifecycle.Token);
             var completed = await Task.WhenAny(callbackTask, lease.ConnectionLost, delay).ConfigureAwait(false);
+
             if (ct.IsCancellationRequested || lease.ConnectionLost.IsCompleted || completed == callbackTask)
                 return default;
+
 
             try
             {
@@ -113,6 +128,7 @@ static class LeaseScope
                 using var renewalDeadline = CancellationTokenSource.CreateLinkedTokenSource(lifecycle.Token, budget.Token);
                 await lease.ExtendAsync(ttl, renewalDeadline.Token).ConfigureAwait(false);
                 lastRenewal = time.GetTimestamp();
+
                 if (lease.FencingTokenChanged.IsCompleted)
                 {
                     var rotation = new LeaseException(
@@ -133,13 +149,15 @@ static class LeaseScope
             }
         }
 
+
         return default;
     }
 
     static async Task<(LeaseException? LeaseLoss, Exception? CancellationError)> LoseAsync(
         LeaseHandle lease,
         CancellationTokenSource lifecycle,
-        Exception cause)
+        Exception cause
+    )
     {
         lease.Invalidate();
         return (LeaseLost(cause), await CancelAsync(lifecycle).ConfigureAwait(false));
@@ -148,6 +166,7 @@ static class LeaseScope
     static async Task<Exception?> ReleaseAsync(LeaseHandle lease, TimeProvider time)
     {
         using var cleanup = new CancellationTokenSource(ReleaseBudget, time);
+
         try
         {
             await lease.ReleaseAsync(cleanup.Token).ConfigureAwait(false);

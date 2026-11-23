@@ -4,7 +4,8 @@ namespace Cntryl.Fitz.Runtime;
 
 delegate bool AsyncHandlerDispatch(
     Func<CancellationToken, ValueTask> handler,
-    Action<Exception>? onRejected);
+    Action<Exception>? onRejected
+);
 
 sealed class SubscriptionRegistration<TNotification> : IDisposable
 {
@@ -27,7 +28,8 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
         string pattern = "unknown",
         Func<CancellationToken, ValueTask>? overflowCleanup = null,
         Action<TNotification>? preDispatch = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         Channel = channel;
         _time = timeProvider ?? TimeProvider.System;
@@ -83,10 +85,12 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
         }
 
         var cancellationSource = Volatile.Read(ref _cancellationSource);
+
         if (cancellationSource is not null)
         {
             await cancellationSource.CancelAsync().ConfigureAwait(false);
         }
+
         Channel.Writer.TryComplete(error);
         _completion.TrySetException(error);
 
@@ -106,18 +110,22 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
     CancellationTokenSource GetOrCreateCancellationSource()
     {
         var existing = Volatile.Read(ref _cancellationSource);
+
         if (existing is not null)
         {
             return existing;
         }
 
+
         var created = new CancellationTokenSource();
         var prior = Interlocked.CompareExchange(ref _cancellationSource, created, comparand: null);
+
         if (prior is not null)
         {
             created.Dispose();
             return prior;
         }
+
 
         if (IsDisposed)
         {
@@ -136,7 +144,8 @@ static class SubscriptionPump
     internal static void Start<TNotification>(
         SubscriptionRegistration<TNotification> registration,
         Func<TNotification, CancellationToken, ValueTask> handler,
-        AsyncHandlerDispatch? dispatch = null)
+        AsyncHandlerDispatch? dispatch = null
+    )
     {
         ThreadPool.UnsafeQueueUserWorkItem(
             static state => _ = RunAsync(state.Registration, state.Handler, state.Dispatch),
@@ -147,7 +156,8 @@ static class SubscriptionPump
     static async Task RunAsync<TNotification>(
         SubscriptionRegistration<TNotification> registration,
         Func<TNotification, CancellationToken, ValueTask> handler,
-        AsyncHandlerDispatch? dispatch)
+        AsyncHandlerDispatch? dispatch
+    )
     {
         try
         {
@@ -169,6 +179,7 @@ static class SubscriptionPump
                         else
                         {
                             var callbackCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
                             if (!dispatch(async dispatcherToken =>
                             {
                                 try
@@ -189,6 +200,7 @@ static class SubscriptionPump
                                 await registration.FailOverflowAsync().ConfigureAwait(false);
                                 return;
                             }
+
 
                             await callbackCompletion.Task.ConfigureAwait(false);
                         }

@@ -16,10 +16,12 @@ static class FrameCodec
     {
         ArgumentOutOfRangeException.ThrowIfNegative(payloadLength);
         var encodedLength = checked(MaxHeaderSize + payloadLength);
+
         if (encodedLength > MaxTransportFrameSize)
         {
             throw new ProtocolException($"Encoded frame length {encodedLength} exceeds the 1 MiB Wire 3 limit.");
         }
+
         return encodedLength;
     }
 
@@ -29,14 +31,17 @@ static class FrameCodec
         ReadOnlySpan<byte> payload,
         Span<byte> destination,
         byte flags = 0,
-        ulong correlationId = 0)
+        ulong correlationId = 0
+    )
     {
         ValidateFlags(flags);
         var required = MaxEncodedSize(payload.Length);
+
         if (destination.Length < required)
         {
             throw new ArgumentException("Destination too small.", nameof(destination));
         }
+
 
         BinaryPrimitives.WriteUInt16BigEndian(destination[..2], messageType);
         destination[2] = flags;
@@ -60,6 +65,7 @@ static class FrameCodec
         {
             throw new ProtocolException("Correlation identifier zero is reserved for notifications.");
         }
+
         return Encode(messageType, payload, correlationId: correlationId);
     }
 
@@ -72,10 +78,12 @@ static class FrameCodec
         }
 
         var expectedLength = checked(MaxHeaderSize + (int)payloadLength);
+
         if (frameBytes.Length < expectedLength)
         {
             throw new ProtocolException("Frame payload is incomplete.");
         }
+
         if (frameBytes.Length != expectedLength)
         {
             throw new ProtocolException("Frame has trailing bytes.");
@@ -89,7 +97,8 @@ static class FrameCodec
         out ushort messageType,
         out byte flags,
         out ulong correlationId,
-        out uint payloadLength)
+        out uint payloadLength
+    )
     {
         if (frameBytes.Length < MaxHeaderSize)
         {
@@ -105,10 +114,12 @@ static class FrameCodec
         ValidateFlags(flags);
         correlationId = BinaryPrimitives.ReadUInt64BigEndian(frameBytes.Slice(3, 8));
         payloadLength = BinaryPrimitives.ReadUInt32BigEndian(frameBytes.Slice(11, 4));
+
         if (payloadLength > MaxTransportFrameSize - MaxHeaderSize)
         {
             throw new ProtocolException($"Payload length {payloadLength} exceeds the 1 MiB Wire 3 frame limit.");
         }
+
         return true;
     }
 

@@ -113,20 +113,24 @@ public sealed class InMemoryKvBrokerFidelityTests
     {
         // Arrange
         var client = new InMemoryKvClient(new InMemoryKvClientOptions { ScanPageSize = 2 });
+
         foreach (var key in new[] { "a", "b", "c", "d", "e" })
         {
             client.Seed(Route, Bytes(key), ReadOnlyMemory<byte>.Empty);
         }
+
         await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
 
         // Act
         var keys = new List<string>();
+
         await foreach (var pair in transaction.ScanAllAsync(new KvScanQuery(Reverse: true)))
         {
             keys.Add(Encoding.UTF8.GetString(pair.Key.Span));
         }
 
         // Assert
+
         Assert.Equal(["e", "d", "c", "b", "a"], keys);
     }
 
@@ -155,10 +159,12 @@ public sealed class InMemoryKvBrokerFidelityTests
     {
         // Arrange
         var client = new InMemoryKvClient();
+
         for (var index = 0; index < 4; index++)
         {
             client.Seed(Route, Bytes($"k{index}"), new byte[30_000]);
         }
+
         await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
 
         // Act
@@ -459,10 +465,12 @@ public sealed class InMemoryKvBrokerFidelityTests
         var tasks = Enumerable.Range(0, writers).Select(index => Task.Run(async () =>
         {
             await using var transaction = await client.BeginAsync($"kv://tenant/app/r{index:D2}");
+
             for (var key = 0; key <= index; key++)
             {
                 await transaction.PutAsync(new[] { (byte)key }, ReadOnlyMemory<byte>.Empty);
             }
+
             start.Wait();
             await transaction.CommitAsync(KvDurability.Buffered);
         })).ToArray();
@@ -475,6 +483,7 @@ public sealed class InMemoryKvBrokerFidelityTests
             .ToArray();
         var delivered = new List<string>();
         await using var enumerator = subscription.GetAsyncEnumerator();
+
         while (delivered.Count < writers)
         {
             Assert.True(await enumerator.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
@@ -482,16 +491,19 @@ public sealed class InMemoryKvBrokerFidelityTests
         }
 
         // Assert
+
         Assert.Equal(committed, delivered);
     }
 
     static InMemoryKvClient SeededClient(params string[] keys)
     {
         var client = new InMemoryKvClient();
+
         foreach (var key in keys)
         {
             client.Seed(Route, Bytes(key), ReadOnlyMemory<byte>.Empty);
         }
+
         return client;
     }
 

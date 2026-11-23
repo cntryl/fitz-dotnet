@@ -82,6 +82,7 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
             {
                 if (kind == MessageTypes.RpcRequest)
                     receive = handler;
+
                 return new TestRegistration();
             }, getConnectionClosedToken: () => connection.ConnectionClosedToken);
         await using var worker = await rpc.RegisterWorkerAsync("rpc://prod/app/work", async (_, _, ct) =>
@@ -100,6 +101,7 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
 
         // Act
         Exception? failure;
+
         try
         {
             failure = await Record.ExceptionAsync(() => connection.CloseAsync());
@@ -110,6 +112,7 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
         }
 
         // Assert
+
         Assert.Null(failure);
         Assert.Equal(ConnectionState.Closed, connection.State);
     }
@@ -161,11 +164,14 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
                 writer.WriteU64(77);
                 return Task.FromResult(writer.Build());
             }
+
+
             if (type == MessageTypes.LeaseRenew)
             {
                 renewals++;
                 return malformed ? Task.FromResult(new byte[] { 0 }) : Task.FromException<byte[]>(new RequestTimeoutException("Sent renewal reply was lost."));
             }
+
             return Task.FromResult(new byte[] { 0 });
         });
         await using var lease = await client.AcquireAsync("lease://prod/app/lock", TimeSpan.FromSeconds(30));
@@ -201,8 +207,10 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
         await response.Resuming.Task.WaitAsync(TimeSpan.FromSeconds(3));
 
         // Act
+
         foreach (var listener in listeners.ToArray())
             listener();
+
         response.AllowResume.Set();
 
         // Assert
@@ -220,8 +228,10 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
         {
             var result = _source.GetResult(token);
             Resuming.TrySetResult();
+
             if (!AllowResume.Wait(TimeSpan.FromSeconds(10)))
                 throw new TimeoutException("Continuation was not released.");
+
             return result;
         }
         public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);
@@ -244,6 +254,7 @@ public sealed class ConnectionAndHandleLifecycleRegressionTests
                 await cancellation.CancelAsync();
                 throw new TransportSendCanceledException(new OperationCanceledException(ct), ct);
             }
+
             await _inner.SendAsync(data, ct);
         }
         public ValueTask<PooledFrame> ReceiveAsync(CancellationToken ct = default) => _inner.ReceiveAsync(ct);

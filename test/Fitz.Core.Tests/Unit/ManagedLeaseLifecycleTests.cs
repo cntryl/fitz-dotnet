@@ -42,6 +42,7 @@ public sealed class ManagedLeaseLifecycleTests
         async ValueTask RunCallback(CancellationToken ct)
         {
             callbackStarted.TrySetResult();
+
             try
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, ct);
@@ -83,6 +84,7 @@ public sealed class ManagedLeaseLifecycleTests
             if (!pending.IsCompleted)
             {
                 await parentCancellation.CancelAsync();
+
                 try
                 {
                     await pending;
@@ -126,6 +128,7 @@ public sealed class ManagedLeaseLifecycleTests
         async ValueTask RunCallback(CancellationToken ct)
         {
             callbackStarted.TrySetResult();
+
             try
             {
                 while (!ct.IsCancellationRequested)
@@ -180,6 +183,7 @@ public sealed class ManagedLeaseLifecycleTests
             if (!pending.IsCompleted)
             {
                 await parentCancellation.CancelAsync();
+
                 try
                 {
                     await pending;
@@ -267,6 +271,7 @@ public sealed class ManagedLeaseLifecycleTests
                     throw cancellationHookFailure;
                 });
                 callbackStarted.TrySetResult();
+
                 try
                 {
                     await callbackCancellationObserved.Task;

@@ -168,10 +168,12 @@ public sealed partial class ConformanceSmokeTests
 
             var readTx = await client.Kv.BeginAsync(route, KvMode.ReadOnly);
             var result = await readTx.GetAsync("user:1"u8.ToArray());
+
             if (result is not KvFound { Value: var bytes })
             {
                 return Result("CS-003", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "expected found=true");
             }
+
 
             var value = Encoding.UTF8.GetString(bytes.Span);
             evidence.Add($"read-after-commit returned \"{value}\"");
@@ -196,6 +198,7 @@ public sealed partial class ConformanceSmokeTests
 
             var noWorkerRoute = IntegrationFixture.CreateUniqueRoute("rpc");
             Exception? caught = null;
+
             try
             {
                 await foreach (var _ in client.Rpc.CallStreamingAsync(noWorkerRoute, "ping"u8.ToArray()))
@@ -206,6 +209,7 @@ public sealed partial class ConformanceSmokeTests
             {
                 caught = ex;
             }
+
 
             if (caught is null)
             {
@@ -239,6 +243,7 @@ public sealed partial class ConformanceSmokeTests
             await client.ConnectAsync();
 
             Exception? caught = null;
+
             try
             {
                 await client.Schedule.CreateAsync(IntegrationFixture.CreateUniqueRoute("schedule"), "not a cron", ScheduleDeliveryMode.Broadcast, ReadOnlyMemory<byte>.Empty);
@@ -247,6 +252,7 @@ public sealed partial class ConformanceSmokeTests
             {
                 caught = ex;
             }
+
             if (caught is not ScheduleException)
             {
                 return Result("CS-005", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, $"invalid cron returned {caught?.GetType().Name ?? "no error"}");
@@ -277,6 +283,7 @@ public sealed partial class ConformanceSmokeTests
             await client.ConnectAsync();
 
             Exception? rpcError = null;
+
             try
             {
                 await foreach (var _ in client.Rpc.CallStreamingAsync(IntegrationFixture.CreateUniqueRoute("rpc"), "ping"u8.ToArray()))
@@ -288,9 +295,11 @@ public sealed partial class ConformanceSmokeTests
                 rpcError = ex;
             }
 
+
             if (rpcError is not null)
             {
                 evidence.Add($"rpc error type: {rpcError.GetType().Name}");
+
                 if (rpcError is RpcException typedRpc)
                 {
                     evidence.Add($"rpc error code: {typedRpc.Code}");
@@ -304,6 +313,7 @@ public sealed partial class ConformanceSmokeTests
 
             var tx2 = await client.Kv.BeginAsync(kvRoute);
             Exception? kvError = null;
+
             try
             {
                 await tx2.InsertAsync("x"u8.ToArray(), "2"u8.ToArray());
@@ -316,6 +326,7 @@ public sealed partial class ConformanceSmokeTests
             {
                 await tx2.RollbackAsync();
             }
+
 
             if (kvError is not null)
             {
@@ -359,6 +370,7 @@ public sealed partial class ConformanceSmokeTests
 
             Exception? caught = null;
             var started = DateTimeOffset.UtcNow;
+
             try
             {
                 await foreach (var _ in callerClient.Rpc.CallStreamingAsync(route, "block"u8.ToArray()))
@@ -370,11 +382,14 @@ public sealed partial class ConformanceSmokeTests
                 caught = ex;
             }
 
+
             var elapsed = DateTimeOffset.UtcNow - started;
+
             if (caught is null)
             {
                 return Result("CS-007", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, "timeout did not surface");
             }
+
 
             evidence.Add($"rpc threw after ~{elapsed.TotalMilliseconds:F0}ms");
             evidence.Add($"error type: {caught.GetType().Name}");
@@ -429,6 +444,7 @@ public sealed partial class ConformanceSmokeTests
             await cts.CancelAsync();
 
             Exception? caught = null;
+
             try
             {
                 await callTask;
@@ -437,6 +453,7 @@ public sealed partial class ConformanceSmokeTests
             {
                 caught = ex;
             }
+
 
             if (caught is null)
             {
@@ -492,6 +509,7 @@ public sealed partial class ConformanceSmokeTests
             await callerClient.DisposeAsync();
 
             Exception? caught = null;
+
             try
             {
                 await callTask;
@@ -500,6 +518,7 @@ public sealed partial class ConformanceSmokeTests
             {
                 caught = ex;
             }
+
 
             if (caught is null)
             {
@@ -625,12 +644,14 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("same client returned to authenticated state after reconnect");
 
             var rpcDisconnect = await CaptureExceptionAsync(() => pendingCallTask);
+
             if (rpcDisconnect is not ConnectionException and not RequestTimeoutException
                 and not RpcException { DomainCode: FitzErrorCodes.RpcWorkerNotFound })
             {
                 evidence.Add($"pending rpc call surfaced {rpcDisconnect?.GetType().Name ?? "no error"}");
                 return Result("CS-010", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, rpcDisconnect?.Message ?? "pending rpc call unexpectedly succeeded");
             }
+
 
             evidence.Add($"pending rpc call terminated with {rpcDisconnect!.GetType().Name}");
 
@@ -673,10 +694,12 @@ public sealed partial class ConformanceSmokeTests
             await verifierClient.ConnectAsync();
 
             var rpcResponses = new List<string>();
+
             await foreach (var frame in verifierClient.Rpc.CallStreamingAsync(restoredWorkerRoute, "verify"u8.ToArray()))
             {
                 rpcResponses.Add(Encoding.UTF8.GetString(frame.Body.Span));
             }
+
 
             if (rpcResponses.Count != 1 || !string.Equals(rpcResponses[0], "same-client-worker", StringComparison.Ordinal))
             {
@@ -730,10 +753,12 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("stream session appended 3 records");
 
             var records = new List<StreamRecord>();
+
             await foreach (var batch in client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10 }))
             {
                 records.AddRange(batch.Records);
             }
+
 
             if (records.Count != 3)
             {
@@ -778,10 +803,12 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("stream session committed");
 
             var count = 0;
+
             await foreach (var batch in client.Stream.ReadAsync(route, 0, StreamReadMode.Replay))
             {
                 count += batch.Records.Count;
             }
+
 
             if (count < 2)
             {
@@ -816,6 +843,7 @@ public sealed partial class ConformanceSmokeTests
             evidence.Add("written first record at offset 0");
 
             Exception? caught = null;
+
             try
             {
                 var wrongSession = await client.Stream.BeginAsync(route);
@@ -825,6 +853,7 @@ public sealed partial class ConformanceSmokeTests
             {
                 caught = ex;
             }
+
 
             if (caught is null)
             {
@@ -871,6 +900,7 @@ public sealed partial class ConformanceSmokeTests
             })).ToArray();
 
             var values = await Task.WhenAll(tasks);
+
             for (var index = 0; index < values.Length; index++)
             {
                 if (!string.Equals(values[index], $"value-{index}", StringComparison.Ordinal))
@@ -878,6 +908,7 @@ public sealed partial class ConformanceSmokeTests
                     return Result("CS-014", transport, authMode, "fail", sw.ElapsedMilliseconds, evidence, $"task {index}: expected value-{index} got {values[index]}");
                 }
             }
+
 
             evidence.Add("3 concurrent kv transactions completed correctly");
             evidence.Add("cross-domain concurrency and within-domain ordering were not exercised");
@@ -970,10 +1001,12 @@ public sealed partial class ConformanceSmokeTests
             };
 
             var records = new List<StreamRecord>();
+
             await foreach (var batch in client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10, Filter = filter }))
             {
                 records.AddRange(batch.Records);
             }
+
 
             if (records.Count != 1)
             {
@@ -994,19 +1027,23 @@ public sealed partial class ConformanceSmokeTests
             }
 
             var page = await client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10, Filter = filter }).FirstAsync();
+
             if (page.Items.Count != 2)
             {
                 evidence.Add($"page returned {page.Items.Count} items");
                 return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, $"expected 2 page items, got {page.Items.Count}");
             }
 
+
             var firstPageItem = page.Items[0];
             var firstRecord = firstPageItem.Record;
+
             if (firstPageItem.Kind != StreamReadItemKind.Event || firstRecord is null)
             {
                 evidence.Add($"first page item kind was {firstPageItem.Kind}");
                 return Result("CS-016", transport, authMode, "partial", sw.ElapsedMilliseconds, evidence, "expected first page item to be an event");
             }
+
 
             if (firstRecord.Offset != firstOffset.Value)
             {
@@ -1071,10 +1108,12 @@ public sealed partial class ConformanceSmokeTests
     static async Task AssertReconnectInvalidationAsync(Func<Task> operation, Func<Exception, bool> predicate, string successEvidence, List<string> evidence)
     {
         var ex = await CaptureExceptionAsync(operation);
+
         if (ex is null)
         {
             throw new InvalidOperationException($"{successEvidence} did not throw after reconnect.");
         }
+
 
         if (!predicate(ex))
         {

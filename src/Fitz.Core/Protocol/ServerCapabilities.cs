@@ -22,6 +22,7 @@ sealed record ServerCapabilities(
             capabilities = None;
             return false;
         }
+
         capabilities = new ServerCapabilities(
             BinaryPrimitives.ReadUInt16BigEndian(payload[..2]),
             BinaryPrimitives.ReadUInt32BigEndian(payload.Slice(2, 4)),

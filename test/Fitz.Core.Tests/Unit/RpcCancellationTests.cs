@@ -59,8 +59,11 @@ public sealed class RpcCancellationTests
             {
                 if (type == MessageTypes.RpcResponse)
                     response = handler;
+
+
                 if (type == MessageTypes.RpcLifecycle)
                     lifecycle = handler;
+
                 return new TestRegistration();
             },
             getConnectionClosedToken: () => current,
@@ -151,7 +154,23 @@ public sealed class RpcCancellationTests
         using var rpc = CreateClient(handler => receive = handler,
             dispatchAsyncHandler: handler => { dispatch = handler; return true; },
             lifecycle: handler => lifecycle = handler,
-            send: (kind, payload, _) => { if (kind == MessageTypes.RpcCancel && payload[0] == 3 && payload[1] == 1) acknowledged.TrySetResult(); return Task.CompletedTask; });
+
+
+
+
+
+
+
+
+            send: (kind, payload, _) =>
+            {
+                if (kind == MessageTypes.RpcCancel && payload[0] == 3 && payload[1] == 1)
+                {
+                    acknowledged.TrySetResult();
+                }
+
+                return Task.CompletedTask;
+            });
         await using var worker = await rpc.RegisterWorkerAsync("rpc://prod/app/work", async (_, _, ct) =>
         {
             invocations++;
@@ -187,6 +206,7 @@ public sealed class RpcCancellationTests
         {
             if (kind == MessageTypes.RpcRequest)
                 payload = request;
+
             return Task.CompletedTask;
         });
         var call = rpc.CallStreamingAsync("rpc://prod/app/work", "work"u8.ToArray(), TimeSpan.FromMilliseconds(20));
@@ -271,8 +291,11 @@ public sealed class RpcCancellationTests
         {
             if (kind == MessageTypes.RpcResponse)
                 terminalSent.TrySetResult();
+
+
             if (kind == MessageTypes.RpcCancel)
                 acknowledged.TrySetResult();
+
             return Task.CompletedTask;
         });
         var canceled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -321,19 +344,24 @@ public sealed class RpcCancellationTests
         Assert.True(cancelled.Task.IsCompletedSuccessfully);
     }
 
-    static RpcClient CreateClient(Action<Action<byte[]>> receive,
+    static RpcClient CreateClient(
+        Action<Action<byte[]>> receive,
         Func<ushort, byte[], CancellationToken, Task>? send = null,
         Func<Func<CancellationToken, ValueTask>, bool>? dispatchAsyncHandler = null,
         Func<CancellationToken>? getConnectionClosedToken = null,
-        Action<Action<byte[]>>? lifecycle = null) => new(
+        Action<Action<byte[]>>? lifecycle = null
+    ) => new(
         (_, _, _) => Task.FromResult(new byte[] { 0, 0, 0, 0, 0 }),
         send: send ?? ((_, _, _) => Task.CompletedTask),
         registerNotificationHandler: (kind, handler) =>
         {
             if (kind == MessageTypes.RpcRequest)
                 receive(handler);
+
+
             if (kind == MessageTypes.RpcLifecycle)
                 lifecycle?.Invoke(handler);
+
             return new Registration();
         },
         dispatchAsyncHandler: dispatchAsyncHandler,

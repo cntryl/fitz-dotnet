@@ -49,6 +49,7 @@ public sealed partial class ConformanceSmokeTests
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var evidence = new List<string>();
+
         try
         {
             await using var client = IntegrationFixture.CreateClientForMode(transport, authMode);
@@ -61,6 +62,7 @@ public sealed partial class ConformanceSmokeTests
                 Clauses = [new StreamFilterClause { Kind = StreamFilterClauseKind.Equals, Value = discriminator }],
             };
             var tail = await client.Stream.ReadAsync("stream://**", 0, StreamReadMode.Replay).LastAsync();
+
             foreach (var route in new[] { firstRoute, secondRoute })
             {
                 await using var session = await client.Stream.BeginAsync(route);
@@ -69,11 +71,13 @@ public sealed partial class ConformanceSmokeTests
                 await session.CommitAsync(StreamCommitMode.Sync);
             }
 
+
             var records = new List<StreamRecord>();
             var filteredOnly = false;
             var pages = 0;
             var next = tail.NextOffset;
             var options = new StreamReadOptions { BatchSize = 1, Filter = filter };
+
             await foreach (var batch in client.Stream.ReadAsync("stream://**", next, StreamReadMode.Replay, options))
             {
                 Assert.Equal(next, batch.FromOffset);
@@ -82,6 +86,7 @@ public sealed partial class ConformanceSmokeTests
                 next = batch.NextOffset;
                 pages++;
             }
+
 
             Assert.True(pages > 1);
             Assert.True(filteredOnly);

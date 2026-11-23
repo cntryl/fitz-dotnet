@@ -74,6 +74,7 @@ sealed class ManualTimeProvider : TimeProvider
     public async Task WaitForTimerAsync(TimeSpan dueIn)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
         while (!HasTimerDueIn(dueIn))
             await Task.Delay(TimeSpan.FromMilliseconds(1), deadline.Token).ConfigureAwait(false);
     }

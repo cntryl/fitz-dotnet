@@ -19,6 +19,7 @@ public sealed class RpcSessionAndSchedulingTests
             {
                 if (kind == MessageTypes.RpcResponse)
                     response = handler;
+
                 return new TestRegistration();
             },
             getConnectionClosedToken: () => previous.Token,
@@ -201,10 +202,12 @@ public sealed class RpcSessionAndSchedulingTests
 
         // Act
         harness.Receive(Request(2, "rpc://prod/app/other", budgetExpires ? 30U : null));
+
         if (!budgetExpires)
             harness.Cancel(2);
 
         // Assert
+
         try
         {
             await harness.SecondCleanup.Task.WaitAsync(TimeSpan.FromSeconds(1));
@@ -299,8 +302,10 @@ public sealed class RpcSessionAndSchedulingTests
         writer.WriteU32(1);
         writer.WriteU8(id);
         writer.WriteU8(budget.HasValue ? (byte)1 : (byte)0);
+
         if (budget is { } remaining)
             writer.WriteU32(remaining);
+
         return writer.Build();
     }
 
@@ -321,16 +326,22 @@ public sealed class RpcSessionAndSchedulingTests
                 {
                     if (kind == MessageTypes.RpcResponse)
                         Interlocked.Increment(ref _rejections);
+
+
                     if (kind == MessageTypes.RpcCancel && payload[0] == 3 && payload[1] == 2)
                         SecondCleanup.TrySetResult();
+
                     return Task.CompletedTask;
                 },
                 registerNotificationHandler: (kind, handler) =>
                 {
                     if (kind == MessageTypes.RpcRequest)
                         _request = handler;
+
+
                     if (kind == MessageTypes.RpcLifecycle)
                         _lifecycle = handler;
+
                     return new TestRegistration();
                 });
         }

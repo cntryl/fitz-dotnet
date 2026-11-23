@@ -59,6 +59,7 @@ public sealed class HotPathRegressionTests
         mux.SetConnected();
         var countdown = new CountdownEvent(subscribers);
         var registrations = new List<IDisposable>();
+
         for (var i = 0; i < subscribers; i++)
         {
             registrations.Add(mux.RegisterNotificationHandler(
@@ -67,14 +68,17 @@ public sealed class HotPathRegressionTests
         }
 
         // Act
+
         mux.DispatchNotification(MessageTypes.NoticeNotify, new byte[] { 0x1, 0x2 });
 
         // Assert
         Assert.True(await Task.Run(() => countdown.Wait(TimeSpan.FromSeconds(10))));
+
         foreach (var registration in registrations)
         {
             registration.Dispose();
         }
+
 
         countdown.Dispose();
     }

@@ -22,6 +22,7 @@ public sealed partial class ConformanceSmokeTests
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var evidence = new List<string>();
+
         try
         {
             await using var client = IntegrationFixture.CreateClientForMode(transport, authMode);
@@ -53,6 +54,7 @@ public sealed partial class ConformanceSmokeTests
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var evidence = new List<string>();
+
         try
         {
             await StreamBoundariesTests.ExerciseBoundaryAsync(transport, authMode);
@@ -71,6 +73,7 @@ public sealed partial class ConformanceSmokeTests
     {
         var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         var evidence = new List<string>();
+
         try
         {
             await using var client = IntegrationFixture.CreateClientForMode(transport, authMode);

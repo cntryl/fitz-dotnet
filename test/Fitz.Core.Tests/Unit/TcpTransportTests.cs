@@ -102,13 +102,16 @@ public sealed class TcpTransportTests
     static async Task ReadExactAsync(NetworkStream stream, byte[] buffer)
     {
         var totalRead = 0;
+
         while (totalRead < buffer.Length)
         {
             var read = await stream.ReadAsync(buffer.AsMemory(totalRead, buffer.Length - totalRead));
+
             if (read == 0)
             {
                 throw new EndOfStreamException("Unexpected EOF");
             }
+
 
             totalRead += read;
         }

@@ -49,7 +49,8 @@ sealed class RpcWorkerHost : IDisposable
         Func<CancellationToken>? getConnectionClosedToken,
         AsyncHandlerDispatch? dispatchAsyncHandler,
         Action<Exception>? onWorkerError,
-        TimeProvider time)
+        TimeProvider time
+    )
     {
         _time = time;
         _owner = owner;
@@ -68,13 +69,16 @@ sealed class RpcWorkerHost : IDisposable
         string pattern,
         Func<RpcRequest, IRpcResponseWriter, CancellationToken, ValueTask> handler,
         uint maxConcurrency,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         lock (_sync)
         {
             ObjectDisposedException.ThrowIf(_disposed, _owner);
+
             if (_workers.ContainsKey(pattern))
                 throw new RpcException($"worker pattern '{pattern}' is already registered", "ALREADY_REGISTERED");
+
 
             _workers[pattern] = new LocalWorker(handler, maxConcurrency);
             EnsureRequestHandlerLocked();
@@ -118,8 +122,10 @@ sealed class RpcWorkerHost : IDisposable
             }
         }
 
+
         if (active is not null)
             _ = CancelAsync(active);
+
         if (discarded is not null)
             _ = SendCleanupAckAsync(discarded.CorrelationId, discarded.ConnectionClosed);
     }
@@ -132,6 +138,7 @@ sealed class RpcWorkerHost : IDisposable
         {
             if (_disposed)
                 return;
+
             _disposed = true;
             _requestRegistration?.Dispose();
             _requestRegistration = null;
@@ -142,8 +149,10 @@ sealed class RpcWorkerHost : IDisposable
             _active.Clear();
             _cancelledBeforeStart.Clear();
             _claimed.Clear();
+
             foreach (var queued in _queued.Values)
                 queued.Request = null;
+
             _queued.Clear();
         }
 
@@ -164,8 +173,10 @@ sealed class RpcWorkerHost : IDisposable
     {
         var receivedAt = _time.GetTimestamp();
         var connectionClosed = _getConnectionClosedToken?.Invoke() ?? CancellationToken.None;
+
         if (RpcWire.TryDecodeRequest(payload) is not { } request)
             return;
+
 
         var queued = new QueuedInvocation(request, receivedAt, connectionClosed);
         lock (_sync)
@@ -196,6 +207,7 @@ sealed class RpcWorkerHost : IDisposable
         {
             if (!_queued.Remove(queued.Id) || queued.Request is not { } claimed)
                 return;
+
             request = claimed;
             queued.Request = null;
             _claimed.Add(queued.Id);
@@ -240,6 +252,7 @@ sealed class RpcWorkerHost : IDisposable
             }
 
             LocalWorker? reserved = null;
+
             try
             {
                 if (cancelledBeforeStart || remaining == TimeSpan.Zero)
@@ -248,11 +261,13 @@ sealed class RpcWorkerHost : IDisposable
                 try
                 {
                     reserved = await ReserveAsync(request.Route, invocation.Token).ConfigureAwait(false);
+
                     if (reserved is null)
                     {
                         await SendBusyAsync(request, connectionClosed).ConfigureAwait(false);
                         return;
                     }
+
 
                     await reserved.Handler(
                         new RpcRequest(request.Route, request.Body, RemainingBudget(request, receivedAt), _time),
@@ -291,6 +306,7 @@ sealed class RpcWorkerHost : IDisposable
                     // Waiting invocations are cancellation targets too; always remove them,
                     // including failures before a worker could be reserved.
                     _active.Remove(request.InvocationId);
+
                     if (reserved is not null)
                     {
                         reserved.Gate.Release();
@@ -310,6 +326,7 @@ sealed class RpcWorkerHost : IDisposable
     {
         if (request.Budget is not { } budget)
             return null;
+
         var remaining = budget - _time.GetElapsedTime(receivedAt);
         return remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero;
     }
@@ -319,6 +336,7 @@ sealed class RpcWorkerHost : IDisposable
     async ValueTask<LocalWorker?> ReserveAsync(string route, CancellationToken ct)
     {
         var waiting = false;
+
         try
         {
             while (true)
@@ -328,19 +346,24 @@ sealed class RpcWorkerHost : IDisposable
                 {
                     if (FindWorkerLocked(route, requireCapacity: true) is { } free && free.Gate.Wait(0, CancellationToken.None))
                         return free;
+
                     if (FindWorkerLocked(route, requireCapacity: false) is null)
                         return null;
+
                     if (!waiting)
                     {
                         // The broker limits admission independently for each overlapping
                         // registration. Local credit can therefore be released in a different
                         // order; retain a bounded wait rather than spuriously reject that work.
                         var capacity = _workers.Values.Sum(static worker => checked((int)worker.MaxConcurrency));
+
                         if (_waitingCount >= capacity)
                             return null;
+
                         _waitingCount++;
                         waiting = true;
                     }
+
 
                     available = _availability.Task;
                 }
@@ -368,11 +391,14 @@ sealed class RpcWorkerHost : IDisposable
         string? bestPattern = null;
         LocalWorker? best = null;
         (int LiteralSegments, int SingleWildcards, int SegmentCount) bestSpecificity = default;
+
         foreach (var (pattern, worker) in _workers)
         {
             if ((requireCapacity && worker.Gate.CurrentCount == 0) || !RouteValidation.MatchesPattern(route, pattern))
                 continue;
+
             var specificity = GetPatternSpecificity(pattern);
+
             if (bestPattern is null || specificity.CompareTo(bestSpecificity) > 0 ||
                 (specificity == bestSpecificity && string.CompareOrdinal(pattern, bestPattern) < 0))
             {
@@ -381,6 +407,7 @@ sealed class RpcWorkerHost : IDisposable
                 bestSpecificity = specificity;
             }
         }
+
 
         return best;
     }
@@ -391,6 +418,7 @@ sealed class RpcWorkerHost : IDisposable
         var segments = pattern[pathStart..].Split('/');
         var literals = 0;
         var singleWildcards = 0;
+
         foreach (var segment in segments)
         {
             if (segment == "*")
@@ -398,6 +426,7 @@ sealed class RpcWorkerHost : IDisposable
             else if (segment != "**")
                 literals++;
         }
+
 
         return (literals, singleWildcards, segments.Length);
     }
@@ -431,6 +460,7 @@ sealed class RpcWorkerHost : IDisposable
         lock (_sync)
         {
             RemoveLocked(pattern);
+
             if (_workers.Count == 0)
             {
                 _reconnectRegistration?.Dispose();
@@ -446,6 +476,7 @@ sealed class RpcWorkerHost : IDisposable
             snapshot = [.. _workers.Select(static entry => (entry.Key, entry.Value.MaxConcurrency))];
 
         var restored = new List<string>(snapshot.Length);
+
         try
         {
             foreach (var (pattern, maxConcurrency) in snapshot)
@@ -514,6 +545,7 @@ sealed class RpcWorkerHost : IDisposable
         using var ack = new BinaryBufferWriter();
         ack.WriteU8(3);
         ack.WriteBytes(correlationId);
+
         try
         {
             await _send(MessageTypes.RpcCancel, ack.WrittenMemory, connectionClosed, connectionClosed).ConfigureAwait(false);

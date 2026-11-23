@@ -32,9 +32,12 @@ public sealed class QueueSubscription : SubscriptionHandle<QueueAvailabilityEven
     /// <param name="completion">Externally owned completion signal, or <see langword="null"/>.</param>
     /// <param name="timeProvider">The clock that bounds cleanup on disposal; the system clock by default.</param>
     public QueueSubscription(
-        string pattern, IAsyncEnumerable<QueueAvailabilityEvent> notifications,
+        string pattern,
+        IAsyncEnumerable<QueueAvailabilityEvent> notifications,
         Func<CancellationToken, ValueTask> unsubscribe,
-        Task? completion = null, TimeProvider? timeProvider = null)
+        Task? completion = null,
+        TimeProvider? timeProvider = null
+    )
         : base(pattern, notifications, unsubscribe, completion, timeProvider)
     {
     }
