@@ -86,6 +86,7 @@ static async Task CompilePreviewApiAsync(
         "notice://example/app/*",
         ct).ConfigureAwait(false);
     await using var configuredSubscription = ((IAsyncDisposable)subscription).ConfigureAwait(false);
+
     await foreach (var notification in subscription
         .WithCancellation(ct)
         .ConfigureAwait(false))
