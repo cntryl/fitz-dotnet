@@ -66,8 +66,10 @@ public sealed class WebSocketTransportTests
     [Fact]
     public void ShouldAcceptBinaryMessageGivenWebsocketReceiveFrameWhenTransportOperationRuns() => WebSocketTransport.EnsureBinaryMessage(WebSocketMessageType.Binary);
 
-    [Fact]
-    public async Task ShouldKeepSocketOpenGivenRacingCallerCancellationWhenRpcFrameIsAlreadyWriting()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ShouldKeepSocketOpenGivenRacingCallerCancellationWhenRpcFrameIsAlreadyWriting(bool queuedSessionEnds)
     {
         // Arrange
         using var stream = new GatedWriteStream();
@@ -75,20 +77,22 @@ public sealed class WebSocketTransportTests
         await using var transport = new WebSocketTransport(socket, new Uri("ws://localhost/ws"), TimeSpan.FromSeconds(5), 1024);
         using var activeCaller = new CancellationTokenSource();
         using var queuedCaller = new CancellationTokenSource();
+        using var queuedSession = new CancellationTokenSource();
         var attempts = 0;
         var active = transport.SendRpcRequestAsync("rpc"u8.ToArray(), () => attempts++, CancellationToken.None, activeCaller.Token);
-        await stream.FirstWrite.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        var queued = transport.SendRpcRequestAsync("queued"u8.ToArray(), () => attempts++, CancellationToken.None, queuedCaller.Token);
 
-        // Act
-        await queuedCaller.CancelAsync();
-        await activeCaller.CancelAsync();
-        stream.ReleaseWrite.SetResult();
-
-        // Assert
         try
         {
+            await stream.FirstWrite.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            var queued = transport.SendRpcRequestAsync("queued"u8.ToArray(), () => attempts++, queuedSession.Token, queuedCaller.Token);
+
+            // Act
+            await (queuedSessionEnds ? queuedSession : queuedCaller).CancelAsync();
+            await activeCaller.CancelAsync();
+
+            // Assert
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(TimeSpan.FromSeconds(2)));
+            stream.ReleaseWrite.SetResult();
             await active.WaitAsync(TimeSpan.FromSeconds(2));
             await transport.SendAsync("next"u8.ToArray());
             Assert.Equal(WebSocketState.Open, socket.State);
@@ -97,6 +101,7 @@ public sealed class WebSocketTransportTests
         }
         finally
         {
+            stream.ReleaseWrite.TrySetResult();
             socket.Abort();
         }
     }

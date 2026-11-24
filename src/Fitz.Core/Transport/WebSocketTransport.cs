@@ -129,7 +129,13 @@ public sealed class WebSocketTransport : ITransport
             throw new ProtocolException($"WebSocket frame length exceeds max frame size {_maxFrameSize}.");
         }
 
-        await _sendLock.WaitAsync(admission).ConfigureAwait(false);
+        if (!_sendLock.Wait(0))
+        {
+            using var queued = admission != writeLifetime
+                ? CancellationTokenSource.CreateLinkedTokenSource(admission, writeLifetime)
+                : null;
+            await _sendLock.WaitAsync(queued?.Token ?? admission).ConfigureAwait(false);
+        }
 
         try
         {
