@@ -304,6 +304,63 @@ public sealed class MultiplexerTests
     }
 
     [Fact]
+    public async Task ShouldIgnoreFramesGivenRetiredReceiveLoopWhenCorrelationIsReused()
+    {
+        // Arrange
+        using var original = new CancellationTokenSource();
+        using var replacement = new CancellationTokenSource();
+        using var mux = new Multiplexer();
+        var delivered = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler = mux.RegisterNotificationHandler(90, payload => delivered.TrySetResult(payload.ToArray()));
+        var retiredSession = new NotificationSession(original.Token, default);
+        mux.SetConnected(retiredSession);
+        mux.SetDisconnected();
+        mux.BeginNotificationRestore();
+        var currentSession = new NotificationSession(replacement.Token, default);
+        mux.SetConnected(currentSession);
+        var pending = mux.RequestAsync(90, [], static (_, _) => Task.CompletedTask,
+            TimeSpan.FromSeconds(5), correlationId: 1);
+
+        // Act
+        mux.DispatchCorrelated(1, new byte[] { 1 }, ct: original.Token);
+        mux.DispatchNotification(90, new byte[] { 1 }, original.Token);
+        Assert.False(pending.IsCompleted);
+        mux.DispatchCorrelated(1, new byte[] { 2 }, ct: replacement.Token);
+        mux.DispatchNotification(90, new byte[] { 2 }, replacement.Token);
+        Assert.Throws<ConnectionException>(() => mux.CompleteNotificationRestore(retiredSession));
+        Assert.False(delivered.Task.IsCompleted);
+        mux.CompleteNotificationRestore(currentSession);
+
+        // Assert
+        Assert.Equal([2], await pending.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal([2], await delivered.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task ShouldRejectRequestGivenRetiredSessionWhenRegistrationIsDelayed()
+    {
+        // Arrange
+        using var original = new CancellationTokenSource();
+        using var replacement = new CancellationTokenSource();
+        using var mux = new Multiplexer();
+        mux.SetConnected(new NotificationSession(default, original.Token));
+        mux.SetDisconnected();
+        mux.SetConnected(new NotificationSession(default, replacement.Token));
+        var writes = 0;
+
+        // Act
+        var act = () => mux.RequestAsync(90, [], (_, _) =>
+        {
+            Interlocked.Increment(ref writes);
+            return Task.CompletedTask;
+        }, TimeSpan.FromSeconds(5), correlationId: 1, expectedSession: original.Token);
+
+        // Assert
+        await Assert.ThrowsAsync<ConnectionException>(act);
+        Assert.Equal(0, writes);
+    }
+
+    [Fact]
     public async Task ShouldDiscardEntireRestoreGivenQueueOverflowWhenPublishingReplacementSession()
     {
         // Arrange
@@ -321,9 +378,6 @@ public sealed class MultiplexerTests
         mux.DispatchNotification(90, new byte[] { 1 });
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
-        for (var i = 0; i < Multiplexer.NotificationQueueCapacity - 1; i++)
-            mux.DispatchNotification(90, new byte[] { 1 });
-
         mux.SetDisconnected();
         mux.BeginNotificationRestore();
         mux.SetConnected();
@@ -331,9 +385,10 @@ public sealed class MultiplexerTests
         // Act
         try
         {
-            mux.DispatchNotification(91, new byte[] { 2 });
-            mux.DispatchNotification(91, new byte[] { 3 });
-            Assert.Throws<SubscriptionBackpressureException>(mux.CompleteNotificationRestore);
+            for (var i = 0; i <= Multiplexer.NotificationQueueCapacity; i++)
+                mux.DispatchNotification(91, new byte[] { 2 });
+
+            Assert.Throws<SubscriptionBackpressureException>(() => mux.CompleteNotificationRestore());
         }
         finally
         {
@@ -343,5 +398,51 @@ public sealed class MultiplexerTests
         // Assert
         await mux.CompleteNotificationDispatchAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
         Assert.Equal(0, delivered);
+    }
+
+    [Fact]
+    public async Task ShouldRestoreFullCapacityGivenQueuedOldFramesWhenSessionIsReplaced()
+    {
+        // Arrange
+        using var mux = new Multiplexer();
+        using var release = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldDeliveries = 0;
+        using var original = mux.RegisterNotificationHandler(90, _ =>
+        {
+            Interlocked.Increment(ref oldDeliveries);
+            entered.TrySetResult();
+            release.Wait(TimeSpan.FromSeconds(5));
+        });
+        var restoredDeliveries = 0;
+        using var restored = mux.RegisterNotificationHandler(91, _ => Interlocked.Increment(ref restoredDeliveries));
+        mux.SetConnected();
+        mux.DispatchNotification(90, new byte[] { 1 });
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        for (var i = 0; i < Multiplexer.NotificationQueueCapacity; i++)
+            mux.DispatchNotification(90, new byte[] { 1 });
+
+        // Act
+        try
+        {
+            mux.SetDisconnected();
+            mux.BeginNotificationRestore();
+            mux.SetConnected();
+
+            for (var i = 0; i < Multiplexer.NotificationQueueCapacity; i++)
+                mux.DispatchNotification(91, new byte[] { 2 });
+
+            mux.CompleteNotificationRestore();
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        // Assert
+        await mux.CompleteNotificationDispatchAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        Assert.Equal(1, oldDeliveries);
+        Assert.Equal(Multiplexer.NotificationQueueCapacity, restoredDeliveries);
     }
 }

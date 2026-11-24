@@ -68,7 +68,7 @@ public class MultiplexerHotPathBenchmarks : IDisposable
             static (_, _) => Task.CompletedTask,
             TimeSpan.FromSeconds(5),
             ++_nextCorrelationId,
-            cts.Token
+            ct: cts.Token
         );
 
         var second = _mux.RequestAsync(

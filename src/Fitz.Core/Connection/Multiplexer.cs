@@ -26,17 +26,16 @@ sealed class Multiplexer : IDisposable
     // arrives, so that response is recognised and dropped rather than treated as a protocol error.
     readonly HashSet<ulong> _correlationTombstones = [];
     readonly int _maxCorrelationTombstones;
-    readonly Dictionary<ushort, Dictionary<long, Action<ReadOnlyMemory<byte>>>> _notificationHandlers = [];
+    readonly Dictionary<ushort, Dictionary<long, Action<ReadOnlyMemory<byte>, NotificationSession>>> _notificationHandlers = [];
     // Registration is rare and dispatch is per frame, so the fan-out array is rebuilt on
     // registration changes rather than on every notification.
-    readonly Dictionary<ushort, Action<ReadOnlyMemory<byte>>[]> _notificationHandlerSnapshots = [];
-    readonly Action<Exception> _onDispatchError;
+    readonly Dictionary<ushort, Action<ReadOnlyMemory<byte>, NotificationSession>[]> _notificationHandlerSnapshots = [];
+    readonly Action<Exception, NotificationSession> _onDispatchError;
     readonly Action<Exception> _onSessionReset;
     readonly Channel<NotificationDispatch> _notificationQueue;
     readonly Task _notificationPump;
     readonly TimeProvider _time;
-    bool _connected;
-    long _sessionEpoch;
+    NotificationSession? _notificationSession;
     long _nextHandlerId;
     NotificationRestore? _notificationRestore;
     bool _disposed;
@@ -51,7 +50,7 @@ sealed class Multiplexer : IDisposable
     /// <param name="maxCorrelationTombstones">Maximum canceled request identifiers retained before resetting the session.</param>
     /// <param name="timeProvider">The clock that times out requests; the system clock by default.</param>
     public Multiplexer(
-        Action<Exception>? onDispatchError = null,
+        Action<Exception, NotificationSession>? onDispatchError = null,
         Action<Exception>? onSessionReset = null,
         int maxCorrelationTombstones = DefaultMaxCorrelationTombstones,
         TimeProvider? timeProvider = null
@@ -60,24 +59,27 @@ sealed class Multiplexer : IDisposable
         _time = timeProvider ?? TimeProvider.System;
         ArgumentOutOfRangeException.ThrowIfNegative(maxCorrelationTombstones);
         _maxCorrelationTombstones = maxCorrelationTombstones;
-        _onDispatchError = onDispatchError ?? (static _ => { });
+        _onDispatchError = onDispatchError ?? (static (_, _) => { });
         _onSessionReset = onSessionReset ?? (static _ => { });
         // Writers use TryWrite, so a full queue fails delivery instead of blocking the receive loop.
         _notificationQueue = Channel.CreateBounded<NotificationDispatch>(new BoundedChannelOptions(NotificationQueueCapacity)
         {
-            SingleReader = true,
+            // Session reset also drains old frames while the dispatch pump is running.
+            SingleReader = false,
             SingleWriter = false,
         });
         _notificationPump = Task.Run(PumpNotificationsAsync);
     }
 
     /// <summary>Marks the session authenticated, so requests and frames are accepted.</summary>
-    public void SetConnected()
+    /// <param name="session">The authenticated receive loop and connection lifetime.</param>
+    public void SetConnected(NotificationSession? session = null)
     {
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            _connected = true;
+            _notificationSession?.Retire();
+            _notificationSession = session ?? new NotificationSession(default, default);
         }
     }
 
@@ -97,14 +99,21 @@ sealed class Multiplexer : IDisposable
     /// <summary>
     /// Publishes notifications received while reconnect listeners were restoring new-session state.
     /// </summary>
+    /// <param name="expectedSession">The session whose restore is being committed.</param>
     /// <exception cref="SubscriptionBackpressureException">
     /// The bounded notification queue overflowed during restore, so notifications were lost.
     /// </exception>
-    internal void CompleteNotificationRestore()
+    internal void CompleteNotificationRestore(NotificationSession? expectedSession = null)
     {
         Exception? failure;
         lock (_gate)
         {
+            if (expectedSession is not null &&
+                (!ReferenceEquals(_notificationSession, expectedSession) || !expectedSession.IsCurrent))
+            {
+                throw new ConnectionException("The notification session ended before it could be committed.");
+            }
+
             if (_notificationRestore is not { } restore)
             {
                 return;
@@ -151,6 +160,12 @@ sealed class Multiplexer : IDisposable
     public IDisposable RegisterNotificationHandler(ushort messageType, Action<ReadOnlyMemory<byte>> handler)
     {
         ArgumentNullException.ThrowIfNull(handler);
+        return RegisterSessionNotificationHandler(messageType, (payload, _) => handler(payload));
+    }
+
+    internal IDisposable RegisterSessionNotificationHandler(ushort messageType, Action<ReadOnlyMemory<byte>, NotificationSession> handler)
+    {
+        ArgumentNullException.ThrowIfNull(handler);
 
         long handlerId;
         lock (_gate)
@@ -179,18 +194,29 @@ sealed class Multiplexer : IDisposable
     /// Whether this is the terminal frame for the identifier. Earlier frames are consumed
     /// without completing the request.
     /// </param>
+    /// <param name="ct">The receive loop's lifetime, which identifies the source of the frame.</param>
     /// <exception cref="ProtocolException">
     /// No request is waiting on the identifier and it was never canceled locally, so the broker
     /// answered something this session did not ask.
     /// </exception>
-    public void DispatchCorrelated(ulong correlationId, ReadOnlyMemory<byte> payload, bool responseFinal = true)
+    public void DispatchCorrelated(ulong correlationId, ReadOnlyMemory<byte> payload, bool responseFinal = true, CancellationToken ct = default)
     {
         PendingRequest? pending;
         lock (_gate)
         {
-            if (!_connected)
+            if (ct.IsCancellationRequested)
+            {
+                return;
+            }
+
+            if (_notificationSession is not { } session)
             {
                 throw new ProtocolException($"Unexpected response correlation {correlationId}.");
+            }
+
+            if (session.ReceiveLoop != ct || !session.IsCurrent)
+            {
+                return;
             }
 
             if (!_correlated.TryGetValue(correlationId, out pending))
@@ -225,15 +251,19 @@ sealed class Multiplexer : IDisposable
     /// <summary>Queues a notification frame for every handler registered for its message type.</summary>
     /// <param name="messageType">Notification message type.</param>
     /// <param name="payload">Frame payload; copied once before queuing.</param>
-    public void DispatchNotification(ushort messageType, ReadOnlyMemory<byte> payload)
+    /// <param name="ct">The receive loop's lifetime, which identifies the source of the frame.</param>
+    public void DispatchNotification(ushort messageType, ReadOnlyMemory<byte> payload, CancellationToken ct = default)
     {
+        NotificationSession session;
         lock (_gate)
         {
-            if (!_connected || !_notificationHandlerSnapshots.TryGetValue(messageType, out var handlers))
+            if (_notificationSession is not { } current || current.ReceiveLoop != ct || !current.IsCurrent ||
+                !_notificationHandlerSnapshots.TryGetValue(messageType, out var handlers))
             {
                 return;
             }
 
+            session = current;
             var restore = _notificationRestore;
 
             if (restore?.Failure is not null)
@@ -244,7 +274,7 @@ sealed class Multiplexer : IDisposable
 
             if (restore is null || restore.Count < NotificationQueueCapacity)
             {
-                var dispatch = new NotificationDispatch(handlers, payload.IsEmpty ? [] : payload.ToArray(), _sessionEpoch, restore);
+                var dispatch = new NotificationDispatch(handlers, payload.IsEmpty ? [] : payload.ToArray(), session, restore);
 
                 if (_notificationQueue.Writer.TryWrite(dispatch))
                 {
@@ -263,7 +293,7 @@ sealed class Multiplexer : IDisposable
         }
 
         _onDispatchError(new SubscriptionBackpressureException(
-            "The multiplexer notification dispatch queue is full."));
+            "The multiplexer notification dispatch queue is full."), session);
     }
 
     /// <summary>Sends a correlated request frame and awaits its response.</summary>
@@ -275,6 +305,7 @@ sealed class Multiplexer : IDisposable
     /// non-final frame arrives, only <paramref name="ct"/> and connection loss end the wait.
     /// </param>
     /// <param name="correlationId">Non-zero identifier the broker echoes on the response.</param>
+    /// <param name="expectedSession">The transport session on which this request will be sent.</param>
     /// <param name="ct">Cancellation token for the request.</param>
     /// <returns>The response payload.</returns>
     public async Task<byte[]> RequestAsync(
@@ -283,6 +314,7 @@ sealed class Multiplexer : IDisposable
         Func<ReadOnlyMemory<byte>, CancellationToken, Task> send,
         TimeSpan timeout,
         ulong correlationId,
+        CancellationToken? expectedSession = null,
         CancellationToken ct = default
     )
     {
@@ -292,7 +324,8 @@ sealed class Multiplexer : IDisposable
         var request = new PendingRequest(this, messageType, correlationId, timeout, ct);
         lock (_gate)
         {
-            if (_disposed || !_connected)
+            if (_disposed || _notificationSession is not { IsCurrent: true } session ||
+                (expectedSession is { } expected && session.Closed != expected))
             {
                 throw new ConnectionException("Connection closed or reset");
             }
@@ -353,23 +386,20 @@ sealed class Multiplexer : IDisposable
 
             foreach (var handler in notification.Handlers)
             {
-                lock (_gate)
+                if (!notification.Session.IsCurrent)
                 {
-                    if (!_connected || notification.SessionEpoch != _sessionEpoch)
-                    {
-                        break;
-                    }
+                    break;
                 }
 
                 try
                 {
-                    handler(notification.Payload);
+                    handler(notification.Payload, notification.Session);
                 }
                 catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
                 {
                     // Isolation boundary: one failing subscriber must not stop delivery to the
                     // others, nor end the pump for every later frame.
-                    _onDispatchError(error);
+                    _onDispatchError(error, notification.Session);
                 }
             }
         }
@@ -413,10 +443,14 @@ sealed class Multiplexer : IDisposable
 
     List<PendingRequest> ResetSessionUnsafe()
     {
-        // Advancing the epoch makes the pump drop notifications queued for the ended session.
-        _connected = false;
-        _sessionEpoch++;
+        _notificationSession?.Retire();
+        _notificationSession = null;
         AbortRestoreUnsafe();
+
+        while (_notificationQueue.Reader.TryRead(out _))
+        {
+        }
+
         List<PendingRequest> pending = [.. _correlated.Values];
         _correlated.Clear();
         _correlationTombstones.Clear();
@@ -437,7 +471,7 @@ sealed class Multiplexer : IDisposable
         }
     }
 
-    void RebuildHandlerSnapshotUnsafe(ushort messageType, Dictionary<long, Action<ReadOnlyMemory<byte>>> registrations)
+    void RebuildHandlerSnapshotUnsafe(ushort messageType, Dictionary<long, Action<ReadOnlyMemory<byte>, NotificationSession>> registrations)
     {
         if (registrations.Count == 0)
         {
@@ -590,7 +624,7 @@ sealed class Multiplexer : IDisposable
     /// subscribers does not consume capacity proportional to the subscriber count.
     /// </summary>
     readonly record struct NotificationDispatch(
-        Action<ReadOnlyMemory<byte>>[] Handlers, byte[] Payload, long SessionEpoch, NotificationRestore? Restore);
+        Action<ReadOnlyMemory<byte>, NotificationSession>[] Handlers, byte[] Payload, NotificationSession Session, NotificationRestore? Restore);
 
     sealed class NotificationRestore
     {
@@ -611,4 +645,16 @@ sealed class Multiplexer : IDisposable
             }
         }
     }
+}
+
+// A notification can be decoding while the connection replaces its subscription ID map.
+sealed class NotificationSession(CancellationToken receiveLoop, CancellationToken closed)
+{
+    bool _retired;
+
+    internal CancellationToken ReceiveLoop { get; } = receiveLoop;
+    internal CancellationToken Closed { get; } = closed;
+    internal bool IsCurrent => !Volatile.Read(ref _retired) && !Closed.IsCancellationRequested && !ReceiveLoop.IsCancellationRequested;
+
+    internal void Retire() => Volatile.Write(ref _retired, true);
 }
