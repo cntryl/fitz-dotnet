@@ -1,9 +1,82 @@
+using System.Text;
+using Cntryl.Fitz.Connection;
+using Cntryl.Fitz.Protocol;
 using Cntryl.Fitz.Runtime;
 
 namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class SubscriptionTableTests
 {
+
+    [Fact]
+    public async Task ShouldFenceOldDeliveryGivenReusedSubscriptionIdWhenNotificationDecodingSpansReconnect()
+    {
+        // Arrange
+        const ushort notificationType = 609;
+        const string pattern = "stream://r/a/x";
+        await using var original = new TestQueuedTransport();
+        await using var replacement = new TestQueuedTransport();
+        var connects = 0;
+        var config = new ClientConfig(original.Url)
+        {
+            Reconnect = new ReconnectOptions(Backoff: TimeSpan.FromMilliseconds(1)),
+        };
+        await using var connection = new FitzConnection(config,
+            () => Interlocked.Increment(ref connects) == 1 ? original : replacement);
+        using var unblock = new ManualResetEventSlim();
+        var decoding = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivered = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var table = new SubscriptionTable<string>(
+            this,
+            "stream",
+            notificationType,
+            registerNotificationHandler: null,
+            dispatchAsyncHandler: null,
+            bufferCapacity: 8,
+            (_, _, _) => Task.FromResult(1UL),
+            (_, _, _, _) => Task.CompletedTask,
+            payload =>
+            {
+                var value = Encoding.UTF8.GetString(payload.Span);
+
+                if (value == "old")
+                {
+                    decoding.TrySetResult();
+                    _ = unblock.Wait(TimeSpan.FromSeconds(10));
+                }
+
+                return new DecodedNotification<string>(1, pattern, value);
+            }
+        );
+        using var binding = table.AttachTo(connection);
+        await connection.ConnectAsync().WaitAsync(TimeSpan.FromSeconds(5));
+        _ = await table.SubscribeAsync(pattern, (value, _) =>
+        {
+            delivered.TrySetResult(value);
+            return ValueTask.CompletedTask;
+        }, preDispatch: null, CancellationToken.None);
+        original.QueueIncomingFrame(FrameCodec.Encode(notificationType, "old"u8));
+        await decoding.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Act
+        try
+        {
+            var originalSession = connection.ConnectionClosedToken;
+            var disconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var closed = originalSession.Register(() => disconnected.TrySetResult());
+            original.QueueClosed();
+            await disconnected.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            _ = await connection.WaitUntilReadyAsync(TimeSpan.FromSeconds(5));
+            replacement.QueueIncomingFrame(FrameCodec.Encode(notificationType, "replacement"u8));
+        }
+        finally
+        {
+            unblock.Set();
+        }
+
+        // Assert
+        Assert.Equal("replacement", await delivered.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
     [Fact]
     public async Task ShouldWithdrawRestoredSubscriptionGivenFollowCleanupDuringRestore()
     {

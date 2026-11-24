@@ -88,7 +88,7 @@ public sealed class HotPathRegressionTests
     {
         // Arrange
         var reported = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
-        using var mux = new Multiplexer(onDispatchError: ex => reported.TrySetResult(ex));
+        using var mux = new Multiplexer(onDispatchError: (ex, _) => reported.TrySetResult(ex));
         mux.SetConnected();
         var afterThrowing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 

@@ -629,15 +629,21 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     /// notifications. The handles cannot be restored; callers must subscribe again.
     /// </summary>
     /// <param name="error">The delivery failure.</param>
-    internal void Fail(Exception error)
+    /// <param name="session">The session on which delivery failed.</param>
+    void Fail(Exception error, CancellationToken session)
     {
         SubscriptionRegistration<TNotification>[] handles;
         lock (_gate)
         {
+            if (CurrentSession().Closed != session)
+            {
+                return;
+            }
+
             foreach (var group in _byPattern.Values)
                 group.Failure = error;
 
-            _deliveryFailure = (CurrentSession().Closed, error);
+            _deliveryFailure = (session, error);
             _activationBuffer.Clear();
             handles = DetachAllUnsafe();
         }
@@ -890,7 +896,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
             _byId.Remove(id);
     }
 
-    void HandleNotification(ReadOnlyMemory<byte> payload)
+    void HandleNotification(ReadOnlyMemory<byte> payload, NotificationSession? session)
     {
         DecodedNotification<TNotification> decoded;
 
@@ -914,6 +920,12 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         SubscriptionRegistration<TNotification>[] registrations;
         lock (_gate)
         {
+            // Check at the lookup, under the same lock that publishes the replacement IDs.
+            if (session is { IsCurrent: false })
+            {
+                return;
+            }
+
             if (!_byId.TryGetValue(decoded.SubscriptionId, out var group))
             {
                 _activationBuffer.Buffer(decoded);
@@ -956,10 +968,16 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
             if (_notificationRegistration is not null)
                 return;
 
+            if (_connection is { } connection)
+            {
+                _notificationRegistration = connection.RegisterSessionNotificationHandler(_notifyMessageType, HandleNotification);
+                return;
+            }
+
             if (_registerNotificationHandler is null)
                 throw new InvalidOperationException("Notification handlers not configured for subscription support");
 
-            _notificationRegistration = _registerNotificationHandler(_notifyMessageType, HandleNotification);
+            _notificationRegistration = _registerNotificationHandler(_notifyMessageType, payload => HandleNotification(payload, session: null));
         }
     }
 
@@ -985,11 +1003,11 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     sealed class ConnectionBinding : IDisposable
     {
         readonly FitzConnection _connection;
-        readonly Action<Exception> _onDeliveryFailed;
+        readonly Action<Exception, CancellationToken> _onDeliveryFailed;
         readonly IDisposable _reconnect;
         bool _disposed;
 
-        internal ConnectionBinding(FitzConnection connection, Func<CancellationToken, ValueTask> onReconnect, Action<Exception> onDeliveryFailed)
+        internal ConnectionBinding(FitzConnection connection, Func<CancellationToken, ValueTask> onReconnect, Action<Exception, CancellationToken> onDeliveryFailed)
         {
             _connection = connection;
             _onDeliveryFailed = onDeliveryFailed;

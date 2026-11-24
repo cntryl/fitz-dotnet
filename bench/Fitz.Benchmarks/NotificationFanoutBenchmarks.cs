@@ -33,7 +33,7 @@ public class NotificationFanoutBenchmarks : IDisposable
     [GlobalSetup]
     public void Setup()
     {
-        _mux = new Multiplexer(onDispatchError: _ => Interlocked.Increment(ref _dispatchErrors));
+        _mux = new Multiplexer(onDispatchError: (_, _) => Interlocked.Increment(ref _dispatchErrors));
         _mux.SetConnected();
         _payload = new byte[128];
         _registrations = new IDisposable[Subscribers];

@@ -29,7 +29,7 @@ sealed class FitzConnection : IAsyncDisposable
     readonly ListenerRegistry<Action> _disconnectListeners = new();
     readonly Dictionary<string, AsyncHandlerDispatcher> _asyncHandlerDispatchers = [with(StringComparer.Ordinal)];
     readonly AsyncLocal<int> _restoreRequestDepth = new();
-    internal event Action<Exception>? NotificationDeliveryFailed;
+    internal event Action<Exception, CancellationToken>? NotificationDeliveryFailed;
     CancellationTokenSource _connectionClosedCts;
     CancellationToken _connectionClosedToken;
     RequestGate _requestGate;
@@ -182,7 +182,10 @@ sealed class FitzConnection : IAsyncDisposable
         return Math.Min(maximum, Math.Max(1, requestLimit / 4));
     }
 
-    internal void InvalidateSubscriptionSession(Exception cause, CancellationToken session)
+    internal void InvalidateSubscriptionSession(Exception cause, CancellationToken session) =>
+        ScheduleConnectionLossForSession(new ConnectionException("The broker subscription state could not be confirmed.", cause), session);
+
+    void ScheduleConnectionLossForSession(Exception cause, CancellationToken session)
     {
         ITransport? transport;
         lock (_gate)
@@ -194,7 +197,7 @@ sealed class FitzConnection : IAsyncDisposable
         }
 
         if (transport is not null)
-            ScheduleConnectionLoss(new ConnectionException("The broker subscription state could not be confirmed.", cause), transport);
+            ScheduleConnectionLoss(cause, transport);
     }
 
     // The configured timeout plus time the broker is known to hold the request, saturating
@@ -497,6 +500,7 @@ sealed class FitzConnection : IAsyncDisposable
                 requestTransport.SendAsync,
                 ResponseTimeout(extraResponseTime),
                 correlationId,
+                session,
                 ct).ConfigureAwait(false);
 
             return new SessionResponse(response, session);
@@ -612,6 +616,9 @@ sealed class FitzConnection : IAsyncDisposable
     /// <returns>A registration that stops delivery when disposed.</returns>
     internal IDisposable RegisterNotificationHandler(ushort messageType, Action<ReadOnlyMemory<byte>> handler) =>
         _multiplexer.RegisterNotificationHandler(messageType, handler);
+
+    internal IDisposable RegisterSessionNotificationHandler(ushort messageType, Action<ReadOnlyMemory<byte>, NotificationSession> handler) =>
+        _multiplexer.RegisterSessionNotificationHandler(messageType, handler);
 
     /// <summary>Registers a listener invoked after each successful reconnect.</summary>
     /// <param name="listener">Invoked once the session is authenticated again.</param>
@@ -854,7 +861,7 @@ sealed class FitzConnection : IAsyncDisposable
             Interlocked.Exchange(ref _nextCorrelationId, 0);
             SetState(ConnectionState.Authenticating);
             _authAttemptIsReconnect = isReconnect;
-            StartReceiveLoop();
+            var receiveLoop = StartReceiveLoop();
 
             var tokenProvider = _config.TokenProvider;
             var token = tokenProvider is null
@@ -901,13 +908,12 @@ sealed class FitzConnection : IAsyncDisposable
             }
 
 
-            _multiplexer.SetConnected();
+            _multiplexer.SetConnected(new NotificationSession(receiveLoop, ConnectionClosedToken));
             _reconnectExhausted = false;
 
             if (isReconnect)
             {
                 await RestoreReconnectStateAsync(ct).ConfigureAwait(false);
-                _multiplexer.CompleteNotificationRestore();
             }
 
             await ThrowIfAttemptFailedAsync(transport).ConfigureAwait(false);
@@ -1015,11 +1021,13 @@ sealed class FitzConnection : IAsyncDisposable
     {
         lock (_gate)
         {
-            if (!ReferenceEquals(Volatile.Read(ref _transport), transport))
+            if (_closeRequested || _connectionLossTask is { IsCompleted: false } ||
+                !ReferenceEquals(Volatile.Read(ref _transport), transport))
             {
                 throw new ConnectionException(SessionLostWhileEstablishing);
             }
 
+            _multiplexer.CompleteNotificationRestore();
             _hasEstablishedSession = true;
             SetState(ConnectionState.Authenticated);
         }
@@ -1028,7 +1036,7 @@ sealed class FitzConnection : IAsyncDisposable
     // Loss handling never waits on a session attempt, so an attempt may wait on loss handling.
     Task PendingConnectionLoss() => Volatile.Read(ref _connectionLossTask) ?? Task.CompletedTask;
 
-    void StartReceiveLoop()
+    CancellationToken StartReceiveLoop()
     {
         _receiveLoopCts?.Cancel();
         _receiveLoopCts = new CancellationTokenSource();
@@ -1062,7 +1070,7 @@ sealed class FitzConnection : IAsyncDisposable
                         }
 
                         var frame = FrameCodec.DecodeStrict(data.Memory);
-                        await DispatchFrameAsync(frame, receiveTransport).ConfigureAwait(false);
+                        await DispatchFrameAsync(frame, receiveTransport, token).ConfigureAwait(false);
                     }
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested || _closeRequested)
@@ -1076,9 +1084,10 @@ sealed class FitzConnection : IAsyncDisposable
                 }
             }
         }, token);
+        return token;
     }
 
-    async ValueTask DispatchFrameAsync(Frame frame, ITransport sessionTransport)
+    async ValueTask DispatchFrameAsync(Frame frame, ITransport sessionTransport, CancellationToken ct)
     {
         var decoded = ExtensionCodec.Decode(frame);
         frame = frame with { Payload = decoded.Core };
@@ -1161,11 +1170,12 @@ sealed class FitzConnection : IAsyncDisposable
             _multiplexer.DispatchCorrelated(
                 frame.CorrelationId,
                 frame.Payload,
-                (frame.Flags & FrameCodec.ResponseFinalFlag) != 0);
+                (frame.Flags & FrameCodec.ResponseFinalFlag) != 0,
+                ct);
             return;
         }
 
-        _multiplexer.DispatchNotification(frame.MessageType, frame.Payload);
+        _multiplexer.DispatchNotification(frame.MessageType, frame.Payload, ct);
     }
 
     async Task EndAfterGoAwayGraceAsync(ITransport sessionTransport, uint graceMs, ushort code, string reason, CancellationToken ct)
@@ -1663,8 +1673,13 @@ sealed class FitzConnection : IAsyncDisposable
         }
     }
 
-    void OnMultiplexerError(Exception exception)
+    void OnMultiplexerError(Exception exception, NotificationSession session)
     {
+        if (!session.IsCurrent)
+        {
+            return;
+        }
+
         _telemetry.Log(FitzLogLevel.Warn, "fitz.connection.notification_dispatch_failed", new Dictionary<string, object?>
         {
             ["error"] = exception.Message,
@@ -1674,11 +1689,11 @@ sealed class FitzConnection : IAsyncDisposable
         {
             if (NotificationDeliveryFailed is { } listeners)
             {
-                foreach (Action<Exception> listener in listeners.GetInvocationList())
+                foreach (Action<Exception, CancellationToken> listener in listeners.GetInvocationList())
                 {
                     try
                     {
-                        listener(exception);
+                        listener(exception, session.Closed);
                     }
                     catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
                     {
@@ -1686,7 +1701,7 @@ sealed class FitzConnection : IAsyncDisposable
                 }
             }
 
-            ScheduleConnectionLoss(exception);
+            ScheduleConnectionLossForSession(exception, session.Closed);
         }
     }
 

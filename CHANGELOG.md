@@ -20,6 +20,9 @@
 
 - Stream subscriptions on one connection share setup for identical selectors and pipeline
   distinct selectors during setup and reconnect. Each async reader has its own bounded buffer.
+- Subscription notifications and acknowledgements stay with the session that received them.
+  Reconnect discards queued frames from the ended session and publishes notifications after
+  the replacement is committed.
 
 ## 4.2.0 (2026-11-13)
 
