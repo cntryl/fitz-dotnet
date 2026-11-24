@@ -15,6 +15,111 @@ public sealed class SubscriptionLifecycleRegressionTests
     static readonly TimeSpan Deadline = TimeSpan.FromSeconds(5);
 
     [Fact]
+    public async Task ShouldEndOwningSessionGivenSentSubscribeWhenAcknowledgementTimesOut()
+    {
+        // Arrange
+        var time = new ManualTimeProvider();
+        var timeout = TimeSpan.FromSeconds(19);
+        var lost = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var transport = new TestQueuedTransport();
+        var config = new ClientConfig(transport.Url)
+        {
+            Timeout = timeout,
+            TransportFactory = _ => transport,
+            Reconnect = new ReconnectOptions(Enabled: false),
+            Observability = new FitzObservabilityOptions(OnLifecycleEvent: evt =>
+            {
+                if (evt.Event == "connection_lost")
+                    lost.TrySetResult();
+            }),
+        };
+        await using var client = new FitzClient(config, time);
+        await client.ConnectAsync().WaitAsync(Deadline);
+        var pending = client.Stream.SubscribeAsync(Route("stream", "events"));
+
+        // Act
+        await time.WaitForTimerAsync(timeout);
+        time.Advance(timeout);
+
+        // Assert
+        await Assert.ThrowsAsync<RequestTimeoutException>(() => pending.WaitAsync(Deadline));
+        await lost.Task.WaitAsync(Deadline);
+    }
+
+    [Fact]
+    public async Task ShouldFreeAdmissionGivenCanceledQueuedSelectorsWhenAnotherSelectorArrives()
+    {
+        // Arrange
+        var firstReply = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var submits = 0;
+        await using var fixture = new DomainFixture("notice", (type, _, _) =>
+        {
+            if (type != MessageTypes.NoticeSubscribe)
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
+            return Interlocked.Increment(ref submits) == 1
+                ? new ValueTask<ReadOnlyMemory<byte>>(firstReply.Task)
+                : ValueTask.FromResult<ReadOnlyMemory<byte>>(Reply("notice", 56));
+        });
+        var first = fixture.SubscribeAsync(Route("notice", "first"));
+        using var stop = new CancellationTokenSource();
+        var pending = Task.WhenAll(Enumerable.Range(0, ClientConfig.DefaultRequestQueueSize)
+            .Select(i => fixture.SubscribeAsync(Route("notice", $"queued{i}"), stop.Token)));
+        Task<SubscriptionHandle>? last = null;
+
+        // Act
+        try
+        {
+            await stop.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(Deadline));
+            last = fixture.SubscribeAsync(Route("notice", "last"));
+            Assert.False(last.IsCompleted);
+        }
+        finally
+        {
+            firstReply.SetResult(Reply("notice", 55));
+        }
+
+        // Assert
+        await using var initial = await first.WaitAsync(Deadline);
+        await using var admitted = await last.WaitAsync(Deadline);
+        Assert.Equal(2, submits);
+    }
+
+    [Fact]
+    public async Task ShouldKeepRemovalOrderedGivenWithdrawWaitCanceledWhenSameSelectorIsRequested()
+    {
+        // Arrange
+        var reply = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var submits = 0;
+        await using var fixture = new DomainFixture("stream", (type, _, token) => type == MessageTypes.StreamSubscribe
+            ? ValueTask.FromResult<ReadOnlyMemory<byte>>(Reply("stream", (ulong)Interlocked.Increment(ref submits)))
+            : new ValueTask<ReadOnlyMemory<byte>>(reply.Task.WaitAsync(token)));
+        var route = Route("stream", "events");
+        await using var first = await fixture.SubscribeAsync(route);
+        using var ct = new CancellationTokenSource();
+        var withdrawing = first.UnsubscribeAsync(ct.Token).AsTask();
+        Task<SubscriptionHandle>? next = null;
+
+        // Act
+        try
+        {
+            await ct.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => withdrawing.WaitAsync(Deadline));
+            next = fixture.SubscribeAsync(route);
+            Assert.False(next.IsCompleted);
+        }
+        finally
+        {
+            reply.SetResult(new byte[] { 0 });
+        }
+
+        // Assert
+        await using var replacement = await next.WaitAsync(Deadline);
+        await first.Completion.WaitAsync(Deadline);
+        Assert.Equal(2, submits);
+    }
+
+    [Fact]
     public async Task ShouldKeepSharedActivationGivenFirstWaiterCancelsWhenAnotherWaiterRemains()
     {
         // Arrange

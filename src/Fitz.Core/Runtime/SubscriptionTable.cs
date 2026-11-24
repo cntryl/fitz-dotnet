@@ -88,6 +88,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     RequestGate _wireGate;
     CancellationToken? _configuredSession;
     TaskCompletionSource? _paused;
+    (CancellationToken Session, Exception Error)? _deliveryFailure;
     readonly CancellationTokenSource _closing = new();
     readonly CancellationToken _closingToken;
     readonly Lock _gate = new();
@@ -275,6 +276,8 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                 }
                 else if (session.IsCurrent)
                 {
+                    if (_deliveryFailure is { } failure && failure.Session == session.Closed)
+                        ExceptionDispatchInfo.Throw(failure.Error);
                     if (!_byPattern.TryGetValue(pattern, out group))
                     {
                         ConfigureWireGate(session);
@@ -315,6 +318,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
+                Task? canceledAdmission = null;
                 lock (_gate)
                 {
                     // Publication wins a race with cancellation. A pending caller can withdraw
@@ -323,7 +327,14 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                         group.Failure is null && group.Contains(handleId))
                         return;
                     group!.Remove(handleId, out _);
+                    if (group.Count == 0 && group.Admission is { } admission)
+                    {
+                        RemoveGroup(pattern, group);
+                        canceledAdmission = admission.CancelAsync();
+                    }
                 }
+                if (canceledAdmission is not null)
+                    await canceledAdmission.ConfigureAwait(false);
                 throw;
             }
 
@@ -338,11 +349,23 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     {
         Exception? failure = null;
         var started = false;
+        using var admission = CancellationTokenSource.CreateLinkedTokenSource(_closingToken);
         try
         {
-            using var slot = await _wireGate.AcquireAsync(_closingToken).ConfigureAwait(false);
             lock (_gate)
             {
+                if (group.Count == 0)
+                {
+                    RemoveGroup(pattern, group);
+                    return;
+                }
+                group.Admission = admission;
+            }
+
+            using var slot = await _wireGate.AcquireAsync(admission.Token).ConfigureAwait(false);
+            lock (_gate)
+            {
+                group.Admission = null;
                 EnsureActivationCurrent(group, session);
                 if (group.Count == 0)
                 {
@@ -389,12 +412,15 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         }
         catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
         {
+            if (started && IsUncertain(error))
+                session.Connection?.InvalidateSubscriptionSession(error, session.Closed);
             failure = _closingToken.IsCancellationRequested ? new ObjectDisposedException(_owner.GetType().Name) : error;
         }
         finally
         {
             lock (_gate)
             {
+                group.Admission = null;
                 if (!change.Task.IsCompleted)
                 {
                     if (started)
@@ -554,6 +580,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         {
             foreach (var group in _byPattern.Values)
                 group.Failure = error;
+            _deliveryFailure = (CurrentSession().Closed, error);
             _activationBuffer.Clear();
             handles = DetachAllUnsafe();
         }
@@ -589,7 +616,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
             lock (_gate)
             {
                 if (_byPattern.TryGetValue(pattern, out var group) &&
-                    group.Remove(handleId, out removed) && group.Count == 0)
+                    group.Remove(handleId, out removed) && group.Count == 0 && group.Change is null)
                     RemoveGroup(pattern, group);
             }
             removed?.Dispose();
@@ -636,7 +663,10 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
 
             if (removal is not null)
             {
-                await RemoveLastHandleAsync(pattern, group, handleId, removal, session, ct).ConfigureAwait(false);
+                var removing = RemoveLastHandleAsync(pattern, group, handleId, removal, session, ct);
+                var error = await removing.WaitAsync(ct).ConfigureAwait(false);
+                if (error is not null)
+                    ExceptionDispatchInfo.Throw(error);
                 return;
             }
 
@@ -647,44 +677,61 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         }
     }
 
-    async Task RemoveLastHandleAsync(string pattern, PatternSubscription group, long handleId,
+    async Task<Exception?> RemoveLastHandleAsync(string pattern, PatternSubscription group, long handleId,
         TaskCompletionSource<Exception?> change, SubscriptionSession session, CancellationToken ct)
     {
         SubscriptionRegistration<TNotification>? removed = null;
+        var started = false;
         try
         {
             using var queued = CancellationTokenSource.CreateLinkedTokenSource(ct, _closingToken);
             using var slot = await _wireGate.AcquireAsync(queued.Token).ConfigureAwait(false);
             queued.Token.ThrowIfCancellationRequested();
-            await _unsubscribe(pattern, group.SubscriptionId.GetValueOrDefault(), session, ct).ConfigureAwait(false);
+            started = true;
+            await _unsubscribe(pattern, group.SubscriptionId.GetValueOrDefault(), session, _closingToken).ConfigureAwait(false);
             lock (_gate)
-            {
-                if (group.Remove(handleId, out removed))
-                    RemoveGroup(pattern, group);
-            }
+                group.Remove(handleId, out removed);
+            return null;
         }
         catch (OperationCanceledException) when (_closingToken.IsCancellationRequested && !ct.IsCancellationRequested)
         {
+            return null;
+        }
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
+        {
+            if (started && IsUncertain(error))
+                session.Connection?.InvalidateSubscriptionSession(error, session.Closed);
+            return error;
         }
         finally
         {
             lock (_gate)
+            {
+                if (group.Count == 0)
+                    RemoveGroup(pattern, group);
                 FinishChange(group, change, error: null);
+            }
             removed?.Dispose();
         }
     }
+
+    static bool IsUncertain(Exception error) => error is RequestTimeoutException or ProtocolException
+        or FitzException { ErrorEffect: 2 }
+        or StreamException { Code: "MISSING_SUB_ID" or "SUBSCRIBE_INVALID_RESPONSE" or "UNSUBSCRIBE_INVALID_RESPONSE" };
 
     SubscriptionSession CurrentSession() => new(_connection, _connection?.ConnectionClosedToken ?? default);
 
     async ValueTask<SubscriptionSession> WaitForReadySessionAsync(CancellationToken ct)
     {
         ThrowIfDisposed();
-        if (_connection is { State: not ConnectionState.Authenticated } connection)
+        var session = CurrentSession();
+        if (session.Connection is { } connection && !session.IsCurrent)
         {
             using var wait = CancellationTokenSource.CreateLinkedTokenSource(_closingToken, ct);
             try
             {
-                await connection.WaitForRequestReadyAsync(wait.Token).ConfigureAwait(false);
+                var ready = await connection.WaitUntilReadyAsync(connection.Timeout, wait.Token).ConfigureAwait(false);
+                return new SubscriptionSession(connection, ready);
             }
             catch (OperationCanceledException) when (_closingToken.IsCancellationRequested && !ct.IsCancellationRequested)
             {
@@ -692,7 +739,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                 throw;
             }
         }
-        return CurrentSession();
+        return session;
     }
 
     async ValueTask<SubscriptionSession> EnterExclusiveOnReadySessionAsync(CancellationToken ct)
@@ -882,6 +929,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
 
         internal ulong? SubscriptionId { get; set; }
         internal TaskCompletionSource<Exception?>? Change { get; set; }
+        internal CancellationTokenSource? Admission { get; set; }
         internal Exception? Failure { get; set; }
         internal int Count => _handles.Count;
         internal SubscriptionRegistration<TNotification>[] Snapshot => _snapshot ??= [.. _handles.Values];

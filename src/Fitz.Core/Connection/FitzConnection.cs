@@ -384,7 +384,7 @@ sealed class FitzConnection : IAsyncDisposable
                 Task waitTask;
                 lock (_gate)
                 {
-                    if (State == ConnectionState.Authenticated && !_connectionClosedToken.IsCancellationRequested)
+                    if (State == ConnectionState.Authenticated && _transport is not null && !_connectionClosedToken.IsCancellationRequested)
                     {
                         return _connectionClosedToken;
                     }
