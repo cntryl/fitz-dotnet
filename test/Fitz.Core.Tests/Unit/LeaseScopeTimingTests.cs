@@ -108,8 +108,18 @@ public sealed class LeaseScopeTimingTests
         var callbackCancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var pending = leases.WithLeaseAsync(Route, Ttl, async (_, ct) =>
         {
-            await using (ct.Register(callbackCancelled.SetResult))
+            try
+            {
                 await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Observe cancellation in the work itself. A separate registration could be
+                // disposed as the work unwinds while the token is still invoking callbacks.
+                callbackCancelled.SetResult();
+                throw;
+            }
+
             return 0;
         });
 
