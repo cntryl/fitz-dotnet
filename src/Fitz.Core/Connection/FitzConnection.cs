@@ -564,8 +564,17 @@ sealed class FitzConnection : IAsyncDisposable
 
         try
         {
-            onWriteAttempt?.Invoke();
-            await sendTransport.SendAsync(frame, ct).ConfigureAwait(false);
+            if (onWriteAttempt is not null && sendTransport is WebSocketTransport webSocket)
+            {
+                await webSocket.SendRpcRequestAsync(frame, onWriteAttempt, session, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                ct.ThrowIfCancellationRequested();
+                onWriteAttempt?.Invoke();
+                await sendTransport.SendAsync(frame, ct).ConfigureAwait(false);
+            }
+
             return session;
         }
         catch (TransportSendCanceledException exception)
@@ -576,6 +585,10 @@ sealed class FitzConnection : IAsyncDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException error) when (session.IsCancellationRequested)
+        {
+            throw new ConnectionException("The owning connection session has ended.", error);
         }
         catch (Exception ex)
         {

@@ -199,11 +199,8 @@ sealed class RpcClient : IRpcClient, IDisposable
     )
     {
         var budgetStartedAt = _time.GetTimestamp();
-        using var timeoutCts = timeout is { } duration ? new CancellationTokenSource(duration, _time) : null;
-        using var linkedCts = timeoutCts is not null
-            ? CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token)
-            : null;
-        var callToken = linkedCts?.Token ?? ct;
+        var deadline = new CallDeadline(timeout, _time, ct);
+        var callToken = deadline.Token;
         // An explicit budget bounds the whole call, so a slow first frame within it is not an
         // error. Without one, each frame must arrive within the connection's response timeout.
         var frameTimeout = timeout is null ? _responseTimeout : Timeout.InfiniteTimeSpan;
@@ -211,7 +208,7 @@ sealed class RpcClient : IRpcClient, IDisposable
         var correlationBytes = RpcWire.GuidToNetworkBytes(correlationId);
         var channel = new SubscriptionChannel<RpcResponseFrame>();
         var call = new RpcCallState(channel, cancellation);
-        var writeAttempted = false;
+        Task<CancellationToken>? canceledSend = null;
         var connectionClosedToken = CancellationToken.None;
         byte cancellationReason = 1;
 
@@ -224,13 +221,31 @@ sealed class RpcClient : IRpcClient, IDisposable
                 _calls.Add(correlationId, call);
             }
 
-            using var writer = RpcWire.EncodeRequest(
-                correlationBytes,
-                route,
-                body.Span,
-                timeout - _time.GetElapsedTime(budgetStartedAt));
+            var send = SendRequestAsync(
+                route, body, correlationBytes, timeout - _time.GetElapsedTime(budgetStartedAt), call, callToken);
 
-            connectionClosedToken = await _sendInSession(MessageTypes.RpcRequest, writer.WrittenMemory, () => writeAttempted = true, callToken).ConfigureAwait(false);
+            if (send.IsCompleted || !callToken.CanBeCanceled)
+            {
+                connectionClosedToken = await send.ConfigureAwait(false);
+            }
+            else
+            {
+                // A started WebSocket write can finish after the caller's local deadline.
+                // SendRequestAsync owns its buffer until that write settles.
+                var pending = send.AsTask();
+
+                try
+                {
+                    connectionClosedToken = await pending.WaitAsync(callToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (callToken.IsCancellationRequested)
+                {
+                    canceledSend = pending;
+                    cancellationReason = deadline.CancellationReason;
+                    throw;
+                }
+            }
+
             call.MarkSent();
             ThrowIfDisposed();
 
@@ -248,7 +263,7 @@ sealed class RpcClient : IRpcClient, IDisposable
                 }
                 catch (OperationCanceledException) when (callToken.IsCancellationRequested)
                 {
-                    cancellationReason = timeoutCts?.IsCancellationRequested == true ? (byte)2 : (byte)1;
+                    cancellationReason = deadline.CancellationReason;
                     throw;
                 }
                 catch (TimeoutException)
@@ -279,23 +294,78 @@ sealed class RpcClient : IRpcClient, IDisposable
             }
             channel.Dispose();
 
-            if (call.IsTerminal)
+            if (canceledSend is not null)
             {
-                cancellation.TrySetResult(RpcCancellationOutcome.NotRequested);
-            }
-            else if (!call.WasSent)
-            {
-                cancellation.TrySetResult(writeAttempted ? RpcCancellationOutcome.Unconfirmed : RpcCancellationOutcome.RequestNotSent);
-            }
-            else if (connectionClosedToken.IsCancellationRequested || Volatile.Read(ref _disposed))
-            {
-                cancellation.TrySetResult(RpcCancellationOutcome.ConnectionClosed);
+                _ = FinishCancellationAfterSendAsync(
+                    canceledSend, correlationId, correlationBytes, call, cancellationReason, deadline).AsTask();
             }
             else
             {
-                await RequestCancellationAsync(correlationId, correlationBytes, call, cancellationReason, connectionClosedToken).ConfigureAwait(false);
+                deadline.Dispose();
+                await FinishCallAsync(correlationId, correlationBytes, call, cancellationReason, connectionClosedToken).ConfigureAwait(false);
             }
         }
+    }
+
+    async ValueTask<CancellationToken> SendRequestAsync(
+        string route,
+        ReadOnlyMemory<byte> body,
+        byte[] correlationBytes,
+        TimeSpan? remainingBudget,
+        RpcCallState call,
+        CancellationToken ct
+    )
+    {
+        using var writer = RpcWire.EncodeRequest(correlationBytes, route, body.Span, remainingBudget);
+        return await _sendInSession(MessageTypes.RpcRequest, writer.WrittenMemory, call.MarkWriteAttempted, ct).ConfigureAwait(false);
+    }
+
+    async ValueTask FinishCancellationAfterSendAsync(
+        Task<CancellationToken> send,
+        Guid correlationId,
+        byte[] correlationBytes,
+        RpcCallState call,
+        byte reason,
+        CallDeadline deadline
+    )
+    {
+        var session = CancellationToken.None;
+
+        try
+        {
+            session = await send.ConfigureAwait(false);
+            call.MarkSent();
+        }
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
+        {
+            // The local wait has already ended. Report the write outcome through RpcCall.Cancellation.
+        }
+        finally
+        {
+            deadline.Dispose();
+        }
+
+        await FinishCallAsync(correlationId, correlationBytes, call, reason, session).ConfigureAwait(false);
+    }
+
+    ValueTask FinishCallAsync(
+        Guid correlationId,
+        byte[] correlationBytes,
+        RpcCallState call,
+        byte reason,
+        CancellationToken session
+    )
+    {
+        if (call.IsTerminal)
+            call.Cancellation.TrySetResult(RpcCancellationOutcome.NotRequested);
+        else if (!call.WasSent)
+            call.Cancellation.TrySetResult(call.WriteAttempted ? RpcCancellationOutcome.Unconfirmed : RpcCancellationOutcome.RequestNotSent);
+        else if (session.IsCancellationRequested || Volatile.Read(ref _disposed))
+            call.Cancellation.TrySetResult(RpcCancellationOutcome.ConnectionClosed);
+        else
+            return new ValueTask(RequestCancellationAsync(correlationId, correlationBytes, call, reason, session));
+
+        return ValueTask.CompletedTask;
     }
 
     void HandleRpcResponse(ReadOnlyMemory<byte> payload)
@@ -418,6 +488,12 @@ sealed class RpcClient : IRpcClient, IDisposable
         var pending = new PendingCancellation(call.Cancellation);
         lock (_responseSync)
         {
+            if (Volatile.Read(ref _disposed))
+            {
+                pending.Result.TrySetResult(RpcCancellationOutcome.ConnectionClosed);
+                return;
+            }
+
             if (_pendingCancellations.ContainsKey(correlationId))
             {
                 return;
@@ -603,6 +679,28 @@ sealed class RpcClient : IRpcClient, IDisposable
 
     void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed), this);
 
+    readonly struct CallDeadline : IDisposable
+    {
+        readonly CancellationTokenSource? _timeout;
+        readonly CancellationTokenSource? _linked;
+
+        internal CallDeadline(TimeSpan? timeout, TimeProvider time, CancellationToken caller)
+        {
+            _timeout = timeout is { } duration ? new CancellationTokenSource(duration, time) : null;
+            _linked = _timeout is not null ? CancellationTokenSource.CreateLinkedTokenSource(caller, _timeout.Token) : null;
+            Token = _linked?.Token ?? caller;
+        }
+
+        internal CancellationToken Token { get; }
+        internal byte CancellationReason => _timeout?.IsCancellationRequested == true ? (byte)2 : (byte)1;
+
+        public void Dispose()
+        {
+            _linked?.Dispose();
+            _timeout?.Dispose();
+        }
+    }
+
     sealed class RpcCallState(
         SubscriptionChannel<RpcResponseFrame> channel,
         TaskCompletionSource<RpcCancellationOutcome> cancellation)
@@ -611,6 +709,9 @@ sealed class RpcClient : IRpcClient, IDisposable
         ulong _nextSequence;
         bool _terminal;
         bool _sent;
+
+        internal bool WriteAttempted { get; private set; }
+        internal void MarkWriteAttempted() => WriteAttempted = true;
 
         internal bool WasSent => Volatile.Read(ref _sent);
         internal void MarkSent() => Volatile.Write(ref _sent, true);

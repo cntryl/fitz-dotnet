@@ -65,4 +65,58 @@ public sealed class WebSocketTransportTests
 
     [Fact]
     public void ShouldAcceptBinaryMessageGivenWebsocketReceiveFrameWhenTransportOperationRuns() => WebSocketTransport.EnsureBinaryMessage(WebSocketMessageType.Binary);
+
+    [Fact]
+    public async Task ShouldKeepSocketOpenGivenRacingCallerCancellationWhenRpcFrameIsAlreadyWriting()
+    {
+        // Arrange
+        using var stream = new GatedWriteStream();
+        using var socket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions());
+        await using var transport = new WebSocketTransport(socket, new Uri("ws://localhost/ws"), TimeSpan.FromSeconds(5), 1024);
+        using var activeCaller = new CancellationTokenSource();
+        using var queuedCaller = new CancellationTokenSource();
+        var attempts = 0;
+        var active = transport.SendRpcRequestAsync("rpc"u8.ToArray(), () => attempts++, CancellationToken.None, activeCaller.Token);
+        await stream.FirstWrite.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var queued = transport.SendRpcRequestAsync("queued"u8.ToArray(), () => attempts++, CancellationToken.None, queuedCaller.Token);
+
+        // Act
+        await queuedCaller.CancelAsync();
+        await activeCaller.CancelAsync();
+        stream.ReleaseWrite.SetResult();
+
+        // Assert
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(TimeSpan.FromSeconds(2)));
+            await active.WaitAsync(TimeSpan.FromSeconds(2));
+            await transport.SendAsync("next"u8.ToArray());
+            Assert.Equal(WebSocketState.Open, socket.State);
+            Assert.Equal(1, attempts);
+            Assert.Equal(2, stream.Writes);
+        }
+        finally
+        {
+            socket.Abort();
+        }
+    }
+
+    sealed class GatedWriteStream : MemoryStream
+    {
+        internal TaskCompletionSource FirstWrite { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource ReleaseWrite { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal int Writes { get; private set; }
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            Write(buffer.Span);
+            Writes++;
+
+            if (Writes == 1)
+            {
+                FirstWrite.SetResult();
+                await ReleaseWrite.Task.WaitAsync(cancellationToken);
+            }
+        }
+    }
 }
