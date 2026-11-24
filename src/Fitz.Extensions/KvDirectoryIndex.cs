@@ -13,8 +13,10 @@ public sealed class KvDirectoryIndex<T>
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(key);
+
         if (generation == 0)
             throw new ArgumentOutOfRangeException(nameof(generation), "An index generation must be positive.");
+
         Name = name;
         Generation = generation;
         _keys = value => [key(value)];
@@ -24,8 +26,10 @@ public sealed class KvDirectoryIndex<T>
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(keys);
+
         if (generation == 0)
             throw new ArgumentOutOfRangeException(nameof(generation), "An index generation must be positive.");
+
         Name = name;
         Generation = generation;
         _keys = keys;
@@ -51,5 +55,6 @@ public static class KvDirectoryIndex
     public static KvDirectoryIndex<T> Many<T>(
         string name,
         uint generation,
-        Func<T, IReadOnlyList<LexKeyPart[]>> keys) => new(name, generation, keys);
+        Func<T, IReadOnlyList<LexKeyPart[]>> keys
+    ) => new(name, generation, keys);
 }

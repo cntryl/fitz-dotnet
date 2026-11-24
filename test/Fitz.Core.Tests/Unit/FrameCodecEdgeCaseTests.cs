@@ -97,8 +97,10 @@ public sealed class FrameCodecEdgeCaseTests
     {
         // Arrange
         var payload = new byte[4096];
+
         for (var i = 0; i < payload.Length; i++)
             payload[i] = (byte)(i % 256);
+
         var encoded = FrameCodec.Encode(999, payload);
 
         // Act
@@ -113,8 +115,10 @@ public sealed class FrameCodecEdgeCaseTests
     {
         // Arrange
         var payload = new byte[FrameCodec.MaxTransportFrameSize - FrameCodec.MaxHeaderSize];
+
         for (var i = 0; i < payload.Length; i++)
             payload[i] = (byte)(i % 256);
+
         var encoded = FrameCodec.Encode(500, payload);
 
         // Act
@@ -164,8 +168,10 @@ public sealed class FrameCodecEdgeCaseTests
     {
         // Arrange
         var payload = new byte[256];
+
         for (var i = 0; i < 256; i++)
             payload[i] = (byte)i;
+
         var encoded = FrameCodec.Encode(777, payload);
 
         // Act

@@ -147,6 +147,7 @@ public sealed class LeaseClientTests
         await using var leaseClient = new LeaseClient((messageType, _, _) =>
         {
             using var writer = new BinaryBufferWriter();
+
             if (messageType == MessageTypes.LeaseAcquire)
             {
                 writer.WriteU8(0);
@@ -163,6 +164,7 @@ public sealed class LeaseClientTests
             {
                 writer.WriteU8(0);
             }
+
 
             return Task.FromResult(writer.Build());
         });
@@ -269,6 +271,7 @@ public sealed class LeaseClientTests
         {
             if (FrameCodec.DecodeStrict(transport.SentFrames[^1]).MessageType != MessageTypes.LeaseAcquire)
                 return;
+
             using var queued = new BinaryBufferWriter();
             queued.WriteU8(0);
             queued.WriteU8(2);
@@ -437,6 +440,7 @@ public sealed class LeaseClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
+
             if (messageType == MessageTypes.LeaseAcquire)
             {
                 writer.WriteU8(1);
@@ -446,6 +450,7 @@ public sealed class LeaseClientTests
             {
                 writer.WriteU64(77);
             }
+
 
             return Task.FromResult(writer.Build());
         });
@@ -479,11 +484,13 @@ public sealed class LeaseClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
+
             if (messageType == MessageTypes.LeaseAcquire)
             {
                 writer.WriteU8(1);
                 writer.WriteU64(77);
             }
+
 
             return Task.FromResult(writer.Build());
         });
@@ -513,6 +520,7 @@ public sealed class LeaseClientTests
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
+
             if (messageType == MessageTypes.LeaseAcquire)
             {
                 writer.WriteU8(1);
@@ -522,6 +530,7 @@ public sealed class LeaseClientTests
             {
                 releaseCalls++;
             }
+
 
             return Task.FromResult(writer.Build());
         });
@@ -545,6 +554,7 @@ public sealed class LeaseClientTests
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(messageType == MessageTypes.LeaseRelease ? (byte)1 : (byte)0);
+
             if (messageType == MessageTypes.LeaseAcquire)
             {
                 writer.WriteU8(1);
@@ -555,6 +565,7 @@ public sealed class LeaseClientTests
                 writer.WriteU32(9001);
                 writer.WriteString("release failed");
             }
+
 
             return Task.FromResult(writer.Build());
         });
@@ -583,10 +594,12 @@ public sealed class LeaseClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+
                 if (messageType == MessageTypes.LeaseSubscribe)
                 {
                     writer.WriteU64(555);
                 }
+
                 return Task.FromResult(writer.Build());
             },
             (messageType, handler) =>
@@ -751,12 +764,14 @@ public sealed class LeaseClientTests
             {
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+
                 if (messageType == MessageTypes.LeaseSubscribe)
                 {
                     seenMessageType = messageType;
                     seenPayload = payload;
                     writer.WriteU64(555);
                 }
+
                 return Task.FromResult(writer.Build());
             },
             (messageType, _) => new TestRegistration());
@@ -787,10 +802,12 @@ public sealed class LeaseClientTests
             {
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+
                 if (messageType == MessageTypes.LeaseSubscribe)
                 {
                     writer.WriteU64(555);
                 }
+
                 return Task.FromResult(writer.Build());
             },
             (_, _) => new TestRegistration());
@@ -816,10 +833,12 @@ public sealed class LeaseClientTests
             {
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+
                 if (messageType == MessageTypes.LeaseSubscribe)
                 {
                     writer.WriteU64(555);
                 }
+
                 return Task.FromResult(writer.Build());
             },
             (_, _) => new TestRegistration());
@@ -900,6 +919,7 @@ public sealed class LeaseClientTests
         var subscription = await leaseClient.SubscribeAsync("lease://prod/app/lock", (evt, _) =>
         {
             var seen = Interlocked.Increment(ref notificationCount);
+
             if (seen == 1)
             {
                 firstNotification.TrySetResult(evt);
@@ -908,6 +928,7 @@ public sealed class LeaseClientTests
             {
                 secondNotification.TrySetResult(evt);
             }
+
 
             return ValueTask.CompletedTask;
         });

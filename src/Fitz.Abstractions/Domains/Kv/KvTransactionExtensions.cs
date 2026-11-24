@@ -23,7 +23,8 @@ public static class KvTransactionExtensions
     public static async IAsyncEnumerable<KvPair> ScanAllAsync(
         this IKvTransaction transaction,
         KvScanQuery? query = null,
-        [EnumeratorCancellation] CancellationToken ct = default)
+        [EnumeratorCancellation] CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(transaction);
         query ??= new KvScanQuery();
@@ -32,20 +33,24 @@ public static class KvTransactionExtensions
         while (true)
         {
             var page = await transaction.ScanAsync(next, ct).ConfigureAwait(false);
+
             foreach (var pair in page.Pairs)
             {
                 ct.ThrowIfCancellationRequested();
                 yield return pair;
             }
 
+
             if (!page.HasMore)
             {
                 yield break;
             }
+
             if (page.Pairs.Count == 0)
             {
                 throw new InvalidOperationException("KV SCAN returned an empty page with HasMore set.");
             }
+
             if (transaction.SupportsExclusiveScan)
             {
                 next = query with { StartKey = page.Pairs[^1].Key, StartExclusive = true };

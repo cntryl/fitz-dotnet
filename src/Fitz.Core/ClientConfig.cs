@@ -85,11 +85,13 @@ public sealed record ClientConfig(Uri Url)
     internal void Validate()
     {
         ArgumentNullException.ThrowIfNull(Url);
+
         if (ServiceName is { } serviceName)
         {
             var normalizedServiceName = serviceName.Trim();
             var utf8 = new System.Text.UTF8Encoding(false, true);
             int byteCount;
+
             try
             {
                 byteCount = utf8.GetByteCount(normalizedServiceName);
@@ -98,30 +100,37 @@ public sealed record ClientConfig(Uri Url)
             {
                 throw new ArgumentException("ServiceName must contain valid Unicode characters.", nameof(ServiceName), exception);
             }
+
             if (normalizedServiceName.Length == 0 || byteCount > 128)
             {
                 throw new ArgumentException("ServiceName must be non-empty and at most 128 UTF-8 bytes.", nameof(ServiceName));
             }
+
             if (normalizedServiceName.Any(char.IsControl))
             {
                 throw new ArgumentException("ServiceName must not contain control characters.", nameof(ServiceName));
             }
         }
+
         if (!Url.IsAbsoluteUri)
         {
             throw new ArgumentException("The Fitz URL must be absolute.", nameof(Url));
         }
+
         if (Transport is not ClientTransport.Auto and not ClientTransport.WebSocket and not ClientTransport.Tcp)
         {
             throw new ArgumentOutOfRangeException(nameof(Transport), Transport, "Unknown client transport.");
         }
 
+
         ValidatePositiveTimeout(Timeout, nameof(Timeout));
+
         if (MaxFrameSize is < FitzLimits.MinFrameSize or > FitzLimits.MaxFrameSize)
         {
             throw new ArgumentOutOfRangeException(nameof(MaxFrameSize),
                 $"MaxFrameSize must be between {FitzLimits.MinFrameSize} and {FitzLimits.MaxFrameSize} bytes, including the Wire 3 header.");
         }
+
 
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaxInFlightRequests);
         ArgumentOutOfRangeException.ThrowIfNegative(MaxRequestQueueSize);
@@ -130,10 +139,12 @@ public sealed record ClientConfig(Uri Url)
         ValidatePositiveTimeout(ResolvedHeartbeat.Interval, $"{nameof(Heartbeat)}.{nameof(HeartbeatOptions.Interval)}");
         ValidatePositiveTimeout(ResolvedHeartbeat.Timeout, $"{nameof(Heartbeat)}.{nameof(HeartbeatOptions.Timeout)}");
         ValidatePositiveTimeout(ResolvedAsyncHandlers.Timeout, $"{nameof(AsyncHandlers)}.{nameof(AsyncHandlerOptions.Timeout)}");
+
         if (ResolvedAsyncHandlers.MaxConcurrency is <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(AsyncHandlers), "MaxConcurrency must be positive when configured.");
         }
+
 
         ArgumentOutOfRangeException.ThrowIfNegative(ResolvedAsyncHandlers.QueueCapacity, $"{nameof(AsyncHandlers)}.{nameof(AsyncHandlerOptions.QueueCapacity)}");
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(ResolvedAsyncHandlers.SubscriptionBufferCapacity, $"{nameof(AsyncHandlers)}.{nameof(AsyncHandlerOptions.SubscriptionBufferCapacity)}");
@@ -169,6 +180,7 @@ public sealed record ClientConfig(Uri Url)
 
         ValidateNonnegativeDelay(backoff, $"{parameterName}.Backoff");
         ValidateNonnegativeDelay(maxBackoff, $"{parameterName}.MaxBackoff");
+
         if (backoff.HasValue && maxBackoff.HasValue &&
             maxBackoff != System.Threading.Timeout.InfiniteTimeSpan &&
             (backoff == System.Threading.Timeout.InfiniteTimeSpan || backoff > maxBackoff))

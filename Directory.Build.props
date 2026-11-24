@@ -10,6 +10,15 @@
     <!-- runtime-async is enabled for net11.0 projects only; see Directory.Build.targets. -->
   </PropertyGroup>
 
+  <ItemGroup Condition="'$(ManagePackageVersionsCentrally)' == 'true'">
+    <PackageReference Include="Cntryl.Conventions.Analyzers" PrivateAssets="all"/>
+    <PackageReference Include="Cntryl.Conventions.CodeFixes" PrivateAssets="all"/>
+  </ItemGroup>
+  <ItemGroup Condition="'$(ManagePackageVersionsCentrally)' != 'true'">
+    <PackageReference Include="Cntryl.Conventions.Analyzers" Version="1.0.5" PrivateAssets="all"/>
+    <PackageReference Include="Cntryl.Conventions.CodeFixes" Version="1.0.5" PrivateAssets="all"/>
+  </ItemGroup>
+
   <!-- Reproducible, SourceLink-resolvable binaries. ContinuousIntegrationBuild rewrites
        source paths to deterministic ones, so it is only set on GitHub Actions: locally it
        would break debugging against the working tree. -->
@@ -20,7 +29,7 @@
 
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
     <!-- Assembly identity stays fixed permanently; release only by advancing PackageVersion. -->
-    <PackageVersion>4.3.0</PackageVersion>
+    <PackageVersion>4.3.1</PackageVersion>
     <Version>$(PackageVersion)</Version>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <InformationalVersion>$(PackageVersion)</InformationalVersion>

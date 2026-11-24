@@ -46,7 +46,8 @@ static class ResponseEnvelope
         ReadOnlyMemory<byte> response,
         string operation,
         WireFailureFactory<TException> create,
-        Func<uint, string>? mapCode = null)
+        Func<uint, string>? mapCode = null
+    )
         where TException : FitzException
     {
         if (response.IsEmpty)
@@ -54,8 +55,10 @@ static class ResponseEnvelope
 
         var reader = new BinaryBufferReader(response);
         var status = reader.ReadU8();
+
         if (status == StatusOk)
             return reader;
+
 
         throw ReadFailure(response, operation, status, create, mapCode);
     }
@@ -73,13 +76,15 @@ static class ResponseEnvelope
         string operation,
         byte status,
         WireFailureFactory<TException> create,
-        Func<uint, string>? mapCode = null)
+        Func<uint, string>? mapCode = null
+    )
         where TException : FitzException
     {
         if (status != StatusError)
             return create(new WireFailure($"{operation} response has unknown status {status}", InvalidResponseCode(operation), status));
 
         ResponseErrorEnvelope error;
+
         try
         {
             error = ResponseError.Read(response);
@@ -88,6 +93,7 @@ static class ResponseEnvelope
         {
             return create(new WireFailure($"{operation} error response is malformed: {exception.Message}", InvalidResponseCode(operation), status));
         }
+
 
         return create(new WireFailure(
             $"{operation} failed: {error.Message}",

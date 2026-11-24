@@ -56,6 +56,7 @@ public sealed class SubscriptionLifecycleRegressionTests
         {
             if (type != MessageTypes.NoticeSubscribe)
                 return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
+
             return Interlocked.Increment(ref submits) == 1
                 ? new ValueTask<ReadOnlyMemory<byte>>(firstReply.Task)
                 : ValueTask.FromResult<ReadOnlyMemory<byte>>(Reply("notice", 56));
@@ -133,6 +134,7 @@ public sealed class SubscriptionLifecycleRegressionTests
                 Interlocked.Increment(ref subscribes);
                 return new ValueTask<ReadOnlyMemory<byte>>(reply.Task);
             }
+
             Interlocked.Increment(ref unsubscribes);
             return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
         });
@@ -176,6 +178,7 @@ public sealed class SubscriptionLifecycleRegressionTests
                 return Interlocked.Increment(ref subscribes) == 1
                     ? new ValueTask<ReadOnlyMemory<byte>>(reply.Task)
                     : ValueTask.FromResult<ReadOnlyMemory<byte>>(Reply("stream", 56));
+
             removing.TrySetResult();
             return new ValueTask<ReadOnlyMemory<byte>>(remove.Task);
         });
@@ -218,6 +221,7 @@ public sealed class SubscriptionLifecycleRegressionTests
         {
             if (type == MessageTypes.StreamSubscribe)
                 return ValueTask.FromResult<ReadOnlyMemory<byte>>(Reply("stream", 55));
+
             Interlocked.Increment(ref unsubscribes);
             return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
         });
@@ -258,6 +262,7 @@ public sealed class SubscriptionLifecycleRegressionTests
         fixture.Notify(Notification("stream", 55, exactRoute));
         fixture.Notify(Notification("stream", 56, exactRoute));
         wildcardReply.SetResult(Reply("stream", 56));
+
         try
         {
             await using var wildcardHandle = await area.WaitAsync(TimeSpan.FromSeconds(2));
@@ -434,8 +439,10 @@ public sealed class SubscriptionLifecycleRegressionTests
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(0);
+
         if (domain is not ("kv" or "lease"))
             writer.WriteU8(1);
+
         writer.WriteU64(id);
         return writer.Build();
     }
@@ -445,6 +452,7 @@ public sealed class SubscriptionLifecycleRegressionTests
         using var writer = new BinaryBufferWriter();
         writer.WriteU64(id);
         writer.WriteString(route);
+
         if (domain == "queue")
         {
             writer.WriteU64(1);
@@ -461,6 +469,7 @@ public sealed class SubscriptionLifecycleRegressionTests
             writer.WriteU32((uint)payload.Length);
             writer.WriteBytes(payload);
         }
+
         return writer.Build();
     }
 
@@ -514,8 +523,10 @@ public sealed class SubscriptionLifecycleRegressionTests
         {
             var result = _source.GetResult(token);
             Resuming.TrySetResult();
+
             if (!AllowResume.Wait(TimeSpan.FromSeconds(10)))
                 throw new TimeoutException("Subscription continuation was not released.");
+
             return result;
         }
         public ValueTaskSourceStatus GetStatus(short token) => _source.GetStatus(token);

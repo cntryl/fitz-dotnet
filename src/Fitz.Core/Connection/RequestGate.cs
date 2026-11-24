@@ -52,6 +52,7 @@ sealed class RequestGate
         lock (_gate)
         {
             _maxConcurrency = maxConcurrency;
+
             while (!_closed && _activeCount < _maxConcurrency && _waiters.First is { } first)
             {
                 _waiters.RemoveFirst();
@@ -59,6 +60,7 @@ sealed class RequestGate
                 granted.Add(first.Value);
             }
         }
+
         foreach (var waiter in granted)
         {
             waiter.Grant(new Releaser(this));
@@ -127,6 +129,7 @@ sealed class RequestGate
             // Removing the node claims completion. A release or Close may already own it.
             if (waiter.Node.List is null)
                 return;
+
             _waiters.Remove(waiter.Node);
         }
 

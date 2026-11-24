@@ -185,6 +185,7 @@ public sealed class CorrelationTests
         var sent = 0;
 
         var requests = new List<Task<byte[]>>();
+
         for (var i = 1; i <= 32; i++)
         {
             requests.Add(mux.RequestAsync(
@@ -199,10 +200,12 @@ public sealed class CorrelationTests
                 correlationId: (ulong)i));
         }
 
+
         var sentBeforeAnyResponse = Volatile.Read(ref sent);
 
         // Act: answer every one of them in reverse order.
         var routed = 0;
+
         for (var i = 32; i >= 1; i--)
         {
             mux.DispatchCorrelated((ulong)i, new byte[] { (byte)i });
@@ -210,8 +213,10 @@ public sealed class CorrelationTests
         }
 
         // Assert: all 32 reached the transport before any answer. Uncorrelated, only one would have.
+
         Assert.Equal(32, sentBeforeAnyResponse);
         Assert.Equal(32, routed);
+
         for (var i = 0; i < requests.Count; i++)
         {
             Assert.Equal([(byte)(i + 1)], await requests[i].WaitAsync(TimeSpan.FromSeconds(10)));

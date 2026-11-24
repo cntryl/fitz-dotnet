@@ -1,11 +1,6 @@
 # Changelog
 
-## Unreleased
-
-- Stream subscriptions on one connection share setup for identical selectors and pipeline
-  distinct selectors during setup and reconnect. Each async reader has its own bounded buffer.
-
-## 4.3.0 (unreleased)
+## 4.3.1 (unreleased)
 
 ### Breaking changes
 
@@ -20,6 +15,11 @@
   Choose `StreamReadMode.Replay` for a finite snapshot or `Follow` to resume after catch-up and
   reconnection. Each batch exposes all tagged `Items`, visible `Records`, and the next offset to
   checkpoint. The SDK manages global snapshot continuation internally.
+
+### Fixes and improvements
+
+- Stream subscriptions on one connection share setup for identical selectors and pipeline
+  distinct selectors during setup and reconnect. Each async reader has its own bounded buffer.
 
 ## 4.2.0 (2026-11-13)
 

@@ -68,6 +68,7 @@ public sealed class StreamReplayTests
         };
 
         // Act
+
         foreach (var entry in fixture.RootElement.GetProperty("selectors").EnumerateArray())
         {
             var selector = entry.GetProperty("selector").GetString()!;
@@ -80,6 +81,7 @@ public sealed class StreamReplayTests
             Assert.Empty(batch.Records);
             Assert.Equal(axes[axis], batch.NextOffset);
         }
+
         foreach (var invalid in fixture.RootElement.GetProperty("invalidSelectors").EnumerateArray())
             Assert.False(RouteValidation.IsStreamSelector(invalid.GetString()!));
     }
@@ -123,10 +125,13 @@ public sealed class StreamReplayTests
         await using var stream = new StreamClient((type, _, _) =>
         {
             requests.Add(type);
+
             if (type == MessageTypes.StreamSubscribe)
                 return Task.FromResult(SubscriptionReply());
+
             if (type == MessageTypes.StreamUnsubscribe)
                 return Task.FromResult(new byte[] { 0 });
+
             if (requests.Count == 2)
             {
                 using var frame = new BinaryBufferWriter();
@@ -135,6 +140,7 @@ public sealed class StreamReplayTests
                 frame.WriteU32(0);
                 notify!(frame.Build());
             }
+
             return Task.FromResult(Page());
         }, (_, handler) => { notify = handler; return new TestRegistration(); });
         using var timeout = new CancellationTokenSource(Deadline);
@@ -159,8 +165,10 @@ public sealed class StreamReplayTests
         // Arrange
         await using var first = new TestQueuedTransport();
         await using var second = new TestQueuedTransport();
+
         foreach (var transport in new[] { first, second })
             transport.QueueResponse(MessageTypes.StreamSubscribe, SubscriptionReply());
+
         first.QueueResponse(MessageTypes.StreamRead, Page(global: true, more: !caughtUp, fingerprint: 67));
         second.QueueResponse(MessageTypes.StreamRead, Page(global: true));
         second.QueueResponse(MessageTypes.StreamUnsubscribe, new byte[] { 0 });
@@ -208,12 +216,15 @@ public sealed class StreamReplayTests
         page.WriteU64(20);
         page.WriteU8(1);
         page.WriteU64(30);
+
         if (global)
         {
             page.WriteU8(1);
             page.WriteU64(40);
         }
+
         page.WriteU8(more ? (byte)1 : (byte)0);
+
         if (global)
         {
             page.WriteU8(1);
@@ -221,6 +232,7 @@ public sealed class StreamReplayTests
             page.WriteU8(1);
             page.WriteU64(99);
         }
+
         using var response = new BinaryBufferWriter();
         response.WriteU8(0);
         response.WriteU8(0);

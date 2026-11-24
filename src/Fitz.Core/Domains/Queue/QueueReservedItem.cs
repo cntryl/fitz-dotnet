@@ -19,7 +19,8 @@ sealed class QueueReservedItem : QueueItem
         ulong token,
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> requestFn,
         Func<Action, IDisposable>? registerOnDisconnect = null,
-        Func<uint, bool>? supportsNack = null)
+        Func<uint, bool>? supportsNack = null
+    )
         : base(route, body)
     {
         _id = id;
@@ -58,9 +59,12 @@ sealed class QueueReservedItem : QueueItem
     {
         ThrowIfClosed();
         var seconds = WireDuration.ToSeconds(visibilityDelay, nameof(visibilityDelay));
+
         if (_supportsNack?.Invoke(2) != true)
             throw new NotSupportedException("Queue NACK capability was not negotiated.");
+
         BeginCompletion();
+
         try
         {
             using var writer = new BinaryBufferWriter();
@@ -70,8 +74,10 @@ sealed class QueueReservedItem : QueueItem
             writer.WriteU64(seconds);
             var response = await _requestFn(MessageTypes.QueueNack, writer.WrittenMemory, ct).ConfigureAwait(false);
             var reader = QueueWireHelpers.ReadSuccess(response, "NACK");
+
             if (!reader.IsEof)
                 throw new QueueException("NACK response has trailing bytes", "NACK_INVALID_RESPONSE");
+
             MarkClosed();
         }
         finally
@@ -90,6 +96,7 @@ sealed class QueueReservedItem : QueueItem
     async Task CompleteCoreAsync(ulong token, CancellationToken ct)
     {
         BeginCompletion();
+
         try
         {
             using var writer = new BinaryBufferWriter();

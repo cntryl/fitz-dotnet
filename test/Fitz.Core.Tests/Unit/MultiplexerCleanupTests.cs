@@ -221,6 +221,7 @@ public sealed class MultiplexerCleanupTests
         // Arrange
         using var mux = new Multiplexer();
         mux.SetConnected();
+
         for (ulong i = 1; i <= 10; i++)
         {
             var task = mux.RequestAsync(
@@ -233,6 +234,7 @@ public sealed class MultiplexerCleanupTests
         }
 
         // Act
+
         var finalTask = mux.RequestAsync(
             210,
             [0x1],

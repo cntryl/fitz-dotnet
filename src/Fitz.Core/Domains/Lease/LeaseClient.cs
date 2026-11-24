@@ -54,7 +54,8 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
     /// </summary>
     public LeaseClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
-        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null
+    )
         : this(
             async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
             NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
@@ -69,7 +70,8 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
         Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null,
         int subscriptionBufferCapacity = SubscriptionRegistration<LeaseChangeEvent>.DefaultCapacity,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _request = request;
         _time = timeProvider ?? TimeProvider.System;
@@ -139,6 +141,7 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
             : null;
         using var acquisition = waitGuard is null ? null : CancellationTokenSource.CreateLinkedTokenSource(ct, waitGuard.Token);
         ReadOnlyMemory<byte> response;
+
         try
         {
             response = await session.RequestAsync(MessageTypes.LeaseAcquire, writer.WrittenMemory, acquisition?.Token ?? ct).ConfigureAwait(false);
@@ -149,18 +152,23 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
                 $"Queued lease acquisition received no final response within its {waitSeconds}-second wait", exception);
         }
 
+
         var reader = LeaseWireHelpers.ReadSuccess(response, "ACQUIRE");
+
         if (reader.RemainingBytes < 9)
         {
             throw new LeaseException("ACQUIRE response missing fencing token", "MISSING_TOKEN");
         }
 
+
         var responseType = reader.ReadU8();
         var fencedToken = reader.ReadU64();
+
         if (!reader.IsEof)
         {
             throw new LeaseException("ACQUIRE response has trailing bytes", "ACQUIRE_INVALID_RESPONSE");
         }
+
 
         switch (responseType)
         {
@@ -185,7 +193,8 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
         TimeSpan ttl,
         Func<CancellationToken, ValueTask<T>> callback,
         LeaseExecutionOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(callback);
@@ -203,16 +212,19 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
         TimeSpan ttl,
         Func<LeaseAuthority, CancellationToken, ValueTask<T>> callback,
         LeaseExecutionOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(callback);
         ct.ThrowIfCancellationRequested();
         var ttlSecs = WireDuration.ToSeconds(ttl, nameof(ttl));
+
         if (ttlSecs == 0 || ttlSecs > uint.MaxValue / 1000)
         {
             throw new LeaseException("ttl must be positive and schedulable", "INVALID_TTL");
         }
+
 
         var waitSeconds = options?.WaitForAvailability == true
             ? ToWaitSeconds(options.Wait, nameof(LeaseExecutionOptions.Wait))
@@ -227,7 +239,8 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
         TimeSpan ttl,
         Func<CancellationToken, ValueTask> callback,
         LeaseExecutionOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(callback);
@@ -245,7 +258,8 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
         TimeSpan ttl,
         Func<LeaseAuthority, CancellationToken, ValueTask> callback,
         LeaseExecutionOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(callback);
@@ -265,10 +279,12 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
     public async Task<LeaseInfo> QueryAsync(string route, CancellationToken ct = default)
     {
         ThrowIfDisposed();
+
         if (!RouteValidation.IsFixedRoute(route, "lease", 3))
         {
             throw new ArgumentException($"route '{route}' must be lease://{{realm}}/{{area}}/{{resource}}", nameof(route));
         }
+
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
@@ -282,15 +298,18 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
         var reader = LeaseWireHelpers.ReadSuccess(response, "QUERY");
 
         var hasHolder = reader.ReadU8();
+
         if (hasHolder > 1)
         {
             throw new LeaseException($"QUERY response has invalid holder flag {hasHolder}", "QUERY_INVALID_RESPONSE");
         }
 
+
         if (hasHolder == 0)
         {
             if (reader.RemainingBytes != 4)
                 throw new LeaseException("QUERY response missing pending_waiters", "QUERY_INVALID_RESPONSE");
+
             var pendingWaiters = reader.ReadU32();
 
             if (!reader.IsEof)
@@ -303,8 +322,10 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
 
         var owner = reader.ReadString();
         var ttlRemaining = reader.ReadU64();
+
         if (reader.RemainingBytes != 4)
             throw new LeaseException("QUERY response missing pending_waiters", "QUERY_INVALID_RESPONSE");
+
         var heldPendingWaiters = reader.ReadU32();
 
         if (!reader.IsEof)
@@ -325,41 +346,51 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
         string pattern,
         LeaseListCursor? cursor = null,
         int? limit = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         EnsureLeaseRegistrationPattern(pattern, nameof(pattern));
+
         if (limit.HasValue)
         {
             ArgumentOutOfRangeException.ThrowIfLessThan(limit.Value, 1, nameof(limit));
         }
 
+
         using var writer = new BinaryBufferWriter();
         writer.WriteString(pattern);
         writer.WriteU8((byte)(cursor is null ? 0 : 1));
+
         if (cursor is not null)
         {
             writer.WriteU64(cursor.SnapshotId);
             writer.WriteU32(cursor.Offset);
         }
+
         writer.WriteU32((uint)(limit ?? 0));
 
         var response = await _request(MessageTypes.LeaseList, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = LeaseWireHelpers.ReadSuccess(response, "LIST");
+
         if (reader.RemainingBytes < 5)
         {
             throw new LeaseException("LIST response is missing its item count or has_next flag", "LIST_INVALID_RESPONSE");
         }
 
+
         var itemCount = reader.ReadU32();
         const int minimumItemWireBytes = 4 + 4 + 8 + 4 + 8 + 4;
         var plausibleItemCount = reader.RemainingBytes / minimumItemWireBytes;
+
         if (itemCount > (uint)plausibleItemCount)
         {
             throw new LeaseException("LIST response item count exceeds the remaining payload", "LIST_INVALID_RESPONSE");
         }
 
+
         var items = new List<LeaseListItem>(checked((int)itemCount));
+
         for (var i = 0; i < itemCount; i++)
         {
             ct.ThrowIfCancellationRequested();
@@ -369,12 +400,14 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
             var acquiredAtText = reader.ReadString();
             var expiresInSecs = reader.ReadU64();
             var renewals = reader.ReadU32();
+
             if (!WireDuration.TryFromSeconds(expiresInSecs, out var expiresIn))
             {
                 throw new LeaseException("LIST response expires_in_secs is out of range", "LIST_INVALID_RESPONSE");
             }
 
             // The broker reports acquired_at as an RFC 3339 timestamp.
+
             if (!DateTimeOffset.TryParse(acquiredAtText, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var acquiredAt))
             {
                 throw new LeaseException("LIST response acquired_at is not an RFC 3339 timestamp", "LIST_INVALID_RESPONSE");
@@ -383,24 +416,29 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
             items.Add(new LeaseListItem(route, ownerId, holderIncarnation, acquiredAt, expiresIn, renewals));
         }
 
+
         if (reader.RemainingBytes < 1)
         {
             throw new LeaseException("LIST response missing has_next", "LIST_INVALID_RESPONSE");
         }
 
         var hasNext = reader.ReadU8();
+
         if (hasNext > 1)
         {
             throw new LeaseException("LIST response has invalid has_next", "LIST_INVALID_RESPONSE");
         }
 
+
         LeaseListCursor? nextCursor = null;
+
         if (hasNext == 1)
         {
             var snapshotId = reader.ReadU64();
             var offset = reader.ReadU32();
             nextCursor = new LeaseListCursor(snapshotId, offset);
         }
+
 
         if (!reader.IsEof)
         {
@@ -413,7 +451,8 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
     /// <inheritdoc />
     public Task<LeaseSubscription> SubscribeAsync(
         string route,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         return SubscribeObserverAsync(route, invalidate: null, ct);
@@ -422,7 +461,8 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
     internal Task<LeaseSubscription> SubscribeObserverAsync(
         string route,
         Action<LeaseChangeEvent>? invalidate,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         EnsureLeaseRegistrationPattern(route, nameof(route));
         return _subscriptions.SubscribeBufferedAsync(
@@ -436,7 +476,8 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
         string route,
         Func<LeaseChangeEvent, CancellationToken, ValueTask> handler,
         Action<LeaseChangeEvent>? preDispatch = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         EnsureLeaseRegistrationPattern(route, nameof(route));
         var binding = await _subscriptions.SubscribeAsync(route, handler, preDispatch, ct).ConfigureAwait(false);
@@ -465,10 +506,12 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
         }
 
         var subscriptionId = reader.ReadU64();
+
         if (!reader.IsEof)
         {
             throw new LeaseException("SUBSCRIBE response has trailing bytes", "SUBSCRIBE_INVALID_RESPONSE");
         }
+
 
         return subscriptionId;
     }
@@ -480,6 +523,7 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
 
         var response = await session.RequestAsync(_request, MessageTypes.LeaseUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = LeaseWireHelpers.ReadSuccess(response, "UNSUBSCRIBE");
+
         if (!reader.IsEof)
         {
             throw new LeaseException("UNSUBSCRIBE response has trailing bytes", "UNSUBSCRIBE_INVALID_RESPONSE");
@@ -524,26 +568,31 @@ sealed class LeaseClient : ILeaseClient, IAsyncDisposable
     public async Task<ILeaseInventoryObserver> ObserveAsync(
         string pattern,
         LeaseObserveOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         EnsureLeaseRegistrationPattern(pattern, nameof(pattern));
 
         options ??= new LeaseObserveOptions();
+
         if (options.ReconciliationInterval <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "ReconciliationInterval must be positive");
         }
+
         if (double.IsNaN(options.ReconciliationJitterRatio) ||
             options.ReconciliationJitterRatio < 0 ||
             options.ReconciliationJitterRatio >= 1)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "ReconciliationJitterRatio must be in [0, 1)");
         }
+
         if (options.UpdateBufferCapacity <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "UpdateBufferCapacity must be positive");
         }
+
         if (options.ListTimeout <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(options), "ListTimeout must be positive");

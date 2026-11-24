@@ -24,7 +24,8 @@ sealed class AsyncHandlerDispatcher
         Action<Exception> onError,
         Action<int, int>? onMetricsChanged = null,
         Action<int, int>? onSaturated = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _time = timeProvider ?? TimeProvider.System;
         _maxConcurrency = maxConcurrency ?? Math.Max(1, Environment.ProcessorCount);
@@ -37,7 +38,8 @@ sealed class AsyncHandlerDispatcher
 
     internal bool TryDispatch(
         Func<CancellationToken, ValueTask> handler,
-        Action<Exception>? onRejected = null)
+        Action<Exception>? onRejected = null
+    )
     {
         ArgumentNullException.ThrowIfNull(handler);
 
@@ -92,10 +94,12 @@ sealed class AsyncHandlerDispatcher
         }
 
         var failure = new OperationCanceledException("The async handler dispatcher is closed.");
+
         foreach (var workItem in queued)
         {
             workItem.Reject(failure);
         }
+
         ReportMetrics(activeCount, 0, saturated: false);
     }
 
@@ -151,10 +155,12 @@ sealed class AsyncHandlerDispatcher
         lock (_gate)
         {
             _activeTasks.Remove(completed);
+
             if (_activeCount > 0)
             {
                 _activeCount--;
             }
+
 
             if (!_closed && _activeCount < _maxConcurrency && _queue.Count > 0)
             {
@@ -176,6 +182,7 @@ sealed class AsyncHandlerDispatcher
             {
                 _onSaturated?.Invoke(activeCount, queuedCount);
             }
+
             _onMetricsChanged?.Invoke(activeCount, queuedCount);
         }
         catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))

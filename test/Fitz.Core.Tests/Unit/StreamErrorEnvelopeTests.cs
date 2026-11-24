@@ -54,8 +54,10 @@ public sealed class StreamErrorEnvelopeTests
         // Arrange
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(1);
+
         if (code.HasValue)
             writer.WriteU32(code.Value);
+
         writer.WriteString("concurrency conflict");
         var payload = writer.Build();
 

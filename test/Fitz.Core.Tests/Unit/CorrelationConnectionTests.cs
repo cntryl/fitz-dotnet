@@ -17,12 +17,15 @@ public sealed class CorrelationConnectionTests
     static async Task WaitForAsync(Func<bool> condition, string because)
     {
         var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
+
         while (DateTimeOffset.UtcNow < deadline)
         {
             if (condition())
                 return;
+
             await Task.Delay(5);
         }
+
         Assert.Fail(because);
     }
 

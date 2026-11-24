@@ -52,5 +52,6 @@ public interface IStreamClient
     /// </returns>
     Task<StreamSubscription> SubscribeAsync(
         string pattern,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 }

@@ -91,10 +91,12 @@ public sealed class FitzClient : IFitzClient
         {
             ThrowIfDisposed();
             ct.ThrowIfCancellationRequested();
+
             if (++attempts > 1 && Expired())
             {
                 throw new TimeoutException(TimedOut);
             }
+
 
             try
             {
@@ -165,16 +167,22 @@ public sealed class FitzClient : IFitzClient
         {
             if (_kvClient is { } kv)
                 await kv.DisposeAsync().ConfigureAwait(false);
+
             if (_leaseClient is { } lease)
                 await lease.DisposeAsync().ConfigureAwait(false);
+
             if (_noticeClient is { } notice)
                 await notice.DisposeAsync().ConfigureAwait(false);
+
             if (_queueClient is { } queue)
                 await queue.DisposeAsync().ConfigureAwait(false);
+
             if (_rpcClient is { } rpc)
                 rpc.Dispose();
+
             if (_scheduleClient is { } schedule)
                 await schedule.DisposeAsync().ConfigureAwait(false);
+
             if (_streamClient is { } stream)
                 await stream.DisposeAsync().ConfigureAwait(false);
         }
@@ -226,10 +234,12 @@ public sealed class FitzClient : IFitzClient
     static TimeSpan ResolveDelay(TimeSpan? value, TimeSpan fallback, bool allowZero = false)
     {
         var resolved = value ?? fallback;
+
         if (resolved == System.Threading.Timeout.InfiniteTimeSpan)
         {
             return resolved;
         }
+
 
         if (resolved <= TimeSpan.Zero)
         {

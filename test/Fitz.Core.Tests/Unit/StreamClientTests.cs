@@ -196,6 +196,7 @@ public sealed class StreamClientTests
             {
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+
                 if (messageType == MessageTypes.StreamSubscribe)
                 {
                     writer.WriteU8(1);
@@ -206,6 +207,7 @@ public sealed class StreamClientTests
                 {
                     Assert.Equal(MessageTypes.StreamUnsubscribe, messageType);
                 }
+
                 return Task.FromResult(writer.Build());
             },
             (_, _) => new TestRegistration());
@@ -342,12 +344,14 @@ public sealed class StreamClientTests
 
         // Act
         var records = new List<StreamRecord>();
+
         await foreach (var batch in stream.ReadAsync("stream://prod/app/*", 4, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 2 }))
         {
             records.AddRange(batch.Records);
         }
 
         // Assert
+
         Assert.Empty(records);
         Assert.Equal(1, requestCount);
     }
@@ -424,12 +428,14 @@ public sealed class StreamClientTests
 
         // Act
         var records = new List<StreamRecord>();
+
         await foreach (var batch in stream.ReadAsync("stream://prod/app/events", 4, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 2, Filter = filter }))
         {
             records.AddRange(batch.Records);
         }
 
         // Assert
+
         Assert.Empty(records);
         Assert.Equal(1, requestCount);
     }
@@ -484,12 +490,14 @@ public sealed class StreamClientTests
 
         // Act
         var records = new List<StreamRecord>();
+
         await foreach (var batch in stream.ReadAsync("stream://prod/app/events", 4, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 2 }))
         {
             records.AddRange(batch.Records);
         }
 
         // Assert
+
         Assert.Collection(
             records,
             record =>
@@ -954,6 +962,7 @@ public sealed class StreamClientTests
             calls.Add((messageType, payload));
 
             using var writer = new BinaryBufferWriter();
+
             if (messageType == MessageTypes.StreamBegin)
             {
                 writer.WriteU8(0);
@@ -966,6 +975,7 @@ public sealed class StreamClientTests
                 writer.WriteU32(8);
                 writer.WriteU64(1234);
             }
+
 
             return Task.FromResult(writer.Build());
         });
@@ -1001,6 +1011,7 @@ public sealed class StreamClientTests
             calls.Add((messageType, payload));
 
             using var writer = new BinaryBufferWriter();
+
             if (messageType == MessageTypes.StreamBegin)
             {
                 writer.WriteU8(0);
@@ -1013,6 +1024,7 @@ public sealed class StreamClientTests
                 writer.WriteU32(8);
                 writer.WriteU64(1234);
             }
+
 
             return Task.FromResult(writer.Build());
         });
@@ -1053,6 +1065,7 @@ public sealed class StreamClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
+
             if (messageType == MessageTypes.StreamBegin)
             {
                 writer.WriteU64(44);
@@ -1062,6 +1075,7 @@ public sealed class StreamClientTests
             {
                 writer.WriteU32(0);
             }
+
 
             return Task.FromResult(writer.Build());
         });
@@ -1092,6 +1106,7 @@ public sealed class StreamClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
+
             if (messageType == MessageTypes.StreamBegin)
             {
                 writer.WriteU64(44);
@@ -1101,6 +1116,7 @@ public sealed class StreamClientTests
             {
                 writer.WriteU32(0);
             }
+
 
             return Task.FromResult(writer.Build());
         });
@@ -1125,6 +1141,7 @@ public sealed class StreamClientTests
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
+
             if (messageType == MessageTypes.StreamBegin)
             {
                 writer.WriteU64(44);
@@ -1134,6 +1151,7 @@ public sealed class StreamClientTests
             {
                 writer.WriteU32(0);
             }
+
 
             return Task.FromResult(writer.Build());
         });
@@ -1156,11 +1174,13 @@ public sealed class StreamClientTests
 
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(0);
+
             if (messageType == MessageTypes.StreamBegin)
             {
                 writer.WriteU64(44);
                 writer.WriteU32(0);
             }
+
 
             return Task.FromResult(writer.Build());
         });
@@ -1360,6 +1380,7 @@ public sealed class StreamClientTests
         var subscription = await stream.SubscribeAsync("stream://prod/*/*", (evt, _) =>
         {
             var seen = Interlocked.Increment(ref notificationCount);
+
             if (seen == 1)
             {
                 firstNotification.TrySetResult(evt);
@@ -1368,6 +1389,7 @@ public sealed class StreamClientTests
             {
                 secondNotification.TrySetResult(evt);
             }
+
 
             return ValueTask.CompletedTask;
         });

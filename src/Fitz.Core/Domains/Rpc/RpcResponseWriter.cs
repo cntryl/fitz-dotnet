@@ -18,8 +18,11 @@ sealed class RpcResponseWriter : IRpcResponseWriter, IAsyncDisposable
 
     internal bool IsEnded => _ended;
 
-    internal RpcResponseWriter(RpcSessionSend send, byte[] correlationId,
-        CancellationToken connectionClosed)
+    internal RpcResponseWriter(
+        RpcSessionSend send,
+        byte[] correlationId,
+        CancellationToken connectionClosed
+    )
     {
         _send = send;
         _correlationId = correlationId;
@@ -33,6 +36,7 @@ sealed class RpcResponseWriter : IRpcResponseWriter, IAsyncDisposable
             ? CancellationTokenSource.CreateLinkedTokenSource(ct, _connectionClosed) : null;
         var sendToken = linked?.Token ?? ct;
         await _sendGate.EnterAsync(this, _closingToken, sendToken).ConfigureAwait(false);
+
         try
         {
             if (_ended)

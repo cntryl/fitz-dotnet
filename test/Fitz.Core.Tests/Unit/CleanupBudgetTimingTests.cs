@@ -65,6 +65,7 @@ public sealed class CleanupBudgetTimingTests
         async ValueTask<ReadOnlyMemory<byte>> StallAsync(CancellationToken ct)
         {
             _started.TrySetResult();
+
             try
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, ct);
@@ -74,6 +75,7 @@ public sealed class CleanupBudgetTimingTests
                 _cancelled = true;
                 throw;
             }
+
 
             return ReadOnlyMemory<byte>.Empty;
         }

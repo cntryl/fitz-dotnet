@@ -47,17 +47,20 @@ static class RouteGrammar
         string scheme,
         int segmentCount,
         bool allowRealmWildcard,
-        out RouteValidationFailure failure) =>
+        out RouteValidationFailure failure
+    ) =>
         TryScan(route, scheme, segmentCount, allowWildcards: true, allowRealmWildcard, out failure);
 
     internal static bool TryGetStreamSelectorScope(string route, out StreamSelectorScope scope)
     {
         scope = default;
+
         if (string.Equals(route, "stream://**", StringComparison.Ordinal))
         {
             scope = StreamSelectorScope.Global;
             return true;
         }
+
 
         if (!route.StartsWith("stream://", StringComparison.Ordinal))
         {
@@ -65,6 +68,7 @@ static class RouteGrammar
         }
 
         var segments = Segments(route);
+
         foreach (var segment in segments)
         {
             if (segment.Length == 0)
@@ -72,6 +76,7 @@ static class RouteGrammar
                 return false;
             }
         }
+
 
         if (segments.Length == 2)
         {
@@ -111,7 +116,8 @@ static class RouteGrammar
         string route,
         string scheme,
         int requiredSegments,
-        out RouteValidationFailure failure)
+        out RouteValidationFailure failure
+    )
     {
         if (requiredSegments < 0)
         {
@@ -128,6 +134,7 @@ static class RouteGrammar
         var doubleWildcardCount = 0;
         var previousWasDoubleWildcard = false;
         var segmentStart = pathStart;
+
         for (var index = pathStart; index <= route.Length; index++)
         {
             if (index != route.Length && route[index] != '/')
@@ -136,19 +143,23 @@ static class RouteGrammar
             }
 
             var length = index - segmentStart;
+
             if (length == 0)
             {
                 failure = RouteValidationFailure.EmptySegment;
                 return false;
             }
 
+
             var doubleWildcard = IsDoubleWildcard(route, segmentStart, length);
+
             if (!IsSingleWildcard(route, segmentStart, length) && !doubleWildcard &&
                 ContainsWildcard(route, segmentStart, index))
             {
                 failure = RouteValidationFailure.ContainsWildcard;
                 return false;
             }
+
 
             if (doubleWildcard)
             {
@@ -166,6 +177,7 @@ static class RouteGrammar
             segmentStart = index + 1;
         }
 
+
         var canMatchRequiredDepth = requiredSegments == 0 ||
             (doubleWildcardCount == 0
                 ? segmentCount == requiredSegments
@@ -180,7 +192,8 @@ static class RouteGrammar
         int expectedSegments,
         bool allowWildcards,
         bool allowRealmWildcard,
-        out RouteValidationFailure failure)
+        out RouteValidationFailure failure
+    )
     {
         if (!TryGetPathStart(route, scheme, out var pathStart, out failure))
         {
@@ -191,6 +204,7 @@ static class RouteGrammar
         var firstWildcard = -1;
         var wildcardSuffix = true;
         var segmentStart = pathStart;
+
         for (var index = pathStart; index <= route.Length; index++)
         {
             if (index != route.Length && route[index] != '/')
@@ -199,11 +213,13 @@ static class RouteGrammar
             }
 
             var length = index - segmentStart;
+
             if (length == 0)
             {
                 failure = RouteValidationFailure.EmptySegment;
                 return false;
             }
+
 
             if (IsSingleWildcard(route, segmentStart, length) || IsDoubleWildcard(route, segmentStart, length))
             {
@@ -229,6 +245,7 @@ static class RouteGrammar
             segmentCount++;
             segmentStart = index + 1;
         }
+
 
         if (expectedSegments > 0 && segmentCount != expectedSegments)
         {
@@ -269,6 +286,7 @@ static class RouteGrammar
         }
 
         var schemeLength = scheme.Length;
+
         if (route.Length <= schemeLength + 2 ||
             string.CompareOrdinal(route, 0, scheme, 0, schemeLength) != 0 ||
             route[schemeLength] != ':' || route[schemeLength + 1] != '/' || route[schemeLength + 2] != '/')
@@ -276,12 +294,15 @@ static class RouteGrammar
             return false;
         }
 
+
         pathStart = schemeLength + 3;
+
         if (route.Length <= pathStart)
         {
             failure = RouteValidationFailure.EmptySegment;
             return false;
         }
+
 
         return true;
     }

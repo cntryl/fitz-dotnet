@@ -66,6 +66,7 @@ public sealed class KvDirectoryTests
                 await Directory.InsertAsync(transaction,
                     new Widget(Guid.NewGuid(), $"Widget {index:D4}", index));
             }
+
             await transaction.CommitAsync(KvDurability.Sync);
         }
         client.ClearOperations();
@@ -86,6 +87,7 @@ public sealed class KvDirectoryTests
     {
         // Arrange
         var client = new InMemoryKvClient();
+
         foreach (var name in new[] { "Alpha", "Beta", "Gamma" })
         {
             await WriteAsync(client, transaction => Directory.InsertAsync(
@@ -93,6 +95,7 @@ public sealed class KvDirectoryTests
         }
 
         // Act
+
         var first = await Directory.QueryAsync(client, Route, ByNameV1.Query().Descending().Take(2));
         var second = await Directory.QueryAsync(
             client, Route, ByNameV1.Query().Descending().Take(2).After(first.NextCursor));
@@ -242,9 +245,11 @@ public sealed class KvDirectoryTests
     {
         // Arrange
         var client = new InMemoryKvClient();
+
         foreach (var name in new[] { "Alpha", "Beta", "Gamma" })
             await WriteAsync(client, transaction => Directory.InsertAsync(
                 transaction, new Widget(Guid.NewGuid(), name, 1)));
+
         var expectedFirst = await Directory.QueryAsync(client, Route, ByNameV1.Query().Take(2));
         var expectedSecond = await Directory.QueryAsync(
             client, Route, ByNameV1.Query().Take(2).After(expectedFirst.NextCursor));
@@ -417,7 +422,8 @@ public sealed class KvDirectoryTests
     public async Task ShouldRejectInvalidInputGivenPrimaryQueryWhenPlanning(
         int limit,
         string? cursor,
-        KvDirectoryQueryError expected)
+        KvDirectoryQueryError expected
+    )
     {
         // Arrange
         var client = new InMemoryKvClient();
@@ -567,11 +573,13 @@ public sealed class KvDirectoryTests
         // Arrange
         var client = new InMemoryKvClient();
         var original = CreateDirectory(ByNameV1);
+
         foreach (var name in new[] { "Alpha", "Beta", "Gamma" })
         {
             await WriteAsync(client, transaction => original.InsertAsync(
                 transaction, new Widget(Guid.NewGuid(), name, 1)));
         }
+
         var upgraded = CreateDirectory(ByNameV1, ByNameV2);
         client.ClearOperations();
 

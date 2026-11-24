@@ -66,7 +66,8 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddFitzClient(
         this IServiceCollection services,
         ClientConfig config,
-        FitzClientHostingOptions hosting)
+        FitzClientHostingOptions hosting
+    )
     {
         ArgumentNullException.ThrowIfNull(config);
         return services.AddFitzClient(_ => config, hosting);
@@ -86,7 +87,8 @@ public static class ServiceCollectionExtensions
     /// <exception cref="InvalidOperationException">A Fitz client is already registered.</exception>
     public static IServiceCollection AddFitzClient(
         this IServiceCollection services,
-        Func<IServiceProvider, ClientConfig> configFactory) =>
+        Func<IServiceProvider, ClientConfig> configFactory
+    ) =>
         services.AddFitzClient(configFactory, new FitzClientHostingOptions());
 
     /// <summary>
@@ -102,11 +104,13 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddFitzClient(
         this IServiceCollection services,
         Func<IServiceProvider, ClientConfig> configFactory,
-        FitzClientHostingOptions hosting)
+        FitzClientHostingOptions hosting
+    )
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(configFactory);
         ValidateHosting(hosting);
+
         if (services.Any(static descriptor => !descriptor.IsKeyedService && descriptor.ServiceType == typeof(FitzClient)))
         {
             throw new InvalidOperationException(
@@ -117,6 +121,7 @@ public static class ServiceCollectionExtensions
         // Every registration supplies an explicit factory: the type-based overloads would
         // have the container select and invoke constructors reflectively, which also forces
         // the trimmer to preserve them.
+
         services.AddSingleton(configFactory);
         services.AddSingleton(static sp => new FitzClient(sp.GetRequiredService<ClientConfig>()));
         services.AddSingleton<IFitzClient>(static sp => sp.GetRequiredService<FitzClient>());
@@ -152,7 +157,8 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddKeyedFitzClient(
         this IServiceCollection services,
         object serviceKey,
-        ClientConfig config)
+        ClientConfig config
+    )
     {
         ArgumentNullException.ThrowIfNull(config);
         return services.AddKeyedFitzClient(serviceKey, config, new FitzClientHostingOptions());
@@ -173,7 +179,8 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         object serviceKey,
         ClientConfig config,
-        FitzClientHostingOptions hosting)
+        FitzClientHostingOptions hosting
+    )
     {
         ArgumentNullException.ThrowIfNull(config);
         return services.AddKeyedFitzClient(serviceKey, _ => config, hosting);
@@ -192,7 +199,8 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddKeyedFitzClient(
         this IServiceCollection services,
         object serviceKey,
-        Func<IServiceProvider, ClientConfig> configFactory) =>
+        Func<IServiceProvider, ClientConfig> configFactory
+    ) =>
         services.AddKeyedFitzClient(serviceKey, configFactory, new FitzClientHostingOptions());
 
     /// <summary>
@@ -211,16 +219,19 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         object serviceKey,
         Func<IServiceProvider, ClientConfig> configFactory,
-        FitzClientHostingOptions hosting)
+        FitzClientHostingOptions hosting
+    )
     {
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(serviceKey);
         ArgumentNullException.ThrowIfNull(configFactory);
         ValidateHosting(hosting);
+
         if (ReferenceEquals(serviceKey, KeyedService.AnyKey))
         {
             throw new ArgumentException("KeyedService.AnyKey cannot identify a single client.", nameof(serviceKey));
         }
+
         if (services.Any(descriptor =>
             descriptor.IsKeyedService &&
             descriptor.ServiceType == typeof(FitzClient) &&
@@ -266,6 +277,7 @@ public static class ServiceCollectionExtensions
     static void ValidateHosting(FitzClientHostingOptions hosting)
     {
         ArgumentNullException.ThrowIfNull(hosting);
+
         if (hosting.Startup is not (FitzClientStartupMode.ConnectWhenReady or FitzClientStartupMode.Connect or FitzClientStartupMode.Manual))
         {
             throw new ArgumentOutOfRangeException(nameof(hosting), hosting.Startup, "Unknown Fitz client startup mode.");

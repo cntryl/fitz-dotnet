@@ -717,6 +717,7 @@ public sealed class ClientTests
             Observability = new FitzObservabilityOptions(OnLifecycleEvent: evt =>
             {
                 lifecycleEvents.Enqueue(evt.Event);
+
                 if (evt.Event == "reconnect_succeeded" && Volatile.Read(ref factoryCalls) >= 3)
                     reconnected.TrySetResult(true);
             }),
@@ -777,10 +778,12 @@ public sealed class ClientTests
         using var failingRegistration = connection.OnReconnect(_ =>
         {
             failingListenerCalls++;
+
             if (failingListenerCalls == 1)
             {
                 throw new InvalidOperationException("restore failed");
             }
+
 
             return ValueTask.CompletedTask;
         });
@@ -1358,6 +1361,7 @@ public sealed class ClientTests
         public override async Task ConnectAsync(CancellationToken ct = default)
         {
             ct.ThrowIfCancellationRequested();
+
             try
             {
                 await _connectSignal.WaitAsync(ct);

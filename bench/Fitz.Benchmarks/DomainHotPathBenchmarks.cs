@@ -67,12 +67,14 @@ public class DomainHotPathBenchmarks : IAsyncDisposable
     static Task<byte[]> KvRequest(ushort messageType, byte[] _, CancellationToken __)
     {
         using var writer = new BinaryBufferWriter();
+
         if (messageType == MessageTypes.KvBegin)
         {
             writer.WriteU8(0);
             writer.WriteU64(1);
             return Task.FromResult(writer.Build());
         }
+
 
         if (messageType == MessageTypes.KvGet)
         {
@@ -91,10 +93,12 @@ public class DomainHotPathBenchmarks : IAsyncDisposable
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(0);
+
         if (messageType == MessageTypes.QueueEnqueue)
         {
             writer.WriteU64(1);
         }
+
 
         return Task.FromResult(writer.Build());
     }
@@ -103,11 +107,13 @@ public class DomainHotPathBenchmarks : IAsyncDisposable
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(0);
+
         if (messageType == MessageTypes.LeaseAcquire)
         {
             writer.WriteU8(1);
             writer.WriteU64(1);
         }
+
 
         return Task.FromResult(writer.Build());
     }
@@ -118,11 +124,13 @@ public class DomainHotPathBenchmarks : IAsyncDisposable
     {
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(0);
+
         if (messageType == MessageTypes.ScheduleCreate)
         {
             writer.WriteU8(1);
             writer.WriteString("sched-1");
         }
+
 
         return Task.FromResult(writer.Build());
     }

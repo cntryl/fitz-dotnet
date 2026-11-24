@@ -23,7 +23,8 @@ sealed class StreamSession : IStreamSession
         Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> request,
         ulong sessionId,
         Func<Action, IDisposable>? registerOnDisconnect = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _request = request;
         _sessionId = sessionId;
@@ -55,10 +56,12 @@ sealed class StreamSession : IStreamSession
 
         var response = await _request(MessageTypes.StreamAppend, writer.WrittenMemory, ct).ConfigureAwait(false);
         var data = StreamWireHelpers.ReadOptionalPayload(response, "APPEND");
+
         if (data.IsEmpty)
         {
             return null;
         }
+
 
         if (data.Length != 8)
         {
@@ -129,6 +132,7 @@ sealed class StreamSession : IStreamSession
         await _closing.CancelAsync().ConfigureAwait(false);
         await _finalizationGate.DrainAndDisposeAsync().ConfigureAwait(false);
         _closing.Dispose();
+
         try
         {
             using var cleanupDeadline = new CancellationTokenSource(CleanupBudget, _time);

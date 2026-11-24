@@ -22,6 +22,7 @@ Console.WriteLine(typeof(InMemoryKvClient).FullName);
 foreach (var assembly in new[] { typeof(FitzClient).Assembly, typeof(IKvClient).Assembly, typeof(ServiceCollectionExtensions).Assembly, typeof(KvDirectoryOptions).Assembly, typeof(InMemoryKvClient).Assembly })
 {
     var name = assembly.GetName();
+
     if (name.Version != new Version(1, 0, 0, 0))
     {
         throw new InvalidOperationException($"{name.Name} assembly version must remain 1.0.0.0; found {name.Version}.");
@@ -35,6 +36,7 @@ await using (var transaction = await inMemoryKv.BeginAsync(
     await transaction.PutAsync("key"u8.ToArray(), "value"u8.ToArray());
     await transaction.CommitAsync(KvDurability.Sync);
 }
+
 if (!inMemoryKv.Snapshot("kv://consumer/package/smoke").Single().Value.Span.SequenceEqual("value"u8))
 {
     throw new InvalidOperationException("The packed in-memory KV client did not commit its value.");
@@ -56,6 +58,7 @@ uint[] rpcErrorCodes =
     FitzErrorCodes.RpcInvalidSubscriptionPattern,
     FitzErrorCodes.RpcSubscriptionLimit,
 ];
+
 if (!rpcErrorCodes.SequenceEqual(new uint[] { 6007, 6050, 6005, 6051, 6052, 6053, 6054, 6055, 6001, 6006, 6002, 6003, 6004 }))
 {
     throw new InvalidOperationException("RPC error code constants must match the Wire 3 catalog.");
@@ -66,6 +69,7 @@ uint[] streamWriteContentionCodes =
     FitzErrorCodes.StreamConcurrencyConflict,
     FitzErrorCodes.StreamSessionAlreadyActive,
 ];
+
 if (!streamWriteContentionCodes.SequenceEqual(new uint[] { 2050, 2051 }))
 {
     throw new InvalidOperationException("Stream write-contention error code constants must match the Wire 3 catalog.");
@@ -75,12 +79,14 @@ if (!streamWriteContentionCodes.SequenceEqual(new uint[] { 2050, 2051 }))
 static async Task CompilePreviewApiAsync(
     INoticeClient notice,
     IScheduleClient schedule,
-    CancellationToken ct)
+    CancellationToken ct
+)
 {
     var subscription = await notice.SubscribeAsync(
         "notice://example/app/*",
         ct).ConfigureAwait(false);
     await using var configuredSubscription = ((IAsyncDisposable)subscription).ConfigureAwait(false);
+
     await foreach (var notification in subscription
         .WithCancellation(ct)
         .ConfigureAwait(false))
@@ -98,14 +104,18 @@ GC.KeepAlive(previewApi);
 
 static async Task CompileStreamSelectorsAsync(
     IStreamClient stream,
-    CancellationToken ct)
+    CancellationToken ct
+)
 {
     await foreach (var batch in stream.ReadAsync("stream://example/app/*", 0, StreamReadMode.Replay,
         new StreamReadOptions { BatchSize = 20 }, ct).ConfigureAwait(false))
     {
         Console.WriteLine(batch.NextOffset);
+
         foreach (var record in batch.Records)
+        {
             Console.WriteLine(record.Route);
+        }
     }
 }
 
@@ -114,7 +124,8 @@ GC.KeepAlive(streamSelectors);
 
 static async Task<ulong> CompileManagedLeaseAuthorityAsync(
     ILeaseClient lease,
-    CancellationToken ct)
+    CancellationToken ct
+)
 {
     var fencingToken = await lease.WithLeaseAsync(
         "lease://example/app/leader",

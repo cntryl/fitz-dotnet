@@ -30,18 +30,22 @@ public sealed class FitzCodeFixProvider : CodeFixProvider
     public override async Task RegisterCodeFixesAsync(CodeFixContext context)
     {
         var root = await context.Document.GetSyntaxRootAsync(context.CancellationToken).ConfigureAwait(false);
+
         if (root is null)
         {
             return;
         }
 
+
         foreach (var diagnostic in context.Diagnostics)
         {
             var key = GetEquivalenceKey(root, diagnostic);
+
             if (key is null)
             {
                 continue;
             }
+
 
             var title = key == RetainHandleKey
                 ? $"Retain and dispose the {GetHandleName(diagnostic)}"
@@ -104,17 +108,21 @@ public sealed class FitzCodeFixProvider : CodeFixProvider
     static async Task<Document> FixDocumentAsync(
         Document document,
         IReadOnlyCollection<Diagnostic> diagnostics,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var root = await document.GetSyntaxRootAsync(ct).ConfigureAwait(false);
         var semanticModel = await document.GetSemanticModelAsync(ct).ConfigureAwait(false);
+
         if (root is null)
         {
             return document;
         }
 
+
         var literals = new Dictionary<LiteralExpressionSyntax, string>();
         var statements = new Dictionary<ExpressionStatementSyntax, string>();
+
         foreach (var diagnostic in diagnostics.OrderBy(item => item.Location.SourceSpan.Start))
         {
             if (diagnostic.Id == DiscardedHandleId)
@@ -130,6 +138,7 @@ public sealed class FitzCodeFixProvider : CodeFixProvider
                 literals[literal] = corrected;
             }
         }
+
 
         var names = ChooseNames(statements, semanticModel);
         var changed = root.ReplaceNodes(
@@ -153,31 +162,38 @@ public sealed class FitzCodeFixProvider : CodeFixProvider
     /// </summary>
     static Dictionary<ExpressionStatementSyntax, string> ChooseNames(
         Dictionary<ExpressionStatementSyntax, string> statements,
-        SemanticModel? semanticModel)
+        SemanticModel? semanticModel
+    )
     {
         var chosen = new Dictionary<ExpressionStatementSyntax, string>();
         var takenByMember = new Dictionary<SyntaxNode, HashSet<string>>();
+
         foreach (var pair in statements.OrderBy(item => item.Key.SpanStart))
         {
             var statement = pair.Key;
             var member = statement.Ancestors().FirstOrDefault(static ancestor => ancestor is MemberDeclarationSyntax or CompilationUnitSyntax)
                 ?? statement;
+
             if (!takenByMember.TryGetValue(member, out var taken))
             {
                 taken = [with(StringComparer.Ordinal)];
                 takenByMember.Add(member, taken);
             }
 
+
             var name = pair.Value;
             var suffix = 2;
+
             while (taken.Contains(name) || semanticModel?.LookupSymbols(statement.SpanStart, name: name).Length > 0)
             {
                 name = pair.Value + suffix++;
             }
 
+
             taken.Add(name);
             chosen.Add(statement, name);
         }
+
 
         return chosen;
     }
@@ -250,29 +266,36 @@ public sealed class FitzCodeFixProvider : CodeFixProvider
         static async Task<Solution> FixAllAsync(FixAllContext fixAllContext, CancellationToken ct)
         {
             var solution = fixAllContext.Solution;
+
             foreach (var document in GetDocuments(fixAllContext))
             {
                 var root = await document.GetSyntaxRootAsync(ct).ConfigureAwait(false);
+
                 if (root is null)
                 {
                     continue;
                 }
 
+
                 var diagnostics = (await fixAllContext.GetDocumentDiagnosticsAsync(document).ConfigureAwait(false))
                     .Where(diagnostic => GetEquivalenceKey(root, diagnostic) == fixAllContext.CodeActionEquivalenceKey)
                     .ToList();
+
                 if (diagnostics.Count == 0)
                 {
                     continue;
                 }
 
+
                 var fixedDocument = await FixDocumentAsync(document, diagnostics, ct).ConfigureAwait(false);
                 var fixedRoot = await fixedDocument.GetSyntaxRootAsync(ct).ConfigureAwait(false);
+
                 if (fixedRoot is not null)
                 {
                     solution = solution.WithDocumentSyntaxRoot(document.Id, fixedRoot);
                 }
             }
+
 
             return solution;
         }

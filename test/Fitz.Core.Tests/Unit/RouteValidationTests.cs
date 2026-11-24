@@ -75,5 +75,6 @@ public sealed class RouteValidationTests
     public void ShouldMatchSharedRegistrationPatternsWithoutCrossingSchemesGivenRouteInputWhenValidating(
         string route,
         string pattern,
-        bool expected) => Assert.Equal(expected, RouteValidation.MatchesPattern(route, pattern));
+        bool expected
+    ) => Assert.Equal(expected, RouteValidation.MatchesPattern(route, pattern));
 }

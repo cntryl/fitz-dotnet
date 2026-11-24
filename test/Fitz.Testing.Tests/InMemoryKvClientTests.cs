@@ -90,10 +90,12 @@ public sealed class InMemoryKvClientTests
     {
         // Arrange
         var client = new InMemoryKvClient();
+
         foreach (var key in new[] { "a", "b", "c", "d" })
         {
             client.Seed(Route, System.Text.Encoding.UTF8.GetBytes(key), "value"u8.ToArray());
         }
+
         await using var transaction = await client.BeginAsync(Route);
 
         // Act
@@ -112,10 +114,12 @@ public sealed class InMemoryKvClientTests
     {
         // Arrange
         var client = new InMemoryKvClient(new InMemoryKvClientOptions { ScanPageSize = 2 });
+
         foreach (var key in new[] { "a", "b", "c", "d", "e" })
         {
             client.Seed(Route, System.Text.Encoding.UTF8.GetBytes(key), Array.Empty<byte>());
         }
+
         await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
 
         // Act
@@ -134,20 +138,24 @@ public sealed class InMemoryKvClientTests
     {
         // Arrange
         var client = new InMemoryKvClient(new InMemoryKvClientOptions { ScanPageSize = 2 });
+
         foreach (var key in new[] { "a", "b", "c", "d", "e" })
         {
             client.Seed(Route, System.Text.Encoding.UTF8.GetBytes(key), Array.Empty<byte>());
         }
+
         await using var transaction = await client.BeginAsync(Route, KvMode.ReadOnly);
 
         // Act
         var keys = new List<string>();
+
         await foreach (var pair in transaction.ScanAllAsync(new KvScanQuery()))
         {
             keys.Add(System.Text.Encoding.UTF8.GetString(pair.Key.Span));
         }
 
         // Assert
+
         Assert.Equal(["a", "b", "c", "d", "e"], keys);
     }
 
@@ -451,12 +459,14 @@ public sealed class InMemoryKvClientTests
         await using var subscription = await client.SubscribeAsync("kv://tenant/**");
 
         // Act
+
         for (var index = 0; index < 2; index++)
         {
             await using var transaction = await client.BeginAsync(Route);
             await transaction.PutAsync(new byte[] { (byte)index }, Array.Empty<byte>());
             await transaction.CommitAsync(KvDurability.Sync);
         }
+
         await using var enumerator = subscription.GetAsyncEnumerator();
         var received = await enumerator.MoveNextAsync();
         var overflow = enumerator.MoveNextAsync().AsTask();

@@ -34,7 +34,8 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
     /// </summary>
     public ScheduleClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
-        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null
+    )
         : this(
             async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
             NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
@@ -47,7 +48,8 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
         Func<ushort, Action<ReadOnlyMemory<byte>>, IDisposable>? registerNotificationHandler = null,
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
         int subscriptionBufferCapacity = SubscriptionRegistration<ScheduleNotification>.DefaultCapacity,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _request = request;
         _subscriptions = new SubscriptionTable<ScheduleNotification>(
@@ -68,10 +70,12 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
     {
         ThrowIfDisposed();
         ValidateScheduleRoute(route, nameof(route));
+
         if (deliveryMode is not ScheduleDeliveryMode.Broadcast and not ScheduleDeliveryMode.Once)
         {
             throw new ArgumentOutOfRangeException(nameof(deliveryMode), deliveryMode, "Unknown schedule delivery mode");
         }
+
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
@@ -80,9 +84,11 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
         writer.WriteLengthPrefixed(payload.Span);
         var data = await RequestSuccessAsync(MessageTypes.ScheduleCreate, writer.WrittenMemory, "CREATE", ct).ConfigureAwait(false);
         var reader = new BinaryBufferReader(data);
+
         if (!reader.IsEof)
         {
             var hasCreatedRoute = reader.ReadU8();
+
             if (hasCreatedRoute > 1)
             {
                 throw new ScheduleException(
@@ -90,17 +96,21 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
                     "CREATE_INVALID_RESPONSE");
             }
 
+
             if (hasCreatedRoute == 1)
             {
                 var createdRoute = reader.ReadString();
+
                 if (!reader.IsEof)
                 {
                     throw new ScheduleException("CREATE response has trailing bytes", "CREATE_INVALID_RESPONSE");
                 }
 
+
                 return createdRoute;
             }
         }
+
 
         if (!reader.IsEof)
         {
@@ -117,11 +127,14 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(entries);
         using var writer = new BinaryBufferWriter();
         writer.WriteU32(checked((uint)entries.Count));
+
         foreach (var entry in entries)
         {
             ValidateScheduleRoute(entry.Route, nameof(entries));
+
             if (entry.DeliveryMode is not ScheduleDeliveryMode.Broadcast and not ScheduleDeliveryMode.Once)
                 throw new ArgumentOutOfRangeException(nameof(entries), "Unknown schedule delivery mode");
+
             writer.WriteString(entry.Route);
             writer.WriteString(entry.Cron);
             writer.WriteU8((byte)entry.DeliveryMode);
@@ -129,7 +142,9 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
             writer.WriteBytes(entry.Payload.Span);
         }
 
+
         var data = await RequestSuccessAsync(MessageTypes.ScheduleCreateBatch, writer.WrittenMemory, "CREATE_BATCH", ct).ConfigureAwait(false);
+
         if (!data.IsEmpty)
             throw new ScheduleException("CREATE_BATCH response has trailing bytes", "CREATE_BATCH_INVALID_RESPONSE");
     }
@@ -140,45 +155,66 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
         ThrowIfDisposed();
         using var writer = new BinaryBufferWriter();
         writer.WriteU8(continuation is null ? (byte)0 : (byte)1);
+
         if (continuation is not null)
             writer.WriteString(continuation);
+
         writer.WriteU8(limit.HasValue ? (byte)1 : (byte)0);
+
         if (limit.HasValue)
             writer.WriteU64(limit.Value);
 
+
         var data = await RequestSuccessAsync(MessageTypes.ScheduleList, writer.WrittenMemory, "LIST", ct).ConfigureAwait(false);
+
         try
         {
             var reader = new BinaryBufferReader(data);
+
             if (reader.ReadU8() != 1)
                 throw new ScheduleException("LIST response has an unknown version", "LIST_INVALID_RESPONSE");
+
             var more = reader.ReadU8();
+
             if (more > 1)
                 throw new ScheduleException("LIST response has an invalid has_more flag", "LIST_INVALID_RESPONSE");
+
             var hasContinuation = reader.ReadU8();
+
             if (hasContinuation > 1)
                 throw new ScheduleException("LIST response has an invalid continuation flag", "LIST_INVALID_RESPONSE");
+
             var next = hasContinuation == 1 ? reader.ReadString() : null;
             var entries = new List<ScheduleEntry>();
+
             while (true)
             {
                 var hasEntry = reader.ReadU8();
+
                 if (hasEntry == 0)
                     break;
+
+
                 if (hasEntry != 1)
                     throw new ScheduleException("LIST response has an invalid entry flag", "LIST_INVALID_RESPONSE");
+
                 var route = reader.ReadString();
                 var cron = reader.ReadString();
                 var mode = reader.ReadU8();
+
                 if (mode > 1)
                     throw new ScheduleException("LIST response has an invalid delivery mode", "LIST_INVALID_RESPONSE");
+
                 var payload = reader.ReadLengthPrefixed();
                 entries.Add(new ScheduleEntry(null, route, cron, (ScheduleDeliveryMode)mode, payload));
             }
+
             if (!reader.IsEof)
                 throw new ScheduleException("LIST response has trailing bytes", "LIST_INVALID_RESPONSE");
+
             if ((more == 1) != (next is not null))
                 throw new ScheduleException("LIST response has inconsistent cursor state", "LIST_INVALID_RESPONSE");
+
             return new ScheduleListPage(entries, more == 1, next);
         }
         catch (ProtocolException)
@@ -196,6 +232,7 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
         var data = await RequestSuccessAsync(MessageTypes.ScheduleCancel, writer.WrittenMemory, "CANCEL", ct).ConfigureAwait(false);
+
         if (!data.IsEmpty)
         {
             throw new ScheduleException("CANCEL response has trailing bytes", "CANCEL_INVALID_RESPONSE");
@@ -206,6 +243,7 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
     public async Task<IReadOnlyList<ScheduleEntry>> ListBySelectorAsync(string selector, CancellationToken ct = default)
     {
         ThrowIfDisposed();
+
         if (!RouteValidation.IsRegistrationPattern(selector, "schedule", 4))
         {
             throw new ArgumentException($"pattern '{selector}' must use whole-segment wildcards and match a four-segment schedule route", nameof(selector));
@@ -213,22 +251,28 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
 
         // The broker has no selector filter on LIST, so this pages the whole keyspace and
         // filters locally. Every cursor must be new: a repeated one would page forever.
+
         const ulong pageSize = 1000;
         var entries = new List<ScheduleEntry>();
         var seenCursors = new HashSet<string>(StringComparer.Ordinal);
         string? continuation = null;
+
         while (true)
         {
             var page = await ListAsync(continuation, pageSize, ct).ConfigureAwait(false);
             entries.AddRange(page.Entries.Where(entry => RouteValidation.MatchesPattern(entry.Route, selector)));
+
             if (!page.HasMore)
             {
                 return entries;
             }
+
             if (page.Entries.Count == 0)
                 throw new ScheduleException("LIST returned an empty page with another cursor", "LIST_INVALID_RESPONSE");
+
             if (page.Continuation is not { } next || !seenCursors.Add(next))
                 throw new ScheduleException("LIST returned a missing or repeated cursor", "LIST_INVALID_RESPONSE");
+
             continuation = next;
         }
     }
@@ -236,7 +280,8 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
     /// <inheritdoc />
     public Task<ScheduleSubscription> SubscribeAsync(
         string pattern,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         EnsurePattern(pattern);
@@ -250,7 +295,8 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
     internal async Task<ScheduleSubscription> SubscribeAsync(
         string pattern,
         Func<ScheduleNotification, CancellationToken, ValueTask> handler,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         EnsurePattern(pattern);
         var binding = await _subscriptions.SubscribeAsync(pattern, handler, preDispatch: null, ct).ConfigureAwait(false);
@@ -272,16 +318,20 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
 
         var response = await session.RequestAsync(_request, MessageTypes.ScheduleSubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
         var reader = ScheduleWireHelpers.ReadSuccess(response, "SUBSCRIBE");
+
         if (reader.IsEof || reader.ReadU8() != 1 || reader.RemainingBytes < 8)
         {
             throw new ScheduleException("SUBSCRIBE response missing subscription id", "MISSING_SUB_ID");
         }
 
+
         var subscriptionId = reader.ReadU64();
+
         if (!reader.IsEof)
         {
             throw new ScheduleException("SUBSCRIBE response has trailing bytes", "SUBSCRIBE_INVALID_RESPONSE");
         }
+
 
         return subscriptionId;
     }
@@ -292,6 +342,7 @@ sealed class ScheduleClient : IScheduleClient, IAsyncDisposable
         writer.WriteString(route);
 
         var response = await session.RequestAsync(_request, MessageTypes.ScheduleUnsubscribe, writer.WrittenMemory, ct).ConfigureAwait(false);
+
         if (!ScheduleWireHelpers.ReadSuccess(response, "UNSUBSCRIBE").IsEof)
         {
             throw new ScheduleException("UNSUBSCRIBE response has trailing bytes", "UNSUBSCRIBE_INVALID_RESPONSE");

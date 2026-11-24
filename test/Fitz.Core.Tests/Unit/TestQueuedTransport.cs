@@ -37,14 +37,17 @@ class TestQueuedTransport : ITransport
             sentFrameCount = SentFrames.Count;
         }
 
+
         if (AutoHello && FrameCodec.DecodeStrict(data).MessageType == MessageTypes.Connect)
         {
             QueueIncomingFrame(ConnectionNegotiationTests.HelloFrame());
         }
+
         var sent = FrameCodec.DecodeStrict(data);
         lock (_sentFramesGate)
         {
             var index = _responses.FindIndex(response => response.Type == sent.MessageType);
+
             if (index >= 0)
             {
                 var response = _responses[index];
@@ -65,10 +68,12 @@ class TestQueuedTransport : ITransport
     async ValueTask<PooledFrame> ReceiveCoreAsync(CancellationToken ct)
     {
         var frame = await _incoming.Reader.ReadAsync(ct).ConfigureAwait(false);
+
         if (BeforeReceiveReturns is { } beforeReceiveReturns)
         {
             await beforeReceiveReturns().ConfigureAwait(false);
         }
+
 
         return frame;
     }
@@ -90,14 +95,17 @@ class TestQueuedTransport : ITransport
             {
                 var request = SentFrames.Select(frame => FrameCodec.DecodeStrict(frame))
                     .FirstOrDefault(frame => frame.MessageType == messageType && !_answered.Contains(frame.CorrelationId));
+
                 if (request.CorrelationId == 0)
                 {
                     _responses.Add((messageType, payload.ToArray(), flags));
                     return;
                 }
+
                 correlationId = request.CorrelationId;
             }
         }
+
         if (messageType != MessageTypes.LeaseAcquire || !payload.StartsWith(new byte[] { 0, 2 }))
         {
             lock (_sentFramesGate)
@@ -105,10 +113,12 @@ class TestQueuedTransport : ITransport
                 _answered.Add(correlationId);
             }
         }
+
         if (correlationId != 0 && !(messageType == 400 && payload.StartsWith(new byte[] { 0, 2 })))
         {
             flags |= FrameCodec.ResponseFinalFlag;
         }
+
         QueueIncomingFrame(FrameCodec.Encode(messageType, payload, flags, correlationId));
     }
 

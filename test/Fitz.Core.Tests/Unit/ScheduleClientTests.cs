@@ -14,6 +14,7 @@ public sealed class ScheduleClientTests
         {
             calls.Add(type);
             var request = new BinaryBufferReader(payload);
+
             if (type == MessageTypes.ScheduleCreateBatch)
             {
                 Assert.Equal(1u, request.ReadU32());
@@ -24,6 +25,7 @@ public sealed class ScheduleClientTests
                 Assert.True(request.IsEof);
                 return Task.FromResult(new byte[] { 0 });
             }
+
             Assert.Equal(MessageTypes.ScheduleList, type);
             Assert.Equal((byte)1, request.ReadU8());
             Assert.Equal("next", request.ReadString());
@@ -67,8 +69,10 @@ public sealed class ScheduleClientTests
         {
             using var writer = new BinaryBufferWriter();
             writer.WriteU8(1);
+
             if (coded)
                 TestErrorEnvelope.Write(writer, 7006);
+
             writer.WriteString("broker rejected batch");
             return Task.FromResult(writer.Build());
         });
@@ -78,6 +82,7 @@ public sealed class ScheduleClientTests
 
         // Assert
         Assert.Equal(expectedCode, error.DomainCode);
+
         if (coded)
             Assert.Contains("broker rejected batch", error.Message, StringComparison.Ordinal);
         else
@@ -304,10 +309,12 @@ public sealed class ScheduleClientTests
 
                 using var writer = new BinaryBufferWriter();
                 writer.WriteU8(0);
+
                 if (messageType == MessageTypes.ScheduleUnsubscribe)
                 {
                     return Task.FromResult(writer.Build());
                 }
+
                 writer.WriteU8(1);
                 writer.WriteU64(55);
                 return Task.FromResult(writer.Build());

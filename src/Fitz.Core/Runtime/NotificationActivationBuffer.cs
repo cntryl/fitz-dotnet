@@ -31,16 +31,20 @@ sealed class NotificationActivationBuffer<TNotification>(int capacity, int maxCo
     void BufferMatching(ulong id, TNotification value)
     {
         _byId.TryGetValue(id, out var frames);
+
         if (_count >= (long)capacity * maxConcurrentChanges || frames?.Count >= capacity)
         {
             if (_overflowed.Count >= MaxTrackedOverflowIds)
                 _failure = new SubscriptionBackpressureException("The subscription activation overflow-ID tracking limit was exceeded.");
             else
                 _overflowed.Add(id);
+
             if (_byId.Remove(id, out var dropped))
                 _count -= dropped.Count;
+
             return;
         }
+
 
         if (frames is null)
         {
@@ -65,6 +69,7 @@ sealed class NotificationActivationBuffer<TNotification>(int capacity, int maxCo
     internal void End(string pattern)
     {
         _pending.Remove(pattern);
+
         if (_pending.Count == 0)
             Clear();
     }

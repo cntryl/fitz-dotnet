@@ -26,18 +26,22 @@ public sealed class TcpTransport : ITransport
     public TcpTransport(Uri url, TimeSpan timeout, int maxFrameSize, HeartbeatOptions? heartbeat = null)
     {
         ArgumentNullException.ThrowIfNull(url);
+
         if (!url.IsAbsoluteUri || !url.Scheme.Equals("tcp", StringComparison.OrdinalIgnoreCase))
         {
             throw new ArgumentException("TCP transport requires an absolute tcp:// URL.", nameof(url));
         }
+
         if (url.Port <= 0)
         {
             throw new ArgumentException("TCP transport URL must include a port.", nameof(url));
         }
+
         if (timeout != Timeout.InfiniteTimeSpan && timeout <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(timeout), "Timeout must be positive or infinite.");
         }
+
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxFrameSize);
 
         _uri = url;
@@ -67,6 +71,7 @@ public sealed class TcpTransport : ITransport
 
         // Disposed in finally unless ownership moves to the transport.
         TcpClient? pending = null;
+
         try
         {
             pending = new TcpClient { NoDelay = true };
@@ -77,10 +82,12 @@ public sealed class TcpTransport : ITransport
             var previousClient = Interlocked.Exchange(ref _client, pending);
             pending = null;
             var previousStream = Interlocked.Exchange(ref _stream, stream);
+
             if (previousStream is not null)
             {
                 await previousStream.DisposeAsync().ConfigureAwait(false);
             }
+
             previousClient?.Dispose();
         }
         catch (OperationCanceledException exception) when (!ct.IsCancellationRequested)
@@ -97,13 +104,16 @@ public sealed class TcpTransport : ITransport
     public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
     {
         var frameLength = data.Length;
+
         if (frameLength > _maxFrameSize)
         {
             throw new ProtocolException($"TCP frame length {frameLength} exceeds max frame size {_maxFrameSize}.");
         }
 
+
         await _sendLock.WaitAsync(ct).ConfigureAwait(false);
         byte[]? frame = null;
+
         try
         {
             var stream = EnsureStream();
@@ -113,6 +123,7 @@ public sealed class TcpTransport : ITransport
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(_timeout);
+
             try
             {
                 await stream.WriteAsync(frame.AsMemory(0, frameLength + 4), timeoutCts.Token).ConfigureAwait(false);
@@ -134,6 +145,7 @@ public sealed class TcpTransport : ITransport
             {
                 ReturnCleared(frame, frameLength + 4);
             }
+
             _sendLock.Release();
         }
     }
@@ -144,6 +156,7 @@ public sealed class TcpTransport : ITransport
         // Reusing that byte stream would append the next frame to the partial body.
         var stream = Interlocked.Exchange(ref _stream, null);
         var client = Interlocked.Exchange(ref _client, null);
+
         try
         {
             stream?.Dispose();
@@ -160,22 +173,28 @@ public sealed class TcpTransport : ITransport
         var stream = EnsureStream();
 
         var headerRead = await ReadExactOrClosedAsync(stream, _receiveHeaderBuffer.AsMemory(), ct).ConfigureAwait(false);
+
         if (headerRead == 0)
         {
             return PooledFrame.Closed;
         }
 
+
         var encodedFrameLength = BinaryPrimitives.ReadUInt32BigEndian(_receiveHeaderBuffer);
+
         if (encodedFrameLength > int.MaxValue)
         {
             throw new ProtocolException($"TCP frame length {encodedFrameLength} cannot be represented by this client.");
         }
 
+
         var frameLength = (int)encodedFrameLength;
+
         if (frameLength == 0)
         {
             return PooledFrame.Empty;
         }
+
 
         if (frameLength > _maxFrameSize)
         {
@@ -184,13 +203,16 @@ public sealed class TcpTransport : ITransport
 
         var payload = ArrayPool<byte>.Shared.Rent(frameLength);
         var ownsPayload = true;
+
         try
         {
             var payloadRead = await ReadExactOrClosedAsync(stream, payload.AsMemory(0, frameLength), ct).ConfigureAwait(false);
+
             if (payloadRead == 0)
             {
                 return PooledFrame.Closed;
             }
+
 
             var frame = PooledFrame.FromRentedBuffer(payload, frameLength);
             ownsPayload = false;
@@ -219,6 +241,7 @@ public sealed class TcpTransport : ITransport
     public async Task CloseAsync(CancellationToken ct = default)
     {
         await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+
         try
         {
             var stream = Interlocked.Exchange(ref _stream, null);
@@ -248,9 +271,11 @@ public sealed class TcpTransport : ITransport
     static async Task<int> ReadExactOrClosedAsync(NetworkStream stream, Memory<byte> buffer, CancellationToken ct)
     {
         var totalRead = 0;
+
         while (totalRead < buffer.Length)
         {
             var bytesRead = await stream.ReadAsync(buffer[totalRead..], ct).ConfigureAwait(false);
+
             if (bytesRead == 0)
             {
                 if (totalRead > 0)
@@ -261,8 +286,10 @@ public sealed class TcpTransport : ITransport
                 return 0;
             }
 
+
             totalRead += bytesRead;
         }
+
 
         return totalRead;
     }
@@ -271,10 +298,12 @@ public sealed class TcpTransport : ITransport
     {
         var stream = Volatile.Read(ref _stream);
         var client = Volatile.Read(ref _client);
+
         if (stream is null || client is null || !client.Connected)
         {
             throw new ConnectionException("Transport is not connected.");
         }
+
 
         return stream;
     }
@@ -289,6 +318,7 @@ public sealed class TcpTransport : ITransport
         socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
         var interval = _heartbeat.Interval ?? TimeSpan.FromSeconds(10);
         var timeout = _heartbeat.Timeout ?? TimeSpan.FromSeconds(30);
+
         try
         {
             socket.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime,

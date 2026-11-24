@@ -24,10 +24,13 @@ sealed class SessionLatch
             if (TryClose())
                 onConnectionLost?.Invoke();
         });
+
         if (registration is null)
             return;
 
+
         Interlocked.Exchange(ref _disconnectRegistration, registration)?.Dispose();
+
         if (IsClosed)
             Interlocked.Exchange(ref _disconnectRegistration, null)?.Dispose();
     }

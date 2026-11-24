@@ -168,6 +168,7 @@ public sealed class LeaseScopeTimingTests
         internal async Task WaitForRenewalsAsync(int count)
         {
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
             while (Renewals < count)
                 await Task.Delay(TimeSpan.FromMilliseconds(1), deadline.Token);
         }

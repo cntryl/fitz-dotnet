@@ -35,12 +35,14 @@ static class SemaphoreSlimShutdown
     internal static async ValueTask<bool> TryEnterAsync(
         this SemaphoreSlim gate,
         CancellationToken closing,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (closing.IsCancellationRequested)
             return false;
 
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(closing, ct);
+
         try
         {
             await gate.WaitAsync(linked.Token).ConfigureAwait(false);
@@ -70,7 +72,8 @@ static class SemaphoreSlimShutdown
         this SemaphoreSlim gate,
         object owner,
         CancellationToken closing,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         var entered = await gate.TryEnterAsync(closing, ct).ConfigureAwait(false);
         ObjectDisposedException.ThrowIf(!entered, owner);

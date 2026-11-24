@@ -81,10 +81,12 @@ public sealed class SharpEdgeBufferTests
 
         using var expectedWriter = new BinaryBufferWriter();
         expectedWriter.WriteU64(42);
+
         if (commit)
         {
             expectedWriter.WriteU8(1);
         }
+
 
         var finalize = commit ? session.CommitAsync(StreamCommitMode.Sync) : session.RollbackAsync();
         await requestStarted.Task;

@@ -37,6 +37,7 @@ public static class Retryability
         {
             return false;
         }
+
         if (wireError.ErrorClass == 5)
         {
             return true;

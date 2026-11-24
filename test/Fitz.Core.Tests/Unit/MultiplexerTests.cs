@@ -320,8 +320,10 @@ public sealed class MultiplexerTests
         mux.SetConnected();
         mux.DispatchNotification(90, new byte[] { 1 });
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
         for (var i = 0; i < Multiplexer.NotificationQueueCapacity - 1; i++)
             mux.DispatchNotification(90, new byte[] { 1 });
+
         mux.SetDisconnected();
         mux.BeginNotificationRestore();
         mux.SetConnected();

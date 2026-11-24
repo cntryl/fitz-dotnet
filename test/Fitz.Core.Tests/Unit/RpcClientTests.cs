@@ -77,6 +77,7 @@ public sealed class RpcClientTests
                     responseRegistrations++;
                     responseHandler = handler;
                 }
+
                 return new TestRegistration();
             });
 
@@ -126,6 +127,7 @@ public sealed class RpcClientTests
                 {
                     bothRequestsStarted.TrySetResult();
                 }
+
                 await releaseResponses.Task;
                 return new byte[] { 0, 0, 0, 0, 0 };
             },
@@ -133,6 +135,7 @@ public sealed class RpcClientTests
             {
                 if (messageType == MessageTypes.RpcRequest)
                     Interlocked.Increment(ref handlerRegistrations);
+
                 return new TestRegistration();
             });
 
@@ -162,12 +165,14 @@ public sealed class RpcClientTests
                     seenMessageType = messageType;
                     seenPayload = payload;
                 }
+
                 return Task.FromResult(Array.Empty<byte>());
             },
             registerNotificationHandler: (messageType, handler) =>
             {
                 if (messageType == MessageTypes.RpcResponse)
                     responseHandler = handler;
+
                 return new TestRegistration();
             });
 
@@ -243,6 +248,7 @@ public sealed class RpcClientTests
             {
                 if (messageType == MessageTypes.RpcResponse)
                     responseHandler = handler;
+
                 return new TestRegistration();
             });
 
@@ -277,7 +283,8 @@ public sealed class RpcClientTests
     public async Task ShouldMapCanonicalErrorGivenRpcDomainCodeWhenCallTerminates(
         uint domainCode,
         string expectedCode,
-        bool retryable)
+        bool retryable
+    )
     {
         // Arrange
         Action<byte[]>? responseHandler = null;
@@ -305,6 +312,7 @@ public sealed class RpcClientTests
             {
                 if (messageType == MessageTypes.RpcResponse)
                     responseHandler = handler;
+
                 return new TestRegistration();
             });
 
@@ -364,6 +372,7 @@ public sealed class RpcClientTests
             {
                 if (messageType == MessageTypes.RpcRequest)
                     incomingHandler = handler;
+
                 return new TestRegistration();
             });
 
@@ -422,6 +431,7 @@ public sealed class RpcClientTests
             {
                 if (kind == MessageTypes.RpcRequest)
                     incomingHandler = handler;
+
                 return new TestRegistration();
             },
             onWorkerError: exception => reported.TrySetResult(exception));
@@ -482,6 +492,7 @@ public sealed class RpcClientTests
             {
                 if (kind == MessageTypes.RpcRequest)
                     incomingHandler = handler;
+
                 return new TestRegistration();
             });
         await using var registration = await rpc.RegisterWorkerAsync(
@@ -651,10 +662,13 @@ public sealed class RpcClientTests
                     requestPayload = payload.ToArray();
                     requestSent.TrySetResult();
                 }
+
+
                 if (messageType == MessageTypes.RpcCancel)
                 {
                     cancellationSent.TrySetResult(payload.ToArray());
                 }
+
                 return Task.CompletedTask;
             },
             registerNotificationHandler: (messageType, handler) =>
@@ -663,6 +677,7 @@ public sealed class RpcClientTests
                 {
                     lifecycleHandler = handler;
                 }
+
                 return new TestRegistration();
             });
         using var cts = new CancellationTokenSource();
@@ -715,6 +730,7 @@ public sealed class RpcClientTests
                 {
                     registrationPayload = payload.ToArray();
                 }
+
                 return Task.FromResult(new byte[] { 0, 0, 0, 0, 0 });
             },
             send: (messageType, payload, _) =>
@@ -723,6 +739,7 @@ public sealed class RpcClientTests
                 {
                     cleanupAck.TrySetResult(payload.ToArray());
                 }
+
                 return Task.CompletedTask;
             },
             registerNotificationHandler: (messageType, handler) =>
@@ -731,10 +748,13 @@ public sealed class RpcClientTests
                 {
                     requestHandler = handler;
                 }
+
+
                 if (messageType == MessageTypes.RpcLifecycle)
                 {
                     lifecycleHandler = handler;
                 }
+
                 return new TestRegistration();
             });
         await using var registration = await rpc.RegisterWorkerAsync(

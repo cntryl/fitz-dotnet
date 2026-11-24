@@ -32,9 +32,12 @@ public sealed class NoticeSubscription : SubscriptionHandle<NoticeMessage>
     /// <param name="completion">Externally owned completion signal, or <see langword="null"/>.</param>
     /// <param name="timeProvider">The clock that bounds cleanup on disposal; the system clock by default.</param>
     public NoticeSubscription(
-        string pattern, IAsyncEnumerable<NoticeMessage> notifications,
+        string pattern,
+        IAsyncEnumerable<NoticeMessage> notifications,
         Func<CancellationToken, ValueTask> unsubscribe,
-        Task? completion = null, TimeProvider? timeProvider = null)
+        Task? completion = null,
+        TimeProvider? timeProvider = null
+    )
         : base(pattern, notifications, unsubscribe, completion, timeProvider)
     {
     }

@@ -85,7 +85,8 @@ public sealed class KvDirectory<T, TKey>
         Func<T, TKey> identity,
         Func<TKey, LexKeyPart[]> identityKey,
         IReadOnlyList<KvDirectoryIndex<T>> indexes,
-        KvDirectoryOptions? options = null)
+        KvDirectoryOptions? options = null
+    )
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentNullException.ThrowIfNull(valueTypeInfo);
@@ -93,25 +94,35 @@ public sealed class KvDirectory<T, TKey>
         ArgumentNullException.ThrowIfNull(identityKey);
         ArgumentNullException.ThrowIfNull(indexes);
         _options = options ?? new KvDirectoryOptions();
+
         if (_options.MaximumPageSize <= 0 || _options.MaximumPageSize == int.MaxValue)
             throw new ArgumentOutOfRangeException(nameof(options), "MaximumPageSize must be between 1 and Int32.MaxValue - 1.");
+
         if (_options.DefaultPageSize <= 0 || _options.DefaultPageSize > _options.MaximumPageSize)
             throw new ArgumentOutOfRangeException(nameof(options), "DefaultPageSize must be within MaximumPageSize.");
+
         if (_options.MaximumCursorBytes < CursorVersion + FingerprintLength + sizeof(int))
             throw new ArgumentOutOfRangeException(nameof(options), "MaximumCursorBytes is too small.");
+
         if (_options.MaximumSerializedValueBytes <= 0)
             throw new ArgumentOutOfRangeException(nameof(options), "MaximumSerializedValueBytes must be positive.");
+
         if (_options.MaximumIndexGenerations < 0 || indexes.Count > _options.MaximumIndexGenerations)
             throw new ArgumentOutOfRangeException(nameof(indexes), "The schema exceeds MaximumIndexGenerations.");
+
         if (_options.MaximumIndexEntriesPerEntity <= 0)
             throw new ArgumentOutOfRangeException(nameof(options), "MaximumIndexEntriesPerEntity must be positive.");
+
         if (indexes.Any(static index => index is null))
             throw new ArgumentException("An index cannot be null.", nameof(indexes));
+
         var duplicate = indexes.GroupBy(static index => (index.Name, index.Generation))
             .FirstOrDefault(static group => group.Count() > 1);
+
         if (duplicate is not null)
             throw new ArgumentException(
                 $"Index '{duplicate.Key.Name}' generation {duplicate.Key.Generation} is duplicated.", nameof(indexes));
+
         _name = name;
         _valueTypeInfo = valueTypeInfo;
         _identity = identity;
@@ -149,14 +160,17 @@ public sealed class KvDirectory<T, TKey>
         IKvTransaction transaction,
         T previous,
         T current,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(previous);
         ArgumentNullException.ThrowIfNull(current);
         var previousIdentity = _identity(previous);
+
         if (!EqualityComparer<TKey>.Default.Equals(previousIdentity, _identity(current)))
             throw new ArgumentException("A replacement cannot change the entity identity.", nameof(current));
+
         var bytes = Serialize(current);
         var previousIndexes = IndexKeys(previous);
         var currentIndexes = IndexKeys(current);
@@ -191,7 +205,8 @@ public sealed class KvDirectory<T, TKey>
         IKvTransaction transaction,
         T value,
         Func<ReadOnlyMemory<byte>, T> readStored,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(readStored);
         return UpsertCoreAsync(transaction, value, readStored, ct);
@@ -201,12 +216,14 @@ public sealed class KvDirectory<T, TKey>
         IKvTransaction transaction,
         T value,
         Func<ReadOnlyMemory<byte>, T>? readStored,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(value);
         var key = PrimaryKey(_identity(value));
         var existing = await transaction.GetAsync(key, ct).ConfigureAwait(false);
+
         if (existing is KvFound { Value: var stored })
             await ReplaceAsync(transaction, ReadStored(stored, readStored), value, ct).ConfigureAwait(false);
         else
@@ -256,7 +273,8 @@ public sealed class KvDirectory<T, TKey>
         IKvTransaction transaction,
         TKey identity,
         Func<ReadOnlyMemory<byte>, T> readStored,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(readStored);
         return DeleteByIdCoreAsync(transaction, identity, readStored, ct);
@@ -266,10 +284,12 @@ public sealed class KvDirectory<T, TKey>
         IKvTransaction transaction,
         TKey identity,
         Func<ReadOnlyMemory<byte>, T>? readStored,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         ArgumentNullException.ThrowIfNull(transaction);
         var existing = await transaction.GetAsync(PrimaryKey(identity), ct).ConfigureAwait(false);
+
         if (existing is KvFound { Value: var stored })
             await DeleteAsync(transaction, ReadStored(stored, readStored), ct).ConfigureAwait(false);
     }
@@ -287,7 +307,8 @@ public sealed class KvDirectory<T, TKey>
         IKvClient client,
         string route,
         TKey identity,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(client);
         var transaction = await client.BeginAsync(route, KvMode.ReadOnly, ct).ConfigureAwait(false);
@@ -306,7 +327,8 @@ public sealed class KvDirectory<T, TKey>
     public async ValueTask<KvDirectoryPage<T>> QueryAsync(
         IKvTransaction transaction,
         KvDirectoryQuery<T> query,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(query);
@@ -322,7 +344,8 @@ public sealed class KvDirectory<T, TKey>
         IKvClient client,
         string route,
         KvDirectoryQuery<T> query,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentException.ThrowIfNullOrWhiteSpace(route);
@@ -350,7 +373,8 @@ public sealed class KvDirectory<T, TKey>
         IKvTransaction transaction,
         int limit,
         string? cursor = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(transaction);
         var plan = PlanPrimary(transaction.Route, limit, cursor);
@@ -372,7 +396,8 @@ public sealed class KvDirectory<T, TKey>
         string route,
         int limit,
         string? cursor = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentException.ThrowIfNullOrWhiteSpace(route);
@@ -406,7 +431,8 @@ public sealed class KvDirectory<T, TKey>
         int limit,
         KvDurability durability,
         string? cursor = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentException.ThrowIfNullOrWhiteSpace(route);
@@ -425,19 +451,25 @@ public sealed class KvDirectory<T, TKey>
         await using (transaction.ConfigureAwait(false))
         {
             var records = new List<KvPair>(limit + 1);
+
             await foreach (var pair in transaction.ScanAllAsync(scan, ct).ConfigureAwait(false))
             {
                 records.Add(pair);
+
                 if (records.Count > limit)
                     break;
             }
+
             var processed = records.Take(limit).ToArray();
+
             foreach (var record in processed)
             {
                 var value = Deserialize(record.Value);
+
                 foreach (var key in IndexKeys(index, value))
                     await transaction.PutAsync(key, record.Value, ct).ConfigureAwait(false);
             }
+
             await transaction.CommitAsync(durability, ct).ConfigureAwait(false);
             var next = records.Count > limit ? EncodeCursor(fingerprint, processed[^1].Key) : null;
             return new KvDirectoryBackfillPage(processed.Length, next);
@@ -451,7 +483,8 @@ public sealed class KvDirectory<T, TKey>
     public ValueTask DeleteIndexGenerationAsync(
         IKvTransaction transaction,
         KvDirectoryIndex<T> index,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(transaction);
         ArgumentNullException.ThrowIfNull(index);
@@ -478,7 +511,8 @@ public sealed class KvDirectory<T, TKey>
         IKvTransaction transaction,
         IReadOnlyList<ReadOnlyMemory<byte>[]> indexes,
         ReadOnlyMemory<byte> bytes,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         foreach (var index in indexes)
         {
@@ -490,7 +524,8 @@ public sealed class KvDirectory<T, TKey>
     static async ValueTask DeleteIndexesAsync(
         IKvTransaction transaction,
         IReadOnlyList<ReadOnlyMemory<byte>[]> indexes,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         foreach (var index in indexes)
         {
@@ -507,25 +542,31 @@ public sealed class KvDirectory<T, TKey>
     ReadOnlyMemory<byte>[][] IndexKeys(T value)
     {
         var result = new ReadOnlyMemory<byte>[_indexes.Length][];
+
         for (var position = 0; position < _indexes.Length; position++)
             result[position] = IndexKeys(_indexes[position], value);
+
         return result;
     }
 
     ReadOnlyMemory<byte>[] IndexKeys(KvDirectoryIndex<T> index, T value)
     {
         var selected = index.Select(value);
+
         if (selected.Count > _options.MaximumIndexEntriesPerEntity)
             throw new InvalidOperationException(
                 $"Index '{index.Name}' exceeds MaximumIndexEntriesPerEntity.");
+
         var identity = IdentityParts(_identity(value));
         var result = new ReadOnlyMemory<byte>[selected.Count];
+
         for (var position = 0; position < selected.Count; position++)
         {
             var key = selected[position]
                 ?? throw new InvalidOperationException($"Index '{index.Name}' returned a null key.");
             result[position] = LexKey.EncodeComposite(Combine(IndexPrefix(index, key), identity)).AsMemory();
         }
+
         return result;
     }
 
@@ -536,8 +577,10 @@ public sealed class KvDirectory<T, TKey>
     {
         var parts = _identityKey(identity)
             ?? throw new InvalidOperationException("The identity selector returned a null key.");
+
         if (parts.Length == 0)
             throw new InvalidOperationException("The identity selector must return at least one part.");
+
         return parts;
     }
 
@@ -552,9 +595,11 @@ public sealed class KvDirectory<T, TKey>
     byte[] Serialize(T value)
     {
         var bytes = JsonSerializer.SerializeToUtf8Bytes(value, _valueTypeInfo);
+
         if (bytes.Length > _options.MaximumSerializedValueBytes)
             throw new InvalidOperationException(
                 $"The serialized directory value exceeds {_options.MaximumSerializedValueBytes} bytes.");
+
         return bytes;
     }
 
@@ -569,6 +614,7 @@ public sealed class KvDirectory<T, TKey>
         if (readStored is not null)
             return readStored(value) ?? throw new InvalidOperationException(
                 "The stored-entry reader returned null.");
+
         try
         {
             return Deserialize(value);
@@ -622,12 +668,15 @@ public sealed class KvDirectory<T, TKey>
     async ValueTask<KvDirectoryPage<T>> ExecuteAsync(IKvTransaction transaction, QueryPlan plan, CancellationToken ct)
     {
         var matches = new List<KvPair>(plan.Limit + 1);
+
         await foreach (var pair in transaction.ScanAllAsync(plan.Scan, ct).ConfigureAwait(false))
         {
             matches.Add(pair);
+
             if (matches.Count > plan.Limit)
                 break;
         }
+
         var hasMore = matches.Count > plan.Limit;
         var returned = matches.Take(plan.Limit).ToArray();
         var items = returned.Select(pair => Deserialize(pair.Value)).ToArray();
@@ -642,7 +691,8 @@ public sealed class KvDirectory<T, TKey>
         KvDirectoryIndex<T> index,
         bool descending,
         LexKeyPart[] prefix,
-        string purpose)
+        string purpose
+    )
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         Append(hash, purpose);
@@ -682,8 +732,10 @@ public sealed class KvDirectory<T, TKey>
         fingerprint.CopyTo(payload, 1);
         BinaryPrimitives.WriteInt32BigEndian(payload.AsSpan(1 + FingerprintLength), key.Length);
         key.Span.CopyTo(payload.AsSpan(1 + FingerprintLength + sizeof(int)));
+
         if (payload.Length > _options.MaximumCursorBytes)
             throw new InvalidOperationException("The generated cursor exceeds MaximumCursorBytes.");
+
         return Convert.ToBase64String(payload);
     }
 
@@ -691,11 +743,14 @@ public sealed class KvDirectory<T, TKey>
     {
         if (cursor is null)
             return null;
+
         if (cursor.Length > _options.MaximumCursorBytes * 2L)
             throw InvalidCursor("The cursor exceeds the configured limit.", paramName);
+
         try
         {
             var payload = Convert.FromBase64String(cursor);
+
             if (payload.Length > _options.MaximumCursorBytes ||
                 payload.Length < CursorVersion + FingerprintLength + sizeof(int) ||
                 payload[0] != CursorVersion)
@@ -703,14 +758,19 @@ public sealed class KvDirectory<T, TKey>
             // The fingerprint is an unkeyed hash of non-secret query inputs. It detects a cursor used
             // against the wrong route, index, direction or prefix; it does not authenticate the cursor,
             // so there is no secret to protect from timing and an ordinary comparison is correct.
+
             var fingerprint = payload.AsSpan(1, FingerprintLength);
+
             if (!fingerprint.SequenceEqual(expectedFingerprint))
                 throw new KvDirectoryQueryException(KvDirectoryQueryError.CursorMismatch,
                     "The cursor belongs to a different directory query.", paramName);
+
             var keyLength = BinaryPrimitives.ReadInt32BigEndian(payload.AsSpan(1 + FingerprintLength));
             var keyOffset = 1 + FingerprintLength + sizeof(int);
+
             if (keyLength <= 0 || keyLength != payload.Length - keyOffset)
                 throw InvalidCursor("The cursor key length is invalid.", paramName);
+
             return payload.AsMemory(keyOffset, keyLength);
         }
         catch (FormatException error)
@@ -730,10 +790,12 @@ public sealed class KvDirectory<T, TKey>
         ReadOnlyMemory<byte>? cursorKey,
         ReadOnlyMemory<byte> rangeStart,
         ReadOnlyMemory<byte> rangeEnd,
-        string paramName)
+        string paramName
+    )
     {
         if (cursorKey is not { } key)
             return;
+
         if (key.Span.SequenceCompareTo(rangeStart.Span) < 0 || key.Span.SequenceCompareTo(rangeEnd.Span) >= 0)
             throw InvalidCursor("The cursor key falls outside the selected query range.", paramName);
     }

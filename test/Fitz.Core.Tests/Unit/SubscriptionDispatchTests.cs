@@ -130,6 +130,7 @@ public sealed class SubscriptionDispatchTests
         SubscriptionPump.Start(registration, async (_, ct) =>
         {
             handlerStarted.TrySetResult(ct);
+
             try
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, ct);

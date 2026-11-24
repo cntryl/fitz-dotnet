@@ -34,12 +34,14 @@ public abstract class SubscriptionHandle : IAsyncDisposable
         string pattern,
         Func<CancellationToken, ValueTask> unsubscribe,
         Task? completion = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         Pattern = pattern;
         _time = timeProvider ?? TimeProvider.System;
         _unsubscribe = unsubscribe;
         _closingToken = _closing.Token;
+
         if (completion is null)
         {
             _ownedCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -104,6 +106,7 @@ public abstract class SubscriptionHandle : IAsyncDisposable
         await _closing.CancelAsync().ConfigureAwait(false);
         await _unsubscribeGate.DrainAndDisposeAsync().ConfigureAwait(false);
         _closing.Dispose();
+
         try
         {
             using var cleanupDeadline = new CancellationTokenSource(CleanupBudget, _time);
@@ -156,7 +159,8 @@ public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerab
         IAsyncEnumerable<T> notifications,
         Func<CancellationToken, ValueTask> unsubscribe,
         Task? completion = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
         : base(pattern, unsubscribe, completion, timeProvider)
     {
         _notifications = notifications;
@@ -176,6 +180,7 @@ public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerab
         }
 
         var transferred = false;
+
         try
         {
             var enumerator = new SubscriptionEnumerator(this, _notifications.GetAsyncEnumerator(cancellationToken));
@@ -202,6 +207,7 @@ public abstract class SubscriptionHandle<T> : SubscriptionHandle, IAsyncEnumerab
                 return false;
 
             var hasNext = false;
+
             try
             {
                 hasNext = await inner.MoveNextAsync().ConfigureAwait(false);

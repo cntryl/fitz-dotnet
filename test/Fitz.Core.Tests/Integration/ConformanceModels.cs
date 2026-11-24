@@ -53,7 +53,8 @@ static class ConformanceResultBuilder
         string transport,
         string authMode,
         DateTimeOffset generatedAt,
-        IReadOnlyList<ScenarioResult> scenarios)
+        IReadOnlyList<ScenarioResult> scenarios
+    )
     {
         var p0 = scenarios.Where(s => string.Equals(s.Priority, "P0", StringComparison.Ordinal)).ToList();
         var p1 = scenarios.Where(s => string.Equals(s.Priority, "P1", StringComparison.Ordinal)).ToList();
@@ -61,10 +62,12 @@ static class ConformanceResultBuilder
         static double PassRate(IEnumerable<ScenarioResult> input)
         {
             var arr = input.ToArray();
+
             if (arr.Length == 0)
             {
                 return 1.0;
             }
+
 
             var pass = arr.Count(r => r.Verdict == "pass");
             return (double)pass / arr.Length;

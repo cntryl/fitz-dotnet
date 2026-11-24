@@ -54,6 +54,7 @@ public sealed class RpcCall : IAsyncEnumerable<RpcResponseFrame>
     {
         if (Interlocked.Exchange(ref _claimed, true))
             throw new InvalidOperationException("An RPC call can only be enumerated once.");
+
         return new Enumerator(this, cancellationToken);
     }
 
@@ -68,11 +69,14 @@ public sealed class RpcCall : IAsyncEnumerable<RpcResponseFrame>
         {
             if (_disposed)
                 return ValueTask.FromResult(false);
+
+
             if (_inner is null)
             {
                 _inner = call._frames.GetAsyncEnumerator(ct);
                 call._outcome.SetResult(call._dispatchedOutcome);
             }
+
             return _inner.MoveNextAsync();
         }
 
@@ -80,9 +84,12 @@ public sealed class RpcCall : IAsyncEnumerable<RpcResponseFrame>
         {
             if (_disposed)
                 return ValueTask.CompletedTask;
+
             _disposed = true;
+
             if (_inner is not null)
                 return _inner.DisposeAsync();
+
             call._outcome.TrySetResult(Task.FromResult(RpcCancellationOutcome.RequestNotSent));
             return ValueTask.CompletedTask;
         }

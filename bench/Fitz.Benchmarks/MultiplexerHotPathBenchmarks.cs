@@ -80,6 +80,7 @@ public class MultiplexerHotPathBenchmarks : IDisposable
         );
 
         await cts.CancelAsync().ConfigureAwait(false);
+
         try
         {
             await first.ConfigureAwait(false);
@@ -87,6 +88,7 @@ public class MultiplexerHotPathBenchmarks : IDisposable
         catch (OperationCanceledException)
         {
         }
+
 
         _mux.DispatchCorrelated(_nextCorrelationId, new byte[] { 0xA });
         _ = await second.ConfigureAwait(false);

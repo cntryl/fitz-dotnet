@@ -380,10 +380,12 @@ public sealed class DomainWorkflowIntegrationTests
         });
 
         var responses = new List<string>();
+
         await foreach (var response in callerClient.Rpc.CallStreamingAsync(route, "ping"u8.ToArray()))
         {
             responses.Add(Encoding.UTF8.GetString(response.Body.Span));
         }
+
 
         Assert.Equal("pong", Assert.Single(responses));
     }
@@ -496,12 +498,14 @@ public sealed class DomainWorkflowIntegrationTests
         };
 
         var records = new List<string>();
+
         await foreach (var batch in client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10, Filter = filter }))
         {
             records.AddRange(batch.Records.Select(record => Encoding.UTF8.GetString(record.Body.Span)));
         }
 
         // Act
+
         var page = await client.Stream.ReadAsync(route, 0, StreamReadMode.Replay, new StreamReadOptions { BatchSize = 10, Filter = filter }).FirstAsync();
 
 
@@ -581,6 +585,7 @@ public sealed class DomainWorkflowIntegrationTests
         await client.Schedule.CreateBatchAsync([new ScheduleEntry(null, route, "*/5 * * * *", ScheduleDeliveryMode.Once, "batch"u8.ToArray())]);
         var page = await client.Schedule.ListAsync(limit: 100);
         var found = page.Entries.Any(entry => entry.Route == route);
+
         while (!found && page.HasMore && page.Continuation is not null)
         {
             page = await client.Schedule.ListAsync(page.Continuation, 100);
@@ -588,6 +593,7 @@ public sealed class DomainWorkflowIntegrationTests
         }
 
         // Assert
+
         Assert.True(found);
         await client.Schedule.CancelAsync(route);
     }
@@ -634,19 +640,24 @@ public sealed class DomainWorkflowIntegrationTests
     static async Task<Cntryl.Fitz.LeaseInfo> WaitForLeaseReleaseAsync(
         FitzClient client,
         string route,
-        TimeSpan timeout)
+        TimeSpan timeout
+    )
     {
         var deadline = DateTime.UtcNow + timeout;
+
         while (DateTime.UtcNow < deadline)
         {
             var info = await client.Lease.QueryAsync(route);
+
             if (!info.IsHeld)
             {
                 return info;
             }
 
+
             await Task.Delay(100);
         }
+
 
         return await client.Lease.QueryAsync(route);
     }

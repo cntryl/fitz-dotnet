@@ -45,7 +45,8 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
     /// </summary>
     public StreamClient(
         Func<ushort, byte[], CancellationToken, Task<byte[]>> request,
-        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null)
+        Func<ushort, Action<byte[]>, IDisposable>? registerNotificationHandler = null
+    )
         : this(
             async (messageType, payload, ct) => new ReadOnlyMemory<byte>(await request(messageType, payload.ToArray(), ct).ConfigureAwait(false)),
             NotificationRegistrationAdapter.Adapt(registerNotificationHandler))
@@ -60,7 +61,8 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
         AsyncHandlerDispatch? dispatchAsyncHandler = null,
         Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? retryRequest = null,
         int subscriptionBufferCapacity = SubscriptionRegistration<StreamCommitEvent>.DefaultCapacity,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null
+    )
     {
         _request = request;
         _time = timeProvider ?? TimeProvider.System;
@@ -88,6 +90,7 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
 
         using var writer = new BinaryBufferWriter();
         writer.WriteString(route);
+
         if (ingestMetadata.HasValue && ingestMetadata.Value.Length > 0)
         {
             writer.WriteU8(1);
@@ -98,6 +101,7 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
             writer.WriteU8(0);
         }
 
+
         using var session = new SessionRequestContext(_connection, _request, _registerOnDisconnect);
         var response = await session.RequestAsync(MessageTypes.StreamBegin, writer.WrittenMemory, ct).ConfigureAwait(false);
         var sessionId = StreamWireHelpers.ReadBeginSessionId(response);
@@ -107,14 +111,23 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
 
     /// <inheritdoc />
     public IAsyncEnumerable<StreamReadBatch> ReadAsync(
-        string route, ulong fromOffset, StreamReadMode mode, StreamReadOptions? options = null, CancellationToken ct = default)
+        string route,
+        ulong fromOffset,
+        StreamReadMode mode,
+        StreamReadOptions? options = null,
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(route);
+
         if (!RouteValidation.TryGetStreamSelectorScope(route, out var scope))
             throw new ArgumentException($"Invalid stream selector '{route}'.", nameof(route));
+
+
         if (mode is not (StreamReadMode.Replay or StreamReadMode.Follow))
             throw new ArgumentOutOfRangeException(nameof(mode));
+
         options ??= new StreamReadOptions();
         return mode == StreamReadMode.Replay
             ? ReadSnapshotAsync(route, scope, fromOffset, options, default, ct)
@@ -122,7 +135,12 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
     }
 
     async IAsyncEnumerable<StreamReadBatch> FollowAsync(
-        string route, StreamSelectorScope scope, ulong fromOffset, StreamReadOptions options, [EnumeratorCancellation] CancellationToken ct)
+        string route,
+        StreamSelectorScope scope,
+        ulong fromOffset,
+        StreamReadOptions options,
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
         // One pending wake covers any number of commits during a read or while yielding a batch.
         var wake = Channel.CreateBounded<bool>(1);
@@ -134,6 +152,7 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
         IAsyncDisposable subscription = new StreamSubscription(route, binding.Unsubscribe, binding.Completion, _time);
         await using var cleanup = subscription.ConfigureAwait(false);
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(ct, binding.Ended);
+
         try
         {
             while (true)
@@ -142,12 +161,14 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
                 var session = _connection is null ? CancellationToken.None
                     : await _connection.WaitUntilReadyAsync(Timeout.InfiniteTimeSpan, lifetime.Token).ConfigureAwait(false);
                 using var snapshot = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token, session);
+
                 await foreach (var batch in ReadSnapshotAsync(route, scope, fromOffset, options, session, snapshot.Token).ConfigureAwait(false))
                 {
                     lifetime.Token.ThrowIfCancellationRequested();
                     yield return batch;
                     fromOffset = batch.NextOffset;
                 }
+
 
                 try
                 {
@@ -168,15 +189,22 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
     }
 
     async IAsyncEnumerable<StreamReadBatch> ReadSnapshotAsync(
-        string route, StreamSelectorScope scope, ulong fromOffset, StreamReadOptions options,
-        CancellationToken session, [EnumeratorCancellation] CancellationToken ct)
+        string route,
+        StreamSelectorScope scope,
+        ulong fromOffset,
+        StreamReadOptions options,
+        CancellationToken session,
+        [EnumeratorCancellation] CancellationToken ct
+    )
     {
         ulong? fingerprint = null;
         ulong? watermark = null;
         ulong? previousNext = null;
+
         while (!session.IsCancellationRequested)
         {
             StreamReadPage page;
+
             try
             {
                 ct.ThrowIfCancellationRequested();
@@ -188,12 +216,16 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
                 yield break;
             }
 
+
             var next = page.NextOffset(scope, fromOffset);
+
             if (page.Cursor.HasMore)
             {
                 if (next == previousNext)
                     throw new StreamException("Two consecutive READ pages have a stalled cursor.", "READ_STALLED");
+
                 previousNext = next;
+
                 if (scope == StreamSelectorScope.Global)
                 {
                     fingerprint = page.Cursor.CursorFingerprint
@@ -202,16 +234,25 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
                         ?? throw new StreamException("READ response is missing the captured watermark", "READ_INVALID_RESPONSE");
                 }
             }
+
             yield return new StreamReadBatch(page.Items, fromOffset, next, !page.Cursor.HasMore);
+
             if (!page.Cursor.HasMore)
                 yield break;
+
             fromOffset = next;
         }
     }
 
     async Task<StreamReadPage> ReadPageAsync(
-        string route, ulong startOffset, StreamReadOptions options, ulong? cursorFingerprint, ulong? capturedWatermark,
-        CancellationToken session, CancellationToken ct)
+        string route,
+        ulong startOffset,
+        StreamReadOptions options,
+        ulong? cursorFingerprint,
+        ulong? capturedWatermark,
+        CancellationToken session,
+        CancellationToken ct
+    )
     {
         ThrowIfDisposed();
         using var writer = new BinaryBufferWriter();
@@ -220,24 +261,32 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
         writer.WriteU64(options.BatchSize);
         var maxBytes = options.MaxBytes;
         writer.WriteU8((byte)(maxBytes.HasValue ? 1 : 0));
+
         if (maxBytes.HasValue)
         {
             writer.WriteU64(maxBytes.Value);
         }
 
+
         var filterBytes = StreamWireHelpers.EncodeStreamFilterSet(options.Filter);
         writer.WriteU8((byte)(filterBytes.Length > 0 ? 1 : 0));
+
         if (filterBytes.Length > 0)
         {
             writer.WriteLengthPrefixed(filterBytes);
         }
 
+
         writer.WriteU8((byte)(cursorFingerprint.HasValue ? 1 : 0));
+
         if (cursorFingerprint.HasValue)
             writer.WriteU64(cursorFingerprint.Value);
+
         writer.WriteU8((byte)(capturedWatermark.HasValue ? 1 : 0));
+
         if (capturedWatermark.HasValue)
             writer.WriteU64(capturedWatermark.Value);
+
 
         var response = session.CanBeCanceled && _connection is not null
             ? await _connection.ExecuteWithRetryAsync(RetryOperations.StreamRead,
@@ -261,10 +310,12 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
             writer.WrittenMemory,
             ct).ConfigureAwait(false);
         var data = StreamWireHelpers.ReadOptionalPayload(response, "LAST");
+
         if (data.IsEmpty)
         {
             return null;
         }
+
 
         return StreamWireHelpers.ReadRoutedRecord(data, "LAST");
     }
@@ -292,10 +343,12 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
         var inner = new BinaryBufferReader(data);
         var firstOffset = StreamWireHelpers.ReadOptionalU64(inner, "METADATA", "first offset") ?? 0;
         var lastOffset = StreamWireHelpers.ReadOptionalU64(inner, "METADATA", "last offset") ?? 0;
+
         if (inner.RemainingBytes < 24)
         {
             throw new StreamException("METADATA response missing metadata payload", "METADATA_INVALID_RESPONSE");
         }
+
 
         var recordCount = inner.ReadU64();
         _ = inner.ReadU64();
@@ -321,7 +374,8 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
     /// <inheritdoc />
     public Task<StreamSubscription> SubscribeAsync(
         string pattern,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ThrowIfDisposed();
         EnsureSubscriptionPattern(pattern);
@@ -334,7 +388,8 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
     internal async Task<StreamSubscription> SubscribeAsync(
         string pattern,
         Func<StreamCommitEvent, CancellationToken, ValueTask> handler,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         EnsureSubscriptionPattern(pattern);
         var binding = await _subscriptions.SubscribeAsync(pattern, handler, preDispatch: null, ct).ConfigureAwait(false);
@@ -374,8 +429,10 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
         var route = reader.ReadString();
         var bodyLength = reader.ReadU32();
         var body = reader.ReadSpan(bodyLength);
+
         if (!reader.IsEof)
             return null;
+
 
         var commitOffset = StreamWireHelpers.ParseCommitOffset(body);
         var notification = new StreamCommitEvent(route, commitOffset.Offset)
@@ -411,7 +468,8 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
         RetryOperation operation,
         ushort messageType,
         ReadOnlyMemory<byte> payload,
-        CancellationToken ct)
+        CancellationToken ct
+    )
     {
         if (_retryRequest is null)
         {

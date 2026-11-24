@@ -49,7 +49,8 @@ public interface ILeaseClient
         TimeSpan ttl,
         Func<CancellationToken, ValueTask<T>> callback,
         LeaseExecutionOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(callback);
         return WithLeaseAsync(route, ttl, (_, callbackToken) => callback(callbackToken), options, ct);
@@ -72,7 +73,8 @@ public interface ILeaseClient
         TimeSpan ttl,
         Func<LeaseAuthority, CancellationToken, ValueTask<T>> callback,
         LeaseExecutionOptions? options = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Runs a callback while holding a lease.
@@ -94,7 +96,8 @@ public interface ILeaseClient
         TimeSpan ttl,
         Func<CancellationToken, ValueTask> callback,
         LeaseExecutionOptions? options = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default
+    )
     {
         ArgumentNullException.ThrowIfNull(callback);
         return WithLeaseAsync(route, ttl, (_, callbackToken) => callback(callbackToken), options, ct);
@@ -116,7 +119,8 @@ public interface ILeaseClient
         TimeSpan ttl,
         Func<LeaseAuthority, CancellationToken, ValueTask> callback,
         LeaseExecutionOptions? options = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Reads the current holder and expiry of a lease without claiming it.
@@ -139,7 +143,8 @@ public interface ILeaseClient
     /// </returns>
     Task<LeaseSubscription> SubscribeAsync(
         string route,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Reads one page of leases matching a pattern.
@@ -153,7 +158,8 @@ public interface ILeaseClient
         string pattern,
         LeaseListCursor? cursor = null,
         int? limit = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 
     /// <summary>
     /// Starts a race-safe, high-level observer over every lease matching <paramref name="pattern"/>.
@@ -166,5 +172,6 @@ public interface ILeaseClient
     Task<ILeaseInventoryObserver> ObserveAsync(
         string pattern,
         LeaseObserveOptions? options = null,
-        CancellationToken ct = default);
+        CancellationToken ct = default
+    );
 }

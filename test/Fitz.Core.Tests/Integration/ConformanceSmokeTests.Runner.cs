@@ -110,10 +110,12 @@ public sealed partial class ConformanceSmokeTests
                 if (trimmed.StartsWith("name:", StringComparison.OrdinalIgnoreCase))
                 {
                     var nameValue = trimmed["name:".Length..].Trim().Trim('"');
+
                     if (!string.IsNullOrWhiteSpace(nameValue))
                     {
                         suiteName = nameValue;
                     }
+
 
                     continue;
                 }
@@ -121,10 +123,12 @@ public sealed partial class ConformanceSmokeTests
                 if (trimmed.StartsWith("version:", StringComparison.OrdinalIgnoreCase))
                 {
                     var versionValue = trimmed["version:".Length..].Trim().Trim('"');
+
                     if (!string.IsNullOrWhiteSpace(versionValue))
                     {
                         suiteVersion = versionValue;
                     }
+
 
                     continue;
                 }

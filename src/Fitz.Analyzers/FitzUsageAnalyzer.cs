@@ -17,6 +17,7 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
         {
             throw new ArgumentNullException(nameof(context));
         }
+
         context.ConfigureGeneratedCodeAnalysis(GeneratedCodeAnalysisFlags.None);
         context.EnableConcurrentExecution();
         context.RegisterCompilationStartAction(static startContext =>
@@ -39,7 +40,8 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
     static void AnalyzeAddress(
         OperationAnalysisContext context,
         IInvocationOperation invocation,
-        FitzRouteRules.ApiSymbols apiSymbols)
+        FitzRouteRules.ApiSymbols apiSymbols
+    )
     {
         if (!FitzRouteRules.TryGetRule(invocation, apiSymbols, out var rule))
         {
@@ -47,33 +49,40 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
         }
 
         var argument = invocation.Arguments.FirstOrDefault(item => item.Parameter?.Name == rule.ParameterName);
+
         if (argument?.Value.ConstantValue is not { HasValue: true, Value: string value })
         {
             return;
         }
 
+
         var valid = rule.IsPattern
             ? FitzRouteRules.IsValidPattern(value, rule.Scheme!, rule.RequiredSegments, rule.IsStreamSelector)
             : FitzRouteRules.IsValidConcrete(value, rule.Scheme!, rule.RequiredSegments);
+
         if (valid)
         {
             return;
         }
 
+
         var descriptor = rule.IsPattern ? FitzDiagnostics.InvalidPattern : FitzDiagnostics.InvalidRoute;
         var properties = ImmutableDictionary<string, string?>.Empty.Add("ExpectedScheme", rule.Scheme);
         var marker = value.IndexOf("://", StringComparison.Ordinal);
+
         if (marker >= 0)
         {
             var suggested = rule.Scheme + "://" + value.Substring(marker + 3);
             var suggestionIsValid = rule.IsPattern
                 ? FitzRouteRules.IsValidPattern(suggested, rule.Scheme!, rule.RequiredSegments, rule.IsStreamSelector)
                 : FitzRouteRules.IsValidConcrete(suggested, rule.Scheme!, rule.RequiredSegments);
+
             if (suggestionIsValid)
             {
                 properties = properties.Add("SuggestedAddress", suggested);
             }
         }
+
 
         context.ReportDiagnostic(Diagnostic.Create(
             descriptor,
@@ -86,7 +95,8 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
     static void AnalyzeDiscard(
         OperationAnalysisContext context,
         IInvocationOperation invocation,
-        FitzRouteRules.ApiSymbols apiSymbols)
+        FitzRouteRules.ApiSymbols apiSymbols
+    )
     {
         if (invocation.Parent is not IAwaitOperation awaited || !IsResultDiscarded(awaited))
         {
@@ -121,7 +131,8 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
     static void AnalyzeArguments(
         OperationAnalysisContext context,
         IInvocationOperation invocation,
-        FitzRouteRules.ApiSymbols apiSymbols)
+        FitzRouteRules.ApiSymbols apiSymbols
+    )
     {
         if (!FitzRouteRules.IsFitzMethod(invocation, apiSymbols))
         {
@@ -139,6 +150,7 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
             // an expression rather than a constant. Evaluate the recognisable TimeSpan factory
             // calls so these stay compile-time errors instead of runtime ones.
             object? reported;
+
             if (TryGetConstantTimeSpan(argument.Value, out var duration))
             {
                 if (!IsInvalidDuration(argument.Parameter.Name, duration))
@@ -151,13 +163,16 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
             else
             {
                 var constant = GetConstantValue(argument.Value);
+
                 if (!IsInvalidConstant(invocation, apiSymbols, argument.Parameter.Name, constant))
                 {
                     continue;
                 }
 
+
                 reported = constant.Value;
             }
+
 
             context.ReportDiagnostic(Diagnostic.Create(
                 FitzDiagnostics.InvalidArgument,
@@ -170,11 +185,13 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
     static Optional<object?> GetConstantValue(IOperation operation)
     {
         var constant = operation.ConstantValue;
+
         while (!constant.HasValue && operation is IConversionOperation conversion)
         {
             operation = conversion.Operand;
             constant = operation.ConstantValue;
         }
+
 
         return constant;
     }
@@ -183,7 +200,8 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
         IInvocationOperation invocation,
         FitzRouteRules.ApiSymbols apiSymbols,
         string parameterName,
-        Optional<object?> constant)
+        Optional<object?> constant
+    )
     {
         if (!constant.HasValue || constant.Value is null)
         {
@@ -226,10 +244,12 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
     static bool TryGetConstantTimeSpan(IOperation operation, out TimeSpan value)
     {
         value = default;
+
         while (operation is IConversionOperation conversion)
         {
             operation = conversion.Operand;
         }
+
 
         if (operation is IFieldReferenceOperation field &&
             IsTimeSpan(field.Field.ContainingType) &&
@@ -248,10 +268,12 @@ public sealed class FitzUsageAnalyzer : DiagnosticAnalyzer
         }
 
         var amountConstant = GetConstantValue(call.Arguments[0].Value);
+
         if (!amountConstant.HasValue || amountConstant.Value is null || !TryToDouble(amountConstant.Value, out var amount))
         {
             return false;
         }
+
 
         try
         {
