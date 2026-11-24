@@ -138,18 +138,21 @@ public sealed class WebSocketTransport : ITransport
             var socket = EnsureSocket();
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(writeLifetime);
             timeoutCts.CancelAfter(_timeout);
+            admission.ThrowIfCancellationRequested();
+            onWriteAttempt?.Invoke();
 
             try
             {
-                onWriteAttempt?.Invoke();
                 await socket.SendAsync(data, WebSocketMessageType.Binary, endOfMessage: true, timeoutCts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (writeLifetime.IsCancellationRequested)
-            {
-                throw;
             }
             catch (OperationCanceledException exception)
             {
+                // A canceled native send may have written only part of the message.
+                socket.Abort();
+
+                if (writeLifetime.IsCancellationRequested)
+                    throw;
+
                 throw new TimeoutException($"WebSocket send exceeded {_timeout}.", exception);
             }
         }

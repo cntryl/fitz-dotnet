@@ -301,8 +301,12 @@ sealed class RpcClient : IRpcClient, IDisposable
             }
             else
             {
+                var canceled = callToken.IsCancellationRequested;
                 deadline.Dispose();
-                await FinishCallAsync(correlationId, correlationBytes, call, cancellationReason, connectionClosedToken).ConfigureAwait(false);
+                var finish = FinishCallAsync(correlationId, correlationBytes, call, cancellationReason, connectionClosedToken);
+
+                if (!canceled)
+                    await finish.ConfigureAwait(false);
             }
         }
     }
@@ -348,7 +352,7 @@ sealed class RpcClient : IRpcClient, IDisposable
         await FinishCallAsync(correlationId, correlationBytes, call, reason, session).ConfigureAwait(false);
     }
 
-    ValueTask FinishCallAsync(
+    Task FinishCallAsync(
         Guid correlationId,
         byte[] correlationBytes,
         RpcCallState call,
@@ -363,9 +367,9 @@ sealed class RpcClient : IRpcClient, IDisposable
         else if (session.IsCancellationRequested || Volatile.Read(ref _disposed))
             call.Cancellation.TrySetResult(RpcCancellationOutcome.ConnectionClosed);
         else
-            return new ValueTask(RequestCancellationAsync(correlationId, correlationBytes, call, reason, session));
+            return RequestCancellationAsync(correlationId, correlationBytes, call, reason, session);
 
-        return ValueTask.CompletedTask;
+        return Task.CompletedTask;
     }
 
     void HandleRpcResponse(ReadOnlyMemory<byte> payload)
@@ -687,7 +691,9 @@ sealed class RpcClient : IRpcClient, IDisposable
         internal CallDeadline(TimeSpan? timeout, TimeProvider time, CancellationToken caller)
         {
             _timeout = timeout is { } duration ? new CancellationTokenSource(duration, time) : null;
-            _linked = _timeout is not null ? CancellationTokenSource.CreateLinkedTokenSource(caller, _timeout.Token) : null;
+            _linked = _timeout is not null
+                ? CancellationTokenSource.CreateLinkedTokenSource(caller, _timeout.Token)
+                : caller.CanBeCanceled ? CancellationTokenSource.CreateLinkedTokenSource(caller) : null;
             Token = _linked?.Token ?? caller;
         }
 

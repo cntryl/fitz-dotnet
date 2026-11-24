@@ -101,6 +101,34 @@ public sealed class WebSocketTransportTests
         }
     }
 
+    [Fact]
+    public async Task ShouldInterruptActiveWriteGivenSessionEndsWhenRpcFrameIsAlreadyWriting()
+    {
+        // Arrange
+        using var stream = new GatedWriteStream();
+        using var socket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions());
+        await using var transport = new WebSocketTransport(socket, new Uri("ws://localhost/ws"), Timeout.InfiniteTimeSpan, 1024);
+        using var session = new CancellationTokenSource();
+        var active = transport.SendRpcRequestAsync("rpc"u8.ToArray(), () => { }, session.Token, CancellationToken.None);
+
+        try
+        {
+            await stream.FirstWrite.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            // Act
+            await session.CancelAsync();
+
+            // Assert
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => active.WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(WebSocketState.Aborted, socket.State);
+        }
+        finally
+        {
+            stream.ReleaseWrite.TrySetResult();
+            socket.Abort();
+        }
+    }
+
     sealed class GatedWriteStream : MemoryStream
     {
         internal TaskCompletionSource FirstWrite { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
