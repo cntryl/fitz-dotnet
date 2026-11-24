@@ -53,7 +53,9 @@ public sealed record ClientConfig(Uri Url)
     public int MaxInFlightRequests { get; init; } = 256;
 
     /// <summary>Depth of the pending-request queue. Exceeding it raises <c>RequestQueueFullException</c>.</summary>
-    public int MaxRequestQueueSize { get; init; } = 1024;
+    public int MaxRequestQueueSize { get; init; } = DefaultRequestQueueSize;
+
+    internal const int DefaultRequestQueueSize = 1024;
 
     /// <summary>Supplies a custom <see cref="ITransport"/> instead of the built-in ones. Override
     /// <see cref="ITransport.TransportName"/> to label it in telemetry.</summary>

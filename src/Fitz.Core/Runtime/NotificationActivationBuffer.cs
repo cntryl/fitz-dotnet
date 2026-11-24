@@ -1,91 +1,80 @@
 namespace Cntryl.Fitz.Runtime;
 
-// Subscription requests are serialized by the domain subscription gate. Replay runs
-// under its routing lock so new notifications cannot overtake buffered notifications.
-sealed class NotificationActivationBuffer(int capacity) : IDisposable
+// The subscription table holds its routing lock for staging and activation. Only a broker ACK
+// assigns a staged ID to a selector. Matching the route merely avoids staging unrelated frames.
+sealed class NotificationActivationBuffer<TNotification>(int capacity, int maxConcurrentChanges)
 {
-    // Retired IDs can continue arriving from the bounded multiplexer queue. Track which
-    // IDs actually lost frames without retaining an unbounded history of retired IDs.
     const int MaxTrackedOverflowIds = 1024;
-    readonly Lock _gate = new();
-    readonly Queue<(ulong SubscriptionId, byte[] Payload)> _notifications = new();
-    readonly HashSet<ulong> _overflowedSubscriptionIds = [];
-    bool _active;
-    string? _pattern;
+    readonly HashSet<string> _pending = [with(StringComparer.Ordinal)];
+    readonly Dictionary<ulong, Queue<TNotification>> _byId = [];
+    readonly HashSet<ulong> _overflowed = [];
+    long _count;
     Exception? _failure;
 
-    internal NotificationActivationBuffer Begin(string pattern)
+    internal void Begin(string pattern) => _pending.Add(pattern);
+
+    internal void Buffer(DecodedNotification<TNotification> notification)
     {
-        lock (_gate)
+        if (_failure is not null || _overflowed.Contains(notification.SubscriptionId))
+            return;
+
+        foreach (var pattern in _pending)
         {
-            _active = true;
-            _pattern = pattern;
-            return this;
-        }
-    }
-
-    internal void Buffer(ulong subscriptionId, string route, ReadOnlyMemory<byte> payload)
-    {
-        lock (_gate)
-        {
-            if (!_active || _failure is not null || !RouteValidation.MatchesPattern(route, _pattern!))
-                return;
-
-            if (_overflowedSubscriptionIds.Contains(subscriptionId))
-                return;
-
-            if (_notifications.Count >= capacity)
+            if (RouteValidation.MatchesPattern(notification.Route, pattern))
             {
-                if (_overflowedSubscriptionIds.Count >= MaxTrackedOverflowIds)
-                    _failure = new SubscriptionBackpressureException("The subscription activation overflow-ID tracking limit was exceeded.");
-                else
-                    _overflowedSubscriptionIds.Add(subscriptionId);
+                BufferMatching(notification.SubscriptionId, notification.Value);
                 return;
             }
-
-            _notifications.Enqueue((subscriptionId, payload.ToArray()));
         }
     }
 
-    internal void Fail(Exception error)
+    void BufferMatching(ulong id, TNotification value)
     {
-        lock (_gate)
+        _byId.TryGetValue(id, out var frames);
+        if (_count >= (long)capacity * maxConcurrentChanges || frames?.Count >= capacity)
         {
-            if (_active)
-                _failure ??= error;
+            if (_overflowed.Count >= MaxTrackedOverflowIds)
+                _failure = new SubscriptionBackpressureException("The subscription activation overflow-ID tracking limit was exceeded.");
+            else
+                _overflowed.Add(id);
+            if (_byId.Remove(id, out var dropped))
+                _count -= dropped.Count;
+            return;
         }
+
+        if (frames is null)
+        {
+            frames = new Queue<TNotification>();
+            _byId.Add(id, frames);
+        }
+
+        frames.Enqueue(value);
+        _count++;
     }
 
-    internal Exception? Replay(ulong subscriptionId, Action<ReadOnlyMemory<byte>> handler)
+    internal Exception? Take(ulong id, out Queue<TNotification>? frames)
     {
-        lock (_gate)
-        {
-            _active = false;
-            var failure = _failure;
-            if (failure is null && _overflowedSubscriptionIds.Contains(subscriptionId))
-                failure = new SubscriptionBackpressureException("The subscription activation buffer is full.");
-            if (failure is null)
-            {
-                while (_notifications.TryDequeue(out var notification))
-                {
-                    if (notification.SubscriptionId == subscriptionId)
-                        handler(notification.Payload);
-                }
-            }
-            Dispose();
-            return failure;
-        }
+        if (_byId.Remove(id, out frames))
+            _count -= frames.Count;
+
+        return _failure ?? (_overflowed.Remove(id)
+            ? new SubscriptionBackpressureException("The subscription activation buffer is full.")
+            : null);
     }
 
-    public void Dispose()
+    internal void End(string pattern)
     {
-        lock (_gate)
-        {
-            _active = false;
-            _pattern = null;
-            _notifications.Clear();
-            _overflowedSubscriptionIds.Clear();
-            _failure = null;
-        }
+        _pending.Remove(pattern);
+        if (_pending.Count == 0)
+            Clear();
+    }
+
+    internal void Clear()
+    {
+        _pending.Clear();
+        _byId.Clear();
+        _overflowed.Clear();
+        _count = 0;
+        _failure = null;
     }
 }

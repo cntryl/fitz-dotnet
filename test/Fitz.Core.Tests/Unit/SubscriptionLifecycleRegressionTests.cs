@@ -12,21 +12,180 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class SubscriptionLifecycleRegressionTests
 {
+    static readonly TimeSpan Deadline = TimeSpan.FromSeconds(5);
+
+    [Fact]
+    public async Task ShouldKeepSharedActivationGivenFirstWaiterCancelsWhenAnotherWaiterRemains()
+    {
+        // Arrange
+        var reply = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var subscribes = 0;
+        var unsubscribes = 0;
+        await using var fixture = new DomainFixture("stream", (type, _, _) =>
+        {
+            if (type == MessageTypes.StreamSubscribe)
+            {
+                Interlocked.Increment(ref subscribes);
+                return new ValueTask<ReadOnlyMemory<byte>>(reply.Task);
+            }
+            Interlocked.Increment(ref unsubscribes);
+            return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
+        });
+        var route = Route("stream", "events");
+        using var ct = new CancellationTokenSource();
+        var first = fixture.SubscribeAsync(route, ct.Token);
+        var sibling = fixture.SubscribeAsync(route);
+
+        // Act
+        try
+        {
+            await ct.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first.WaitAsync(Deadline));
+            fixture.Notify(Notification("stream", 55, route));
+        }
+        finally
+        {
+            reply.SetResult(Reply("stream", 55));
+        }
+
+        // Assert
+        await using var surviving = await sibling.WaitAsync(Deadline);
+        using var deadline = new CancellationTokenSource(Deadline);
+        Assert.Equal(route, await FirstRouteAsync(surviving, deadline.Token));
+        await surviving.UnsubscribeAsync(deadline.Token);
+        Assert.Equal(1, subscribes);
+        Assert.Equal(1, unsubscribes);
+    }
+
+    [Fact]
+    public async Task ShouldWaitForWithdrawalGivenCanceledOnlyWaiterWhenSelectorIsRequestedAgain()
+    {
+        // Arrange
+        var reply = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var remove = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var removing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var subscribes = 0;
+        await using var fixture = new DomainFixture("stream", (type, _, _) =>
+        {
+            if (type == MessageTypes.StreamSubscribe)
+                return Interlocked.Increment(ref subscribes) == 1
+                    ? new ValueTask<ReadOnlyMemory<byte>>(reply.Task)
+                    : ValueTask.FromResult<ReadOnlyMemory<byte>>(Reply("stream", 56));
+            removing.TrySetResult();
+            return new ValueTask<ReadOnlyMemory<byte>>(remove.Task);
+        });
+        var route = Route("stream", "events");
+        using var ct = new CancellationTokenSource();
+        var canceled = fixture.SubscribeAsync(route, ct.Token);
+        Task<SubscriptionHandle>? next = null;
+
+        // Act
+        try
+        {
+            await ct.CancelAsync();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => canceled.WaitAsync(Deadline));
+            reply.SetResult(Reply("stream", 55));
+            await removing.Task.WaitAsync(Deadline);
+            next = fixture.SubscribeAsync(route);
+            Assert.False(next.IsCompleted);
+            Assert.Equal(1, subscribes);
+        }
+        finally
+        {
+            reply.TrySetResult(Reply("stream", 55));
+            remove.SetResult(new byte[] { 0 });
+        }
+
+        // Assert
+        await using var subscription = await next.WaitAsync(Deadline);
+        using var deadline = new CancellationTokenSource(Deadline);
+        fixture.Notify(Notification("stream", 56, route));
+        Assert.Equal(route, await FirstRouteAsync(subscription, deadline.Token));
+        Assert.Equal(2, subscribes);
+    }
+
+    [Fact]
+    public async Task ShouldDeliverToFastReaderGivenSharedSelectorWhenSiblingOverflows()
+    {
+        // Arrange
+        var unsubscribes = 0;
+        await using var fixture = new DomainFixture("stream", (type, _, _) =>
+        {
+            if (type == MessageTypes.StreamSubscribe)
+                return ValueTask.FromResult<ReadOnlyMemory<byte>>(Reply("stream", 55));
+            Interlocked.Increment(ref unsubscribes);
+            return ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 });
+        });
+        var route = Route("stream", "events");
+        await using var slow = await fixture.SubscribeAsync(route);
+        await using var fast = (StreamSubscription)await fixture.SubscribeAsync(route);
+        using var deadline = new CancellationTokenSource(Deadline);
+        await using var reader = fast.GetAsyncEnumerator(deadline.Token);
+
+        // Act
+        fixture.Notify(Notification("stream", 55, route));
+        Assert.True(await reader.MoveNextAsync());
+        fixture.Notify(Notification("stream", 55, route));
+
+        // Assert
+        await Assert.ThrowsAsync<SubscriptionBackpressureException>(() => slow.Completion.WaitAsync(Deadline));
+        Assert.True(await reader.MoveNextAsync());
+        Assert.Equal(route, reader.Current.Route);
+        Assert.False(fast.Completion.IsCompleted);
+        Assert.Equal(0, unsubscribes);
+    }
+
+    [Fact]
+    public async Task ShouldActivateIndependentRoutesGivenOverlappingSelectorsWhenRepliesArriveOutOfOrder()
+    {
+        // Arrange
+        var exactReply = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var wildcardReply = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var exactRoute = Route("stream", "events");
+        var wildcard = Route("stream", "*");
+        await using var fixture = new DomainFixture("stream", (type, payload, _) => type == MessageTypes.StreamSubscribe
+            ? new ValueTask<ReadOnlyMemory<byte>>(new BinaryBufferReader(payload).ReadString() == exactRoute ? exactReply.Task : wildcardReply.Task)
+            : ValueTask.FromResult<ReadOnlyMemory<byte>>(new byte[] { 0 }));
+        var exact = fixture.SubscribeAsync(exactRoute);
+        var area = fixture.SubscribeAsync(wildcard);
+
+        // Act
+        fixture.Notify(Notification("stream", 55, exactRoute));
+        fixture.Notify(Notification("stream", 56, exactRoute));
+        wildcardReply.SetResult(Reply("stream", 56));
+        try
+        {
+            await using var wildcardHandle = await area.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.False(exact.IsCompleted);
+            exactReply.SetResult(Reply("stream", 55));
+            await using var exactHandle = await exact.WaitAsync(TimeSpan.FromSeconds(2));
+
+            // Assert
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            Assert.Equal(exactRoute, await FirstRouteAsync(wildcardHandle, deadline.Token));
+            Assert.Equal(exactRoute, await FirstRouteAsync(exactHandle, deadline.Token));
+        }
+        finally
+        {
+            exactReply.TrySetResult(Reply("stream", 55));
+        }
+    }
+
     [Fact]
     public async Task ShouldRejectQueuedSubscribeGivenDisposedDomainWhenSubscriptionGateBecomesAvailable()
     {
         // Arrange
         var firstReply = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
         var wireRequests = 0;
-        await using var fixture = new DomainFixture("stream", (_, _, _) =>
+        await using var fixture = new DomainFixture("notice", (_, _, _) =>
             ++wireRequests == 1 ? new ValueTask<ReadOnlyMemory<byte>>(firstReply.Task)
-                : ValueTask.FromResult<ReadOnlyMemory<byte>>(Reply("stream", 56)));
-        var first = fixture.SubscribeAsync(Route("stream", "first"));
-        var queued = fixture.SubscribeAsync(Route("stream", "queued"));
+                : ValueTask.FromResult<ReadOnlyMemory<byte>>(Reply("notice", 56)));
+        var first = fixture.SubscribeAsync(Route("notice", "first"));
+        var queued = fixture.SubscribeAsync(Route("notice", "queued"));
 
         // Act: disposal waits for the in-flight subscribe, so release it after disposal starts.
         var disposing = fixture.DisposeAsync().AsTask();
-        firstReply.SetResult(Reply("stream", 55));
+        firstReply.SetResult(Reply("notice", 55));
         await disposing.WaitAsync(TimeSpan.FromSeconds(5));
 
         // Assert
@@ -224,14 +383,14 @@ public sealed class SubscriptionLifecycleRegressionTests
             };
         }
 
-        internal async Task<SubscriptionHandle> SubscribeAsync(string route) => _client switch
+        internal async Task<SubscriptionHandle> SubscribeAsync(string route, CancellationToken ct = default) => _client switch
         {
-            StreamClient value => await value.SubscribeAsync(route),
-            QueueClient value => await value.SubscribeAsync(route),
-            NoticeClient value => await value.SubscribeAsync(route),
-            KvClient value => await value.SubscribeAsync(route),
-            ScheduleClient value => await value.SubscribeAsync(route),
-            LeaseClient value => await value.SubscribeAsync(route),
+            StreamClient value => await value.SubscribeAsync(route, ct),
+            QueueClient value => await value.SubscribeAsync(route, ct),
+            NoticeClient value => await value.SubscribeAsync(route, ct),
+            KvClient value => await value.SubscribeAsync(route, ct),
+            ScheduleClient value => await value.SubscribeAsync(route, ct),
+            LeaseClient value => await value.SubscribeAsync(route, ct),
             _ => throw new InvalidOperationException(),
         };
 
