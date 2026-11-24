@@ -908,7 +908,8 @@ sealed class FitzConnection : IAsyncDisposable
             }
 
 
-            _multiplexer.SetConnected(new NotificationSession(receiveLoop, ConnectionClosedToken));
+            var notificationSession = new NotificationSession(receiveLoop, ConnectionClosedToken);
+            _multiplexer.SetConnected(notificationSession);
             _reconnectExhausted = false;
 
             if (isReconnect)
@@ -918,7 +919,7 @@ sealed class FitzConnection : IAsyncDisposable
 
             await ThrowIfAttemptFailedAsync(transport).ConfigureAwait(false);
 
-            CommitSession(transport);
+            CommitSession(transport, notificationSession);
             _telemetry.LifecycleEvent(isReconnect ? "reconnect_succeeded" : "connect_succeeded");
         }
         catch (Exception ex) when (ExceptionPolicy.IsRecoverable(ex))
@@ -1017,7 +1018,7 @@ sealed class FitzConnection : IAsyncDisposable
     // state change share one lock section, and a loss handler publishes its own state through the
     // same lock after detaching the transport. So a loss either makes this throw, or is handled
     // after the session became visible. The connection is never authenticated without a transport.
-    void CommitSession(ITransport transport)
+    void CommitSession(ITransport transport, NotificationSession notificationSession)
     {
         lock (_gate)
         {
@@ -1027,7 +1028,7 @@ sealed class FitzConnection : IAsyncDisposable
                 throw new ConnectionException(SessionLostWhileEstablishing);
             }
 
-            _multiplexer.CompleteNotificationRestore();
+            _multiplexer.CompleteNotificationRestore(notificationSession);
             _hasEstablishedSession = true;
             SetState(ConnectionState.Authenticated);
         }

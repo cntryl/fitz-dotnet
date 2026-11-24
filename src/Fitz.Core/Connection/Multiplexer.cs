@@ -99,14 +99,21 @@ sealed class Multiplexer : IDisposable
     /// <summary>
     /// Publishes notifications received while reconnect listeners were restoring new-session state.
     /// </summary>
+    /// <param name="expectedSession">The session whose restore is being committed.</param>
     /// <exception cref="SubscriptionBackpressureException">
     /// The bounded notification queue overflowed during restore, so notifications were lost.
     /// </exception>
-    internal void CompleteNotificationRestore()
+    internal void CompleteNotificationRestore(NotificationSession? expectedSession = null)
     {
         Exception? failure;
         lock (_gate)
         {
+            if (expectedSession is not null &&
+                (!ReferenceEquals(_notificationSession, expectedSession) || !expectedSession.IsCurrent))
+            {
+                throw new ConnectionException("The notification session ended before it could be committed.");
+            }
+
             if (_notificationRestore is not { } restore)
             {
                 return;

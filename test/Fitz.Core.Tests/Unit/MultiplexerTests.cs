@@ -312,9 +312,12 @@ public sealed class MultiplexerTests
         using var mux = new Multiplexer();
         var delivered = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var handler = mux.RegisterNotificationHandler(90, payload => delivered.TrySetResult(payload.ToArray()));
-        mux.SetConnected(new NotificationSession(original.Token, default));
+        var retiredSession = new NotificationSession(original.Token, default);
+        mux.SetConnected(retiredSession);
         mux.SetDisconnected();
-        mux.SetConnected(new NotificationSession(replacement.Token, default));
+        mux.BeginNotificationRestore();
+        var currentSession = new NotificationSession(replacement.Token, default);
+        mux.SetConnected(currentSession);
         var pending = mux.RequestAsync(90, [], static (_, _) => Task.CompletedTask,
             TimeSpan.FromSeconds(5), correlationId: 1);
 
@@ -324,6 +327,9 @@ public sealed class MultiplexerTests
         Assert.False(pending.IsCompleted);
         mux.DispatchCorrelated(1, new byte[] { 2 }, ct: replacement.Token);
         mux.DispatchNotification(90, new byte[] { 2 }, replacement.Token);
+        Assert.Throws<ConnectionException>(() => mux.CompleteNotificationRestore(retiredSession));
+        Assert.False(delivered.Task.IsCompleted);
+        mux.CompleteNotificationRestore(currentSession);
 
         // Assert
         Assert.Equal([2], await pending.WaitAsync(TimeSpan.FromSeconds(5)));
@@ -382,7 +388,7 @@ public sealed class MultiplexerTests
             for (var i = 0; i <= Multiplexer.NotificationQueueCapacity; i++)
                 mux.DispatchNotification(91, new byte[] { 2 });
 
-            Assert.Throws<SubscriptionBackpressureException>(mux.CompleteNotificationRestore);
+            Assert.Throws<SubscriptionBackpressureException>(() => mux.CompleteNotificationRestore());
         }
         finally
         {
