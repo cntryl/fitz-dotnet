@@ -16,6 +16,11 @@
   reconnection. Each batch exposes all tagged `Items`, visible `Records`, and the next offset to
   checkpoint. The SDK manages global snapshot continuation internally.
 
+### Fixes and improvements
+
+- Stream subscriptions on one connection share setup for identical selectors and pipeline
+  distinct selectors during setup and reconnect. Each async reader has its own bounded buffer.
+
 ## 4.2.0 (2026-11-13)
 
 This release deliberately breaks the public API to remove Wire 2 leftovers and make the

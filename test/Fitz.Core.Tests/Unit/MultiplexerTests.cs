@@ -302,4 +302,46 @@ public sealed class MultiplexerTests
         Assert.True(stillWaiting, "A non-final frame must disarm the response timeout.");
         Assert.Equal([0, 0, 0, 9], await request.WaitAsync(TimeSpan.FromSeconds(5)));
     }
+
+    [Fact]
+    public async Task ShouldDiscardEntireRestoreGivenQueueOverflowWhenPublishingReplacementSession()
+    {
+        // Arrange
+        using var mux = new Multiplexer();
+        using var release = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var registration = mux.RegisterNotificationHandler(90, unused =>
+        {
+            entered.TrySetResult();
+            _ = release.Wait(TimeSpan.FromSeconds(5));
+        });
+        var delivered = 0;
+        using var restored = mux.RegisterNotificationHandler(91, _ => Interlocked.Increment(ref delivered));
+        mux.SetConnected();
+        mux.DispatchNotification(90, new byte[] { 1 });
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        for (var i = 0; i < Multiplexer.NotificationQueueCapacity - 1; i++)
+            mux.DispatchNotification(90, new byte[] { 1 });
+
+        mux.SetDisconnected();
+        mux.BeginNotificationRestore();
+        mux.SetConnected();
+
+        // Act
+        try
+        {
+            mux.DispatchNotification(91, new byte[] { 2 });
+            mux.DispatchNotification(91, new byte[] { 3 });
+            Assert.Throws<SubscriptionBackpressureException>(mux.CompleteNotificationRestore);
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        // Assert
+        await mux.CompleteNotificationDispatchAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+        Assert.Equal(0, delivered);
+    }
 }

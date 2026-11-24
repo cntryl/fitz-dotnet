@@ -20,9 +20,6 @@ sealed class Multiplexer : IDisposable
     /// <summary>Notification frames queued for the dispatch pump before delivery fails.</summary>
     internal const int NotificationQueueCapacity = 1024;
 
-    /// <summary>Notification frames buffered while reconnect state is being restored.</summary>
-    internal const int RestoreBufferCapacity = 1024;
-
     readonly Lock _gate = new();
     readonly Dictionary<ulong, PendingRequest> _correlated = [];
     // A canceled or timed-out request's identifier is remembered until its late response
@@ -33,7 +30,6 @@ sealed class Multiplexer : IDisposable
     // Registration is rare and dispatch is per frame, so the fan-out array is rebuilt on
     // registration changes rather than on every notification.
     readonly Dictionary<ushort, Action<ReadOnlyMemory<byte>>[]> _notificationHandlerSnapshots = [];
-    readonly Queue<NotificationDispatch> _restoringNotifications = [];
     readonly Action<Exception> _onDispatchError;
     readonly Action<Exception> _onSessionReset;
     readonly Channel<NotificationDispatch> _notificationQueue;
@@ -42,8 +38,7 @@ sealed class Multiplexer : IDisposable
     bool _connected;
     long _sessionEpoch;
     long _nextHandlerId;
-    Exception? _notificationRestoreFailure;
-    bool _notificationRestoreActive;
+    NotificationRestore? _notificationRestore;
     bool _disposed;
 
     /// <summary>Creates a multiplexer.</summary>
@@ -94,9 +89,8 @@ sealed class Multiplexer : IDisposable
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            _restoringNotifications.Clear();
-            _notificationRestoreFailure = null;
-            _notificationRestoreActive = true;
+            AbortRestoreUnsafe();
+            _notificationRestore = new NotificationRestore();
         }
     }
 
@@ -104,31 +98,21 @@ sealed class Multiplexer : IDisposable
     /// Publishes notifications received while reconnect listeners were restoring new-session state.
     /// </summary>
     /// <exception cref="SubscriptionBackpressureException">
-    /// The restore buffer or dispatch queue overflowed, so notifications were lost.
+    /// The bounded notification queue overflowed during restore, so notifications were lost.
     /// </exception>
     internal void CompleteNotificationRestore()
     {
         Exception? failure;
         lock (_gate)
         {
-            if (!_notificationRestoreActive)
+            if (_notificationRestore is not { } restore)
             {
                 return;
             }
 
-            failure = _notificationRestoreFailure;
-
-            while (failure is null && _restoringNotifications.TryDequeue(out var buffered))
-            {
-                if (!_notificationQueue.Writer.TryWrite(buffered))
-                {
-                    failure = new SubscriptionBackpressureException(
-                        "The multiplexer notification dispatch queue filled while reconnect state was being restored.");
-                }
-            }
-
-
-            ClearRestoreUnsafe();
+            failure = restore.Failure;
+            _notificationRestore = null;
+            restore.Completion.SetResult(failure is null);
         }
 
         if (failure is not null)
@@ -142,7 +126,7 @@ sealed class Multiplexer : IDisposable
     {
         lock (_gate)
         {
-            ClearRestoreUnsafe();
+            AbortRestoreUnsafe();
         }
     }
 
@@ -243,7 +227,6 @@ sealed class Multiplexer : IDisposable
     /// <param name="payload">Frame payload; copied once before queuing.</param>
     public void DispatchNotification(ushort messageType, ReadOnlyMemory<byte> payload)
     {
-        NotificationDispatch dispatch;
         lock (_gate)
         {
             if (!_connected || !_notificationHandlerSnapshots.TryGetValue(messageType, out var handlers))
@@ -251,27 +234,36 @@ sealed class Multiplexer : IDisposable
                 return;
             }
 
-            dispatch = new NotificationDispatch(handlers, payload.IsEmpty ? [] : payload.ToArray(), _sessionEpoch);
+            var restore = _notificationRestore;
 
-            if (_notificationRestoreActive)
+            if (restore?.Failure is not null)
+                return;
+
+            // Stage restore notifications in the same FIFO that delivers ordinary frames. The
+            // pump waits for the attempt's outcome, so a failed restore publishes no prefix.
+
+            if (restore is null || restore.Count < NotificationQueueCapacity)
             {
-                if (_restoringNotifications.Count >= RestoreBufferCapacity)
+                var dispatch = new NotificationDispatch(handlers, payload.IsEmpty ? [] : payload.ToArray(), _sessionEpoch, restore);
+
+                if (_notificationQueue.Writer.TryWrite(dispatch))
                 {
-                    _notificationRestoreFailure ??= new SubscriptionBackpressureException(
-                        "The reconnect notification buffer is full.");
+                    if (restore is not null)
+                        restore.Count++;
+
                     return;
                 }
+            }
 
-                _restoringNotifications.Enqueue(dispatch);
+            if (restore is not null)
+            {
+                restore.Failure = new SubscriptionBackpressureException("The reconnect notification buffer is full.");
                 return;
             }
         }
 
-        if (!_notificationQueue.Writer.TryWrite(dispatch))
-        {
-            _onDispatchError(new SubscriptionBackpressureException(
-                "The multiplexer notification dispatch queue is full."));
-        }
+        _onDispatchError(new SubscriptionBackpressureException(
+            "The multiplexer notification dispatch queue is full."));
     }
 
     /// <summary>Sends a correlated request frame and awaits its response.</summary>
@@ -356,6 +348,9 @@ sealed class Multiplexer : IDisposable
     {
         await foreach (var notification in _notificationQueue.Reader.ReadAllAsync().ConfigureAwait(false))
         {
+            if (notification.Restore is { } restore && !await restore.Completion.Task.ConfigureAwait(false))
+                continue;
+
             foreach (var handler in notification.Handlers)
             {
                 lock (_gate)
@@ -421,18 +416,17 @@ sealed class Multiplexer : IDisposable
         // Advancing the epoch makes the pump drop notifications queued for the ended session.
         _connected = false;
         _sessionEpoch++;
-        ClearRestoreUnsafe();
+        AbortRestoreUnsafe();
         List<PendingRequest> pending = [.. _correlated.Values];
         _correlated.Clear();
         _correlationTombstones.Clear();
         return pending;
     }
 
-    void ClearRestoreUnsafe()
+    void AbortRestoreUnsafe()
     {
-        _restoringNotifications.Clear();
-        _notificationRestoreFailure = null;
-        _notificationRestoreActive = false;
+        _notificationRestore?.Completion.SetResult(false);
+        _notificationRestore = null;
     }
 
     static void FailAll(List<PendingRequest> pending, ConnectionException failure)
@@ -595,7 +589,15 @@ sealed class Multiplexer : IDisposable
     /// than per handler keeps the pump queue's capacity a count of frames, so a burst to many
     /// subscribers does not consume capacity proportional to the subscriber count.
     /// </summary>
-    readonly record struct NotificationDispatch(Action<ReadOnlyMemory<byte>>[] Handlers, byte[] Payload, long SessionEpoch);
+    readonly record struct NotificationDispatch(
+        Action<ReadOnlyMemory<byte>>[] Handlers, byte[] Payload, long SessionEpoch, NotificationRestore? Restore);
+
+    sealed class NotificationRestore
+    {
+        internal TaskCompletionSource<bool> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal int Count { get; set; }
+        internal SubscriptionBackpressureException? Failure { get; set; }
+    }
 
     sealed class NotificationRegistration(Multiplexer owner, ushort messageType, long handlerId) : IDisposable
     {

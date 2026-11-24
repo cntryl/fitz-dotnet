@@ -21,6 +21,7 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
     readonly string _pattern;
     readonly Func<CancellationToken, ValueTask>? _overflowCleanup;
     readonly TimeProvider _time;
+    readonly bool _directReader;
 
     internal SubscriptionRegistration(
         Channel<TNotification> channel,
@@ -28,7 +29,8 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
         string pattern = "unknown",
         Func<CancellationToken, ValueTask>? overflowCleanup = null,
         Action<TNotification>? preDispatch = null,
-        TimeProvider? timeProvider = null
+        TimeProvider? timeProvider = null,
+        bool directReader = false
     )
     {
         Channel = channel;
@@ -37,6 +39,7 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
         _pattern = pattern;
         _overflowCleanup = overflowCleanup;
         PreDispatch = preDispatch;
+        _directReader = directReader;
         _ = _completion.Task.ContinueWith(
             static task => _ = task.Exception,
             CancellationToken.None,
@@ -75,7 +78,9 @@ sealed class SubscriptionRegistration<TNotification> : IDisposable
         _completion.TrySetResult();
     }
 
-    internal Task FailOverflowAsync() => FailAsync(new AsyncHandlerOverflowException(_domain, _pattern));
+    internal Task FailOverflowAsync() => FailAsync(_directReader
+        ? new SubscriptionBackpressureException($"The local subscription buffer for '{_pattern}' is full")
+        : new AsyncHandlerOverflowException(_domain, _pattern));
 
     internal async Task FailAsync(Exception error)
     {
