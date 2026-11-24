@@ -65,4 +65,91 @@ public sealed class WebSocketTransportTests
 
     [Fact]
     public void ShouldAcceptBinaryMessageGivenWebsocketReceiveFrameWhenTransportOperationRuns() => WebSocketTransport.EnsureBinaryMessage(WebSocketMessageType.Binary);
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ShouldKeepSocketOpenGivenRacingCallerCancellationWhenRpcFrameIsAlreadyWriting(bool queuedSessionEnds)
+    {
+        // Arrange
+        using var stream = new GatedWriteStream();
+        using var socket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions());
+        await using var transport = new WebSocketTransport(socket, new Uri("ws://localhost/ws"), TimeSpan.FromSeconds(5), 1024);
+        using var activeCaller = new CancellationTokenSource();
+        using var queuedCaller = new CancellationTokenSource();
+        using var queuedSession = new CancellationTokenSource();
+        var attempts = 0;
+        var active = transport.SendRpcRequestAsync("rpc"u8.ToArray(), () => attempts++, CancellationToken.None, activeCaller.Token);
+
+        try
+        {
+            await stream.FirstWrite.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            var queued = transport.SendRpcRequestAsync("queued"u8.ToArray(), () => attempts++, queuedSession.Token, queuedCaller.Token);
+
+            // Act
+            await (queuedSessionEnds ? queuedSession : queuedCaller).CancelAsync();
+            await activeCaller.CancelAsync();
+
+            // Assert
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(TimeSpan.FromSeconds(2)));
+            stream.ReleaseWrite.SetResult();
+            await active.WaitAsync(TimeSpan.FromSeconds(2));
+            await transport.SendAsync("next"u8.ToArray());
+            Assert.Equal(WebSocketState.Open, socket.State);
+            Assert.Equal(1, attempts);
+            Assert.Equal(2, stream.Writes);
+        }
+        finally
+        {
+            stream.ReleaseWrite.TrySetResult();
+            socket.Abort();
+        }
+    }
+
+    [Fact]
+    public async Task ShouldInterruptActiveWriteGivenSessionEndsWhenRpcFrameIsAlreadyWriting()
+    {
+        // Arrange
+        using var stream = new GatedWriteStream();
+        using var socket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions());
+        await using var transport = new WebSocketTransport(socket, new Uri("ws://localhost/ws"), Timeout.InfiniteTimeSpan, 1024);
+        using var session = new CancellationTokenSource();
+        var active = transport.SendRpcRequestAsync("rpc"u8.ToArray(), () => { }, session.Token, CancellationToken.None);
+
+        try
+        {
+            await stream.FirstWrite.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+            // Act
+            await session.CancelAsync();
+
+            // Assert
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => active.WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.Equal(WebSocketState.Aborted, socket.State);
+        }
+        finally
+        {
+            stream.ReleaseWrite.TrySetResult();
+            socket.Abort();
+        }
+    }
+
+    sealed class GatedWriteStream : MemoryStream
+    {
+        internal TaskCompletionSource FirstWrite { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource ReleaseWrite { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal int Writes { get; private set; }
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            Write(buffer.Span);
+            Writes++;
+
+            if (Writes == 1)
+            {
+                FirstWrite.SetResult();
+                await ReleaseWrite.Task.WaitAsync(cancellationToken);
+            }
+        }
+    }
 }

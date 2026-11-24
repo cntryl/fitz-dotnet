@@ -14,8 +14,8 @@
     <PackageVersion Include="Cntryl.LexKey" Version="0.1.2" />
     <PackageVersion Include="Cntryl.Conventions.Analyzers" Version="1.0.5" />
     <PackageVersion Include="Cntryl.Conventions.CodeFixes" Version="1.0.5" />
-    <PackageVersion Include="Cntryl.Conventions.Testing.Analyzers" Version="1.0.1" />
-    <PackageVersion Include="Cntryl.Conventions.Testing.CodeFixes" Version="1.0.1" />
+    <PackageVersion Include="Cntryl.Conventions.Testing.Analyzers" Version="1.0.5" />
+    <PackageVersion Include="Cntryl.Conventions.Testing.CodeFixes" Version="1.0.5" />
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="11.0.0" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="11.0.0" />
     <PackageVersion Include="BenchmarkDotNet" Version="0.16.0-preview.2" />

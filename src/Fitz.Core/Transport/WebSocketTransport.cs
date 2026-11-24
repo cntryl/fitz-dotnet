@@ -14,7 +14,7 @@ public sealed class WebSocketTransport : ITransport
     readonly WebSocketOptions? _options;
     readonly HeartbeatOptions _heartbeat;
     readonly SemaphoreSlim _sendLock = new(1, 1);
-    ClientWebSocket? _socket;
+    WebSocket? _socket;
 
     /// <summary>Creates a WebSocket transport.</summary>
     public WebSocketTransport(
@@ -46,6 +46,9 @@ public sealed class WebSocketTransport : ITransport
         _options = options;
         _heartbeat = heartbeat ?? new HeartbeatOptions();
     }
+
+    internal WebSocketTransport(WebSocket socket, Uri url, TimeSpan timeout, int maxFrameSize)
+        : this(url, timeout, maxFrameSize) => _socket = socket;
 
     /// <inheritdoc />
     public string TransportName => nameof(WebSocketTransport);
@@ -103,31 +106,59 @@ public sealed class WebSocketTransport : ITransport
     }
 
     /// <inheritdoc />
-    public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
+    public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default) => SendCoreAsync(data, null, ct, ct);
+
+    // ClientWebSocket aborts the entire socket if its send token is canceled. Once an RPC
+    // request starts writing, only the session or transport timeout can interrupt the frame.
+    internal Task SendRpcRequestAsync(
+        ReadOnlyMemory<byte> data,
+        Action onWriteAttempt,
+        CancellationToken session,
+        CancellationToken admission
+    ) => SendCoreAsync(data, onWriteAttempt, admission, session);
+
+    async Task SendCoreAsync(
+        ReadOnlyMemory<byte> data,
+        Action? onWriteAttempt,
+        CancellationToken admission,
+        CancellationToken writeLifetime
+    )
     {
         if (data.Length > _maxFrameSize)
         {
             throw new ProtocolException($"WebSocket frame length exceeds max frame size {_maxFrameSize}.");
         }
 
-        await _sendLock.WaitAsync(ct).ConfigureAwait(false);
+        if (!_sendLock.Wait(0))
+        {
+            using var queued = admission != writeLifetime
+                ? CancellationTokenSource.CreateLinkedTokenSource(admission, writeLifetime)
+                : null;
+            await _sendLock.WaitAsync(queued?.Token ?? admission).ConfigureAwait(false);
+        }
 
         try
         {
+            admission.ThrowIfCancellationRequested();
+            writeLifetime.ThrowIfCancellationRequested();
             var socket = EnsureSocket();
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(writeLifetime);
             timeoutCts.CancelAfter(_timeout);
+            admission.ThrowIfCancellationRequested();
+            onWriteAttempt?.Invoke();
 
             try
             {
                 await socket.SendAsync(data, WebSocketMessageType.Binary, endOfMessage: true, timeoutCts.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested)
-            {
-                throw;
-            }
             catch (OperationCanceledException exception)
             {
+                // A canceled native send may have written only part of the message.
+                socket.Abort();
+
+                if (writeLifetime.IsCancellationRequested)
+                    throw;
+
                 throw new TimeoutException($"WebSocket send exceeded {_timeout}.", exception);
             }
         }
@@ -286,7 +317,7 @@ public sealed class WebSocketTransport : ITransport
         _sendLock.Dispose();
     }
 
-    ClientWebSocket EnsureSocket()
+    WebSocket EnsureSocket()
     {
         var socket = Volatile.Read(ref _socket);
 

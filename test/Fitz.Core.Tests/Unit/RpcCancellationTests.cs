@@ -5,6 +5,126 @@ namespace Cntryl.Fitz.Core.Tests.Unit;
 
 public sealed class RpcCancellationTests
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task ShouldEndLocalWaitGivenPendingRequestWriteWhenCallerCancels(bool deadlineExpires, bool sessionCloses)
+    {
+        // Arrange
+        var time = new ManualTimeProvider();
+        var writing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var session = new CancellationTokenSource();
+        using var caller = new CancellationTokenSource();
+        Action<ReadOnlyMemory<byte>>? lifecycle = null;
+        byte[]? correlation = null;
+        using var rpc = new RpcClient(
+            (_, _, _) => throw new InvalidOperationException(),
+            (_, _, _) => throw new InvalidOperationException(),
+            registerNotificationHandler: (type, handler) =>
+            {
+                if (type == MessageTypes.RpcLifecycle)
+                    lifecycle = handler;
+
+                return new Registration();
+            },
+            sendInSession: async (_, payload, onWrite, _) =>
+            {
+                onWrite();
+                correlation = payload.Span[..16].ToArray();
+                writing.SetResult();
+                await release.Task;
+                Assert.Equal(correlation, payload.Span[..16].ToArray());
+                return session.Token;
+            },
+            timeProvider: time,
+            sendOnSession: (type, payload, owner, _) =>
+            {
+                Assert.False(sessionCloses);
+                Assert.Equal(session.Token, owner);
+                Assert.Equal(MessageTypes.RpcCancel, type);
+                Assert.Equal(correlation, payload.Span.Slice(1, 16).ToArray());
+                Assert.Equal(deadlineExpires ? (byte)2 : (byte)1, payload.Span[17]);
+                var acknowledgement = payload.ToArray();
+                acknowledgement[0] = 4;
+                acknowledgement[17] = 2;
+                lifecycle!(acknowledgement);
+                return ValueTask.CompletedTask;
+            });
+        var call = rpc.CallStreamingAsync(
+            "rpc://prod/app/work", ReadOnlyMemory<byte>.Empty, TimeSpan.FromSeconds(1), caller.Token);
+        await using var reader = call.GetAsyncEnumerator();
+        var pending = reader.MoveNextAsync().AsTask();
+        await writing.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        // Act
+        if (deadlineExpires)
+            time.Advance(TimeSpan.FromSeconds(1));
+        else
+            await caller.CancelAsync();
+
+        // Assert
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.False(call.Cancellation.IsCompleted);
+
+            if (sessionCloses)
+                await session.CancelAsync();
+        }
+        finally
+        {
+            release.TrySetResult();
+            await Record.ExceptionAsync(() => pending.WaitAsync(TimeSpan.FromSeconds(2)));
+        }
+
+        var expected = sessionCloses ? RpcCancellationOutcome.ConnectionClosed : RpcCancellationOutcome.Forwarded;
+        Assert.Equal(expected, await call.Cancellation.WaitAsync(TimeSpan.FromSeconds(2)));
+    }
+
+    [Fact]
+    public async Task ShouldEndLocalWaitGivenBrokerCancellationSendIsPendingWhenCallerCancels()
+    {
+        // Arrange
+        var cancelSending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Action<byte[]>? lifecycle = null;
+        using var caller = new CancellationTokenSource();
+        using var rpc = CreateClient(_ => { }, lifecycle: handler => lifecycle = handler, send: async (type, payload, _) =>
+        {
+            if (type != MessageTypes.RpcCancel)
+                return;
+
+            cancelSending.SetResult();
+            await release.Task;
+            payload[0] = 4;
+            payload[17] = 2;
+            lifecycle!(payload);
+        });
+        var call = rpc.CallStreamingAsync("rpc://prod/app/work", ReadOnlyMemory<byte>.Empty, caller.Token);
+        await using var reader = call.GetAsyncEnumerator();
+        var pending = reader.MoveNextAsync().AsTask();
+
+        // Act
+        await caller.CancelAsync();
+
+        // Assert
+        try
+        {
+            await cancelSending.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.False(call.Cancellation.IsCompleted);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await Record.ExceptionAsync(() => pending.WaitAsync(TimeSpan.FromSeconds(2)));
+        }
+
+        Assert.Equal(RpcCancellationOutcome.Forwarded, await call.Cancellation.WaitAsync(TimeSpan.FromSeconds(2)));
+    }
+
     [Fact]
     public async Task ShouldReportUnconfirmedGivenShutdownDuringUncertainWrite()
     {
