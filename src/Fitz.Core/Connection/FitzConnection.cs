@@ -170,6 +170,28 @@ sealed class FitzConnection : IAsyncDisposable
     /// <summary>The clock for timeouts, backoff, and the timers of domain clients built on this connection.</summary>
     internal TimeProvider Time { get; }
 
+    internal int MaxRequestQueueSize => _config.ResolvedMaxRequestQueueSize;
+
+    internal int SubscriptionRequestConcurrency(int maximum)
+    {
+        var requestLimit = (int)Math.Min(Capabilities.MaxInFlightRequests, (uint)_config.MaxInFlightRequests);
+        return Math.Min(maximum, Math.Max(1, requestLimit / 4));
+    }
+
+    internal void InvalidateSubscriptionSession(Exception cause, CancellationToken session)
+    {
+        ITransport? transport;
+        lock (_gate)
+        {
+            if (_connectionClosedToken != session || session.IsCancellationRequested)
+                return;
+            transport = _transport;
+        }
+
+        if (transport is not null)
+            ScheduleConnectionLoss(new ConnectionException("The broker subscription state could not be confirmed.", cause), transport);
+    }
+
     // The configured timeout plus time the broker is known to hold the request, saturating
     // to infinite rather than overflowing.
     TimeSpan ResponseTimeout(TimeSpan extra)
@@ -362,7 +384,7 @@ sealed class FitzConnection : IAsyncDisposable
                 Task waitTask;
                 lock (_gate)
                 {
-                    if (State == ConnectionState.Authenticated && !_connectionClosedToken.IsCancellationRequested)
+                    if (State == ConnectionState.Authenticated && _transport is not null && !_connectionClosedToken.IsCancellationRequested)
                     {
                         return _connectionClosedToken;
                     }

@@ -252,12 +252,10 @@ sealed class LeaseInventoryObserver : ILeaseInventoryObserver
                 lock (_gate)
                 {
                     ready = _isReady;
-                    if (!ready)
-                    {
-                        _bootstrapDirty = true;
-                    }
                 }
 
+                // The receive-path hook already recorded this invalidation. A slow consumer
+                // can reach this frame during a later LIST pass that already accounts for it.
                 if (!ready)
                 {
                     continue;

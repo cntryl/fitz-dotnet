@@ -1,3 +1,5 @@
+using System.Runtime.ExceptionServices;
+using System.Threading.Channels;
 using Cntryl.Fitz.Connection;
 using Cntryl.Fitz.Observability;
 
@@ -64,9 +66,9 @@ delegate TSubscription BufferedSubscriptionFactory<TNotification, TSubscription>
 /// <typeparam name="TNotification">The domain's notification type.</typeparam>
 /// <remarks>
 /// Domains own only what differs between them: pattern validation, the wire encoding of
-/// SUBSCRIBE and UNSUBSCRIBE, and the NOTIFY decoder. Subscription changes are serialized by one
-/// gate, and the broker subscription is withdrawn only when the last local handle leaves. A
-/// failed wire unsubscribe keeps the handle registered so the caller can retry.
+/// SUBSCRIBE and UNSUBSCRIBE, and the NOTIFY decoder. Changes to a single pattern are ordered,
+/// and the broker subscription is withdrawn only when the last local handle leaves. A failed
+/// wire unsubscribe keeps the handle registered so the caller can retry.
 /// </remarks>
 sealed class SubscriptionTable<TNotification> : IAsyncDisposable
 {
@@ -79,13 +81,19 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     readonly SubscribeWire _subscribe;
     readonly UnsubscribeWire _unsubscribe;
     readonly NotificationDecoder<TNotification> _decode;
-    readonly NotificationActivationBuffer _activationBuffer;
-    readonly SemaphoreSlim _changeGate = new(1, 1);
+    readonly NotificationActivationBuffer<TNotification> _activationBuffer;
+    readonly int _maxConcurrentChanges;
+    readonly SemaphoreSlim _exclusiveGate = new(1, 1);
+    readonly HashSet<Task<Exception?>> _changes = [];
+    RequestGate _wireGate;
+    CancellationToken? _configuredSession;
+    TaskCompletionSource? _paused;
+    (CancellationToken Session, Exception Error)? _deliveryFailure;
     readonly CancellationTokenSource _closing = new();
     readonly CancellationToken _closingToken;
     readonly Lock _gate = new();
     readonly Dictionary<string, PatternSubscription> _byPattern = [with(StringComparer.Ordinal)];
-    readonly Dictionary<ulong, string> _patternById = [];
+    readonly Dictionary<ulong, PatternSubscription> _byId = [];
     FitzConnection? _connection;
     IDisposable? _notificationRegistration;
     long _nextHandleId;
@@ -102,6 +110,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     /// <param name="unsubscribe">Encodes UNSUBSCRIBE.</param>
     /// <param name="decode">Decodes NOTIFY frames.</param>
     /// <param name="timeProvider">The clock for overflow cleanup budgets; the system clock by default.</param>
+    /// <param name="maxConcurrentChanges">Upper bound for distinct patterns changing concurrently.</param>
     internal SubscriptionTable(
         object owner,
         string domain,
@@ -112,7 +121,8 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         SubscribeWire subscribe,
         UnsubscribeWire unsubscribe,
         NotificationDecoder<TNotification> decode,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        int maxConcurrentChanges = 1)
     {
         _owner = owner;
         _time = timeProvider ?? TimeProvider.System;
@@ -124,7 +134,9 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         _subscribe = subscribe;
         _unsubscribe = unsubscribe;
         _decode = decode;
-        _activationBuffer = new NotificationActivationBuffer(bufferCapacity);
+        _maxConcurrentChanges = maxConcurrentChanges;
+        _wireGate = new RequestGate(maxConcurrentChanges, ClientConfig.DefaultRequestQueueSize);
+        _activationBuffer = new NotificationActivationBuffer<TNotification>(bufferCapacity, maxConcurrentChanges);
         _closingToken = _closing.Token;
     }
 
@@ -143,6 +155,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     internal IDisposable AttachTo(FitzConnection connection, Func<CancellationToken, ValueTask>? onReconnect = null)
     {
         _connection = connection;
+        _wireGate = new RequestGate(1, connection.MaxRequestQueueSize);
         return new ConnectionBinding(connection, onReconnect ?? RestoreAsync, Fail);
     }
 
@@ -178,6 +191,13 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     /// <summary>The clock that bounds subscription cleanup, for handles built outside the table.</summary>
     internal TimeProvider Time => _time;
 
+    internal async Task<TSubscription> SubscribeReaderAsync<TSubscription>(
+        string pattern, BufferedSubscriptionFactory<TNotification, TSubscription> create, CancellationToken ct)
+    {
+        var (binding, reader) = await SubscribeCoreAsync(pattern, handler: null, preDispatch: null, false, ct).ConfigureAwait(false);
+        return create(pattern, reader.ReadAllAsync(CancellationToken.None), binding.Unsubscribe, binding.Completion, _time);
+    }
+
     /// <summary>Subscribes a callback to a pattern.</summary>
     /// <param name="pattern">A route or pattern the domain has already validated.</param>
     /// <param name="handler">Callback invoked for each notification.</param>
@@ -195,6 +215,14 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         CancellationToken ct, bool bestEffort = false)
     {
         ArgumentNullException.ThrowIfNull(handler);
+        var (binding, _) = await SubscribeCoreAsync(pattern, handler, preDispatch, bestEffort, ct).ConfigureAwait(false);
+        return binding;
+    }
+
+    async Task<(SubscriptionBinding Binding, ChannelReader<TNotification> Reader)> SubscribeCoreAsync(
+        string pattern, Func<TNotification, CancellationToken, ValueTask>? handler,
+        Action<TNotification>? preDispatch, bool bestEffort, CancellationToken ct)
+    {
         EnsureNotificationHandlerRegistered();
 
         var handleId = Interlocked.Increment(ref _nextHandleId);
@@ -204,56 +232,228 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
             pattern,
             token => UnsubscribeAsync(pattern, handleId, token),
             preDispatch,
-            _time);
+            _time,
+            directReader: handler is null);
         ValueTask Unsubscribe(CancellationToken token) => bestEffort
             ? UnsubscribeFollowAsync(pattern, handleId, token)
             : UnsubscribeAsync(pattern, handleId, token);
         var binding = new SubscriptionBinding(Unsubscribe, registration.Completion,
             bestEffort ? registration.CancellationToken : default);
-        var gateEntered = false;
         try
         {
-            var acquired = await TryEnterChangeAsync(ct).ConfigureAwait(false);
-            ObjectDisposedException.ThrowIf(!acquired.HasValue, _owner);
-            var session = acquired.GetValueOrDefault();
-            gateEntered = true;
-            lock (_gate)
-            {
-                ThrowIfDisposed();
-                if (_byPattern.TryGetValue(pattern, out var existing))
-                {
-                    // Sibling handles share the broker subscription already in place.
-                    existing.Handles[handleId] = registration;
-                    SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
-                    registration = null;
-                    return binding;
-                }
-            }
-
-            using var activation = _activationBuffer.Begin(pattern);
-            var subscriptionId = await _subscribe(pattern, session, ct).ConfigureAwait(false);
-            var subscription = new PatternSubscription(subscriptionId);
-            subscription.Handles[handleId] = registration;
-            lock (_gate)
-            {
-                ThrowIfDisposed();
-                if (!session.IsCurrent)
-                    throw new ConnectionException("The subscription response belongs to an ended session.");
-                _byPattern[pattern] = subscription;
-                _patternById[subscriptionId] = pattern;
-                if (_activationBuffer.Replay(subscriptionId, HandleNotification) is { } activationError)
-                    _ = registration.FailAsync(activationError);
-            }
-
-            SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
+            await AttachHandleAsync(pattern, handleId, registration, ct).ConfigureAwait(false);
+            if (handler is not null)
+                SubscriptionPump.Start(registration, handler, _dispatchAsyncHandler);
+            var reader = registration.Channel.Reader;
             registration = null;
-            return binding;
+            return (binding, reader);
         }
         finally
         {
-            if (gateEntered)
-                _changeGate.Release();
             registration?.Dispose();
+            registration?.DisposeCancellationSource();
+        }
+    }
+
+    async Task AttachHandleAsync(
+        string pattern, long handleId, SubscriptionRegistration<TNotification> registration, CancellationToken ct)
+    {
+        while (true)
+        {
+            var session = await WaitForReadySessionAsync(ct).ConfigureAwait(false);
+            PatternSubscription? group = null;
+            TaskCompletionSource<Exception?>? activation = null;
+            Task? wait = null;
+            var start = false;
+
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                ct.ThrowIfCancellationRequested();
+                if (_paused is { } paused)
+                {
+                    wait = paused.Task;
+                }
+                else if (session.IsCurrent)
+                {
+                    if (_deliveryFailure is { } failure && failure.Session == session.Closed)
+                        ExceptionDispatchInfo.Throw(failure.Error);
+                    if (!_byPattern.TryGetValue(pattern, out group))
+                    {
+                        ConfigureWireGate(session);
+                        group = new PatternSubscription();
+                        _byPattern.Add(pattern, group);
+                        StartChange(group);
+                        start = true;
+                    }
+
+                    if (group.SubscriptionId.HasValue && group.Change is { } removing)
+                    {
+                        wait = removing.Task;
+                    }
+                    else
+                    {
+                        group.Add(handleId, registration);
+                        activation = group.Change;
+                        if (activation is null)
+                            return;
+                    }
+                }
+            }
+
+            if (activation is null)
+            {
+                if (wait is not null)
+                    await wait.WaitAsync(ct).ConfigureAwait(false);
+                continue;
+            }
+
+            if (start)
+                _ = ActivateAsync(pattern, group!, activation, session);
+
+            Exception? error;
+            try
+            {
+                error = await activation.Task.WaitAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                Task? canceledAdmission = null;
+                lock (_gate)
+                {
+                    // Publication wins a race with cancellation. A pending caller can withdraw
+                    // independently while the operation still owns the response and any cleanup.
+                    if (activation.Task.IsCompletedSuccessfully && group!.SubscriptionId.HasValue &&
+                        group.Failure is null && group.Contains(handleId))
+                        return;
+                    group!.Remove(handleId, out _);
+                    if (group.Count == 0 && group.Admission is { } admission)
+                    {
+                        RemoveGroup(pattern, group);
+                        canceledAdmission = admission.CancelAsync();
+                    }
+                }
+                if (canceledAdmission is not null)
+                    await canceledAdmission.ConfigureAwait(false);
+                throw;
+            }
+
+            if (error is not null)
+                ExceptionDispatchInfo.Throw(error);
+            return;
+        }
+    }
+
+    async Task ActivateAsync(
+        string pattern, PatternSubscription group, TaskCompletionSource<Exception?> change, SubscriptionSession session)
+    {
+        Exception? failure = null;
+        var started = false;
+        using var admission = CancellationTokenSource.CreateLinkedTokenSource(_closingToken);
+        try
+        {
+            lock (_gate)
+            {
+                if (group.Count == 0)
+                {
+                    RemoveGroup(pattern, group);
+                    return;
+                }
+                group.Admission = admission;
+            }
+
+            using var slot = await _wireGate.AcquireAsync(admission.Token).ConfigureAwait(false);
+            lock (_gate)
+            {
+                group.Admission = null;
+                EnsureActivationCurrent(group, session);
+                if (group.Count == 0)
+                {
+                    RemoveGroup(pattern, group);
+                    return;
+                }
+
+                _activationBuffer.Begin(pattern);
+                started = true;
+            }
+
+            var id = await _subscribe(pattern, session, _closingToken).ConfigureAwait(false);
+
+            lock (_gate)
+            {
+                EnsureActivationCurrent(group, session);
+                group.SubscriptionId = id;
+                var error = _activationBuffer.Take(id, out var frames);
+                if (group.Count > 0)
+                {
+                    _byId.Add(id, group);
+                    var handles = group.Snapshot;
+                    if (error is not null)
+                    {
+                        foreach (var handle in handles)
+                            _ = handle.FailAsync(error);
+                    }
+                    else if (frames is not null)
+                    {
+                        foreach (var frame in frames)
+                            Deliver(handles, frame);
+                    }
+
+                    _activationBuffer.End(pattern);
+                    FinishChange(group, change, error: null);
+                    return;
+                }
+
+                // A reply can arrive after all callers canceled. Keep the removal in this
+                // selector's change so a new caller cannot acquire the ID being withdrawn.
+            }
+
+            await WithdrawAbandonedAsync(pattern, id, session).ConfigureAwait(false);
+        }
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
+        {
+            if (started && IsUncertain(error))
+                session.Connection?.InvalidateSubscriptionSession(error, session.Closed);
+            failure = _closingToken.IsCancellationRequested ? new ObjectDisposedException(_owner.GetType().Name) : error;
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                group.Admission = null;
+                if (!change.Task.IsCompleted)
+                {
+                    if (started)
+                        _activationBuffer.End(pattern);
+                    RemoveGroup(pattern, group);
+                    FinishChange(group, change, group.Failure ?? failure);
+                }
+            }
+        }
+    }
+
+    void EnsureActivationCurrent(PatternSubscription group, SubscriptionSession session)
+    {
+        ThrowIfDisposed();
+        if (group.Failure is { } error)
+            ExceptionDispatchInfo.Throw(error);
+        if (!session.IsCurrent)
+            throw new ConnectionException("The subscription response belongs to an ended session.");
+    }
+
+    async Task WithdrawAbandonedAsync(string pattern, ulong id, SubscriptionSession session)
+    {
+        if (!session.IsCurrent)
+            return;
+
+        using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5), _time);
+        try
+        {
+            await _unsubscribe(pattern, id, session, cleanup.Token).ConfigureAwait(false);
+        }
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
+        {
+            session.Connection?.InvalidateSubscriptionSession(error, session.Closed);
         }
     }
 
@@ -265,17 +465,17 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     /// <returns>A task that completes once the broker accepts the request.</returns>
     internal async Task RemoveAllAsync(Func<SubscriptionSession, CancellationToken, Task> request, CancellationToken ct)
     {
-        var acquired = await TryEnterChangeAsync(ct).ConfigureAwait(false);
-        ObjectDisposedException.ThrowIf(!acquired.HasValue, _owner);
+        var acquired = await EnterExclusiveOnReadySessionAsync(ct).ConfigureAwait(false);
         try
         {
-            await request(acquired.GetValueOrDefault(), ct).ConfigureAwait(false);
+            await DrainChangesAsync(ct).ConfigureAwait(false);
+            await request(acquired, ct).ConfigureAwait(false);
             foreach (var registration in DetachAll())
                 registration.Dispose();
         }
         finally
         {
-            _changeGate.Release();
+            EndExclusive();
         }
     }
 
@@ -287,56 +487,66 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     /// <returns>A task that completes once every subscription is restored.</returns>
     internal async ValueTask RestoreAsync(CancellationToken ct)
     {
-        if (!await _changeGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
+        if (!await _exclusiveGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
             return;
 
         try
         {
+            await DrainChangesAsync(ct).ConfigureAwait(false);
             var session = CurrentSession();
-            string[] snapshot;
+            KeyValuePair<string, PatternSubscription>[] snapshot;
             lock (_gate)
             {
-                if (_byPattern.Count == 0)
-                    return;
-                snapshot = [.. _byPattern.Keys];
+                snapshot = [.. _byPattern];
             }
 
-            var restored = new List<(string Pattern, ulong Id)>(snapshot.Length);
+            var restored = new ulong?[snapshot.Length];
+            var degree = WireConcurrency(session);
+            async ValueTask RestoreOneAsync(int index, CancellationToken token) =>
+                restored[index] = await _subscribe(snapshot[index].Key, session, token).ConfigureAwait(false);
+
             try
             {
-                foreach (var pattern in snapshot)
+                if (degree == 1)
                 {
-                    var subscriptionId = await _subscribe(pattern, session, ct).ConfigureAwait(false);
-                    restored.Add((pattern, subscriptionId));
+                    for (var i = 0; i < snapshot.Length; i++)
+                        await RestoreOneAsync(i, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    await Parallel.ForEachAsync(Enumerable.Range(0, snapshot.Length),
+                        new ParallelOptions { MaxDegreeOfParallelism = degree, CancellationToken = ct },
+                        RestoreOneAsync).ConfigureAwait(false);
                 }
             }
             catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
             {
-                foreach (var (pattern, id) in restored)
+                // The failed connected attempt will close its transport and release all IDs.
+                if (_connection is null)
                 {
-                    try
+                    for (var i = 0; i < snapshot.Length; i++)
                     {
-                        await _unsubscribe(pattern, id, session, CancellationToken.None).ConfigureAwait(false);
-                    }
-                    catch (Exception cleanupError) when (ExceptionPolicy.IsRecoverable(cleanupError))
-                    {
-                        // Best effort rollback; preserve the original restore failure.
+                        if (restored[i] is { } id)
+                            await WithdrawAbandonedAsync(snapshot[i].Key, id, session).ConfigureAwait(false);
                     }
                 }
-
                 throw;
             }
 
             List<(string Pattern, ulong Id)>? withdrawn = null;
             lock (_gate)
             {
-                _patternById.Clear();
-                foreach (var (pattern, id) in restored)
+                if (!session.IsCurrent)
+                    throw new ConnectionException("The subscription restore belongs to an ended session.");
+                _byId.Clear();
+                for (var i = 0; i < snapshot.Length; i++)
                 {
-                    if (_byPattern.TryGetValue(pattern, out var subscription))
+                    var (pattern, group) = snapshot[i];
+                    var id = restored[i].GetValueOrDefault();
+                    if (_byPattern.TryGetValue(pattern, out var current) && ReferenceEquals(current, group))
                     {
-                        _byPattern[pattern] = subscription.WithId(id);
-                        _patternById[id] = pattern;
+                        group.SubscriptionId = id;
+                        _byId.Add(id, group);
                     }
                     else
                     {
@@ -345,6 +555,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                     }
                 }
             }
+
             if (withdrawn is not null)
             {
                 foreach (var (pattern, id) in withdrawn)
@@ -353,7 +564,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         }
         finally
         {
-            _changeGate.Release();
+            EndExclusive();
         }
     }
 
@@ -364,32 +575,31 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     /// <param name="error">The delivery failure.</param>
     internal void Fail(Exception error)
     {
+        SubscriptionRegistration<TNotification>[] handles;
         lock (_gate)
         {
-            _activationBuffer.Fail(error);
-            foreach (var registration in DetachAllUnsafe())
-                _ = registration.FailAsync(error);
+            foreach (var group in _byPattern.Values)
+                group.Failure = error;
+            _deliveryFailure = (CurrentSession().Closed, error);
+            _activationBuffer.Clear();
+            handles = DetachAllUnsafe();
         }
+        foreach (var handle in handles)
+            _ = handle.FailAsync(error);
     }
 
-    /// <summary>
-    /// Ends every local handle and releases resources. Waits for an in-progress subscription change;
-    /// queued and later changes fail with <see cref="ObjectDisposedException"/>, and unsubscribes
-    /// and restoration become no-ops.
-    /// </summary>
-    /// <returns>A task that completes once shutdown finishes.</returns>
+    /// <summary>Ends local handles and waits for in-flight subscription changes to settle.</summary>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, true))
             return;
 
         await _closing.CancelAsync().ConfigureAwait(false);
-        _activationBuffer.Dispose();
         _notificationRegistration?.Dispose();
+        await _exclusiveGate.DrainAndDisposeAsync().ConfigureAwait(false);
+        await DrainChangesAsync(CancellationToken.None).ConfigureAwait(false);
         foreach (var registration in DetachAll())
             registration.Dispose();
-
-        await _changeGate.DrainAndDisposeAsync().ConfigureAwait(false);
         _closing.Dispose();
     }
 
@@ -401,16 +611,13 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         }
         finally
         {
-            // The iterator has ended. A failed wire unsubscribe must not restore its callback.
+            // An ended reader must never be restored, even when its wire cleanup fails.
             SubscriptionRegistration<TNotification>? removed = null;
             lock (_gate)
             {
-                if (_byPattern.TryGetValue(pattern, out var subscription) &&
-                    subscription.Handles.Remove(handleId, out removed) && subscription.Handles.Count == 0)
-                {
-                    _byPattern.Remove(pattern);
-                    _patternById.Remove(subscription.SubscriptionId);
-                }
+                if (_byPattern.TryGetValue(pattern, out var group) &&
+                    group.Remove(handleId, out removed) && group.Count == 0 && group.Change is null)
+                    RemoveGroup(pattern, group);
             }
             removed?.Dispose();
         }
@@ -418,95 +625,191 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
 
     async ValueTask UnsubscribeAsync(string pattern, long handleId, CancellationToken ct)
     {
-        if (!await _changeGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
-            return;
-
-        var session = CurrentSession();
-        while (true)
+        while (!_closingToken.IsCancellationRequested)
         {
-            SubscriptionRegistration<TNotification>? removed = null;
+            ct.ThrowIfCancellationRequested();
+            var session = CurrentSession();
+            PatternSubscription? group;
+            TaskCompletionSource<Exception?>? removal = null;
+            SubscriptionRegistration<TNotification>? detached = null;
+            Task? wait = null;
+
             try
             {
-                ulong subscriptionId;
                 lock (_gate)
                 {
-                    if (!_byPattern.TryGetValue(pattern, out var subscription) ||
-                        !subscription.Handles.ContainsKey(handleId))
-                    {
+                    if (Volatile.Read(ref _disposed) || !_byPattern.TryGetValue(pattern, out group) || !group.Contains(handleId))
                         return;
-                    }
-
-                    // Sibling handles share the broker registration. Removing one only changes local state.
-                    if (subscription.Handles.Count != 1)
+                    if (_paused is { } paused)
+                        wait = paused.Task;
+                    else if (group.Change is { } change)
+                        wait = change.Task;
+                    else if (group.Count > 1)
+                        group.Remove(handleId, out detached);
+                    else if (session.IsCurrent)
                     {
-                        subscription.Handles.Remove(handleId, out removed);
-                        return;
+                        ConfigureWireGate(session);
+                        removal = StartChange(group);
                     }
-
-                    subscriptionId = subscription.SubscriptionId;
                 }
 
-                if (session.IsCurrent)
-                {
-                    // A failed wire unsubscribe leaves the handle registered, so the caller can retry.
-                    await _unsubscribe(pattern, subscriptionId, session, ct).ConfigureAwait(false);
-                    lock (_gate)
-                    {
-                        if (_byPattern.TryGetValue(pattern, out var subscription) &&
-                            subscription.Handles.Remove(handleId, out removed))
-                        {
-                            _byPattern.Remove(pattern);
-                            _patternById.Remove(subscription.SubscriptionId);
-                        }
-                    }
+                if (detached is not null)
                     return;
-                }
             }
             finally
             {
-                _changeGate.Release();
-                removed?.Dispose();
+                detached?.Dispose();
             }
 
-            var acquired = await TryEnterChangeAsync(ct).ConfigureAwait(false);
-            if (!acquired.HasValue)
+            if (removal is not null)
+            {
+                var removing = RemoveLastHandleAsync(pattern, group, handleId, removal, session, ct);
+                var error = await removing.WaitAsync(ct).ConfigureAwait(false);
+                if (error is not null)
+                    ExceptionDispatchInfo.Throw(error);
                 return;
-            session = acquired.GetValueOrDefault();
+            }
+
+            if (wait is not null)
+                await wait.WaitAsync(ct).ConfigureAwait(false);
+            else
+                _ = await WaitForReadySessionAsync(ct).ConfigureAwait(false);
         }
     }
 
-    SubscriptionSession CurrentSession() => new(_connection, _connection?.ConnectionClosedToken ?? default);
-
-    async ValueTask<SubscriptionSession?> TryEnterChangeAsync(CancellationToken ct)
+    async Task<Exception?> RemoveLastHandleAsync(string pattern, PatternSubscription group, long handleId,
+        TaskCompletionSource<Exception?> change, SubscriptionSession session, CancellationToken ct)
     {
-        if (_connection is not { } connection)
-            return await _changeGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false)
-                ? default(SubscriptionSession) : null;
-
-        using var wait = CancellationTokenSource.CreateLinkedTokenSource(_closingToken, ct);
+        SubscriptionRegistration<TNotification>? removed = null;
+        var started = false;
         try
         {
-            while (true)
-            {
-                // Restoration needs this gate before the connection can become ready.
-                await connection.WaitForRequestReadyAsync(wait.Token).ConfigureAwait(false);
-                var session = CurrentSession();
-                if (!await _changeGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false))
-                    return null;
-                if (session.IsCurrent)
-                    return session;
-                _changeGate.Release();
-            }
+            using var queued = CancellationTokenSource.CreateLinkedTokenSource(ct, _closingToken);
+            using var slot = await _wireGate.AcquireAsync(queued.Token).ConfigureAwait(false);
+            queued.Token.ThrowIfCancellationRequested();
+            started = true;
+            await _unsubscribe(pattern, group.SubscriptionId.GetValueOrDefault(), session, _closingToken).ConfigureAwait(false);
+            lock (_gate)
+                group.Remove(handleId, out removed);
+            return null;
         }
         catch (OperationCanceledException) when (_closingToken.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             return null;
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))
         {
-            ct.ThrowIfCancellationRequested();
-            throw;
+            if (started && IsUncertain(error))
+                session.Connection?.InvalidateSubscriptionSession(error, session.Closed);
+            return error;
         }
+        finally
+        {
+            lock (_gate)
+            {
+                if (group.Count == 0)
+                    RemoveGroup(pattern, group);
+                FinishChange(group, change, error: null);
+            }
+            removed?.Dispose();
+        }
+    }
+
+    static bool IsUncertain(Exception error) => error is RequestTimeoutException or ProtocolException
+        or FitzException { ErrorEffect: 2 }
+        or StreamException { Code: "MISSING_SUB_ID" or "SUBSCRIBE_INVALID_RESPONSE" or "UNSUBSCRIBE_INVALID_RESPONSE" };
+
+    SubscriptionSession CurrentSession() => new(_connection, _connection?.ConnectionClosedToken ?? default);
+
+    async ValueTask<SubscriptionSession> WaitForReadySessionAsync(CancellationToken ct)
+    {
+        ThrowIfDisposed();
+        var session = CurrentSession();
+        if (session.Connection is { } connection && !session.IsCurrent)
+        {
+            using var wait = CancellationTokenSource.CreateLinkedTokenSource(_closingToken, ct);
+            try
+            {
+                var ready = await connection.WaitUntilReadyAsync(connection.Timeout, wait.Token).ConfigureAwait(false);
+                return new SubscriptionSession(connection, ready);
+            }
+            catch (OperationCanceledException) when (_closingToken.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                ThrowIfDisposed();
+                throw;
+            }
+        }
+        return session;
+    }
+
+    async ValueTask<SubscriptionSession> EnterExclusiveOnReadySessionAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            var session = await WaitForReadySessionAsync(ct).ConfigureAwait(false);
+            ObjectDisposedException.ThrowIf(!await _exclusiveGate.TryEnterAsync(_closingToken, ct).ConfigureAwait(false), _owner);
+            if (session.IsCurrent)
+                return session;
+            _exclusiveGate.Release();
+        }
+    }
+
+    async Task DrainChangesAsync(CancellationToken ct)
+    {
+        Task[] changes;
+        lock (_gate)
+        {
+            _paused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            changes = [.. _changes];
+        }
+        await Task.WhenAll(changes).WaitAsync(ct).ConfigureAwait(false);
+    }
+
+    void EndExclusive()
+    {
+        lock (_gate)
+        {
+            _paused?.SetResult();
+            _paused = null;
+        }
+        _exclusiveGate.Release();
+    }
+
+    int WireConcurrency(SubscriptionSession session) =>
+        session.Connection?.SubscriptionRequestConcurrency(_maxConcurrentChanges) ?? _maxConcurrentChanges;
+
+    // Change tracking and group membership are protected by _gate. Completion tasks always
+    // resolve to an error value so an exclusive operation can drain changes that failed.
+    void ConfigureWireGate(SubscriptionSession session)
+    {
+        if (_configuredSession != session.Closed)
+        {
+            _wireGate.SetMaxConcurrency(WireConcurrency(session));
+            _configuredSession = session.Closed;
+        }
+    }
+
+    TaskCompletionSource<Exception?> StartChange(PatternSubscription group)
+    {
+        var change = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        group.Change = change;
+        _changes.Add(change.Task);
+        return change;
+    }
+
+    void FinishChange(PatternSubscription group, TaskCompletionSource<Exception?> change, Exception? error)
+    {
+        group.Change = null;
+        _changes.Remove(change.Task);
+        change.SetResult(error);
+    }
+
+    void RemoveGroup(string pattern, PatternSubscription group)
+    {
+        if (_byPattern.TryGetValue(pattern, out var current) && ReferenceEquals(current, group))
+            _byPattern.Remove(pattern);
+        if (group.SubscriptionId is { } id && _byId.TryGetValue(id, out current) && ReferenceEquals(current, group))
+            _byId.Remove(id);
     }
 
     void HandleNotification(ReadOnlyMemory<byte> payload)
@@ -531,22 +834,25 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
         SubscriptionRegistration<TNotification>[] registrations;
         lock (_gate)
         {
-            if (!_patternById.TryGetValue(decoded.SubscriptionId, out var pattern) ||
-                !_byPattern.TryGetValue(pattern, out var subscription))
+            if (!_byId.TryGetValue(decoded.SubscriptionId, out var group))
             {
-                // The subscribe response may still be in flight; replayed once it is recorded.
-                _activationBuffer.Buffer(decoded.SubscriptionId, decoded.Route, payload);
+                _activationBuffer.Buffer(decoded);
                 return;
             }
-
-            registrations = [.. subscription.Handles.Values];
+            registrations = group.Snapshot;
         }
+        Deliver(registrations, decoded.Value);
+    }
 
+    static void Deliver(SubscriptionRegistration<TNotification>[] registrations, TNotification value)
+    {
         foreach (var registration in registrations)
         {
+            if (registration.IsDisposed)
+                continue;
             try
             {
-                registration.PreDispatch?.Invoke(decoded.Value);
+                registration.PreDispatch?.Invoke(value);
             }
             catch (FitzException error)
             {
@@ -554,7 +860,7 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
                 continue;
             }
 
-            if (!registration.Channel.Writer.TryWrite(decoded.Value))
+            if (!registration.Channel.Writer.TryWrite(value))
                 _ = registration.FailOverflowAsync();
         }
     }
@@ -583,9 +889,9 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     // Callers hold _gate.
     SubscriptionRegistration<TNotification>[] DetachAllUnsafe()
     {
-        var registrations = _byPattern.Values.SelectMany(static subscription => subscription.Handles.Values).ToArray();
+        var registrations = _byPattern.Values.SelectMany(static subscription => subscription.Snapshot).ToArray();
         _byPattern.Clear();
-        _patternById.Clear();
+        _byId.Clear();
         return registrations;
     }
 
@@ -616,19 +922,30 @@ sealed class SubscriptionTable<TNotification> : IAsyncDisposable
     }
 
     /// <summary>One broker subscription and the local handles sharing it.</summary>
-    sealed class PatternSubscription(ulong subscriptionId)
+    sealed class PatternSubscription
     {
-        internal ulong SubscriptionId { get; } = subscriptionId;
+        readonly Dictionary<long, SubscriptionRegistration<TNotification>> _handles = [];
+        SubscriptionRegistration<TNotification>[]? _snapshot;
 
-        internal Dictionary<long, SubscriptionRegistration<TNotification>> Handles { get; } = [];
+        internal ulong? SubscriptionId { get; set; }
+        internal TaskCompletionSource<Exception?>? Change { get; set; }
+        internal CancellationTokenSource? Admission { get; set; }
+        internal Exception? Failure { get; set; }
+        internal int Count => _handles.Count;
+        internal SubscriptionRegistration<TNotification>[] Snapshot => _snapshot ??= [.. _handles.Values];
 
-        // The same handles, re-bound to the identifier a new session assigned.
-        internal PatternSubscription WithId(ulong subscriptionId)
+        internal bool Contains(long handleId) => _handles.ContainsKey(handleId);
+
+        internal void Add(long handleId, SubscriptionRegistration<TNotification> registration)
         {
-            var copy = new PatternSubscription(subscriptionId);
-            foreach (var (handleId, registration) in Handles)
-                copy.Handles.Add(handleId, registration);
-            return copy;
+            _handles.Add(handleId, registration);
+            _snapshot = null;
+        }
+
+        internal bool Remove(long handleId, out SubscriptionRegistration<TNotification>? registration)
+        {
+            _snapshot = null;
+            return _handles.Remove(handleId, out registration);
         }
     }
 }

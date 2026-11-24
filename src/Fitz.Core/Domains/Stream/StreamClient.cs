@@ -15,6 +15,8 @@ namespace Cntryl.Fitz.Domains.Stream;
 /// </remarks>
 sealed class StreamClient : IStreamClient, IAsyncDisposable
 {
+    const int MaxConcurrentSubscriptionChanges = 16;
+
     readonly Func<ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>> _request;
     readonly Func<RetryOperation, ushort, ReadOnlyMemory<byte>, CancellationToken, ValueTask<ReadOnlyMemory<byte>>>? _retryRequest;
     readonly Func<Action, IDisposable>? _registerOnDisconnect;
@@ -74,7 +76,8 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
             SubscribeWireAsync,
             UnsubscribeWireAsync,
             DecodeNotification,
-            _time);
+            _time,
+            maxConcurrentChanges: MaxConcurrentSubscriptionChanges);
     }
 
     /// <inheritdoc />
@@ -322,10 +325,9 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
     {
         ThrowIfDisposed();
         EnsureSubscriptionPattern(pattern);
-        return _subscriptions.SubscribeBufferedAsync(
+        return _subscriptions.SubscribeReaderAsync(
             pattern,
             static (pattern, notifications, unsubscribe, completion, time) => new StreamSubscription(pattern, notifications, unsubscribe, completion, time),
-            preDispatch: null,
             ct);
     }
 
