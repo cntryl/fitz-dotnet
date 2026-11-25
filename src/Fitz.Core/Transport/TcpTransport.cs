@@ -13,6 +13,7 @@ public sealed class TcpTransport : ITransport
     readonly TimeSpan _timeout;
     readonly int _maxFrameSize;
     readonly HeartbeatOptions _heartbeat;
+    readonly TimeProvider _time;
     readonly byte[] _receiveHeaderBuffer = new byte[4];
     readonly SemaphoreSlim _sendLock = new(1, 1);
     TcpClient? _client;
@@ -20,12 +21,24 @@ public sealed class TcpTransport : ITransport
 
     /// <summary>Creates a TCP transport.</summary>
     /// <param name="url">Broker endpoint.</param>
-    /// <param name="timeout">Connect timeout.</param>
+    /// <param name="timeout">Connect and send timeout.</param>
     /// <param name="maxFrameSize">Largest frame accepted or produced.</param>
     /// <param name="heartbeat">Socket keepalive settings, or <see langword="null"/> for defaults.</param>
     public TcpTransport(Uri url, TimeSpan timeout, int maxFrameSize, HeartbeatOptions? heartbeat = null)
+        : this(url, timeout, maxFrameSize, heartbeat, TimeProvider.System)
+    {
+    }
+
+    /// <summary>Creates a TCP transport with the supplied timeout clock.</summary>
+    /// <param name="url">Broker endpoint.</param>
+    /// <param name="timeout">Connect and send timeout.</param>
+    /// <param name="maxFrameSize">Largest frame accepted or produced.</param>
+    /// <param name="heartbeat">Socket keepalive settings, or <see langword="null"/> for defaults.</param>
+    /// <param name="timeProvider">The clock for connect and send timeouts.</param>
+    public TcpTransport(Uri url, TimeSpan timeout, int maxFrameSize, HeartbeatOptions? heartbeat, TimeProvider timeProvider)
     {
         ArgumentNullException.ThrowIfNull(url);
+        ArgumentNullException.ThrowIfNull(timeProvider);
 
         if (!url.IsAbsoluteUri || !url.Scheme.Equals("tcp", StringComparison.OrdinalIgnoreCase))
         {
@@ -48,6 +61,7 @@ public sealed class TcpTransport : ITransport
         _timeout = timeout;
         _maxFrameSize = maxFrameSize;
         _heartbeat = heartbeat ?? new HeartbeatOptions();
+        _time = timeProvider;
     }
 
     /// <inheritdoc />
@@ -64,10 +78,7 @@ public sealed class TcpTransport : ITransport
             return;
         }
 
-        using var timeoutCts = new CancellationTokenSource(_timeout);
-        using var cancellationRegistration = ct.CanBeCanceled
-            ? ct.Register(static state => ((CancellationTokenSource)state!).Cancel(), timeoutCts)
-            : default;
+        using var deadline = new TransportDeadline(_timeout, _time, ct);
 
         // Disposed in finally unless ownership moves to the transport.
         TcpClient? pending = null;
@@ -75,7 +86,7 @@ public sealed class TcpTransport : ITransport
         try
         {
             pending = new TcpClient { NoDelay = true };
-            await pending.ConnectAsync(_uri.Host, _uri.Port, timeoutCts.Token).ConfigureAwait(false);
+            await pending.ConnectAsync(_uri.Host, _uri.Port, deadline.Token).ConfigureAwait(false);
             ConfigureKeepAlive(pending.Client);
 
             var stream = pending.GetStream();
@@ -121,12 +132,11 @@ public sealed class TcpTransport : ITransport
             BinaryPrimitives.WriteUInt32BigEndian(frame.AsSpan(0, 4), (uint)frameLength);
             data.Span.CopyTo(frame.AsSpan(4, frameLength));
 
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(_timeout);
+            using var deadline = new TransportDeadline(_timeout, _time, ct);
 
             try
             {
-                await stream.WriteAsync(frame.AsMemory(0, frameLength + 4), timeoutCts.Token).ConfigureAwait(false);
+                await stream.WriteAsync(frame.AsMemory(0, frameLength + 4), deadline.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException exception) when (ct.IsCancellationRequested)
             {

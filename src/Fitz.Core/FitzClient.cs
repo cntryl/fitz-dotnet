@@ -43,14 +43,19 @@ public sealed class FitzClient : IFitzClient
     {
     }
 
-    /// <summary>Creates a client that keeps time with <paramref name="time"/>.</summary>
+    /// <summary>Creates a client with an application-supplied clock.</summary>
     /// <param name="config">Configuration for the connection. Validated immediately.</param>
-    /// <param name="time">The clock for every timeout, backoff, and deadline of this client.</param>
-    internal FitzClient(ClientConfig config, TimeProvider time)
+    /// <param name="timeProvider">The clock for client deadlines, retries, and built-in transport timeouts.</param>
+    /// <exception cref="ArgumentNullException">An argument is <see langword="null"/>.</exception>
+    public FitzClient(ClientConfig config, TimeProvider timeProvider)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
-        var transportFactory = _config.TransportFactory ?? TransportResolver.Resolve;
-        _connection = new FitzConnection(_config, () => transportFactory(_config), time);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        var transportFactory = _config.TransportFactory;
+        _connection = new FitzConnection(
+            _config,
+            () => transportFactory is null ? TransportResolver.Resolve(_config, timeProvider) : transportFactory(_config),
+            timeProvider);
     }
 
     /// <summary>The configuration this client was created with.</summary>

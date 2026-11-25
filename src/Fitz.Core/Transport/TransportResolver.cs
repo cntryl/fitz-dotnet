@@ -11,9 +11,16 @@ public static class TransportResolver
     /// <param name="config">Configuration to resolve.</param>
     /// <returns>A transport that is not yet connected.</returns>
     /// <exception cref="NotSupportedException">The configured transport is not supported.</exception>
-    public static ITransport Resolve(ClientConfig config)
+    public static ITransport Resolve(ClientConfig config) => Resolve(config, TimeProvider.System);
+
+    /// <summary>Creates the configured transport with the supplied timeout clock.</summary>
+    /// <param name="config">Configuration to resolve.</param>
+    /// <param name="timeProvider">The clock for connect and send timeouts.</param>
+    /// <returns>A transport that is not yet connected.</returns>
+    public static ITransport Resolve(ClientConfig config, TimeProvider timeProvider)
     {
         ArgumentNullException.ThrowIfNull(config);
+        ArgumentNullException.ThrowIfNull(timeProvider);
         config.Validate();
 
         return config.ResolvedTransportKind switch
@@ -23,12 +30,14 @@ public static class TransportResolver
                 config.Timeout ?? TimeSpan.FromSeconds(30),
                 config.MaxFrameSize,
                 config.WebSocket,
-                config.ResolvedHeartbeat),
+                config.ResolvedHeartbeat,
+                timeProvider),
             ClientTransport.Tcp => new TcpTransport(
                 config.Url,
                 config.Timeout ?? TimeSpan.FromSeconds(30),
                 config.MaxFrameSize,
-                config.ResolvedHeartbeat),
+                config.ResolvedHeartbeat,
+                timeProvider),
             _ => throw new NotSupportedException($"Transport '{Describe(config.Transport)}' is not supported."),
         };
     }

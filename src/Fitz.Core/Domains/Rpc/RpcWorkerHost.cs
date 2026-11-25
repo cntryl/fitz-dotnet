@@ -99,7 +99,7 @@ sealed class RpcWorkerHost : IDisposable
         lock (_sync)
             _reconnectRegistration ??= _onReconnect?.Invoke(ResubscribeAsync);
 
-        return new RpcWorkerRegistration(pattern, token => new ValueTask(UnregisterAsync(pattern, token)));
+        return new RpcWorkerRegistration(pattern, token => new ValueTask(UnregisterAsync(pattern, token)), _time);
     }
 
     /// <summary>Applies a broker cancellation to the request with <paramref name="invocationId"/>.</summary>

@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using Cntryl.Fitz.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -284,6 +286,50 @@ public sealed class DependencyInjectionTests
 
         // Assert
         await Assert.ThrowsAsync<TimeoutException>(start);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ShouldTimeOutTransportHandshakeGivenRegisteredClockWhenClockReachesDeadline(bool keyed)
+    {
+        // Arrange
+        var time = new ManualTimeProvider();
+        var timeout = TimeSpan.FromMinutes(1);
+        using var guard = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var config = new ClientConfig(new Uri($"ws://127.0.0.1:{port}/ws")) { Timeout = timeout };
+        var services = new ServiceCollection().AddSingleton<TimeProvider>(time);
+
+        if (keyed)
+        {
+            services.AddKeyedFitzClient("broker", config);
+        }
+        else
+        {
+            services.AddFitzClient(config);
+        }
+
+        await using var provider = services.BuildServiceProvider();
+        var client = keyed
+            ? provider.GetRequiredKeyedService<IFitzClient>("broker")
+            : provider.GetRequiredService<IFitzClient>();
+
+        // Act
+        var connecting = client.ConnectAsync(guard.Token);
+        // Leave the HTTP upgrade unanswered. The client cannot reach the Fitz HELLO deadline.
+        using var peer = await listener.AcceptTcpClientAsync(guard.Token);
+        time.Advance(timeout - TimeSpan.FromTicks(1));
+        var completedEarly = connecting.IsCompleted;
+        time.Advance(TimeSpan.FromTicks(1));
+        var error = await Record.ExceptionAsync(() => connecting.WaitAsync(guard.Token));
+
+        // Assert
+        Assert.False(completedEarly);
+        Assert.Contains("WebSocket connect exceeded", Assert.IsType<TimeoutException>(error).Message,
+            StringComparison.Ordinal);
     }
 
     [Fact]

@@ -13,6 +13,7 @@ public sealed class WebSocketTransport : ITransport
     readonly int _maxFrameSize;
     readonly WebSocketOptions? _options;
     readonly HeartbeatOptions _heartbeat;
+    readonly TimeProvider _time;
     readonly SemaphoreSlim _sendLock = new(1, 1);
     WebSocket? _socket;
 
@@ -24,8 +25,28 @@ public sealed class WebSocketTransport : ITransport
         WebSocketOptions? options = null,
         HeartbeatOptions? heartbeat = null
     )
+        : this(url, timeout, maxFrameSize, options, heartbeat, TimeProvider.System)
+    {
+    }
+
+    /// <summary>Creates a WebSocket transport with the supplied timeout clock.</summary>
+    /// <param name="url">Broker endpoint.</param>
+    /// <param name="timeout">Connect and send timeout.</param>
+    /// <param name="maxFrameSize">Largest frame accepted or produced.</param>
+    /// <param name="options">WebSocket connection options, or <see langword="null"/> for defaults.</param>
+    /// <param name="heartbeat">Native heartbeat settings, or <see langword="null"/> for defaults.</param>
+    /// <param name="timeProvider">The clock for connect and send timeouts.</param>
+    public WebSocketTransport(
+        Uri url,
+        TimeSpan timeout,
+        int maxFrameSize,
+        WebSocketOptions? options,
+        HeartbeatOptions? heartbeat,
+        TimeProvider timeProvider
+    )
     {
         ArgumentNullException.ThrowIfNull(url);
+        ArgumentNullException.ThrowIfNull(timeProvider);
 
         if (!url.IsAbsoluteUri || url.Scheme is not ("ws" or "wss"))
         {
@@ -45,10 +66,11 @@ public sealed class WebSocketTransport : ITransport
         _maxFrameSize = maxFrameSize;
         _options = options;
         _heartbeat = heartbeat ?? new HeartbeatOptions();
+        _time = timeProvider;
     }
 
-    internal WebSocketTransport(WebSocket socket, Uri url, TimeSpan timeout, int maxFrameSize)
-        : this(url, timeout, maxFrameSize) => _socket = socket;
+    internal WebSocketTransport(WebSocket socket, Uri url, TimeSpan timeout, int maxFrameSize, TimeProvider? timeProvider = null)
+        : this(url, timeout, maxFrameSize, null, null, timeProvider ?? TimeProvider.System) => _socket = socket;
 
     /// <inheritdoc />
     public string TransportName => nameof(WebSocketTransport);
@@ -80,12 +102,10 @@ public sealed class WebSocketTransport : ITransport
             }
         }
 
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeoutCts.CancelAfter(_timeout);
-
         try
         {
-            await socket.ConnectAsync(_uri, timeoutCts.Token).ConfigureAwait(false);
+            using var deadline = new TransportDeadline(_timeout, _time, ct);
+            await socket.ConnectAsync(_uri, deadline.Token).ConfigureAwait(false);
             Interlocked.Exchange(ref _socket, socket)?.Dispose();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -142,14 +162,13 @@ public sealed class WebSocketTransport : ITransport
             admission.ThrowIfCancellationRequested();
             writeLifetime.ThrowIfCancellationRequested();
             var socket = EnsureSocket();
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(writeLifetime);
-            timeoutCts.CancelAfter(_timeout);
+            using var deadline = new TransportDeadline(_timeout, _time, writeLifetime);
             admission.ThrowIfCancellationRequested();
             onWriteAttempt?.Invoke();
 
             try
             {
-                await socket.SendAsync(data, WebSocketMessageType.Binary, endOfMessage: true, timeoutCts.Token).ConfigureAwait(false);
+                await socket.SendAsync(data, WebSocketMessageType.Binary, endOfMessage: true, deadline.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException exception)
             {

@@ -59,6 +59,11 @@ exception — check `InnerException` before assuming the broker was merely slow.
 `ClientConfig` is validated eagerly, so a bad configuration throws at construction rather than
 on first use. `ClientTransport.Auto` (the default) picks WebSocket or TCP from the URL scheme.
 
+To control client deadlines, retries, and built-in transport timeouts, pass a `TimeProvider` to
+`new FitzClient(config, timeProvider)` or register it as a `TimeProvider` service for DI.
+The default is `TimeProvider.System`. Native socket keepalive and WebSocket heartbeats run
+in the platform transport. A custom `TransportFactory` supplies its own transport timing.
+
 ## Routes
 
 Every domain addresses resources by route, a URI of the form `scheme://realm/area/name`:
