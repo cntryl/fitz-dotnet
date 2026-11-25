@@ -23,8 +23,8 @@ are only published to `https://nuget.pkg.github.com/cntryl/index.json`, declared
   restore for fork pull requests**; a maintainer has to push the branch to this repository to
   run CI. Fork contributors also cannot build locally until the feed packages are public or
   mirrored; this is a known limitation, not something to work around in the project files.
-- **Dependabot** uses the Dependabot secret `DEPENDABOT_PACKAGES_TOKEN` (a `read:packages`
-  token); it must exist for NuGet updates to resolve the private packages.
+- **Dependabot** uses its GitHub token. Grant this repository read access under
+  **Manage Actions access** on each GitHub package it restores.
 
 ## Before you open a pull request
 
