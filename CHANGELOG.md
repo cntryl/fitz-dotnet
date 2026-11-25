@@ -18,6 +18,9 @@
 
 ### Fixes and improvements
 
+- Supply a `TimeProvider` when constructing a Fitz client or register it in the DI container.
+  Client deadlines, built-in transport timeouts, and RPC worker cleanup use that clock.
+
 - Stream subscriptions on one connection share setup for identical selectors and pipeline
   distinct selectors during setup and reconnect. Each async reader has its own bounded buffer.
 - Subscription notifications and acknowledgements stay with the session that received them.

@@ -134,6 +134,39 @@ public sealed class WebSocketTransportTests
         }
     }
 
+    [Fact]
+    public async Task ShouldAbortPartialFrameGivenStalledWriteWhenTransportClockReachesDeadline()
+    {
+        // Arrange
+        using var stream = new GatedWriteStream();
+        using var socket = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions());
+        var time = new ManualTimeProvider();
+        var timeout = TimeSpan.FromMinutes(1);
+        await using var transport = new WebSocketTransport(socket, new Uri("ws://localhost/ws"), timeout, 1024, time);
+
+        try
+        {
+            // Act
+            var sending = transport.SendAsync("frame"u8.ToArray());
+            await stream.FirstWrite.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            time.Advance(timeout - TimeSpan.FromTicks(1));
+            var completedEarly = sending.IsCompleted;
+            time.Advance(TimeSpan.FromTicks(1));
+            var error = await Record.ExceptionAsync(() => sending.WaitAsync(TimeSpan.FromSeconds(5)));
+
+            // Assert
+            Assert.False(completedEarly);
+            Assert.Contains("WebSocket send exceeded", Assert.IsType<TimeoutException>(error).Message,
+                StringComparison.Ordinal);
+            Assert.Equal(WebSocketState.Aborted, socket.State);
+        }
+        finally
+        {
+            stream.ReleaseWrite.TrySetResult();
+            socket.Abort();
+        }
+    }
+
     sealed class GatedWriteStream : MemoryStream
     {
         internal TaskCompletionSource FirstWrite { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);

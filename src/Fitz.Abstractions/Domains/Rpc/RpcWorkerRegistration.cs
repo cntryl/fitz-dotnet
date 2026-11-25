@@ -13,6 +13,7 @@ public sealed class RpcWorkerRegistration : IAsyncDisposable
     static readonly TimeSpan CleanupBudget = TimeSpan.FromSeconds(5);
 
     readonly Func<CancellationToken, ValueTask> _unregister;
+    readonly TimeProvider _time;
     readonly SemaphoreSlim _unregisterGate = new(1, 1);
     readonly CancellationTokenSource _closing = new();
     readonly CancellationToken _closingToken;
@@ -28,9 +29,23 @@ public sealed class RpcWorkerRegistration : IAsyncDisposable
         string pattern,
         Func<CancellationToken, ValueTask> unregister
     )
+        : this(pattern, unregister, TimeProvider.System)
+    {
+    }
+
+    /// <summary>Initializes a registration with the supplied cleanup clock.</summary>
+    /// <param name="pattern">Route or pattern this worker serves.</param>
+    /// <param name="unregister">Callback that withdraws the registration from the broker.</param>
+    /// <param name="timeProvider">The clock for the cleanup timeout.</param>
+    public RpcWorkerRegistration(
+        string pattern,
+        Func<CancellationToken, ValueTask> unregister,
+        TimeProvider timeProvider
+    )
     {
         Pattern = pattern;
         _unregister = unregister;
+        _time = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
         _closingToken = _closing.Token;
     }
 
@@ -83,7 +98,7 @@ public sealed class RpcWorkerRegistration : IAsyncDisposable
 
         try
         {
-            using var cleanupDeadline = new CancellationTokenSource(CleanupBudget);
+            using var cleanupDeadline = new CancellationTokenSource(CleanupBudget, _time);
             await UnregisterOnceAsync(cleanupDeadline.Token).ConfigureAwait(false);
         }
         catch (Exception error) when (ExceptionPolicy.IsRecoverable(error))

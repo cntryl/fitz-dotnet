@@ -28,6 +28,10 @@ namespace Cntryl.Fitz.DependencyInjection;
 /// <para>
 /// The container owns and disposes what it creates. Asynchronously disposing the provider closes the client.
 /// </para>
+/// <para>
+/// Keyed and unkeyed clients use the registered <see cref="TimeProvider"/> when available.
+/// Otherwise they use <see cref="TimeProvider.System"/>.
+/// </para>
 /// </remarks>
 public static class ServiceCollectionExtensions
 {
@@ -123,7 +127,9 @@ public static class ServiceCollectionExtensions
         // the trimmer to preserve them.
 
         services.AddSingleton(configFactory);
-        services.AddSingleton(static sp => new FitzClient(sp.GetRequiredService<ClientConfig>()));
+        services.AddSingleton(static sp => new FitzClient(
+            sp.GetRequiredService<ClientConfig>(),
+            sp.GetService<TimeProvider>() ?? TimeProvider.System));
         services.AddSingleton<IFitzClient>(static sp => sp.GetRequiredService<FitzClient>());
         services.TryAddSingleton<IKvClient>(static sp => sp.GetRequiredService<IFitzClient>().Kv);
         services.TryAddSingleton<IQueueClient>(static sp => sp.GetRequiredService<IFitzClient>().Queue);
@@ -244,7 +250,9 @@ public static class ServiceCollectionExtensions
         services.AddKeyedSingleton(serviceKey, (sp, _) => configFactory(sp));
         services.AddKeyedSingleton(
             serviceKey,
-            static (sp, key) => new FitzClient(sp.GetRequiredKeyedService<ClientConfig>(key)));
+            static (sp, key) => new FitzClient(
+                sp.GetRequiredKeyedService<ClientConfig>(key),
+                sp.GetService<TimeProvider>() ?? TimeProvider.System));
         services.AddKeyedSingleton<IFitzClient>(
             serviceKey,
             static (sp, key) => sp.GetRequiredKeyedService<FitzClient>(key));
