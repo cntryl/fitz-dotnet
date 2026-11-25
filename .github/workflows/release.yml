@@ -1,0 +1,175 @@
+name: Release to NuGet.org
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: nuget-org-release
+  cancel-in-progress: false
+
+jobs:
+  pack:
+    uses: ./.github/workflows/publish.yml
+    permissions:
+      contents: write
+      packages: write
+    with:
+      pack-only: true
+
+  release:
+    name: Publish and verify NuGet.org packages
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: nuget.org
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      PACKAGE_VERSION: ${{ needs.pack.outputs.package-version }}
+      NUGET_SOURCE: https://api.nuget.org/v3/index.json
+
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up .NET 11
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 11.0.x
+
+      - name: Download packed artifacts
+        uses: actions/download-artifact@v8.0.2
+        with:
+          artifact-ids: ${{ needs.pack.outputs.artifact-id }}
+          path: artifacts/packages
+
+      - name: Prepare clean restore probe
+        run: |
+          test -n "$PACKAGE_VERSION"
+          tag="refs/tags/v$PACKAGE_VERSION"
+          if git show-ref --verify --quiet "$tag" &&
+             [[ "$(git rev-parse "$tag^{commit}")" != "$GITHUB_SHA" ]]; then
+            echo "::error::Tag v$PACKAGE_VERSION points to a different commit. Bump PackageVersion before releasing."
+            exit 1
+          fi
+
+          probe="$RUNNER_TEMP/nuget-release-probe"
+          mkdir -p "$probe"
+          python3 - "$probe" <<'PY'
+          import os
+          import sys
+          import xml.etree.ElementTree as xml
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          probe = Path(sys.argv[1])
+          packages = sorted(Path("artifacts/packages").glob("*.nupkg"))
+          if not packages:
+              sys.exit("No .nupkg artifacts were downloaded.")
+
+          project = xml.Element("Project", Sdk="Microsoft.NET.Sdk")
+          properties = xml.SubElement(project, "PropertyGroup")
+          xml.SubElement(properties, "TargetFramework").text = "net11.0"
+          references = xml.SubElement(project, "ItemGroup")
+          ids = set()
+
+          for package in packages:
+              with ZipFile(package) as archive:
+                  nuspec, = (name for name in archive.namelist() if name.endswith(".nuspec") and "/" not in name)
+                  metadata = xml.fromstring(archive.read(nuspec)).find("{*}metadata")
+              package_id = metadata.findtext("{*}id")
+              version = metadata.findtext("{*}version")
+              if not package_id or version != os.environ["PACKAGE_VERSION"] or package_id.lower() in ids:
+                  sys.exit(f"Unexpected package identity in {package}: {package_id} {version}")
+              ids.add(package_id.lower())
+              xml.SubElement(references, "PackageReference", Include=package_id, Version=f"[{version}]")
+
+          xml.ElementTree(project).write(probe / "Probe.csproj", encoding="utf-8")
+          config = xml.Element("configuration")
+          sources = xml.SubElement(config, "packageSources")
+          xml.SubElement(sources, "add", key="public", value=os.environ["NUGET_SOURCE"])
+          xml.ElementTree(config).write(probe / "Public.Config", encoding="utf-8")
+
+          xml.SubElement(sources, "add", key="artifacts", value=str(packages[0].parent.resolve()))
+          mapping = xml.SubElement(config, "packageSourceMapping")
+          public = xml.SubElement(mapping, "packageSource", key="public")
+          xml.SubElement(public, "package", pattern="*")
+          artifacts = xml.SubElement(mapping, "packageSource", key="artifacts")
+          for package_id in sorted(ids):
+              xml.SubElement(artifacts, "package", pattern=package_id)
+          xml.ElementTree(config).write(probe / "Preflight.Config", encoding="utf-8")
+          PY
+
+      - name: Verify dependencies resolve using only artifacts and NuGet.org
+        run: |
+          probe="$RUNNER_TEMP/nuget-release-probe"
+          dotnet restore "$probe/Probe.csproj" --configfile "$probe/Preflight.Config" \
+            --packages "$probe/preflight-cache" --no-http-cache --force
+
+      - name: Log in to NuGet.org
+        uses: NuGet/login@v1.2.0
+        id: nuget
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Push the verified packages
+        env:
+          NUGET_API_KEY: ${{ steps.nuget.outputs.NUGET_API_KEY }}
+        run: |
+          dotnet nuget push "artifacts/packages/*.nupkg" \
+            --source "$NUGET_SOURCE" --api-key "$NUGET_API_KEY" --skip-duplicate
+
+      - name: Restore and verify public packages
+        run: |
+          probe="$RUNNER_TEMP/nuget-release-probe"
+          for attempt in {1..15}; do
+            if dotnet restore "$probe/Probe.csproj" --configfile "$probe/Public.Config" \
+              --packages "$probe/public-cache" --no-http-cache --force; then
+              break
+            fi
+            if [[ "$attempt" == 15 ]]; then
+              echo "::error::The full package family could not be restored from NuGet.org."
+              exit 1
+            fi
+            sleep 60
+          done
+
+          # A duplicate is safe only if NuGet.org has the same package payload.
+          # Repository signing can add a signature and change ZIP metadata.
+          python3 - "$probe" <<'PY'
+          import sys
+          import xml.etree.ElementTree as xml
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          def payload(path):
+              with ZipFile(path) as archive:
+                  return {
+                      name: archive.read(name)
+                      for name in archive.namelist()
+                      if not name.endswith("/") and name != ".signature.p7s"
+                  }
+
+          probe = Path(sys.argv[1])
+          packages = {path.name.lower(): path for path in Path("artifacts/packages").glob("*.nupkg")}
+          for reference in xml.parse(probe / "Probe.csproj").iter("PackageReference"):
+              package_id = reference.attrib["Include"].lower()
+              version = reference.attrib["Version"][1:-1].lower()
+              filename = f"{package_id}.{version}.nupkg"
+              public = probe / "public-cache" / package_id / version / filename
+              if payload(packages[filename]) != payload(public):
+                  sys.exit(f"NuGet.org returned different package contents for {filename}.")
+          PY
+
+      - name: Tag the verified release
+        run: |
+          tag="refs/tags/v$PACKAGE_VERSION"
+          if ! git show-ref --verify --quiet "$tag"; then
+            git tag "v$PACKAGE_VERSION" "$GITHUB_SHA"
+          fi
+          git push origin "$tag"

@@ -2,6 +2,19 @@ name: Publish
 
 on:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      pack-only:
+        description: Upload the packages for the caller without publishing or tagging.
+        type: boolean
+        default: false
+    outputs:
+      artifact-id:
+        description: The immutable package artifact for the caller.
+        value: ${{ jobs.publish.outputs.artifact-id }}
+      package-version:
+        description: The version of the packed packages.
+        value: ${{ jobs.publish.outputs.package-version }}
 
 # Serialize publishes rather than cancelling them: interrupting a run partway through
 # dotnet nuget push would leave some packages pushed and the rest not.
@@ -31,9 +44,12 @@ env:
 jobs:
   publish:
     name: Verify, pack and publish packages
-    if: github.ref == 'refs/heads/main'
+    if: inputs.pack-only || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      artifact-id: ${{ steps.artifact.outputs.artifact-id }}
+      package-version: ${{ steps.version.outputs.package-version }}
     env:
       NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       PACKAGE_SOURCE: https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json
@@ -51,6 +67,7 @@ jobs:
         run: echo "package-version=$(dotnet msbuild src/Fitz.Abstractions/Fitz.Abstractions.csproj -getProperty:PackageVersion -nologo)" >> "$GITHUB_OUTPUT"
 
       - name: Fail if this version is already tagged
+        if: ${{ !inputs.pack-only }}
         env:
           PACKAGE_VERSION: ${{ steps.version.outputs.package-version }}
         run: |
@@ -91,9 +108,21 @@ jobs:
       - name: Run Native AOT consumer
         run: artifacts/native-aot/Fitz.PackageConsumer
 
+      - name: Upload release packages
+        if: inputs.pack-only
+        uses: actions/upload-artifact@v7.0.2
+        id: artifact
+        with:
+          name: release-packages-${{ github.run_attempt }}
+          path: |
+            artifacts/packages/*.nupkg
+            artifacts/packages/*.snupkg
+          if-no-files-found: error
+
       # --skip-duplicate exists only to resume a partly failed run (see the header comment);
       # the tag guard above rejects a re-release of an already-published version.
       - name: Publish packages
+        if: ${{ !inputs.pack-only }}
         run: |
           set -o pipefail
           dotnet nuget push "artifacts/packages/*.nupkg" --api-key "$NUGET_AUTH_TOKEN" --source "$PACKAGE_SOURCE" --skip-duplicate | tee push.log
@@ -103,6 +132,7 @@ jobs:
           fi
 
       - name: Tag release
+        if: ${{ !inputs.pack-only }}
         env:
           PACKAGE_VERSION: ${{ steps.version.outputs.package-version }}
         run: |
