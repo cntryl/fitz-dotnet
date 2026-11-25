@@ -233,6 +233,74 @@ Commit persistence is explicit and has no default: `Sync` waits for durability, 
 does not. Without a `CommitAsync` the transaction rolls back on disposal. `ScanAsync` returns
 a `KvScanResult` whose `HasMore` tells you to continue from the last key.
 
+#### Testing KV consumers
+
+`Cntryl.Fitz.Testing` supplies an `IKvClient` implementation without bringing in an
+assertion framework or test host. It is route-isolated and transactional, clones all byte
+buffers, supports read-your-writes, commit, rollback, read-only enforcement, optimistic
+conflicts, bounded or unbounded mutation subscriptions, configurable scan page caps,
+deterministic fault injection, reset-safe transactions, and operation history.
+
+```csharp
+using Cntryl.Fitz.Testing;
+
+var kv = new InMemoryKvClient(new InMemoryKvClientOptions { ScanPageSize = 2 });
+kv.Seed("kv://tenant/app/teams", "team/a"u8.ToArray(), payload);
+
+var service = new TeamDirectory(kv);
+var page = await service.ListAsync(/* ... */);
+
+Assert.Contains(kv.Operations, operation => operation.Operation == KvTestOperation.Scan);
+```
+
+Production and test transactions can use `ScanAllAsync` to own continuation safely in
+either direction. It rejects an empty page whose `HasMore` flag is set. Use `Cntryl.LexKey` to construct typed keys and range bounds, then pass
+`LexKey.AsMemory()` directly to Fitz without copying.
+
+#### Indexed KV directories
+
+`Cntryl.Fitz.Extensions` turns declared query shapes into bounded primary-key or covering-index
+scans. The application declares its indexes and maps external sort or filter input to them.
+Fitz owns atomic index maintenance, bounds, keyset continuation, and generation migration.
+
+```csharp
+var byName = new KvDirectoryIndex<Team>(
+    "by_name", generation: 1,
+    static team => [team.Name.ToUpperInvariant()]);
+
+var teams = new KvDirectory<Team, Guid>(
+    "teams",
+    TeamJsonContext.Default.Team,
+    static team => team.Id,
+    static id => [id],
+    [byName]);
+
+await teams.InsertAsync(transaction, team, ct); // no read
+var page = await teams.QueryAsync(client, route,
+    byName.Query().Take(50).After(cursor), ct);
+
+// Use a caller-owned transaction to see its staged writes.
+var same = await teams.QueryAsync(transaction, byName.Query().Take(50).After(cursor), ct);
+
+// Page the existing primary rows directly when identity order is the required order.
+var primaryPage = await teams.QueryPrimaryAsync(transaction, limit: 50, cursor: primaryCursor, ct);
+```
+
+Record operations and queries accept a caller-owned `IKvTransaction`. The `(client, route)`
+read forms open a short read-only transaction. Cursors are bound to the route
+the query ran on, taken from `IKvTransaction.Route`, so a cursor from one route is rejected on
+another.
+
+Primary-key pages are ascending and bounded, and use their own route-bound opaque cursors.
+They read the primary rows already maintained by the directory, including historical rows, so
+they require no secondary index, backfill, migration marker, or request-path write.
+
+`UpsertAsync` reads the previous primary record so it can remove old index rows. Hot paths that
+already know the previous value use `ReplaceAsync(previous, current)` instead. To add an index
+generation, deploy a schema containing both generations (ordinary writes then dual-write), backfill
+the new generation in bounded batches, switch application reads, deploy a schema that no longer
+writes the old generation, and finally delete the old range.
+
 ### Queue — work distribution
 
 ```csharp
@@ -253,6 +321,19 @@ processing legitimately runs long.
 
 The queue wire carries no delivery-attempt count, so the client does not expose one. Do not
 build redelivery logic that depends on counting attempts.
+
+#### Queue backpressure and acknowledgement retries
+
+Queue capacity error `4005` means the request was rejected before admission.
+Use bounded backoff and a cancellation or deadline budget. For a rejected ACK,
+keep the existing reservation and retry its completion while the lease remains
+valid. Retrying the ACK only requires the reservation handle. Successful completion
+closes the reservation.
+
+A timeout, disconnect, cancellation after sending, or error `4007` can leave the
+outcome unknown. Do not blindly replay enqueue, reserve, or completion in those
+cases. Reconnection invalidates old reservation handles. Treat retryability as one
+input to the application's retry policy.
 
 ### Notice — fire-and-forget pub/sub
 

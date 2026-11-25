@@ -52,6 +52,22 @@ Tests that need a broker carry `[Trait("Category", "Integration")]`; the cross-l
 conformance tests also carry `[Trait("Category", "Conformance")]`. Add the trait to any new
 broker-backed test class, or it will run (and fail) in the unit-test job.
 
+### Run one conformance leg
+
+With the local brokers running, select a transport and authentication mode and write
+the normalized result artifact.
+
+```sh
+CONFORMANCE_TRANSPORT=websocket \
+CONFORMANCE_AUTH_MODE=anonymous \
+CONFORMANCE_OUTPUT=artifacts/conformance-results.json \
+dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter 'Category=Conformance'
+```
+
+CI covers TCP and WebSocket with anonymous and JWT authentication. The
+[cross-language scenario definitions](conformance/cross-language-conformance-suite.yaml)
+are shared across the client SDKs.
+
 ## Standards that are enforced, not suggested
 
 **Warnings are errors.** `Directory.Build.props` sets `TreatWarningsAsErrors` with
