@@ -407,20 +407,39 @@ public sealed class LeaseInventoryObserverTests
             dispatchAsyncHandler: (_, _) => Interlocked.Exchange(ref rejectNextDispatch, 0) == 0);
 
         await using var observer = await leaseClient.ObserveAsync("lease://acme/renderers/*");
-        Assert.True(observer.IsReady);
+        var readyBeforeOverflow = observer.IsReady;
         broker.QueueSubscribeFailure(new InvalidOperationException("transient subscribe failure"));
-        broker.DefaultListPage = new[] { MakeItem("lease://acme/renderers/recovered") };
+        // Hold the recovery response until the test can observe readiness.
+        var recoveryListStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRecoveryList = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        broker.QueueListPage(new[] { MakeItem("lease://acme/renderers/recovered") }, before: () =>
+        {
+            recoveryListStarted.SetResult();
+            return releaseRecoveryList.Task;
+        });
 
-        // Act: rejecting dispatch fails and removes the observer's current
-        // registration. The first replacement SUBSCRIBE also fails, forcing
-        // the recovery loop through its bounded retry path.
-        broker.PushNotification(broker.LastSubscriptionId, "lease://acme/renderers/a");
+        // Act
+        bool readyDuringRecovery;
 
-        // Assert
-        await WaitUntilAsync(() => !observer.IsReady);
+        try
+        {
+            broker.PushNotification(broker.LastSubscriptionId, "lease://acme/renderers/a");
+            await recoveryListStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            readyDuringRecovery = observer.IsReady;
+        }
+        finally
+        {
+            releaseRecoveryList.SetResult();
+        }
+
+
         await WaitUntilAsync(
             () => observer.IsReady && observer.View.ContainsKey("lease://acme/renderers/recovered"),
             TimeSpan.FromSeconds(5));
+
+        // Assert
+        Assert.True(readyBeforeOverflow);
+        Assert.False(readyDuringRecovery);
         Assert.Equal(3, broker.Calls.Count(call => call == "SUBSCRIBE"));
         Assert.True(broker.Calls.Count(call => call == "LIST") >= 2);
     }
