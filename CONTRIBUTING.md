@@ -23,8 +23,8 @@ are only published to `https://nuget.pkg.github.com/cntryl/index.json`, declared
   restore for fork pull requests**; a maintainer has to push the branch to this repository to
   run CI. Fork contributors also cannot build locally until the feed packages are public or
   mirrored; this is a known limitation, not something to work around in the project files.
-- **Dependabot** uses the Dependabot secret `DEPENDABOT_PACKAGES_TOKEN` (a `read:packages`
-  token); it must exist for NuGet updates to resolve the private packages.
+- **Dependabot** uses its GitHub token. Grant this repository read access under
+  **Manage Actions access** on each GitHub package it restores.
 
 ## Before you open a pull request
 
@@ -51,6 +51,22 @@ docker compose down --volumes
 Tests that need a broker carry `[Trait("Category", "Integration")]`; the cross-language
 conformance tests also carry `[Trait("Category", "Conformance")]`. Add the trait to any new
 broker-backed test class, or it will run (and fail) in the unit-test job.
+
+### Run one conformance leg
+
+With the local brokers running, select a transport and authentication mode and write
+the normalized result artifact.
+
+```sh
+CONFORMANCE_TRANSPORT=websocket \
+CONFORMANCE_AUTH_MODE=anonymous \
+CONFORMANCE_OUTPUT=artifacts/conformance-results.json \
+dotnet test test/Fitz.Core.Tests/Fitz.Core.Tests.csproj -c Release --no-build --filter 'Category=Conformance'
+```
+
+CI covers TCP and WebSocket with anonymous and JWT authentication. The
+[cross-language scenario definitions](conformance/cross-language-conformance-suite.yaml)
+are shared across the client SDKs.
 
 ## Standards that are enforced, not suggested
 
