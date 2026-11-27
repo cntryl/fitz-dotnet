@@ -18,6 +18,8 @@
 
 ### Fixes and improvements
 
+- Add a runnable workload identity example for AWS STS, Microsoft Entra managed identity, and Kubernetes projected ServiceAccount tokens.
+
 - Supply a `TimeProvider` when constructing a Fitz client or register it in the DI container.
   Client deadlines, built-in transport timeouts, and RPC worker cleanup use that clock.
 
