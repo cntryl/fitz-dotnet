@@ -53,6 +53,7 @@ await transaction.CommitAsync(KvDurability.Sync);
 | Task | Guide |
 | --- | --- |
 | Connect, configure retries, or use a client domain | [Client guide](docs/guide.md) |
+| Connect with AWS, Entra or Kubernetes workload identity | [Workload identity example](examples/Fitz.WorkloadIdentity/README.md) |
 | Build or test a KV directory | [Indexed directories](docs/guide.md#indexed-kv-directories) · [Testing KV consumers](docs/guide.md#testing-kv-consumers) |
 | Control subscription delivery or handle reconnects | [Subscriptions](docs/guide.md#subscriptions) · [Reconnect](docs/guide.md#reconnect) |
 | Configure hosting and telemetry | [Dependency injection](docs/guide.md#dependency-injection-and-hosting) · [Observability](docs/guide.md#observability) |

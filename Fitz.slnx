@@ -18,4 +18,7 @@
     <Project Path="bench/Fitz.Benchmarks/Fitz.Benchmarks.csproj" />
     <Project Path="bench/Fitz.Benchmarks.Runner/Fitz.Benchmarks.Runner.csproj" />
   </Folder>
+  <Folder Name="/examples/">
+    <Project Path="examples/Fitz.WorkloadIdentity/Fitz.WorkloadIdentity.csproj" />
+  </Folder>
 </Solution>
