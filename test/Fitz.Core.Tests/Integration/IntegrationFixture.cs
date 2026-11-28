@@ -197,12 +197,13 @@ static class IntegrationFixture
         ReconnectOptions? reconnect = null,
         int? maxInFlightRequests = null,
         FitzObservabilityOptions? observability = null,
-        AsyncHandlerOptions? asyncHandlers = null
+        AsyncHandlerOptions? asyncHandlers = null,
+        IReadOnlyList<string>? permissions = null
     )
     {
         var secret = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_HMAC_SECRET") ?? "dev-test-secret";
         var audience = Environment.GetEnvironmentVariable("FITZ_BROKER_JWT_AUDIENCE") ?? "fitz";
-        var validToken = CreateTestJwt(secret, audience, DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds());
+        var validToken = CreateTestJwt(secret, audience, GetJwtTenant(), DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds(), permissions);
 
         return CreateClient(
             url,
@@ -341,9 +342,13 @@ static class IntegrationFixture
 
     static string CreateInvalidSignatureJwt(string secret, string audience) => CreateTestJwt($"{secret}-invalid", audience, GetJwtTenant(), DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds());
 
-    static string CreateTestJwt(string secret, string audience, long expiresAtSeconds) => CreateTestJwt(secret, audience, GetJwtTenant(), expiresAtSeconds);
-
-    static string CreateTestJwt(string secret, string audience, string tenant, long expiresAtSeconds)
+    static string CreateTestJwt(
+        string secret,
+        string audience,
+        string tenant,
+        long expiresAtSeconds,
+        IReadOnlyList<string>? permissions = null
+    )
     {
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var header = Base64UrlEncode(
@@ -366,7 +371,7 @@ static class IntegrationFixture
                     tid = tenant,
                     exp = expiresAtSeconds,
                     iat = now,
-                    permissions = BrokerPermissions,
+                    permissions = permissions ?? BrokerPermissions,
                 }
             )
         );

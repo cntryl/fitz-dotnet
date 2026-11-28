@@ -140,26 +140,6 @@ static class StreamWireHelpers
         return record;
     }
 
-    internal static StreamRecord ReadRoutedRecord(ReadOnlyMemory<byte> payload, string operation)
-    {
-        var reader = new BinaryBufferReader(payload);
-        var route = reader.ReadString();
-
-        if (!RouteValidation.TryValidateFixedRoute(route, "stream", 3, out _))
-        {
-            throw new StreamException($"{operation} response contains invalid concrete stream route: {route}", $"{operation}_INVALID_RESPONSE");
-        }
-
-        var record = ReadRecord(reader, operation, route);
-
-        if (!reader.IsEof)
-        {
-            throw new StreamException($"{operation} response has trailing bytes", $"{operation}_INVALID_RESPONSE");
-        }
-
-        return record;
-    }
-
     internal static StreamRecord ReadRecord(BinaryBufferReader reader, string operation, string route, bool global = false)
     {
         if (reader.RemainingBytes < 8)

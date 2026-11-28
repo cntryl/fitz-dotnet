@@ -5,6 +5,19 @@ namespace Cntryl.Fitz;
 /// </summary>
 public interface IStreamClient
 {
+    /// <summary>Deletes committed Stream data within the selected scope.</summary>
+    /// <param name="selector">A realm wildcard, area wildcard, or exact resource selector.</param>
+    /// <param name="mode">The required persistence policy for the deletion.</param>
+    /// <param name="ct">Cancellation token for dispatch and waiting for the response.</param>
+    /// <returns>A task that completes when the broker acknowledges the deletion.</returns>
+    /// <remarks>
+    /// The outcome can be indeterminate after dispatch if the response is lost.
+    /// Reconcile the selected scope before retrying.
+    /// Discard checkpoints for offsets reset by the deletion.
+    /// </remarks>
+    Task DropAsync(string selector, StreamCommitMode mode, CancellationToken ct = default) =>
+        throw new NotSupportedException("This Stream client does not implement scoped DROP.");
+
     /// <summary>
     /// Opens an append session for a stream.
     /// </summary>
