@@ -77,6 +77,26 @@ sealed class KvClient : IKvClient, IAsyncDisposable
     }
 
     /// <inheritdoc />
+    public async Task DropAsync(string selector, KvDurability durability, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        ScopedDrop.Validate(selector, "kv");
+
+        if (durability is not KvDurability.Buffered and not KvDurability.Sync)
+            throw new ArgumentOutOfRangeException(nameof(durability), durability, "Unknown persistence policy");
+
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(selector);
+        writer.WriteU8((byte)durability);
+
+        var response = await _request(MessageTypes.KvDrop, writer.WrittenMemory, ct).ConfigureAwait(false);
+        var reader = KvWireHelpers.ReadSuccess(response, "DROP");
+
+        if (!reader.IsEof)
+            throw KvWireHelpers.InvalidResponse("DROP", "response has trailing bytes");
+    }
+
+    /// <inheritdoc />
     public async Task<IKvTransaction> BeginAsync(
         string route,
         KvMode mode = KvMode.ReadWrite,

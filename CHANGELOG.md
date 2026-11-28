@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add scoped `Kv.DropAsync` and `Stream.DropAsync` with explicit Buffered or Sync
+  persistence. Reconcile the selected scope after an indeterminate result before
+  retrying. Discard checkpoints for Stream offsets reset by DROP.
+
 ## 4.3.1 (unreleased)
 
 ### Breaking changes

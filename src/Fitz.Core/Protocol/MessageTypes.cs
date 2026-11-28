@@ -89,6 +89,9 @@ static class MessageTypes
     /// </summary>
     public const ushort KvNotify = 111;
 
+    /// <summary>Deletes committed Kv data within a selector.</summary>
+    public const ushort KvDrop = 112;
+
     /// <summary>
     /// Appends a message to a queue, optionally with a whole-second delivery delay.
     /// </summary>
@@ -267,6 +270,9 @@ static class MessageTypes
     /// Broker-originated notification carrying a stream commit event.
     /// </summary>
     public const ushort StreamNotify = 609;
+
+    /// <summary>Deletes committed Stream data within a selector.</summary>
+    public const ushort StreamDrop = 610;
 
     /// <summary>
     /// Registers a cron schedule that delivers a payload to a route.

@@ -5,6 +5,18 @@ namespace Cntryl.Fitz;
 /// </summary>
 public interface IKvClient
 {
+    /// <summary>Deletes committed KV data within the selected scope.</summary>
+    /// <param name="selector">A realm wildcard, area wildcard, or exact resource selector.</param>
+    /// <param name="durability">The required persistence policy for the deletion.</param>
+    /// <param name="ct">Cancellation token for dispatch and waiting for the response.</param>
+    /// <returns>A task that completes when the broker acknowledges the deletion.</returns>
+    /// <remarks>
+    /// The outcome can be indeterminate after dispatch if the response is lost.
+    /// Reconcile the selected scope before retrying.
+    /// </remarks>
+    Task DropAsync(string selector, KvDurability durability, CancellationToken ct = default) =>
+        throw new NotSupportedException("This KV client does not implement scoped DROP.");
+
     /// <summary>
     /// Begins a KV transaction for a route.
     /// </summary>

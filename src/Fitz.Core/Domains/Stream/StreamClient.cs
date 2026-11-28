@@ -83,6 +83,23 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
     }
 
     /// <inheritdoc />
+    public async Task DropAsync(string selector, StreamCommitMode mode, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        ScopedDrop.Validate(selector, "stream");
+
+        if (mode is not StreamCommitMode.Buffered and not StreamCommitMode.Sync)
+            throw new ArgumentOutOfRangeException(nameof(mode), mode, "Unknown persistence policy");
+
+        using var writer = new BinaryBufferWriter();
+        writer.WriteString(selector);
+        writer.WriteU8((byte)mode);
+
+        var response = await _request(MessageTypes.StreamDrop, writer.WrittenMemory, ct).ConfigureAwait(false);
+        StreamWireHelpers.EnsureSuccessStatusOnly(response, "DROP");
+    }
+
+    /// <inheritdoc />
     public async Task<IStreamSession> BeginAsync(string route, ReadOnlyMemory<byte>? ingestMetadata = null, CancellationToken ct = default)
     {
         ThrowIfDisposed();
