@@ -77,6 +77,50 @@ public sealed class ScopedDropIntegrationTests
         Assert.Equal(FitzErrorCodes.StreamConcurrencyConflict, failure.DomainCode);
     }
 
+    [Theory]
+    [InlineData("tcp")]
+    [InlineData("websocket")]
+    public async Task ShouldReturnLastRecordGivenARecordCommittedOnTheRequestedStream(string transport)
+    {
+        // Arrange
+        await using var client = await ConnectAsync(transport);
+        var (route, _, _) = CreateScope("stream", 3);
+        await AppendAsync(client.Stream, route);
+
+        // Act
+        var record = await client.Stream.PeekAsync(route);
+
+        // Assert
+        Assert.NotNull(record);
+        Assert.Equal(route, record.Route);
+        Assert.Equal(0UL, record.Offset);
+        Assert.Equal("record"u8.ToArray(), record.Body.ToArray());
+    }
+
+    [Theory]
+    [InlineData("tcp")]
+    [InlineData("websocket")]
+    public async Task ShouldDenyAreaDropGivenOnlyResourceWritePermission(string transport)
+    {
+        // Arrange
+        var (kvRoute, _, kvScope) = CreateScope("kv", 2);
+        var (streamRoute, _, streamScope) = CreateScope("stream", 2);
+        await using var client = IntegrationFixture.CreateValidJwtClient(
+            IntegrationFixture.GetBrokerUrl(transport, "valid_jwt"), transport,
+            permissions: [$"{kvRoute}#write", $"{streamRoute}#write"]);
+        await client.ConnectAsync();
+
+        // Act
+        var kvDenied = await Assert.ThrowsAsync<KvException>(() => client.Kv.DropAsync(kvScope, KvDurability.Sync));
+        var streamDenied = await Assert.ThrowsAsync<StreamException>(() => client.Stream.DropAsync(streamScope, StreamCommitMode.Sync));
+
+        // Assert
+        Assert.Equal(1001U, kvDenied.DomainCode);
+        Assert.Equal(2001U, streamDenied.DomainCode);
+        await client.Kv.DropAsync(kvRoute, KvDurability.Sync);
+        await client.Stream.DropAsync(streamRoute, StreamCommitMode.Sync);
+    }
+
     static async Task<FitzClient> ConnectAsync(string transport)
     {
         var client = IntegrationFixture.CreateAnonymousClient(IntegrationFixture.GetBrokerUrl(transport, "anonymous"), transport);

@@ -819,7 +819,7 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task ShouldReturnLastRecordGivenCanonicalPayloadWhenPeekingStream()
+    public async Task ShouldReturnLastRecordGivenBrokerPayloadWithoutARoute()
     {
         // Arrange
         await using var stream = new StreamClient((messageType, payload, _) =>
@@ -830,7 +830,6 @@ public sealed class StreamClientTests
             Assert.Equal("stream://prod/app/events", request.ReadString());
 
             using var data = new BinaryBufferWriter();
-            data.WriteString("stream://prod/app/events");
             data.WriteU64(42);
             data.WriteU8(0);
             data.WriteU8(0);
@@ -856,27 +855,16 @@ public sealed class StreamClientTests
     }
 
     [Fact]
-    public async Task ShouldRejectWildcardRouteGivenLastResponseWhenPeekingStream()
+    public async Task ShouldRejectTruncatedRecordGivenASuccessfulLastResponse()
     {
         // Arrange
+        await using var stream = new StreamClient((_, _, _) => Task.FromResult<byte[]>([0, 1]));
+
         // Act
-        // Assert
-        await using var stream = new StreamClient((_, _, _) =>
-        {
-            using var data = new BinaryBufferWriter();
-            data.WriteString("stream://*/app/events");
-
-            using var writer = new BinaryBufferWriter();
-            writer.WriteU8(0);
-            writer.WriteU8(0);
-            writer.WriteU32((uint)data.Build().Length);
-            writer.WriteBytes(data.Build());
-            return Task.FromResult(writer.Build());
-        });
-
         var error = await Assert.ThrowsAsync<StreamException>(
             () => stream.PeekAsync("stream://prod/app/events"));
 
+        // Assert
         Assert.Equal("LAST_INVALID_RESPONSE", error.Code);
     }
 

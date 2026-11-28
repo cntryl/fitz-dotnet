@@ -334,7 +334,7 @@ sealed class StreamClient : IStreamClient, IAsyncDisposable
         }
 
 
-        return StreamWireHelpers.ReadRoutedRecord(data, "LAST");
+        return StreamWireHelpers.ReadRecord(data, "LAST", route);
     }
 
     /// <inheritdoc />

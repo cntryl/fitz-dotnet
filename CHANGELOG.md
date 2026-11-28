@@ -5,6 +5,7 @@
 - Add scoped `Kv.DropAsync` and `Stream.DropAsync` with explicit Buffered or Sync
   persistence. Reconcile the selected scope after an indeterminate result before
   retrying. Discard checkpoints for Stream offsets reset by DROP.
+- Fix `Stream.PeekAsync` decoding of populated broker responses.
 
 ## 4.3.1 (unreleased)
 
